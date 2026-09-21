@@ -46,19 +46,20 @@ aarch64) abi=FreeBSD:15:aarch64 ;;
 esac
 fetch -q -T 30 -o /dev/null "http://pkg.FreeBSD.org/$abi/latest/meta.conf" 2>/dev/null ||
     skip "pkg.FreeBSD.org unreachable from the VM"
-# The kernel reports ostype NextBSD, so pkg would derive ABI NextBSD:15:<arch>,
-# which the FreeBSD mirror doesn't have. Force the FreeBSD ABI, as build.sh
-# does for the release image; pkg requires OSVERSION alongside an explicit ABI.
-ABI=$abi
-OSVERSION=$(uname -K)
-export ABI OSVERSION
-mkdir -p /etc/pkg
-cat > /etc/pkg/FreeBSD.conf <<EOF
+# Configure pkg exactly as the release image does (nextbsd build.sh step 5):
+# the ABI pinned to FreeBSD:15:<arch> because the kernel reports ostype
+# NextBSD, the osversion gate off, and the FreeBSD repo on `latest`. This CI
+# image skips that step, so write the same files here. http, not https, in case
+# this image lacks the CA bundle.
+mkdir -p /usr/local/etc/pkg/repos
+cat > /usr/local/etc/pkg.conf <<EOF
+ABI = "$abi";
+IGNORE_OSVERSION = yes;
+EOF
+cat > /usr/local/etc/pkg/repos/FreeBSD.conf <<EOF
 FreeBSD: {
   url: "pkg+http://pkg.FreeBSD.org/$abi/latest",
   mirror_type: "srv",
-  signature_type: "fingerprints",
-  fingerprints: "/usr/share/keys/pkg",
   enabled: yes
 }
 EOF
@@ -66,8 +67,7 @@ EOF
 mkdir -p /var/cache/pkg
 mount -t tmpfs -o size=1g tmpfs /var/cache/pkg 2>/dev/null || true
 ASSUME_ALWAYS_YES=yes
-IGNORE_OSVERSION=yes
-export ASSUME_ALWAYS_YES IGNORE_OSVERSION
+export ASSUME_ALWAYS_YES
 pkg bootstrap -f >/tmp/linux-e2e-pkg.log 2>&1 || { cat /tmp/linux-e2e-pkg.log; fail "pkg bootstrap failed"; }
 pkg install -y claude-code >>/tmp/linux-e2e-pkg.log 2>&1
 prc=$?
