@@ -16,10 +16,10 @@
 # populated later (debootstrap, a tarball, linux_base) is already mounted.
 # debootstrap unmounts $emul/proc on its way out; re-run this tool afterwards.
 #
-# Run at boot by /System/Library/LaunchDaemons/org.nextbsd.linux.plist
-# (one-shot: RunAtLoad, no KeepAlive). Re-run by hand with
-#     launchctl start org.nextbsd.linux
-# (launchd-842's launchctl has no kickstart).
+# Run at boot by launchctl bootstrap (support/launchctl.c,
+# system_specific_bootstrap), next to the other boot-time mounts and before
+# any LaunchDaemon starts, as `nextbsd-linux --boot`. Re-run by hand (as root)
+# after populating a Linux root: `nextbsd-linux`.
 #
 # Design: https://pkgdemon.github.io/nextbsd-linux-abi-mounts-plan.html
 #
@@ -37,6 +37,8 @@
 #                is present, 1 otherwise
 #   --check      dry run: say what would be done, change nothing
 #   --root PATH  use PATH instead of compat.linux.emul_path for this run
+#   --boot       boot run from launchctl bootstrap: log to
+#                /var/log/nextbsd-linux.log, one console line only on failure
 #
 # Config (optional, sh syntax): /etc/nextbsd-linux.conf
 #   native_mounts=NO     mount the native set on boot runs too
@@ -105,6 +107,7 @@ force=0
 json=0
 check=0
 root_arg=
+boot=0
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--compat)  action=compat ;;
@@ -116,11 +119,19 @@ while [ $# -gt 0 ]; do
 	--force)   force=1 ;;
 	--json)    json=1 ;;
 	--root)    [ $# -ge 2 ] || usage; root_arg=$2; shift ;;
+	--boot)    boot=1 ;;
 	-h|--help) usage ;;
 	*)         echo "$PROG: unknown argument: $1" >&2; usage ;;
 	esac
 	shift
 done
+
+# Boot run: everything to the log; keep the console (fd 3) for one summary
+# line if something fails.
+if [ "$boot" -eq 1 ]; then
+	exec 3>&2 >>/var/log/nextbsd-linux.log 2>&1
+	echo "--- $(date '+%Y-%m-%d %H:%M:%S') boot run"
+fi
 
 rc=0
 fail() {	# fail CODE MESSAGE — record the highest code, keep going
@@ -357,4 +368,7 @@ status)
 	;;
 esac
 
+if [ "$boot" -eq 1 ] && [ "$rc" -ne 0 ]; then
+	echo "$PROG: Linux ABI mounts incomplete (exit $rc); see /var/log/nextbsd-linux.log" >&3
+fi
 exit $rc

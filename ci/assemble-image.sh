@@ -208,7 +208,9 @@ fixup_rootfs() {
 assemble() {
     mkdir -p "$OUT"
     log "makefs ffs (root)"
-    makefs -t ffs -B little -o version=2,label=ROOTFS,softupdates=1 -b 512m \
+    # -b 2g: headroom for linux-e2e.sh, which installs linux_base-rl9 and
+    # claude-code into /compat/linux during the boot test (#190).
+    makefs -t ffs -B little -o version=2,label=ROOTFS,softupdates=1 -b 2g \
         "$WORK/rootfs.ufs" "$ROOTFS"
 
     log "EFI System Partition ($EFI_NAME)"

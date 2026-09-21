@@ -2449,6 +2449,20 @@ system_specific_bootstrap(bool sflag)
 	empty_dir(_PATH_TMP, NULL);
 	(void)remove(_PATH_NOLOGIN);
 
+#ifdef __FreeBSD__
+	/* Linux ABI filesystems (nextbsd-userland#190). On stock FreeBSD this is
+	 * rc.d/linux's job; here it sits with the other boot-time mounts, after
+	 * /etc/sysctl.conf (so a moved compat.linux.emul_path is in effect), the
+	 * fstab pass and the /tmp and /var/run sweep, and before load -D all, so
+	 * every LaunchDaemon starts with the mounts in place. The tool is
+	 * idempotent and logs to /var/log/nextbsd-linux.log; it is also the
+	 * manual re-run after a Linux root is (re)populated. */
+	if (path_check("/usr/libexec/nextbsd-linux")) {
+		const char *linux_tool[] = { "/usr/libexec/nextbsd-linux", "--boot", NULL };
+		(void)fwexec(linux_tool, NULL);
+	}
+#endif
+
 	if (path_check("/usr/libexec/dirhelper")) {
 		const char *dirhelper_tool[] = { "/usr/libexec/dirhelper", "-machineBoot", NULL };
 		(void)posix_assumes_zero(fwexec(dirhelper_tool, NULL));

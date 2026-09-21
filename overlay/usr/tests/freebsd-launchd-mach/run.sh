@@ -1662,8 +1662,8 @@ da_iokit_gate()
 }
 da_iokit_gate
 
-# LINUX-MOUNTS — #190. org.nextbsd.linux (one-shot, RunAtLoad) ran
-# /usr/libexec/nextbsd-linux at boot, which must have mounted the five Linux ABI
+# LINUX-MOUNTS — #190. launchctl bootstrap ran
+# /usr/libexec/nextbsd-linux --boot, which must have mounted the five Linux ABI
 # filesystems under compat.linux.emul_path even though no Linux userland is
 # installed (rc.d/linux's behaviour), plus the default /tmp nullfs.
 # Then prove it is idempotent (a second run stacks nothing) and that
@@ -1677,7 +1677,7 @@ linux_mounts_gate()
     fi
     emul=$(sysctl -n compat.linux.emul_path 2>/dev/null)
     emul=${emul:-/compat/linux}
-    echo "--- nextbsd-linux --status (boot run by org.nextbsd.linux):"
+    echo "--- nextbsd-linux --status (boot run by launchctl bootstrap):"
     "$tool" --status
     [ -f /var/log/nextbsd-linux.log ] && { echo "--- /var/log/nextbsd-linux.log:"; cat /var/log/nextbsd-linux.log; }
     want="linprocfs:$emul/proc linsysfs:$emul/sys devfs:$emul/dev fdescfs:$emul/dev/fd tmpfs:$emul/dev/shm nullfs:$emul/tmp"
