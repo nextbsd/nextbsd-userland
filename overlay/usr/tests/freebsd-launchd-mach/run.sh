@@ -1680,7 +1680,9 @@ linux_mounts_gate()
     echo "--- nextbsd-linux --status (boot run by org.nextbsd.linux):"
     "$tool" --status
     [ -f /var/log/nextbsd-linux.log ] && { echo "--- /var/log/nextbsd-linux.log:"; cat /var/log/nextbsd-linux.log; }
-    want="linprocfs:$emul/proc linsysfs:$emul/sys devfs:$emul/dev fdescfs:$emul/dev/fd tmpfs:$emul/dev/shm nullfs:$emul/tmp nullfs:$emul/home"
+    want="linprocfs:$emul/proc linsysfs:$emul/sys devfs:$emul/dev fdescfs:$emul/dev/fd tmpfs:$emul/dev/shm nullfs:$emul/tmp"
+    # Default chroot_nullfs also covers /home and /Users where they exist.
+    for h in /home /Users; do [ -d "$h" ] && want="$want nullfs:$emul$h"; done
     missing=
     for w in $want; do
         fs=${w%%:*}; p=${w#*:}
@@ -1702,7 +1704,7 @@ linux_mounts_gate()
     fi
     "$tool" --compat || { echo "LINUX-MOUNTS-FAIL: re-mount after --unmount exited $?"; return 0; }
     "$tool" --status >/dev/null 2>&1 || { echo "LINUX-MOUNTS-FAIL: --status incomplete after the round trip"; return 0; }
-    echo "LINUX-MOUNTS-OK: five Linux ABI mounts + /tmp,/home nullfs under $emul at boot; idempotent; --unmount/--compat round-trips"
+    echo "LINUX-MOUNTS-OK: five Linux ABI mounts + /tmp (and home) nullfs under $emul at boot; idempotent; --unmount/--compat round-trips"
 }
 linux_mounts_gate
 

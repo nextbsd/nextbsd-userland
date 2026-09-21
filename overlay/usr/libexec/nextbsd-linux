@@ -45,12 +45,14 @@
 #                        when / is unionfs (RAM-backed live media)
 #   shm_share=YES        with the native set, nullfs the compat shm onto
 #                        /dev/shm instead of a second tmpfs (one size cap)
-#   chroot_nullfs="/tmp /home"
+#   chroot_nullfs="/tmp /home /Users"
 #                        host dirs nullfs-mounted into $emul, so native programs,
 #                        apt-installed .debs (Edge, VS Code, Chrome) and AppImages
 #                        share one /tmp (X11 sockets, the AppImage FUSE mount,
 #                        downloads) and one /home, and `apt install ./x.deb` sees
-#                        files under them from inside the chroot. Set "" to disable.
+#                        files under them from inside the chroot. Entries that do
+#                        not exist on this system are skipped (NextBSD homes may be
+#                        under /Users, Apple-style, or /home). Set "" to disable.
 #   fallback_brand=YES   set kern.elf64.fallback_brand=3 if it reads -1
 #
 # To move the root persistently, put compat.linux.emul_path=/compat/debian in
@@ -86,7 +88,7 @@ fi
 native_mounts=NO
 shm_size=
 shm_share=YES
-chroot_nullfs="/tmp /home"
+chroot_nullfs="/tmp /home /Users"
 fallback_brand=YES
 # shellcheck disable=SC1090
 [ -r "$CONF" ] && . "$CONF"
@@ -232,6 +234,10 @@ do_compat() {
 	mount_one tmpfs     "$emul/dev/shm" "mode=1777,size=$(shm_bytes)" 0
 	for _d in $chroot_nullfs; do
 		case "$_d" in /?*) ;; *) fail 1 "chroot_nullfs entry '$_d' is not absolute"; continue ;; esac
+		if [ ! -d "$_d" ]; then
+			say "skip nullfs $_d (not present on this system)"
+			continue
+		fi
 		mount_one nullfs "$emul$_d" "" 1 "$_d"
 	done
 }
@@ -316,7 +322,7 @@ do_status() {
 	st_line compat devfs     "$emul/dev"
 	st_line compat fdescfs   "$emul/dev/fd"
 	st_line compat tmpfs     "$emul/dev/shm"
-	for _d in $chroot_nullfs; do st_line compat nullfs "$emul$_d"; done
+	for _d in $chroot_nullfs; do [ -d "$_d" ] && st_line compat nullfs "$emul$_d"; done
 	if [ "$_native" = YES ]; then
 		st_line native linprocfs /proc
 		st_line native linsysfs  /sys
