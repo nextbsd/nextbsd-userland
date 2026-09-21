@@ -30,6 +30,9 @@
 # "should be running" is not one rule:
 #
 #   KeepAlive=true / RunAtLoad=true  resident -- must have a live process
+#   RunAtLoad=true + KeepAlive=false one-shot -- runs once at boot and exits;
+#                                    must be LOADED, and must not be running
+#                                    forever (org.nextbsd.linux, #190)
 #   MachServices, in RESIDENT_DEMAND demand-launched but resident once started
 #                                    -- must be LOADED and RUNNING
 #   MachServices, otherwise          demand-launched -- must be loaded; running
@@ -197,7 +200,17 @@ for plist in "$DAEMONS_DIR"/*.plist; do
         continue
     fi
 
-    if [ "$keepalive" = "true" ] || [ "$runatload" = "true" ]; then
+    if [ "$runatload" = "true" ] && [ "$keepalive" = "false" ]; then
+        # One-shot: RunAtLoad with KeepAlive explicitly false. It ran at boot
+        # and exited; launchctl's Status column cannot tell us its exit code
+        # (job_export() always inserts LastExitStatus), so its own test gate
+        # judges the result. Here: loaded, and not still running long after boot.
+        if [ "$pid" = "-" ] || [ -z "$pid" ]; then
+            echo "    OK   $label: one-shot, loaded and exited"
+        else
+            echo "    INFO $label: one-shot, still running as pid $pid"
+        fi
+    elif [ "$keepalive" = "true" ] || [ "$runatload" = "true" ]; then
         # Resident. Must have a live process, and ps must agree with launchd.
         if [ "$pid" = "-" ] || [ -z "$pid" ]; then
             fails="$fails\n    $label: resident (KeepAlive/RunAtLoad) but launchd holds no PID — it is not running"

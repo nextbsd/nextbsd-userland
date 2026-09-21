@@ -1228,6 +1228,23 @@ expect {
     }
 }
 
+# LINUX-MOUNTS — #190. org.nextbsd.linux mounts the Linux ABI filesystems at
+# boot (pre-created, always mounted, like rc.d/linux), idempotently, and the
+# tool's --unmount/--compat round-trips. run.sh emits exactly one OK/FAIL.
+expect {
+    timeout {
+        puts "\nFAIL: LINUX-MOUNTS marker not seen"
+        exit 1
+    }
+    -re {LINUX-MOUNTS-FAIL[^\r\n]*} {
+        puts "\nFAIL: $expect_out(0,string)"
+        exit 1
+    }
+    "LINUX-MOUNTS-OK" {
+        puts "\nOK: Linux ABI filesystems mounted at boot by org.nextbsd.linux"
+    }
+}
+
 # IPCFG-IPCONFIG — iter 8 Apple-shape CLI. Same MIG round-trip
 # ipconfigrpctest exercises, but driven through /usr/sbin/ipconfig.
 # Validates that the Apple-canonical CLI parses argv, looks up

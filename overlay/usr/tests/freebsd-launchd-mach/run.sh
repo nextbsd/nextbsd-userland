@@ -1662,6 +1662,50 @@ da_iokit_gate()
 }
 da_iokit_gate
 
+# LINUX-MOUNTS — #190. org.nextbsd.linux (one-shot, RunAtLoad) ran
+# /usr/libexec/nextbsd-linux at boot, which must have mounted the five Linux ABI
+# filesystems under compat.linux.emul_path even though no Linux userland is
+# installed (rc.d/linux's behaviour), plus the default /tmp and /home nullfs.
+# Then prove it is idempotent (a second run stacks nothing) and that
+# --unmount / --compat round-trips. Emits exactly one LINUX-MOUNTS-OK/FAIL.
+linux_mounts_gate()
+{
+    tool=/usr/libexec/nextbsd-linux
+    if [ ! -x "$tool" ]; then
+        echo "LINUX-MOUNTS-FAIL: $tool missing"
+        return 0
+    fi
+    emul=$(sysctl -n compat.linux.emul_path 2>/dev/null)
+    emul=${emul:-/compat/linux}
+    echo "--- nextbsd-linux --status (boot run by org.nextbsd.linux):"
+    "$tool" --status
+    [ -f /var/log/nextbsd-linux.log ] && { echo "--- /var/log/nextbsd-linux.log:"; cat /var/log/nextbsd-linux.log; }
+    want="linprocfs:$emul/proc linsysfs:$emul/sys devfs:$emul/dev fdescfs:$emul/dev/fd tmpfs:$emul/dev/shm nullfs:$emul/tmp nullfs:$emul/home"
+    missing=
+    for w in $want; do
+        fs=${w%%:*}; p=${w#*:}
+        mount -p | awk -v p="$p" -v f="$fs" '$2 == p && $3 == f { ok = 1 } END { exit !ok }' || missing="$missing $w"
+    done
+    if [ -n "$missing" ]; then
+        echo "LINUX-MOUNTS-FAIL: not mounted at boot:$missing"
+        return 0
+    fi
+    mount -p | awk -v p="$emul/dev/fd" '$2 == p' | grep -q linrdlnk || { echo "LINUX-MOUNTS-FAIL: $emul/dev/fd lacks linrdlnk"; return 0; }
+    mount -p | awk -v p="$emul/dev/shm" '$2 == p' | grep -q 'size=' || { echo "LINUX-MOUNTS-FAIL: $emul/dev/shm has no size cap"; return 0; }
+    before=$(mount -p | wc -l)
+    "$tool" --compat >/dev/null 2>&1 || { echo "LINUX-MOUNTS-FAIL: second --compat run exited $?"; return 0; }
+    after=$(mount -p | wc -l)
+    [ "$before" -eq "$after" ] || { echo "LINUX-MOUNTS-FAIL: second run changed the mount count ($before -> $after)"; return 0; }
+    "$tool" --unmount || { echo "LINUX-MOUNTS-FAIL: --unmount exited $?"; return 0; }
+    if "$tool" --status >/dev/null 2>&1; then
+        echo "LINUX-MOUNTS-FAIL: --status still reports mounts after --unmount"; return 0
+    fi
+    "$tool" --compat || { echo "LINUX-MOUNTS-FAIL: re-mount after --unmount exited $?"; return 0; }
+    "$tool" --status >/dev/null 2>&1 || { echo "LINUX-MOUNTS-FAIL: --status incomplete after the round trip"; return 0; }
+    echo "LINUX-MOUNTS-OK: five Linux ABI mounts + /tmp,/home nullfs under $emul at boot; idempotent; --unmount/--compat round-trips"
+}
+linux_mounts_gate
+
 ipconfig_cli=/usr/sbin/ipconfig
 if [ ! -x "$ipconfig_cli" ]; then
     echo "IPCFG-IPCONFIG-FAIL: $ipconfig_cli missing"
