@@ -29,13 +29,14 @@
  *     so PID 1 takes ownership of the log_open flip itself. The fd
  *     is intentionally leaked — we just need logopen() to fire once.
  *
- * Synthesis machinery is duplicated from
- * src/hostnamed/freebsd-shim/shim.c (sh_derive_slug, sh_sanitize_slug,
- * sh_read_kenv) instead of linked — PID 1 is the foundation, every
- * transitive .so it pulls
- * is one more thing that has to be present and loadable on a degraded
- * boot. Direct C means no CoreFoundation, no SCDS, no Libnotify;
- * only libc + libthr.
+ * Synthesis comes from the header-only nextbsd_hostname_synth.h, the
+ * same code hostnamed's freebsd_synthesize_hostname (shim.c) uses, so
+ * the early name getty caches equals the one hostnamed publishes. It is
+ * included rather than linked because PID 1 is the foundation: every
+ * transitive .so it pulls is one more thing that has to be present and
+ * loadable on a degraded boot. Header-only C means no CoreFoundation, no
+ * SCDS, no Libnotify; only libc + libthr. (nextbsd/nextbsd#325: the two
+ * used to be separate copies and drifted.)
  *
  * Both helpers are best-effort: failures log to launchd_console and
  * boot continues. They are not the sole or final hostname / log
@@ -59,90 +60,20 @@
 #include <string.h>
 #include <unistd.h>
 
-#define EARLY_SLUG_MAX		48
-#define EARLY_NAME_MAX		64	/* DNS label limit */
-
 #include "launchd_early.h"
-
-/* --- synthesis machinery (mirrors hostnamed's shim) ----------------- */
-
-static int
-early_read_kenv(const char *name, char *out, size_t outsz)
-{
-	int n;
-
-	if (outsz == 0 || outsz > INT_MAX)
-		return (-1);
-	n = kenv(KENV_GET, name, out, (int)outsz);
-	if (n <= 0)
-		return (-1);
-	out[outsz - 1] = '\0';
-	return (n);
-}
-
-static size_t
-early_sanitize_slug(char *s)
-{
-	size_t i, j;
-	int prev_dash;
-
-	if (s == NULL)
-		return (0);
-	j = 0;
-	prev_dash = 1;
-	for (i = 0; s[i] != '\0' && j < EARLY_SLUG_MAX; i++) {
-		unsigned char c = (unsigned char)s[i];
-		if (isalnum(c)) {
-			s[j++] = (char)c;
-			prev_dash = 0;
-		} else if (!prev_dash) {
-			s[j++] = '-';
-			prev_dash = 1;
-		}
-	}
-	while (j > 0 && s[j - 1] == '-')
-		j--;
-	s[j] = '\0';
-	return (j);
-}
-
-static void
-early_derive_slug(char *out, size_t outsz)
-{
-	char buf[256];
-
-	if (early_read_kenv("smbios.system.version", buf, sizeof(buf)) > 0) {
-		(void)strncpy(out, buf, outsz - 1);
-		out[outsz - 1] = '\0';
-		(void)early_sanitize_slug(out);
-		if (out[0] != '\0')
-			return;
-	}
-	if (early_read_kenv("smbios.system.product", buf, sizeof(buf)) > 0) {
-		(void)strncpy(out, buf, outsz - 1);
-		out[outsz - 1] = '\0';
-		(void)early_sanitize_slug(out);
-		if (out[0] != '\0')
-			return;
-	}
-	(void)strncpy(out, "freebsd", outsz - 1);
-	out[outsz - 1] = '\0';
-}
+#include "nextbsd_hostname_synth.h"
 
 int
 launchd_early_sethostname(char *out, size_t outsz)
 {
-	char slug[EARLY_SLUG_MAX + 1];
-	char name[EARLY_NAME_MAX + 1];
+	char name[NBHS_NAME_MAX + 1];
 
-	/* slug only — no serial/MAC suffix. Must match hostnamed's
-	 * freebsd_synthesize_hostname (shim.c) so the kernel hostname set
-	 * here, the name hostnamed publishes to SCDS, the DHCP host-name
-	 * option ipconfigd sends, and mDNSResponder's .local label all
-	 * agree. e.g. "ThinkPad-T460s". */
-	early_derive_slug(slug, sizeof(slug));
-	(void)strncpy(name, slug, sizeof(name) - 1);
-	name[sizeof(name) - 1] = '\0';
+	/* Must be byte-identical to hostnamed's freebsd_synthesize_hostname
+	 * (both call nbhs_synthesize) so the kernel hostname set here, the
+	 * name hostnamed publishes to SCDS, the DHCP host-name option
+	 * ipconfigd sends, and mDNSResponder's .local label all agree.
+	 * e.g. "ThinkPad-T460s", or "VirtualBox-68f9a871" for a VM. */
+	nbhs_synthesize(name, sizeof(name));
 	if (sethostname(name, (int)strlen(name)) != 0)
 		return (-1);
 	if (out != NULL && outsz > 0) {

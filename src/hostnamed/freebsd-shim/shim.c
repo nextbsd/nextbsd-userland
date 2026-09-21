@@ -9,13 +9,12 @@
  *      hostnamed_xlog_cf (the my_log macro target).
  *   2. SCPrivate.h SPI subset — _SC_string_to_sockaddr,
  *      _SC_cfstring_to_cstring, _SC_CFStringIsValidDNSName.
- *   3. freebsd_synthesize_hostname — slug synthesis (SMBIOS model
- *      slug, e.g. "ThinkPad-T460s") for the "localhost" fallback
- *      substitution. No serial/MAC suffix is appended.
- *   4. The synthesis helper machinery itself (derive_slug,
- *      sanitize_slug), extracted from hostnamed.c — the new minimal
- *      hostnamed.c calls these for its boot-time prefs_monitor initial
- *      value, and the shim's freebsd_synthesize_hostname wraps them too.
+ *   3. freebsd_synthesize_hostname — SMBIOS hostname synthesis
+ *      (e.g. "ThinkPad-T460s", "VirtualBox-68f9a871") for the
+ *      "localhost" fallback substitution and prefs_monitor's boot-time
+ *      value. The algorithm lives in the header-only
+ *      nextbsd_hostname_synth.h, shared with launchd's early-init
+ *      (launchd_early.c) so the two can't drift (nextbsd/nextbsd#325).
  *
  * Everything is in one file so the build picks up a small additional
  * SRCS surface; the individual responsibilities are demarcated by
@@ -30,6 +29,8 @@
 #include <SystemConfiguration/SCSchemaDefinitions.h>
 
 #include <CoreFoundation/CoreFoundation.h>
+
+#include "nextbsd_hostname_synth.h"
 
 #include <sys/sysctl.h>
 #include <sys/types.h>
@@ -53,9 +54,6 @@
 #include <string.h>
 #include <syslog.h>
 #include <time.h>
-
-#define HOSTNAMED_MAX	64
-#define SLUG_MAX	40
 
 /* hostnamed's plain-C log surface (definition in hostnamed.c). */
 extern void	xlog(const char *fmt, ...);
@@ -86,181 +84,17 @@ hostnamed_xlog_cf(int level, CFStringRef format, ...)
 }
 
 #pragma mark -
-#pragma mark synthesis machinery (slug from SMBIOS)
-
-static int
-sh_read_kenv(const char *name, char *out, size_t outsz)
-{
-	int n;
-
-	if (outsz == 0 || outsz > INT_MAX)
-		return (-1);
-	n = kenv(KENV_GET, name, out, (int)outsz);
-	if (n <= 0)
-		return (-1);
-	out[outsz - 1] = '\0';
-	return (n);
-}
-
-static size_t
-sh_sanitize_slug(char *s)
-{
-	size_t i, j;
-	int prev_dash;
-
-	if (s == NULL)
-		return (0);
-	j = 0;
-	prev_dash = 1;
-	for (i = 0; s[i] != '\0' && j < SLUG_MAX; i++) {
-		unsigned char c = (unsigned char)s[i];
-		if (isalnum(c)) {
-			s[j++] = (char)c;
-			prev_dash = 0;
-		} else if (!prev_dash) {
-			s[j++] = '-';
-			prev_dash = 1;
-		}
-	}
-	while (j > 0 && s[j - 1] == '-')
-		j--;
-	s[j] = '\0';
-	return (j);
-}
-
-/*
- * An SMBIOS field is "identifying" only if it carries at least one
- * letter. Real OEMs put the model name in smbios.system.version
- * (e.g. "ThinkPad T460s"), but synthetic firmware such as VirtualBox
- * stuffs the bare SMBIOS table revision there ("1.2"), which sanitizes
- * to the useless slug "1-2". A model name always contains an alpha
- * character; a dotted revision never does — so a single isalpha scan
- * cleanly separates the two without hard-coding vendor strings.
- */
-static int
-sh_value_is_identifying(const char *raw)
-{
-	size_t i;
-
-	if (raw == NULL)
-		return (0);
-	for (i = 0; raw[i] != '\0'; i++) {
-		if (isalpha((unsigned char)raw[i]))
-			return (1);
-	}
-	return (0);
-}
-
-static int
-sh_try_kenv_slug(const char *key, char *out, size_t outsz)
-{
-	char buf[256];
-
-	if (sh_read_kenv(key, buf, sizeof(buf)) <= 0)
-		return (0);
-	if (!sh_value_is_identifying(buf))
-		return (0);
-	(void)strncpy(out, buf, outsz - 1);
-	out[outsz - 1] = '\0';
-	(void)sh_sanitize_slug(out);
-	return (out[0] != '\0');
-}
-
-/*
- * Derive the host slug. Returns 1 when the slug is an identifying per-model
- * name (from smbios.system.version, e.g. "ThinkPad-T460s") that is unique
- * enough to use bare; returns 0 when it is a GENERIC fallback
- * (smbios.system.product such as "VirtualBox", shared by every guest of
- * that hypervisor, or the "nextbsd" last resort) that the caller should
- * make unique with a per-machine suffix.
- */
-static int
-sh_derive_slug(char *out, size_t outsz)
-{
-	/*
-	 * Prefer the model name in smbios.system.version, but skip it when
-	 * it is a non-identifying revision (e.g. VirtualBox's "1.2") and
-	 * fall through to smbios.system.product ("VirtualBox"). "nextbsd"
-	 * is the last resort.
-	 */
-	if (sh_try_kenv_slug("smbios.system.version", out, outsz))
-		return (1);	/* real model name → unique enough, use bare */
-	if (sh_try_kenv_slug("smbios.system.product", out, outsz))
-		return (0);	/* generic product (e.g. VirtualBox) → add suffix */
-	(void)strncpy(out, "nextbsd", outsz - 1);
-	out[outsz - 1] = '\0';
-	return (0);		/* last resort → add suffix */
-}
-
-/*
- * Derive a short, stable, per-machine uniqueness suffix from the SMBIOS
- * system UUID (e.g. "68f9a871-8e8b-..." -> "68f9a871"). Two VMs of the same
- * hypervisor share smbios.system.product ("VirtualBox") but each gets a
- * distinct UUID, so this makes their synthesized hostnames unique at boot
- * without relying on Bonjour conflict-rename. Writes lowercase hex,
- * NUL-terminated; returns its length, or 0 if no usable (present, non-zero)
- * UUID is available.
- */
-static size_t
-sh_derive_uuid_suffix(char *out, size_t outsz)
-{
-	char buf[256];
-	size_t i, j;
-
-	if (outsz == 0)
-		return (0);
-	out[0] = '\0';
-	if (sh_read_kenv("smbios.system.uuid", buf, sizeof(buf)) <= 0)
-		return (0);
-	/* Take up to the 8 leading hex digits (the UUID's first group). */
-	j = 0;
-	for (i = 0; buf[i] != '\0' && buf[i] != '-' && j < 8 && j < outsz - 1;
-	    i++) {
-		unsigned char c = (unsigned char)buf[i];
-		if (isxdigit(c))
-			out[j++] = (char)tolower(c);
-	}
-	out[j] = '\0';
-	/* Reject an all-zero UUID (some firmware reports 00000000-...). */
-	if (j > 0 && strspn(out, "0") == j)
-		out[0] = '\0';
-	return (strlen(out));
-}
+#pragma mark synthesis (shared with launchd early-init)
 
 /* Public synthesis entry — used by set-hostname.c's localhost carry
- * AND by hostnamed's prefs_monitor (Commit 7) for the boot-time
- * fallback value when SCPrefs ComputerName is absent. */
+ * AND by hostnamed's prefs_monitor for the boot-time fallback value
+ * when SCPrefs ComputerName is absent. See nextbsd_hostname_synth.h. */
 CFStringRef
 freebsd_synthesize_hostname(void)
 {
-	char slug[SLUG_MAX + 1];
-	char name[HOSTNAMED_MAX];
-	int identifying;
+	char name[NBHS_NAME_MAX + 1];
 
-	/*
-	 * Identifying model names (e.g. "ThinkPad-T460s" from
-	 * smbios.system.version) are used bare. Generic fallbacks
-	 * (smbios.system.product like "VirtualBox", or "nextbsd") get a short
-	 * per-machine suffix from the SMBIOS UUID appended — otherwise every
-	 * guest of the same hypervisor would synthesize the identical hostname
-	 * (e.g. all VirtualBox guests -> "VirtualBox", or "1-2" before the
-	 * identifying-version fix). See sh_derive_slug / sh_derive_uuid_suffix.
-	 */
-	identifying = sh_derive_slug(slug, sizeof(slug));
-	(void)strncpy(name, slug, sizeof(name) - 1);
-	name[sizeof(name) - 1] = '\0';
-	if (!identifying) {
-		char suffix[16];
-
-		if (sh_derive_uuid_suffix(suffix, sizeof(suffix)) > 0) {
-			size_t len = strlen(name);
-
-			(void)snprintf(name + len, sizeof(name) - len, "-%s",
-			    suffix);
-		}
-	}
-	if (strlen(name) > 63)
-		name[63] = '\0';
+	nbhs_synthesize(name, sizeof(name));
 	xlog("freebsd_synthesize_hostname -> '%s'", name);
 	return (CFStringCreateWithCString(NULL, name, kCFStringEncodingUTF8));
 }
