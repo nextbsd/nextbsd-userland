@@ -4034,6 +4034,20 @@ fwexec(const char *const *argv, int *wstatus)
 void
 do_potential_fsck(void)
 {
+#ifdef __FreeBSD__
+	/* launchd (PID 1) owns root fsck and the read-write remount
+	 * (launchd_root_make_writable(), src/launchd.c) and runs before this
+	 * bootstrapper. Apple's body below is Darwin-only: FreeBSD fsck(8) has
+	 * no -q, and a no-operand `fsck -fy` with no /etc/fstab returns 8, so
+	 * a read-only root would become a halt. If / is still read-only here,
+	 * launchd's remount already failed and logged why; report and carry on
+	 * (nextbsd/nextbsd-userland#186). */
+	struct statfs sfs;
+
+	if (statfs("/", &sfs) == 0 && (sfs.f_flags & MNT_RDONLY)) {
+		launchctl_log(LOG_ERR, "/ is still read-only after launchd's remount (see root-rw: on the console); continuing");
+	}
+#else
 	/* XXX: This whole function's logic needs to be redone. */
 
 	const char *safe_fsck_tool[] = { "fsck", "-fy", NULL };
@@ -4128,6 +4142,7 @@ out:
 	}
 
 	fix_bogus_file_metadata();
+#endif
 }
 
 void

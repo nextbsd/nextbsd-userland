@@ -307,8 +307,9 @@ main(int argc, char *const *argv)
 	if (pid1_magic) {
 		/*
 		 * The kernel mounts / read-only; make it read-write before
-		 * any LaunchDaemon is dispatched (Apple does this in
-		 * launchctl's do_potential_fsck() ahead of the scan).
+		 * any LaunchDaemon is dispatched. launchd owns this step:
+		 * launchctl's Darwin do_potential_fsck() is compiled out on
+		 * FreeBSD (nextbsd/nextbsd-userland#186).
 		 */
 		launchd_root_make_writable();
 
@@ -382,10 +383,13 @@ main(int argc, char *const *argv)
  *
  * The FreeBSD kernel always mounts / read-only — vfs_mountroot.c forces
  * the 'ro' option and deliberately discards vfs.root.mountfrom.options=rw.
- * Apple's launchd performs the read-write transition itself, in
- * launchctl's do_potential_fsck(), run before the LaunchDaemons scan;
- * this port dropped that bootstrapper. Restore the step here so / is
- * writable before getty / syslogd / etc. are dispatched — no rc.d.
+ * On macOS the read-write transition lives in launchctl bootstrap's
+ * do_potential_fsck(). Here it lives in PID 1, which runs before the
+ * com.apple.launchctl.System bootstrapper, so / is writable before getty /
+ * syslogd / etc. are dispatched -- no rc.d. launchctl's Darwin copy is
+ * compiled out on FreeBSD so there is a single owner: its fsck -q is not a
+ * FreeBSD flag, and its no-operand fsck -fy halts the machine when there is
+ * no /etc/fstab (nextbsd/nextbsd-userland#186).
  *
  * Filesystem-agnostic: statfs() reports the mounted type and fsck(8) /
  * mount(8) dispatch on it. Works for UFS today; a future root on any

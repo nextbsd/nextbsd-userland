@@ -16,6 +16,7 @@ alias it to a MIB that is guaranteed to fail, because the assert will still log.
 |---|---|---|---|
 | `support/launchctl.c` `is_safeboot()` | `kern.safeboot` (`KERN_SAFEBOOT`) | absent | **stub-false.** No safe-boot mode (matches `OSKextGetActualSafeBoot()`, #182). |
 | `support/launchctl.c` `is_netboot()` | `kern.netboot` (`KERN_NETBOOT`) | absent | **stub-false.** NextBSD does not NetBoot. |
+| `support/launchctl.c` `do_potential_fsck()` | Darwin `fsck -q` / no-operand `fsck -fy` + `mount -uw /` | `-q` invalid on FreeBSD; `fsck -fy` with no fstab returns 8 and the function halts | **stub.** launchd's `launchd_root_make_writable()` owns root fsck and remount; on FreeBSD this only logs if `/` is still read-only (#186). |
 | `support/launchctl.c` `do_bootroot_magic()` | `IODeviceTree:/chosen` → `boot-root-active` | absent (IOKit shim returns `IO_OBJECT_NULL`) | **stub.** Returns quietly with no BootRoot/kextcache refresh. |
 | `src/runtime.c` `launchd_runtime_init()`, `runtime_fork()` | `vfs.generic.noremotehang` | absent | **best-effort** `(void)sysctlbyname(...)` (nextbsd#317). A real port is tracked in nextbsd#318. |
 | `support/launchctl.c` `do_sysversion_sysctl()` | `kern.osversion` (`KERN_OSVERSION`) | aliased to `kern.osrelease` | **real MIB.** Always non-empty, so launchctl never writes it. |
