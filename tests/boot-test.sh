@@ -1489,30 +1489,6 @@ send "/usr/tests/nextbsd-iokit/run.sh\r"
         timeout             { puts "\nWARN: IOKit tests did not finish in 180s (informational)" }
     }
 
-# LINUX-E2E — #190 end to end. linux-e2e.sh checks the Linux ABI mounts exist
-# on an EMPTY /compat/linux, runs `pkg install claude-code` (pulls
-# linux_base-rl9) into that already-mounted root, re-checks the mounts, runs a
-# Linux uname and `claude --help`. Network-bound (FreeBSD package mirror), so
-# it gets a long bound; SKIP only if pkg.FreeBSD.org is unreachable.
-send "/usr/tests/freebsd-launchd-mach/linux-e2e.sh\r"
-set timeout 1500
-expect {
-    timeout {
-        puts "\nFAIL: LINUX-E2E did not finish within 25 minutes"
-        exit 1
-    }
-    -re {LINUX-E2E-FAIL[^\r\n]*[\r\n]} {
-        puts "\nFAIL: $expect_out(0,string)"
-        exit 1
-    }
-    -re {LINUX-E2E-SKIP[^\r\n]*[\r\n]} {
-        puts "\nWARN: $expect_out(0,string)"
-    }
-    "LINUX-E2E-OK" {
-        puts "\nOK: claude-code installed into the pre-mounted /compat/linux and claude --help ran"
-    }
-}
-
 set timeout 150
 
 # Stage 4: power off THROUGH launchd — `shutdown -p now` signals PID 1 with

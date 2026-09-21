@@ -240,7 +240,7 @@ jobs:
     # can KVM-boot the aarch64 image natively (free on public repos); TCG is the
     # fallback if /dev/kvm is absent.
     runs-on: ${{ inputs.boot_runner }}
-    timeout-minutes: 60   # +20 for linux-e2e.sh (pkg install claude-code, #190)
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4          # for the in-repo native tests/boot-test.sh
       - uses: actions/download-artifact@v4
