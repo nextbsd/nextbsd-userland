@@ -11,9 +11,10 @@ deployments — a **C++ FTXUI front-end** over a **`/bin/sh` engine**.
   parses their `PROGRESS` / `STATUS` lines. cpdup is vendored at `../cpdup`.
 
 The installed root is laid down by cloning the running system with **cpdup** and
-labeling the target UFS `ROOTFS`, so the shipped `/etc/fstab` (`ufs/ROOTFS`) and
-the kernel's baked-in `ufs:/dev/ufs/ROOTFS` root both resolve with **no edits** —
-the install is disk-path agnostic (ada0/nvd0/vtbd0 all just work).
+labeling the target UFS `NEXTBSD` (not the medium's `ROOTFS`). Root is found by
+`vfs.root.mountfrom` — in `loader.conf` on EFI, on the `cmdline.txt` line on a Pi —
+never by an fstab line, so the install is disk-path agnostic (ada0/nvd0/vtbd0 all
+just work). No `/etc/fstab` is shipped (nextbsd-overlays#5).
 
 ## Build & test locally (no hardware, no root)
 

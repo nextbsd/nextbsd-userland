@@ -11,9 +11,10 @@
 #     all. There is no UEFI and no loader(8): the EEPROM bootloader reads
 #     config.txt off a FAT partition and enters the kernel directly. That
 #     needs MBR + FAT32 + UFS, selected automatically -- see LAYOUT/PAYLOAD.
-#   * UFS root labeled ROOTFS  -> the shipped /etc/fstab (ufs/ROOTFS) and the
-#     kernel's baked-in ufs:/dev/ufs/ROOTFS root both resolve with NO edits,
-#     and the install is disk-path agnostic (ada0/nvd0/vtbd0 all just work).
+#   * UFS root labeled NEXTBSD (not the medium's ROOTFS; see LABEL below),
+#     found by vfs.root.mountfrom -- loader.conf on EFI, cmdline.txt on a
+#     Pi -- so the install is disk-path agnostic (ada0/nvd0/vtbd0 all just
+#     work). No /etc/fstab is needed for root (nextbsd-overlays#5).
 #   * Clone with cpdup from the live / (union ISO or plain image alike), then
 #     SCRUB the volatile dirs — NextBSD has no rc.d cleanvar/cleartmp, so the
 #     installer must hand off a boot-clean /var and /tmp itself.
@@ -42,7 +43,8 @@ SRC=/
 # Root label for the INSTALLED system — deliberately NOT "ROOTFS" (the live
 # install medium's label). A shared label makes a leftover/failed install a
 # boot-hijacker: two ufs/ROOTFS providers and the kernel mounts the wrong one.
-# The cloned fstab + a loader.conf override (step 5b) point the target here.
+# vfs.root.mountfrom in loader.conf (EFI, step 5b) or cmdline.txt (Pi, step 6)
+# points the target here.
 LABEL=NEXTBSD
 
 # --- Which boot layout does this machine need? ------------------------------
@@ -235,8 +237,8 @@ if [ "$UPGRADE" = 0 ]; then
 	fi
 fi
 
-# Where the root filesystem ended up, so the mount + fstab steps below do not
-# each have to re-derive it.
+# Where the root filesystem ended up, so the mount and boot-config steps below
+# do not each have to re-derive it.
 if [ "$LAYOUT" = mbr-fat ]; then
 	ROOTPART="${DISK}s2a"
 	BOOTPART="${DISK}s1"
@@ -279,23 +281,20 @@ done
 progress 88
 
 # --- 5b. Point the cloned system at its OWN root label -----------------------
-# cpdup copied the source's fstab (ufs/ROOTFS) and loader.conf verbatim, so the
-# target still references the live medium's label. Repoint both at $LABEL so the
-# installed disk is self-contained and never collides with a ROOTFS medium. The
-# kernel's baked ROOTDEVNAME=ufs/ROOTFS is only a fallback; the loader.conf
-# vfs.root.mountfrom below takes precedence.
+# Root is found by vfs.root.mountfrom, never by an fstab line: the kernel's
+# baked ROOTDEVNAME=ufs/ROOTFS is only a fallback, and the target is labelled
+# $LABEL so it never collides with a ROOTFS medium. EFI gets the override in
+# loader.conf below; a Pi gets it in cmdline.txt (step 6).
+#
+# Media built after nextbsd-overlays#5 ship no /etc/fstab, so there is normally
+# nothing to fix. A medium built before that still clones an fstab whose root
+# line names ufs/ROOTFS; repoint it so launchctl's boot-time mount -a doesn't
+# chase the medium's label.
 status "Setting root label + boot config ($LABEL)"
 [ -f "$MNT/etc/fstab" ] && run sed -i '' -e "s#/dev/ufs/ROOTFS#/dev/ufs/$LABEL#g" "$MNT/etc/fstab"
-# loader.conf only means something where there IS a loader. Route (a) on a Pi
-# has none -- the firmware enters the kernel directly -- so the label in fstab
-# above plus the kernel's compiled-in ROOTDEVNAME are the whole story there.
-#
-# That leaves one wrinkle worth naming: the baked-in ROOTDEVNAME is
-# ufs:/dev/ufs/ROOTFS, and this installer deliberately labels the target
-# NEXTBSD so a leftover install medium cannot hijack the boot. On the Pi the
-# kernel therefore cannot find root by its baked default and drops to
-# mountroot. Until a board kernel ships with a matching default, label the Pi
-# root ROOTFS and accept that the live medium must not be left plugged in.
+# loader.conf only means something where there IS a loader. A Pi has none --
+# the firmware enters the kernel directly -- so step 6 puts the same
+# vfs.root.mountfrom on the cmdline.txt line instead.
 if [ "$PAYLOAD" = efi ]; then
 	run sh -c "echo 'vfs.root.mountfrom=\"ufs:/dev/ufs/$LABEL\"' >> '$MNT/boot/loader.conf'"
 fi
