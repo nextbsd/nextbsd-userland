@@ -443,7 +443,12 @@ static void
 launchd_root_make_writable(void)
 {
 	const char *fsck_argv[]  = { "/sbin/fsck",  "-p",  "/", NULL };
-	const char *mount_argv[] = { "/sbin/mount", "-uw", "/", NULL };
+	/*
+	 * noatime lives here, not in /etc/fstab: the image ships no fstab, and
+	 * an MNT_UPDATE mount clears every update-mask flag that is not
+	 * re-specified, MNT_NOATIME included (nextbsd/nextbsd-userland#185).
+	 */
+	const char *mount_argv[] = { "/sbin/mount", "-u", "-o", "rw,noatime", "/", NULL };
 	struct statfs sfs;
 	int rc;
 
@@ -466,10 +471,10 @@ launchd_root_make_writable(void)
 	rc = launchd_run_tool(mount_argv);
 	if (rc != 0) {
 		launchd_syslog(LOG_ERR | LOG_CONSOLE,
-		    "root-rw: mount -uw / exited %d -- / left read-only", rc);
+		    "root-rw: mount -u -o rw,noatime / exited %d -- / left read-only", rc);
 	} else {
 		launchd_syslog(LOG_NOTICE | LOG_CONSOLE,
-		    "root-rw: / remounted read-write");
+		    "root-rw: / remounted read-write,noatime");
 	}
 }
 
