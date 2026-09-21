@@ -618,28 +618,21 @@ expect {
     "LAUNCHCTL-LIST-OK" { puts "\nOK: launchctl list round-trips with launchd" }
 }
 
-# GETTY-TTYV0 — the framebuffer login. org.nextbsd.getty.console serves /dev/console,
-# which binds to exactly ONE tty (cnselect -> ttyconsdev_select); only kernel
-# MESSAGES fan out to every console. On arm64 the UART always wins that
-# selection (the EFI loader publishes hw.uart.console from ACPI SPCR on its
-# own), so org.nextbsd.getty.ttyv0 is what gives a screen-only arm64 machine a
-# reachable login. WARN on timeout: a published image built before that plist
-# landed simply doesn't emit the marker, and this stage must not fail it.
-# SKIP is expected on a guest with no framebuffer (qemu -machine virt with no
-# GPU -> no GOP -> no efifb -> vt(4) never attaches -> no /dev/ttyv0), where the
-# job's `test -c` guard makes it a deliberate no-op.
+# GETTY — the one login job (org.nextbsd.getty) chose its terminal from the
+# loader settings: /dev/console here, because this test boots with
+# console=comconsole and boot_serial=YES; ttyv0 on a machine with a screen and
+# no serial console requested. run.sh asserts there is exactly one getty job
+# and that the chosen terminal is served. WARN on timeout: an image built
+# before the single job existed prints the old GETTY-TTYV0 marker instead.
 expect {
     timeout {
-        puts "\nWARN: GETTY-TTYV0 marker not seen (image predates org.nextbsd.getty.ttyv0 — informational)"
+        puts "\nWARN: GETTY marker not seen (image predates org.nextbsd.getty — informational)"
     }
-    "GETTY-TTYV0-FAIL" {
-        puts "\nFAIL: GETTY-TTYV0-FAIL — framebuffer console has no login"
+    "GETTY-FAIL" {
+        puts "\nFAIL: GETTY-FAIL — the getty job is missing, duplicated, or its terminal has no login"
         exit 1
     }
-    "GETTY-TTYV0-SKIP" {
-        puts "\nWARN: GETTY-TTYV0-SKIP — no framebuffer on this guest; job no-ops by design"
-    }
-    "GETTY-TTYV0-OK" { puts "\nOK: framebuffer console (ttyv0) has a login" }
+    "GETTY-OK" { puts "\nOK: one getty job, serving the terminal the loader settings pick" }
 }
 
 # Stage 3+ Phase J runtime: syslogd + notifyd RunAtLoad via plists,

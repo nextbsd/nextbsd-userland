@@ -188,15 +188,6 @@ for plist in "$DAEMONS_DIR"/*.plist; do
     fi
     pid=$(awk -v want="$label" '$3 == want { print $1; exit }' "$LIST")
 
-    # The framebuffer getty is a deliberate no-op on a guest with no GPU: its
-    # ProgramArguments are `test -c /dev/ttyv0 || exit 0`, so on a headless
-    # qemu -machine virt (no GOP -> no efifb -> vt(4) never attaches) there is
-    # no /dev/ttyv0 and the job correctly exits 0 without running getty.
-    if [ "$label" = "org.nextbsd.getty.ttyv0" ] && [ ! -c /dev/ttyv0 ]; then
-        echo "    SKIP $label: no /dev/ttyv0 on this guest; the plist's test -c guard makes it a no-op by design"
-        continue
-    fi
-
     if [ "$keepalive" = "true" ] || [ "$runatload" = "true" ]; then
         # Resident. Must have a live process, and ps must agree with launchd.
         if [ "$pid" = "-" ] || [ -z "$pid" ]; then

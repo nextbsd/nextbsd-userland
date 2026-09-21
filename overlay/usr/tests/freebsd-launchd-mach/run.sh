@@ -562,7 +562,7 @@ fi
 #   Iter 3: getconf (POSIX configuration query; gperf tables via the
 #           vendored fake-gperf.awk).
 #   Iter 4: getty (replaces FreeBSD-runtime /usr/libexec/getty; the
-#           Apple binary now serves the org.nextbsd.getty.console plist on
+#           Apple binary now serves the org.nextbsd.getty plist on
 #           /dev/console — the existing BOOT-BANNER + "login:" stages
 #           in boot-test.sh exercise it implicitly).
 #   Iter 5: pwd_mkdb + passwd. Both replace FreeBSD-runtime binaries.
@@ -829,36 +829,38 @@ else
     echo "LAUNCHCTL-LIST-OK: exit=0, $launchd_jobs job(s) loaded, all required daemons present"
 fi
 
-# GETTY-TTYV0 — the framebuffer login (org.nextbsd.getty.ttyv0).
-# org.nextbsd.getty.console serves /dev/console, which binds to exactly ONE tty:
-# cninit() ends in cnselect(best_cn) -> ttyconsdev_select(). Kernel
-# MESSAGES fan out to every console (that is what boot_multicons buys),
-# the login does not. On arm64 the winner is always the UART, because
-# the EFI loader publishes hw.uart.console out of ACPI SPCR unbidden —
-# so without this second job an arm64 box with no serial cable has no
-# reachable login, and its screen goes quiet at the last kernel line
-# before userland, looking exactly like a hang.
-# Assert the job is loaded, and that SOMETHING owns ttyv0 when the
-# framebuffer exists (getty normally; a login shell if someone is
-# already sitting at that screen when the suite runs). A headless guest
-# — qemu -machine virt with no GPU: no GOP, no efifb, vt(4) never
-# attaches — has no /dev/ttyv0 at all, and the plist's `test -c` guard
-# makes the job a deliberate silent no-op there, so that is a SKIP and
-# not a failure.
-echo "==> getty on the framebuffer console (ttyv0)"
-if launchctl list 2>/dev/null | awk '$3 == "org.nextbsd.getty.ttyv0" { found = 1 } END { exit !found }'; then
-    if [ -c /dev/ttyv0 ]; then
-        ttyv0_owner=$(ps -A -o tty= -o command= 2>/dev/null | awk '$1 == "ttyv0" { $1 = ""; sub(/^ /, ""); print; exit }')
-        if [ -n "$ttyv0_owner" ]; then
-            echo "GETTY-TTYV0-OK: framebuffer console served by: $ttyv0_owner"
-        else
-            echo "GETTY-TTYV0-FAIL: /dev/ttyv0 exists but no process owns it"
-        fi
-    else
-        echo "GETTY-TTYV0-SKIP: no /dev/ttyv0 on this guest (no framebuffer); job is a no-op by design"
-    fi
+# GETTY — the one login job (org.nextbsd.getty). It serves exactly one
+# terminal: /dev/console when the loader was asked for a serial console
+# (console=comconsole or boot_serial=YES, which is how CI boots), otherwise
+# ttyv0 when there is a screen, otherwise /dev/console. /dev/console is the
+# first entry of kern.console's active list (kern_cons.c: cnadd/cnselect keep
+# the selected console at the head of cn_devlist). Assert there is exactly one
+# getty job, and that the terminal the rule picks is owned by getty, or by a
+# login or shell if someone is already signed in there.
+echo "==> getty: one job, on the terminal the loader settings pick"
+getty_jobs=$(launchctl list 2>/dev/null | awk '$3 ~ /^org\.nextbsd\.getty/ { n++ } END { print n + 0 }')
+if [ "$getty_jobs" -ne 1 ] || ! launchctl list 2>/dev/null | awk '$3 == "org.nextbsd.getty" { f = 1 } END { exit !f }'; then
+    echo "GETTY-FAIL: expected exactly one getty job (org.nextbsd.getty), found $getty_jobs"
 else
-    echo "GETTY-TTYV0-FAIL: org.nextbsd.getty.ttyv0 not loaded"
+    getty_want=console
+    case "$(kenv -q console)" in
+        *comconsole*) ;;
+        *) case "$(kenv -q boot_serial)" in
+               [Yy][Ee][Ss]) ;;
+               *) [ -c /dev/ttyv0 ] && getty_want=ttyv0 ;;
+           esac ;;
+    esac
+    if [ "$getty_want" = console ]; then
+        getty_tty=$(sysctl -n kern.console 2>/dev/null | cut -d/ -f1 | cut -d, -f1)
+    else
+        getty_tty=ttyv0
+    fi
+    getty_owner=$(ps -A -o tty= -o command= 2>/dev/null | awk -v t="$getty_tty" '$1 == t { $1 = ""; sub(/^ /, ""); print; exit }')
+    if [ -n "$getty_tty" ] && [ -n "$getty_owner" ]; then
+        echo "GETTY-OK: one job; $getty_want -> $getty_tty served by: $getty_owner"
+    else
+        echo "GETTY-FAIL: rule picked $getty_want (${getty_tty:-no tty}) but no process owns it"
+    fi
 fi
 
 # 10. ASL runtime smoke (Phase J). Task #41 move_member wire-up

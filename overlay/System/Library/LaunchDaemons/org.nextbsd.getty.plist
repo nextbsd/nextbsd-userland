@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  org.nextbsd.getty.plist
+
+  The one login getty. It picks exactly one terminal per boot:
+
+    1. The loader was asked for a serial console
+       (console contains comconsole, or boot_serial=YES)
+         -> getty on /dev/console, which the kernel bound to the UART.
+            This is CI, and any serial-console server.
+    2. Otherwise, if there is a screen (/dev/ttyv0 exists)
+         -> getty on ttyv0.
+    3. Otherwise (headless, no framebuffer)
+         -> getty on /dev/console.
+
+  Why it replaces the two jobs that were here (org.nextbsd.getty.console
+  and org.nextbsd.getty.ttyv0):
+    /dev/console binds to exactly ONE tty: cnadd() points it at the first
+    console and cnselect() moves the chosen one to the head of cn_devlist
+    (sys/kern/kern_cons.c). Which tty that is depends on the machine:
+
+      arm64 with a screen: the EFI loader publishes hw.uart.console from
+        ACPI SPCR without being asked, so /dev/console is the UART and the
+        screen got no login unless a second job served ttyv0.
+      amd64 laptop: /dev/console IS ttyv0, so both jobs targeted the same
+        tty. The second one's login_tty() failed with EPERM (the tty
+        already belonged to the first job's session, sys/kern/tty.c
+        TIOCSCTTY), getty logged "login_tty /dev/ttyv0: Operation not
+        permitted", exited, and KeepAlive respawned it every 10 seconds,
+        forever.
+
+    Deciding from the loader's own settings covers both with one job: a
+    serial console is only preferred when someone asked for it, and
+    otherwise the login goes where a person is looking. Measured on an
+    amd64 ThinkPad T460s and an arm64 virt VM: one job, getty on v0, no
+    log spam; with boot_serial=YES set in kenv the job moves to the UART.
+
+  Why ttyv0 is there early enough on arm64:
+    vt(4) attaches with the kernel's own virtio_gpu / efifb driver before
+    launchd starts; the DRM kext loaded later only replaces the driver
+    ("VT: Replacing driver ... with new drmfb"), not the terminal.
+
+  A serial login on a machine that also has a screen:
+    set boot_serial="YES" (or console="comconsole") in /boot/loader.conf.
+
+  Why 3wire.9600 (nextbsd#355):
+    FreeBSD's std.* gettytab classes lack nc (no carrier), so on a UART
+    without DCD the post-login shell hangs opening /dev/tty. 3wire.9600
+    sets CLOCAL. On vt(4) carrier always asserts, so it is harmless there.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.nextbsd.getty</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>case "$(kenv -q console)" in *comconsole*) exec /usr/libexec/getty 3wire.9600 console ;; esac; case "$(kenv -q boot_serial)" in [Yy][Ee][Ss]) exec /usr/libexec/getty 3wire.9600 console ;; esac; test -c /dev/ttyv0 &amp;&amp; exec /usr/libexec/getty 3wire.9600 ttyv0; exec /usr/libexec/getty 3wire.9600 console</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>
