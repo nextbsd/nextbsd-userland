@@ -295,23 +295,15 @@ loader_boot
 # arch follows the target (amd64/arm64/powerpc/...). Matched brand- AND
 # arch-agnostically so neither a rebrand nor a new arch breaks this check.
 #
-# This check is INFORMATIONAL, not gating. Both daemons (hostnamed
-# + getty) have RunAtLoad=true and launchd dispatches them in
-# parallel; getty's fork+exec+banner-print path (~10-30ms) finishes
-# before hostnamed's fork+exec+synthesize+sethostname path
-# (~30-100ms — kenv + SMBIOS + getifaddrs + crypt). The first-boot
-# banner consistently loses the race and shows 'Amnesiac'.
-#
-# What's actually working: kern.hostname IS set to the synthesized
-# value before login runs (verified by HOSTNAMED-OK and PAM-LOGIN-OK
-# downstream); second-getty-respawn (after logout) shows the
-# synthesized name. The banner-at-first-boot is purely cosmetic.
-#
-# Apple's macOS doesn't hit this because loginwindow reads the
-# hostname dynamically; FreeBSD getty captures it at print time.
-# Proper fix needs either launchd job ordering (no native mechanism)
-# or a getty patch to defer banner until kern.hostname stabilizes —
-# both out of scope for the PAM port.
+# launchd's early-init synthesizes the hostname from SMBIOS and sets it
+# before any LaunchDaemon starts, and it logs "early-init: sethostname('X')"
+# on the console just before the banner. getty reads the hostname once, so
+# the banner must show that same X. 'Amnesiac' (nothing set) or 'localhost'
+# (launchctl bootstrap's Apple reset, launchctl.c system_specific_bootstrap)
+# means the early name was lost (nextbsd/nextbsd#325). A mismatch is recorded
+# and fails the run at the end, so the checks after the banner still run.
+set early_name ""
+set banner_fail ""
 # Exit 2, not 1, for the two "never got there" timeouts below. A boot that
 # never completes is categorically different from an assertion that fails, and
 # boot_soft must not hide it -- see #87. The workflow gates on 2 regardless of
@@ -321,11 +313,22 @@ expect {
         puts "\nFAIL: boot banner not seen within 8 minutes"
         exit 2
     }
-    -re "\[A-Za-z\]*BSD/\[A-Za-z0-9_\]+ \\(Amnesiac\\) \\(console\\)" {
-        puts "\nWARN: BOOT-BANNER — first-boot banner shows 'Amnesiac' (getty/hostnamed race; cosmetic only)"
+    -re "early-init: sethostname\\('(\[^'\]+)'\\)" {
+        set early_name $expect_out(1,string)
+        exp_continue
     }
     -re "\[A-Za-z\]*BSD/\[A-Za-z0-9_\]+ \\(\(\[A-Za-z0-9._-\]+\)\\) \\(console\\)" {
-        puts "\nOK: BOOT-BANNER-OK — synthesized hostname '$expect_out(1,string)' visible to getty (hostnamed won the race this run)"
+        set banner_name $expect_out(1,string)
+        if {$banner_name eq "Amnesiac" || $banner_name eq "localhost"} {
+            set banner_fail "banner shows '$banner_name', not the synthesized hostname '$early_name'"
+        } elseif {$early_name ne "" && $banner_name ne $early_name} {
+            set banner_fail "banner shows '$banner_name' but early-init set '$early_name'"
+        }
+        if {$banner_fail eq ""} {
+            puts "\nOK: BOOT-BANNER-OK — getty shows the synthesized hostname '$banner_name'"
+        } else {
+            puts "\nFAIL: BOOT-BANNER — $banner_fail (recorded; fails the run at the end)"
+        }
     }
 }
 
@@ -1519,6 +1522,10 @@ expect {
 # Guard both so teardown never turns a green boot red. (#369)
 catch { close }
 catch { wait }
+if {$banner_fail ne ""} {
+    puts "\nFAIL: BOOT-BANNER — $banner_fail"
+    exit 1
+}
 exit 0
 EOF
 

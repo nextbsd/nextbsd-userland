@@ -2318,7 +2318,23 @@ system_specific_bootstrap(bool sflag)
 	EV_SET(&kev, SIGTERM, EVFILT_SIGNAL, EV_ADD, 0, 0, 0);
 	(void)posix_assumes_zero(kevent(kq, &kev, 1, NULL, 0, NULL));
 	(void)posix_assumes_zero(signal(SIGTERM, SIG_IGN));
+#ifdef __FreeBSD__
+	/* launchd's early-init has already named the host from SMBIOS
+	 * (launchd_early.c) so getty's first banner shows the real name.
+	 * Apple resets it to "localhost" here because nothing on macOS has
+	 * named the machine yet; only do that if the name is still empty, or
+	 * every banner reads "localhost" until hostnamed renames it
+	 * (nextbsd/nextbsd#325). */
+	{
+		char hn[MAXHOSTNAMELEN];
+
+		if (gethostname(hn, sizeof(hn)) != 0 || hn[0] == '\0') {
+			(void)posix_assumes_zero(sysctl(hnmib, 2, NULL, NULL, "localhost", sizeof("localhost")));
+		}
+	}
+#else
 	(void)posix_assumes_zero(sysctl(hnmib, 2, NULL, NULL, "localhost", sizeof("localhost")));
+#endif
 
 	loopback_setup_ipv4();
 	loopback_setup_ipv6();
