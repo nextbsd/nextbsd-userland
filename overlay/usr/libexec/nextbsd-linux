@@ -151,7 +151,9 @@ fi
 # fstype mounted exactly on PATH (the top-most mount), or empty.
 mounted_type() {
 	_p=$(realpath "$1" 2>/dev/null) || _p=$1
-	mount -p | awk -v p="$_p" '$2 == p { t = $3 } END { print t }'
+	# 2>/dev/null: with no /etc/fstab, mount -p's putfsent() lookups print
+	# "fstab: /etc/fstab:0: No such file or directory" per mount.
+	mount -p 2>/dev/null | awk -v p="$_p" '$2 == p { t = $3 } END { print t }'
 }
 
 # --- /dev/shm size -----------------------------------------------------------

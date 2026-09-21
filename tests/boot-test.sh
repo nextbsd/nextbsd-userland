@@ -1236,7 +1236,7 @@ expect {
         puts "\nFAIL: LINUX-MOUNTS marker not seen"
         exit 1
     }
-    -re {LINUX-MOUNTS-FAIL[^\r\n]*} {
+    -re {LINUX-MOUNTS-FAIL[^\r\n]*[\r\n]} {
         puts "\nFAIL: $expect_out(0,string)"
         exit 1
     }

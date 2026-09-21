@@ -1686,17 +1686,28 @@ linux_mounts_gate()
     missing=
     for w in $want; do
         fs=${w%%:*}; p=${w#*:}
-        mount -p | awk -v p="$p" -v f="$fs" '$2 == p && $3 == f { ok = 1 } END { exit !ok }' || missing="$missing $w"
+        mount -p 2>/dev/null | awk -v p="$p" -v f="$fs" '$2 == p && $3 == f { ok = 1 } END { exit !ok }' || missing="$missing $w"
     done
     if [ -n "$missing" ]; then
         echo "LINUX-MOUNTS-FAIL: not mounted at boot:$missing"
         return 0
     fi
-    mount -p | awk -v p="$emul/dev/fd" '$2 == p' | grep -q linrdlnk || { echo "LINUX-MOUNTS-FAIL: $emul/dev/fd lacks linrdlnk"; return 0; }
-    mount -p | awk -v p="$emul/dev/shm" '$2 == p' | grep -q 'size=' || { echo "LINUX-MOUNTS-FAIL: $emul/dev/shm has no size cap"; return 0; }
-    before=$(mount -p | wc -l)
+    # mount -p shows only generic flags, so check the fs-specific options by
+    # behaviour. linrdlnk makes fdescfs report its entries as symlinks.
+    if [ "$(stat -f %HT "$emul/dev/fd/0" 2>/dev/null)" != "Symbolic Link" ]; then
+        echo "LINUX-MOUNTS-FAIL: $emul/dev/fd/0 is '$(stat -f %HT "$emul/dev/fd/0" 2>&1)', expected a symlink (fdescfs linrdlnk)"
+        return 0
+    fi
+    # size= caps the tmpfs; an uncapped one reports roughly all of RAM (+swap).
+    shm_kb=$(df -k "$emul/dev/shm" | awk 'NR == 2 { print $2 }')
+    mem_kb=$(( $(sysctl -n hw.physmem) / 1024 ))
+    if [ -z "$shm_kb" ] || [ "$shm_kb" -ge $((mem_kb * 9 / 10)) ]; then
+        echo "LINUX-MOUNTS-FAIL: $emul/dev/shm is ${shm_kb:-?} KB of ${mem_kb} KB RAM; expected a size cap"
+        return 0
+    fi
+    before=$(mount -p 2>/dev/null | wc -l)
     "$tool" --compat >/dev/null 2>&1 || { echo "LINUX-MOUNTS-FAIL: second --compat run exited $?"; return 0; }
-    after=$(mount -p | wc -l)
+    after=$(mount -p 2>/dev/null | wc -l)
     [ "$before" -eq "$after" ] || { echo "LINUX-MOUNTS-FAIL: second run changed the mount count ($before -> $after)"; return 0; }
     "$tool" --unmount || { echo "LINUX-MOUNTS-FAIL: --unmount exited $?"; return 0; }
     if "$tool" --status >/dev/null 2>&1; then
