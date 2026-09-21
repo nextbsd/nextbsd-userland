@@ -1523,4 +1523,12 @@ exit 0
 EOF
 
 expect "$EXP" "$IMG"
+
+# Darwin-only sysctl probes must not reach the console as ENOENT soft-asserts
+# (nextbsd#324; dispositions in docs/launchd-darwin-probes.md).
+if grep -aE '_assumes_zero: sysctl[a-z]*\(.*\(errno 2\)' "$LOG"; then
+    echo "FAIL: DARWIN-SYSCTL-NOISE — launchd/launchctl probed a sysctl absent on NextBSD"
+    exit 1
+fi
+echo "OK: DARWIN-SYSCTL-QUIET"
 echo "==> boot-test PASSED"

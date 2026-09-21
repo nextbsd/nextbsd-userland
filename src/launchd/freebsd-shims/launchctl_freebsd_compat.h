@@ -54,19 +54,13 @@ task_for_pid(mach_port_name_t target_tport __attribute__((unused)),
 #define _PATH_UTMPX     "/var/empty/utmpx"
 #endif
 
-/* KERN_SAFEBOOT (line 4181) and KERN_NETBOOT (line 4195)
- *   is_safeboot() and is_netboot() do sysctl(CTL_KERN, KERN_*) reads.
- *   FreeBSD has no equivalent (we don't have a "safe boot" mode and
- *   netboot is detected differently). Use sysctl MIB indexes
- *   guaranteed to ENOENT so sysctl(2) fails cleanly and the helpers
- *   return false.
+/* KERN_SAFEBOOT / KERN_NETBOOT
+ *   Not defined here on purpose. is_safeboot() and is_netboot() in
+ *   launchctl.c return false under __FreeBSD__ without calling sysctl(2):
+ *   the old approach (alias to a guaranteed-ENOENT MIB) made
+ *   posix_assumes_zero log to the console on every boot (nextbsd#324).
+ *   See docs/launchd-darwin-probes.md.
  */
-#ifndef KERN_SAFEBOOT
-#define KERN_SAFEBOOT   9990
-#endif
-#ifndef KERN_NETBOOT
-#define KERN_NETBOOT    9991
-#endif
 
 /* KERN_OSVERSION (line 4364)
  *   do_sysversion_sysctl() reads kern.osversion to print the macOS

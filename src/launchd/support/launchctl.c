@@ -4205,6 +4205,11 @@ path_check(const char *path)
 bool
 is_safeboot(void)
 {
+#ifdef __FreeBSD__
+	/* NextBSD has no safe-boot mode and no kern.safeboot sysctl; probing
+	 * it would only trip posix_assumes_zero on ENOENT (nextbsd#324). */
+	return false;
+#else
 	int sbmib[] = { CTL_KERN, KERN_SAFEBOOT };
 	uint32_t sb = 0;
 	size_t sbsz = sizeof(sb);
@@ -4214,11 +4219,17 @@ is_safeboot(void)
 	}
 
 	return (bool)sb;
+#endif
 }
 
 bool
 is_netboot(void)
 {
+#ifdef __FreeBSD__
+	/* NextBSD does not NetBoot and has no kern.netboot sysctl; probing it
+	 * would only trip posix_assumes_zero on ENOENT (nextbsd#324). */
+	return false;
+#else
 	int nbmib[] = { CTL_KERN, KERN_NETBOOT };
 	uint32_t nb = 0;
 	size_t nbsz = sizeof(nb);
@@ -4228,6 +4239,7 @@ is_netboot(void)
 	}
 
 	return (bool)nb;
+#endif
 }
 
 void
@@ -4531,6 +4543,13 @@ do_bootroot_magic(void)
 
 	chosen = IORegistryEntryFromPath(kIOMasterPortDefault, "IODeviceTree:/chosen");
 
+#ifdef __FreeBSD__
+	/* No IODeviceTree on NextBSD, so there is never a /chosen entry and never
+	 * a BootRoot to refresh. Bail quietly instead of via os_assumes (#324). */
+	if (chosen == IO_OBJECT_NULL) {
+		return;
+	}
+#endif
 	if (!os_assumes(chosen)) {
 		return;
 	}
