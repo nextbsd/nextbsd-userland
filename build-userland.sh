@@ -567,6 +567,12 @@ test -x "$DESTDIR/usr/sbin/ioreg" || { echo "FAIL: /usr/sbin/ioreg not installed
 needed_check "$DESTDIR/usr/sbin/ioreg" "libIOKit"
 # DROPPED: iokittest/iokitmatchtest/iokitnotify* (host-exec).
 
+comp "caffeinate(8)"
+mkdir -p "$DESTDIR/usr/bin"
+run_buildenv "make -C $SRC/caffeinate DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/bin/caffeinate" || { echo "FAIL: /usr/bin/caffeinate not installed"; exit 1; }
+needed_check "$DESTDIR/usr/bin/caffeinate" "libIOKit"
+
 # ---- kext_tools (libkext + OSKext CLIs + kextd) -----------------------------
 # build.sh ~1941-2018. SUBDIR build (bsd.prog.mk + bsd.lib.mk) builds
 # kextload/kextunload/kextstat/kextdeps + libexec/kextd; installs sys/iocatalogue.h.

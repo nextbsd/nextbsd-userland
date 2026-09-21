@@ -20,7 +20,7 @@ that the `nextbsd` ISO assembler ingests.
 |------|-----------|
 | 0 — host tool | `migcom` + `mig` (arch-neutral MIG codegen, built for the runner) |
 | 1 — foundation libs | `libmach`→`libsystem_kernel` → `libdispatch` *(cmake)* → `libxpc` → `liblaunch` → `swift-foundation-icu` *(cmake)* → `libCoreFoundation` |
-| 2 — daemons/services | `launchd`+`launchctl` → `configd` → `libSystemConfiguration` → `libIOKit`+`ioreg` → `kext_tools` → `Libnotify`+`notifyd` → syslog/asl stack → `IPConfiguration` → `mDNSResponder` → `DiskArbitration` → `hostnamed` |
+| 2 — daemons/services | `launchd`+`launchctl` → `configd` → `libSystemConfiguration` → `libIOKit`+`ioreg`+`caffeinate` → `kext_tools` → `Libnotify`+`notifyd` → syslog/asl stack → `IPConfiguration` → `mDNSResponder` → `DiskArbitration` → `hostnamed` |
 
 **Out (by design):**
 

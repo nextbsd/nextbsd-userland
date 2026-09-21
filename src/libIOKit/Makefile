@@ -18,7 +18,7 @@
 LIB=		IOKit
 SHLIB_MAJOR=	1
 
-SRCS=		IOKitLib.c IOKitMatching.c IOKitNotify.c
+SRCS=		IOKitLib.c IOKitMatching.c IOKitNotify.c IOPMAssertions.c
 
 # WARNS=0: the public header pulls the whole CoreFoundation public
 # header tree (for later iters' CFDictionary / CFString surfaces).
@@ -65,6 +65,7 @@ LDADD+=		-L${SYSROOT}/usr/lib/system
 .endif
 
 INCS=		IOKit/IOKitLib.h
+INCS+=		IOKit/pwr_mgt/IOPMLib.h IOKit/pwr_mgt/IOPMLibPrivate.h
 INCSDIR=	${PREFIX}/include/IOKit
 LIBDIR=		${PREFIX}/lib/system
 

@@ -31,6 +31,7 @@ provenance; it does not relicense anything.
 | `mDNSResponder` (+ libdns_sd) | apple-oss-distributions/mDNSResponder | Apache-2.0 |
 | `DiskArbitration` | apple-oss-distributions/DiskArbitration | APSL-2.0 |
 | `hostnamed` | NextBSD (Apple-shape) | APSL-2.0 *(component header)* |
+| `caffeinate` | apple-oss-distributions/PowerManagement | APSL-2.0 |
 
 Two license families dominate: **APSL-2.0** (classic Apple open source) and
 **Apache-2.0** (the swift.org-era projects + mDNSResponder). Both are permissive
