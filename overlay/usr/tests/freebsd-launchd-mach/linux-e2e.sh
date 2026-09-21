@@ -27,13 +27,24 @@ export PATH
 fail() { echo "LINUX-E2E-FAIL: $*"; exit 0; }
 skip() { echo "LINUX-E2E-SKIP: $*"; exit 0; }
 
-tool=/usr/libexec/nextbsd-linux
-[ -x "$tool" ] || fail "$tool missing"
+# The six mounts launchctl bootstrap makes (linux_abi_mounts(), #190).
+mounts_ok()
+{
+    emul=$(sysctl -n compat.linux.emul_path 2>/dev/null)
+    emul=${emul:-/compat/linux}
+    missing=
+    for w in linprocfs:$emul/proc linsysfs:$emul/sys devfs:$emul/dev fdescfs:$emul/dev/fd tmpfs:$emul/dev/shm nullfs:$emul/tmp; do
+        fs=${w%%:*}; p=${w#*:}
+        mount -p 2>/dev/null | awk -v p="$p" -v f="$fs" '$2 == p && $3 == f { ok = 1 } END { exit !ok }' || missing="$missing $w"
+    done
+    [ -z "$missing" ] || { echo "missing:$missing"; return 1; }
+    mount -p 2>/dev/null | awk -v e="$emul" 'index($2, e) == 1'
+}
 emul=$(sysctl -n compat.linux.emul_path 2>/dev/null)
 emul=${emul:-/compat/linux}
 
 echo "==> linux-e2e: 1. mounts on an empty root"
-"$tool" --status || fail "Linux ABI mounts not all present before any userland was installed"
+mounts_ok || fail "Linux ABI mounts not all present before any userland was installed"
 echo "--- contents of $emul before install:"
 ls -la "$emul"
 df -h /
@@ -79,7 +90,7 @@ fi
 df -h /
 
 echo "==> linux-e2e: 3. mounts still intact after install"
-"$tool" --status || fail "Linux ABI mounts changed during pkg install"
+mounts_ok || fail "Linux ABI mounts changed during pkg install"
 
 echo "==> linux-e2e: 4. a Linux binary from the root"
 lu=$(ls "$emul"/usr/bin/uname "$emul"/bin/uname 2>/dev/null | head -1)

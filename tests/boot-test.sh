@@ -1229,8 +1229,8 @@ expect {
 }
 
 # LINUX-MOUNTS — #190. launchctl bootstrap mounts the Linux ABI filesystems at
-# boot (pre-created, always mounted, like rc.d/linux), idempotently, and the
-# tool's --unmount/--compat round-trips. run.sh emits exactly one OK/FAIL.
+# boot (pre-created, always mounted, like rc.d/linux). run.sh emits exactly
+# one OK/FAIL.
 expect {
     timeout {
         puts "\nFAIL: LINUX-MOUNTS marker not seen"

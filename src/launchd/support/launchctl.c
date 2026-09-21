@@ -164,6 +164,9 @@ static void print_launchd_env(launch_data_t obj, const char *key, void *context)
 static void loopback_setup_ipv4(void);
 static void loopback_setup_ipv6(void);
 static pid_t fwexec(const char *const *argv, int *wstatus);
+#ifdef __FreeBSD__
+static void linux_abi_mounts(void);
+#endif
 static void do_potential_fsck(void);
 static bool path_check(const char *path);
 static bool is_safeboot(void);
@@ -2450,17 +2453,11 @@ system_specific_bootstrap(bool sflag)
 	(void)remove(_PATH_NOLOGIN);
 
 #ifdef __FreeBSD__
-	/* Linux ABI filesystems (nextbsd-userland#190). On stock FreeBSD this is
-	 * rc.d/linux's job; here it sits with the other boot-time mounts, after
-	 * /etc/sysctl.conf (so a moved compat.linux.emul_path is in effect), the
-	 * fstab pass and the /tmp and /var/run sweep, and before load -D all, so
-	 * every LaunchDaemon starts with the mounts in place. The tool is
-	 * idempotent and logs to /var/log/nextbsd-linux.log; it is also the
-	 * manual re-run after a Linux root is (re)populated. */
-	if (path_check("/usr/libexec/nextbsd-linux")) {
-		const char *linux_tool[] = { "/usr/libexec/nextbsd-linux", "--boot", NULL };
-		(void)fwexec(linux_tool, NULL);
-	}
+	/* Linux ABI filesystems (nextbsd-userland#190): rc.d/linux's job on
+	 * stock FreeBSD. Here with the other boot-time mounts: after
+	 * /etc/sysctl.conf (a moved compat.linux.emul_path is in effect), the
+	 * fstab pass and the /tmp and /var/run sweep, and before load -D all. */
+	linux_abi_mounts();
 #endif
 
 	if (path_check("/usr/libexec/dirhelper")) {
@@ -4044,6 +4041,130 @@ fwexec(const char *const *argv, int *wstatus)
 
 	return -1;
 }
+
+#ifdef __FreeBSD__
+/*
+ * Linux ABI filesystems (nextbsd-userland#190).
+ *
+ * NextBSD has no rc.d, so this does FreeBSD rc.d/linux's job at every boot.
+ * It creates the mount points under compat.linux.emul_path (default
+ * /compat/linux) and ALWAYS mounts the five Linux ABI filesystems there,
+ * whether or not a Linux userland is installed, exactly as rc.d/linux does.
+ * It also nullfs-mounts /tmp so Linux programs share the real /tmp: a Linux
+ * root has its own /tmp directory, which would otherwise shadow it.
+ *
+ * An empty-but-mounted root already gives Linux processes Linux /proc, /sys,
+ * /dev/fd and /dev/shm: the Linuxulator tries every absolute path under the
+ * root first and falls back to the real root only on ENOENT. A root populated
+ * later (debootstrap, a tarball, linux_base) is already mounted. debootstrap
+ * unmounts $root/proc on exit, so whatever runs it remounts that one mount.
+ *
+ * Each mount is skipped if that filesystem is already mounted there (an admin
+ * fstab line, or a second bootstrap), and -o nocover means nothing is ever
+ * stacked. Failures are logged and boot continues.
+ */
+static void
+linux_mkdirs(const char *path)
+{
+	char buf[MAXPATHLEN];
+	char *p;
+
+	if (strlcpy(buf, path, sizeof(buf)) >= sizeof(buf)) {
+		return;
+	}
+	for (p = buf + 1; *p != '\0'; p++) {
+		if (*p == '/') {
+			*p = '\0';
+			(void)mkdir(buf, 0755);
+			*p = '/';
+		}
+	}
+	(void)mkdir(buf, 0755);
+}
+
+static bool
+linux_is_mounted(const char *path, const char *fstype)
+{
+	struct statfs sfs;
+
+	return statfs(path, &sfs) == 0 &&
+	    strcmp(sfs.f_mntonname, path) == 0 &&
+	    strcmp(sfs.f_fstypename, fstype) == 0;
+}
+
+static void
+linux_mount(const char *fstype, const char *source, const char *path, const char *opts)
+{
+	const char *argv[] = { "/sbin/mount", "-t", fstype, "-o", opts, source, path, NULL };
+
+	if (linux_is_mounted(path, fstype)) {
+		return;
+	}
+	if (fwexec(argv, NULL) == -1) {
+		launchctl_log(LOG_ERR, "Linux ABI: mount -t %s %s failed", fstype, path);
+	}
+}
+
+static void
+linux_abi_mounts(void)
+{
+	char root[MAXPATHLEN], emul[MAXPATHLEN], path[MAXPATHLEN], tmp[MAXPATHLEN];
+	char shmopts[64];
+	struct statfs rootfs;
+	unsigned long physmem = 0;
+	unsigned long long shm;
+	size_t len = sizeof(root);
+	int div = 2;
+
+	/* No Linuxulator in this kernel: nothing to mount. */
+	if (sysctlbyname("compat.linux.emul_path", root, &len, NULL, 0) != 0 || root[0] != '/') {
+		return;
+	}
+	linux_mkdirs(root);
+	if (realpath(root, emul) == NULL) {
+		launchctl_log(LOG_ERR, "Linux ABI: cannot use emulation root %s: %s", root, strerror(errno));
+		return;
+	}
+
+	(void)snprintf(path, sizeof(path), "%s/proc", emul);
+	linux_mkdirs(path);
+	linux_mount("linprocfs", "linprocfs", path, "nocover");
+
+	(void)snprintf(path, sizeof(path), "%s/sys", emul);
+	linux_mkdirs(path);
+	linux_mount("linsysfs", "linsysfs", path, "nocover");
+
+	/* devfs supplies fd/, and the Linuxulator puts shm/ into every devfs
+	 * instance at ABI init, so neither needs (or allows) mkdir. */
+	(void)snprintf(path, sizeof(path), "%s/dev", emul);
+	linux_mkdirs(path);
+	linux_mount("devfs", "devfs", path, "nocover");
+
+	(void)snprintf(path, sizeof(path), "%s/dev/fd", emul);
+	linux_mount("fdescfs", "fdescfs", path, "nocover,linrdlnk");	/* Bun/claude-code need linrdlnk */
+
+	/* Cap /dev/shm: half of RAM, as Linux does, or a quarter on the
+	 * RAM-backed live union root, with a 128 MiB floor. */
+	len = sizeof(physmem);
+	(void)sysctlbyname("hw.physmem", &physmem, &len, NULL, 0);
+	if (statfs("/", &rootfs) == 0 && strcmp(rootfs.f_fstypename, "unionfs") == 0) {
+		div = 4;
+	}
+	shm = physmem / div;
+	if (shm < 128ULL * 1024 * 1024) {
+		shm = 128ULL * 1024 * 1024;
+	}
+	(void)snprintf(shmopts, sizeof(shmopts), "nocover,mode=1777,size=%llu", shm);
+	(void)snprintf(path, sizeof(path), "%s/dev/shm", emul);
+	linux_mount("tmpfs", "tmpfs", path, shmopts);
+
+	if (realpath("/tmp", tmp) != NULL) {
+		(void)snprintf(path, sizeof(path), "%s/tmp", emul);
+		linux_mkdirs(path);
+		linux_mount("nullfs", tmp, path, "nocover");
+	}
+}
+#endif
 
 void
 do_potential_fsck(void)

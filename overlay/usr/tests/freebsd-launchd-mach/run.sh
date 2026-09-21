@@ -1662,58 +1662,38 @@ da_iokit_gate()
 }
 da_iokit_gate
 
-# LINUX-MOUNTS — #190. launchctl bootstrap ran
-# /usr/libexec/nextbsd-linux --boot, which must have mounted the five Linux ABI
-# filesystems under compat.linux.emul_path even though no Linux userland is
-# installed (rc.d/linux's behaviour), plus the default /tmp nullfs.
-# Then prove it is idempotent (a second run stacks nothing) and that
-# --unmount / --compat round-trips. Emits exactly one LINUX-MOUNTS-OK/FAIL.
+# LINUX-MOUNTS — #190. launchctl bootstrap (linux_abi_mounts() in
+# support/launchctl.c) mounts the five Linux ABI filesystems under
+# compat.linux.emul_path at every boot, even with no Linux userland installed
+# (rc.d/linux's behaviour), plus a nullfs of /tmp. mount -p shows only generic
+# flags, so linrdlnk and the shm size cap are checked by behaviour.
+# Emits exactly one LINUX-MOUNTS-OK/FAIL.
 linux_mounts_gate()
 {
-    tool=/usr/libexec/nextbsd-linux
-    if [ ! -x "$tool" ]; then
-        echo "LINUX-MOUNTS-FAIL: $tool missing"
-        return 0
-    fi
     emul=$(sysctl -n compat.linux.emul_path 2>/dev/null)
     emul=${emul:-/compat/linux}
-    echo "--- nextbsd-linux --status (boot run by launchctl bootstrap):"
-    "$tool" --status
-    [ -f /var/log/nextbsd-linux.log ] && { echo "--- /var/log/nextbsd-linux.log:"; cat /var/log/nextbsd-linux.log; }
-    want="linprocfs:$emul/proc linsysfs:$emul/sys devfs:$emul/dev fdescfs:$emul/dev/fd tmpfs:$emul/dev/shm nullfs:$emul/tmp"
     missing=
-    for w in $want; do
+    for w in linprocfs:$emul/proc linsysfs:$emul/sys devfs:$emul/dev fdescfs:$emul/dev/fd tmpfs:$emul/dev/shm nullfs:$emul/tmp; do
         fs=${w%%:*}; p=${w#*:}
         mount -p 2>/dev/null | awk -v p="$p" -v f="$fs" '$2 == p && $3 == f { ok = 1 } END { exit !ok }' || missing="$missing $w"
     done
+    echo "--- Linux ABI mounts under $emul:"
+    mount -p 2>/dev/null | awk -v e="$emul" 'index($2, e) == 1'
     if [ -n "$missing" ]; then
         echo "LINUX-MOUNTS-FAIL: not mounted at boot:$missing"
         return 0
     fi
-    # mount -p shows only generic flags, so check the fs-specific options by
-    # behaviour. linrdlnk makes fdescfs report its entries as symlinks.
     if [ "$(stat -f %HT "$emul/dev/fd/0" 2>/dev/null)" != "Symbolic Link" ]; then
         echo "LINUX-MOUNTS-FAIL: $emul/dev/fd/0 is '$(stat -f %HT "$emul/dev/fd/0" 2>&1)', expected a symlink (fdescfs linrdlnk)"
         return 0
     fi
-    # size= caps the tmpfs; an uncapped one reports roughly all of RAM (+swap).
     shm_kb=$(df -k "$emul/dev/shm" | awk 'NR == 2 { print $2 }')
     mem_kb=$(( $(sysctl -n hw.physmem) / 1024 ))
     if [ -z "$shm_kb" ] || [ "$shm_kb" -ge $((mem_kb * 9 / 10)) ]; then
         echo "LINUX-MOUNTS-FAIL: $emul/dev/shm is ${shm_kb:-?} KB of ${mem_kb} KB RAM; expected a size cap"
         return 0
     fi
-    before=$(mount -p 2>/dev/null | wc -l)
-    "$tool" --compat >/dev/null 2>&1 || { echo "LINUX-MOUNTS-FAIL: second --compat run exited $?"; return 0; }
-    after=$(mount -p 2>/dev/null | wc -l)
-    [ "$before" -eq "$after" ] || { echo "LINUX-MOUNTS-FAIL: second run changed the mount count ($before -> $after)"; return 0; }
-    "$tool" --unmount || { echo "LINUX-MOUNTS-FAIL: --unmount exited $?"; return 0; }
-    if "$tool" --status >/dev/null 2>&1; then
-        echo "LINUX-MOUNTS-FAIL: --status still reports mounts after --unmount"; return 0
-    fi
-    "$tool" --compat || { echo "LINUX-MOUNTS-FAIL: re-mount after --unmount exited $?"; return 0; }
-    "$tool" --status >/dev/null 2>&1 || { echo "LINUX-MOUNTS-FAIL: --status incomplete after the round trip"; return 0; }
-    echo "LINUX-MOUNTS-OK: five Linux ABI mounts + /tmp nullfs under $emul at boot; idempotent; --unmount/--compat round-trips"
+    echo "LINUX-MOUNTS-OK: five Linux ABI mounts + /tmp nullfs under $emul at boot (launchctl bootstrap)"
 }
 linux_mounts_gate
 
