@@ -45,14 +45,13 @@
 #                        when / is unionfs (RAM-backed live media)
 #   shm_share=YES        with the native set, nullfs the compat shm onto
 #                        /dev/shm instead of a second tmpfs (one size cap)
-#   chroot_nullfs="/tmp /home /Users"
-#                        host dirs nullfs-mounted into $emul, so native programs,
-#                        apt-installed .debs (Edge, VS Code, Chrome) and AppImages
-#                        share one /tmp (X11 sockets, the AppImage FUSE mount,
-#                        downloads) and one /home, and `apt install ./x.deb` sees
-#                        files under them from inside the chroot. Entries that do
-#                        not exist on this system are skipped (NextBSD homes may be
-#                        under /Users, Apple-style, or /home). Set "" to disable.
+#   chroot_nullfs="/tmp" host dirs nullfs-mounted into $emul. /tmp is the one
+#                        path a Linux root has its own copy of, so without this
+#                        Linux programs would create files in a private /tmp that
+#                        native programs never see (AppImage FUSE mounts, temp
+#                        files). Homes need no mount: paths absent from the root
+#                        fall back to the real filesystem. Entries that do not
+#                        exist on this system are skipped. Set "" to disable.
 #   fallback_brand=YES   set kern.elf64.fallback_brand=3 if it reads -1
 #
 # To move the root persistently, put compat.linux.emul_path=/compat/debian in
@@ -88,7 +87,7 @@ fi
 native_mounts=NO
 shm_size=
 shm_share=YES
-chroot_nullfs="/tmp /home /Users"
+chroot_nullfs="/tmp"
 fallback_brand=YES
 # shellcheck disable=SC1090
 [ -r "$CONF" ] && . "$CONF"

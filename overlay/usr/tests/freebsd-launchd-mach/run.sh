@@ -1665,7 +1665,7 @@ da_iokit_gate
 # LINUX-MOUNTS — #190. org.nextbsd.linux (one-shot, RunAtLoad) ran
 # /usr/libexec/nextbsd-linux at boot, which must have mounted the five Linux ABI
 # filesystems under compat.linux.emul_path even though no Linux userland is
-# installed (rc.d/linux's behaviour), plus the default /tmp and /home nullfs.
+# installed (rc.d/linux's behaviour), plus the default /tmp nullfs.
 # Then prove it is idempotent (a second run stacks nothing) and that
 # --unmount / --compat round-trips. Emits exactly one LINUX-MOUNTS-OK/FAIL.
 linux_mounts_gate()
@@ -1681,8 +1681,6 @@ linux_mounts_gate()
     "$tool" --status
     [ -f /var/log/nextbsd-linux.log ] && { echo "--- /var/log/nextbsd-linux.log:"; cat /var/log/nextbsd-linux.log; }
     want="linprocfs:$emul/proc linsysfs:$emul/sys devfs:$emul/dev fdescfs:$emul/dev/fd tmpfs:$emul/dev/shm nullfs:$emul/tmp"
-    # Default chroot_nullfs also covers /home and /Users where they exist.
-    for h in /home /Users; do [ -d "$h" ] && want="$want nullfs:$emul$h"; done
     missing=
     for w in $want; do
         fs=${w%%:*}; p=${w#*:}
@@ -1715,7 +1713,7 @@ linux_mounts_gate()
     fi
     "$tool" --compat || { echo "LINUX-MOUNTS-FAIL: re-mount after --unmount exited $?"; return 0; }
     "$tool" --status >/dev/null 2>&1 || { echo "LINUX-MOUNTS-FAIL: --status incomplete after the round trip"; return 0; }
-    echo "LINUX-MOUNTS-OK: five Linux ABI mounts + /tmp (and home) nullfs under $emul at boot; idempotent; --unmount/--compat round-trips"
+    echo "LINUX-MOUNTS-OK: five Linux ABI mounts + /tmp nullfs under $emul at boot; idempotent; --unmount/--compat round-trips"
 }
 linux_mounts_gate
 
