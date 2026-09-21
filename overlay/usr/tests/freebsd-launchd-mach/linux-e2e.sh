@@ -44,7 +44,7 @@ amd64)   abi=FreeBSD:15:amd64 ;;
 aarch64) abi=FreeBSD:15:aarch64 ;;
 *)       skip "no FreeBSD package set for $(uname -p)" ;;
 esac
-fetch -q -T 30 -o /dev/null "http://pkg.FreeBSD.org/$abi/quarterly/meta.conf" 2>/dev/null ||
+fetch -q -T 30 -o /dev/null "http://pkg.FreeBSD.org/$abi/latest/meta.conf" 2>/dev/null ||
     skip "pkg.FreeBSD.org unreachable from the VM"
 # The kernel reports ostype NextBSD, so pkg would derive ABI NextBSD:15:<arch>,
 # which the FreeBSD mirror doesn't have. Force the FreeBSD ABI, as build.sh
@@ -55,7 +55,7 @@ export ABI OSVERSION
 mkdir -p /etc/pkg
 cat > /etc/pkg/FreeBSD.conf <<EOF
 FreeBSD: {
-  url: "pkg+http://pkg.FreeBSD.org/$abi/quarterly",
+  url: "pkg+http://pkg.FreeBSD.org/$abi/latest",
   mirror_type: "srv",
   signature_type: "fingerprints",
   fingerprints: "/usr/share/keys/pkg",
