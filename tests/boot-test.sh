@@ -1461,13 +1461,15 @@ send "/usr/tests/nextbsd-iokit/run.sh\r"
         "IOKIT-LOOKUP-FAIL" { puts "\nFAIL: in-kernel matcher lookup failed"; exit 1 }
         "KEXTD-LOAD-FAIL"   { puts "\nFAIL: kextd did not load on a kernel request"; exit 1 }
         "EM-AUTOLOAD-FAIL"  { puts "\nFAIL: em0 absent - IntelEthernet.kext did not auto-load/bind"; exit 1 }
+        "CAFFEINATE-FAIL"   { puts "\nFAIL: caffeinate test failed"; exit 1 }
         "IOREG-OK"          { puts "\nOK: IOREG"; exp_continue }
         "IOKITNOTIFY-OK"    { puts "\nOK: IOKITNOTIFY"; exp_continue }
         "IOCATALOGUE-OK"    { puts "\nOK: IOCATALOGUE"; exp_continue }
         "IOKIT-LOOKUP-OK"   { puts "\nOK: IOKIT-LOOKUP"; exp_continue }
         "KEXTD-LOAD-OK"     { puts "\nOK: KEXTD-LOAD"; exp_continue }
         "EM-AUTOLOAD-OK"    { puts "\nOK: EM-AUTOLOAD (em0 via kext auto-load)"; exp_continue }
-        -re {(IOREG|IOKITNOTIFY|IOCATALOGUE|IOKIT-LOOKUP|KEXTD-LOAD|EM-AUTOLOAD)-SKIP} { puts "\nWARN: IOKit SKIP (informational)"; exp_continue }
+        "CAFFEINATE-OK"     { puts "\nOK: CAFFEINATE (caffeinate executes cleanly)"; exp_continue }
+        -re {(IOREG|IOKITNOTIFY|IOCATALOGUE|IOKIT-LOOKUP|KEXTD-LOAD|EM-AUTOLOAD|CAFFEINATE)-SKIP} { puts "\nWARN: IOKit SKIP (informational)"; exp_continue }
         "IOKIT-RUN-DONE"    { puts "\nOK: IOKit tests complete (sentinel)" }
         timeout             { puts "\nWARN: IOKit tests did not finish in 180s (informational)" }
     }

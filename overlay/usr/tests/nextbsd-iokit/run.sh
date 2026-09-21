@@ -302,6 +302,25 @@ else
 	echo "EM-AUTOLOAD-FAIL: boot daemon did NOT autoload IntelEthernet — em0 absent (real-hardware autoload failure)"
 fi
 
+# CAFFEINATE — verify caffeinate(8) executes cleanly.
+# Exercises caffeinate binary, dynamic link against libIOKit, libCoreFoundation,
+# libdispatch, libsystem_blocks, and libsystem_kernel, plus IOPMAssertion stub APIs.
+if [ -x /usr/bin/caffeinate ]; then
+	caff_out=$(/usr/bin/caffeinate -h 2>&1 || true)
+	if echo "${caff_out}" | grep -qi "usage: caffeinate"; then
+		# Also smoke test assertion creation with a command that exits immediately
+		if /usr/bin/caffeinate -d true 2>/dev/null; then
+			echo "CAFFEINATE-OK: caffeinate binary executes and usage/assertions run"
+		else
+			echo "CAFFEINATE-FAIL: caffeinate failed during assertion execution"
+		fi
+	else
+		echo "CAFFEINATE-FAIL: caffeinate -h did not print expected usage"
+	fi
+else
+	echo "CAFFEINATE-SKIP: /usr/bin/caffeinate not present"
+fi
+
 # Done-sentinel: lets boot-test.sh end the IOKit section the instant this script
 # finishes (pull model) instead of waiting a fixed per-marker timeout.
 # Job table AFTER the IOKit tests. Diff against the BEGIN dump above.
