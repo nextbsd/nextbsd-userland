@@ -660,8 +660,8 @@ expect {
 # passwd edits both. SKIP (warn) if a real database or test account exists.
 expect {
     timeout { puts "\nWARN: ACCT marker not seen (image predates the account tools — informational)" }
-    -re {ACCT-FAIL[^\r\n]*} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
-    -re {ACCT-SKIP[^\r\n]*} { puts "\nWARN: $expect_out(0,string)" }
+    -re {ACCT-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    -re {ACCT-SKIP[^\r\n]*[\r\n]} { puts "\nWARN: $expect_out(0,string)" }
     "ACCT-OK" { puts "\nOK: the account tools route between the plists and master.passwd" }
 }
 

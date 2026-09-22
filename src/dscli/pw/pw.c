@@ -66,8 +66,9 @@
 enum which { W_NONE = -1, W_USER, W_GROUP };
 enum mode { M_NONE = -1, M_ADD, M_DEL, M_MOD, M_SHOW, M_NEXT, M_LOCK, M_UNLOCK };
 
-static const char *const modes[] = { "add", "del", "mod", "show", "next",
-    "lock", "unlock" };
+/* The bare mode words FreeBSD's pw takes after user|group (lock and unlock
+ * exist only as whole commands). */
+static const char *const modes[] = { "add", "del", "mod", "show", "next" };
 static const char *const combos[][2] = {
 	{ "useradd", "adduser" }, { "userdel", "deluser" },
 	{ "usermod", "moduser" }, { "usershow", "showuser" },
@@ -147,6 +148,9 @@ db_open(struct db *db, bool write)
 		need_root();
 		if (acct_refuse_if_joined(progname))
 			exit(EX_NOPERM);
+		/* The first directory user may arrive before `dscli init`. */
+		if (ds_mkdirs(ds_dir(), 0755) == -1)
+			err(EX_OSERR, "mkdir %s", ds_dir());
 		db->lockfd = ds_lock(ds_dir());
 		if (db->lockfd == -1)
 			err(EX_OSERR, "lock %s", ds_dir());
@@ -1159,17 +1163,15 @@ main(int argc, char *argv[])
 	 */
 	while (argc > 1) {
 		if (argv[1][0] == '-') {
-			switch (argv[1][1]) {
-			case 'V': case 'R': case 'M': case 'C': case 'N': case 'Y':
+			/*
+			 * Before the keywords only -V, -R and -M are valid, and
+			 * they select another root: FreeBSD's business. After
+			 * them the options belong to the command.
+			 */
+			if (mode == M_NONE && which == W_NONE)
 				exec_bsd();
-				/* NOTREACHED */
-			case 'q':
-				quiet = true;
-				break;
-			default:
-				exec_bsd();
-			}
-		} else if (mode == M_NONE && (idx = index_of(modes, 7, argv[1])) != -1)
+			break;
+		} else if (mode == M_NONE && (idx = index_of(modes, 5, argv[1])) != -1)
 			mode = (enum mode)idx;
 		else if (which == W_NONE && strcmp(argv[1], "user") == 0)
 			which = W_USER;
