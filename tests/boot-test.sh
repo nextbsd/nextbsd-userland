@@ -652,13 +652,13 @@ expect {
 # check waits on daemons and a mount, so it gets a longer timeout.
 expect {
     timeout { puts "\nWARN: NTP marker not seen (image predates the E18 service jobs — informational)" }
-    -re {NTP-FAIL[^\r\n]*} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    -re {NTP-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
     "NTP-OK" { puts "\nOK: org.nextbsd.ntpd runs ntpd under launchd" }
 }
 expect {
     -timeout 180
     timeout { puts "\nWARN: NFS marker not seen (image predates the E18 service jobs — informational)" }
-    -re {NFS-FAIL[^\r\n]*} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    -re {NFS-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
     "NFS-OK" { puts "\nOK: NFS server jobs serve the exports and the client job's script behaves" }
 }
 

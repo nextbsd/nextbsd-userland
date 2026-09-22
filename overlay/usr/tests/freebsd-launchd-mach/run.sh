@@ -971,7 +971,9 @@ else
     if [ -e /etc/exports ]; then
         nfs_fail="/etc/exports already exists; not touching it"
     else
-        printf '# Written by dscli promote; dscli demote removes this file.\n/Network/Library/DirectoryServices -ro\n/Local/Users\n' > /etc/exports
+        # One line: both directories are on /, and the kernel allows one
+        # default export per filesystem (see org.nextbsd.mountd.plist).
+        printf '# Written by dscli promote; dscli demote removes this file.\n/Local/Users /Network/Library/DirectoryServices\n' > /etc/exports
         for svc_l in org.nextbsd.rpcbind org.nextbsd.mountd org.nextbsd.nfsd; do
             launchctl load -w "$svc_ld/$svc_l.plist"
         done

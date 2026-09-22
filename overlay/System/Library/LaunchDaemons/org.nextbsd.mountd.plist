@@ -6,8 +6,15 @@
   The NFS mount daemon (E18 U6, nextbsd/nextbsd-userland#252). It serves
   /etc/exports, which `dscli promote` writes before loading this job:
 
-      /Network/Library/DirectoryServices -ro
-      /Local/Users
+      /Local/Users /Network/Library/DirectoryServices
+
+  One line, no options: the kernel allows exactly one default (all-hosts)
+  export per filesystem (vfs_export.c returns EPERM for a second one,
+  whatever its options), and on a NextBSD server both directories live
+  on /. So they share a line and its options; dscli groups directories by
+  filesystem and writes one line per filesystem. Root on a client maps to
+  nobody, and the plists are root-owned, so a client cannot alter them
+  even though the export is not read-only.
 
   -d is mountd's only way to stay in the foreground; it also logs each
   mount request to stderr, which goes to /var/log/mountd.stderr. -r lets
