@@ -874,6 +874,83 @@ DESTDIR="$DESTDIR" ninja -C "$NBI_BUILD" install
 test -x "$DESTDIR/usr/sbin/nextbsd-installer" || { echo "FAIL: /usr/sbin/nextbsd-installer not installed"; exit 1; }
 test -f "$DESTDIR/usr/libexec/nextbsd-installer/do-install.sh" || { echo "FAIL: installer engine (do-install.sh) not installed"; exit 1; }
 
+# ---- sudo (nextbsd/nextbsd-userland#247) ------------------------------------
+# Upstream autoconf, run in cross mode on the runner like the cmake components:
+# configure --host=<triple> with the cross clang + sysroot, then GNU make. Four
+# configure checks execute a test program, impossible when cross compiling, so
+# their FreeBSD answers are pre-seeded as cache variables (see src/sudo/NEXTBSD.md).
+# Only sudo and visudo are built and staged. The package ships no /etc
+# (/etc/sudoers comes from nextbsd-overlays); CI re-applies the setuid bit on
+# /usr/bin/sudo after staging.
+comp "sudo [autoconf cross]"
+SUDO_BUILD="$ROOT/.build/sudo-$T"
+SUDO_ROOT="$ROOT/.build/sudo-root-$T"
+rm -rf "$SUDO_BUILD" "$SUDO_ROOT"; mkdir -p "$SUDO_BUILD" "$SUDO_ROOT"
+# libtool needs a target-aware archiver: llvm-ar/llvm-ranlib/llvm-strip from the
+# llvm-19 package (build-arch.yml installs it; the image has only clang + lld).
+sudo_llvm_tool() {
+    local t
+    for t in "$CROSS_BINDIR/$1" "$(command -v "$1-19" 2>/dev/null)" "$(command -v "$1" 2>/dev/null)"; do
+        [ -n "$t" ] && [ -x "$t" ] && { echo "$t"; return 0; }
+    done
+    echo "FAIL: $1 not found (install llvm-19; looked in $CROSS_BINDIR and PATH)" >&2
+    return 1
+}
+SUDO_AR=$(sudo_llvm_tool llvm-ar)
+SUDO_RANLIB=$(sudo_llvm_tool llvm-ranlib)
+SUDO_STRIP=$(sudo_llvm_tool llvm-strip)
+note "sudo archiver: $SUDO_AR"
+(
+    cd "$SUDO_BUILD"
+    CC="$CROSS_CC --sysroot=$SYSROOT" \
+    CPPFLAGS="-I$SYSROOT/usr/include" \
+    LDFLAGS="-L$SYSROOT/usr/lib" \
+    AR="$SUDO_AR" RANLIB="$SUDO_RANLIB" STRIP="$SUDO_STRIP" \
+    sudo_cv_func_fnmatch=yes \
+    sudo_cv_working_pie=yes \
+    ac_cv_have_working_snprintf=yes \
+    ac_cv_have_working_vsnprintf=yes \
+    sudo_cv_var_mantype=mdoc \
+    "$SRC/sudo/dist/configure" \
+        --build="$(uname -m)-pc-linux-gnu" --host="$CROSS_TRIPLE" \
+        --prefix=/usr --sysconfdir=/etc --libexecdir=/usr/libexec \
+        --localstatedir=/var --mandir=/usr/share/man --docdir=/usr/share/doc/sudo \
+        --with-rundir=/var/run/sudo --with-vardir=/var/db/sudo \
+        --with-pam --with-logfac=authpriv \
+        --with-editor=/usr/bin/vi --with-env-editor \
+        --enable-zlib=system \
+        --disable-log-server --disable-log-client --disable-openssl \
+        --disable-nls --without-sendmail \
+        --enable-static-sudoers --disable-shared-libutil \
+        --without-noexec --disable-intercept
+    # Build only sudo and visudo (and what they link), not upstream's `all`:
+    # the helper libs, the sudoers policy (linked into sudo), visudo, sudo, and
+    # the two man pages. Nothing else is compiled.
+    J=-j"$(nproc 2>/dev/null || echo 2)"
+    make $J -C lib/util
+    make $J -C lib/eventlog
+    make $J -C lib/iolog
+    make $J -C lib/protobuf-c
+    make $J -C plugins/sudoers sudoers.la visudo
+    make $J -C src sudo
+    mt=$(sed -n 's/^mantype = //p' docs/Makefile)
+    make -C docs "sudo.$mt" "visudo.$mt"
+    mkdir -p "$SUDO_ROOT/usr/bin" "$SUDO_ROOT/usr/sbin" "$SUDO_ROOT/usr/share/man/man8"
+    ./libtool --mode=install install -m 0755 src/sudo "$SUDO_ROOT/usr/bin/sudo"
+    ./libtool --mode=install install -m 0755 plugins/sudoers/visudo "$SUDO_ROOT/usr/sbin/visudo"
+    install -m 0444 "docs/sudo.$mt"   "$SUDO_ROOT/usr/share/man/man8/sudo.8"
+    install -m 0444 "docs/visudo.$mt" "$SUDO_ROOT/usr/share/man/man8/visudo.8"
+)
+# Stage sudo (4511, set in CI after staging) and visudo (0111), matching Darwin,
+# plus their two man pages. The sudoers policy and libsudo_util are linked in
+# (--enable-static-sudoers --disable-shared-libutil): no /usr/libexec/sudo.
+mkdir -p "$DESTDIR/usr/bin" "$DESTDIR/usr/sbin" "$DESTDIR/usr/share/man/man8"
+install -m 0755 "$SUDO_ROOT/usr/bin/sudo"    "$DESTDIR/usr/bin/sudo"
+install -m 0111 "$SUDO_ROOT/usr/sbin/visudo" "$DESTDIR/usr/sbin/visudo"
+install -m 0444 "$SUDO_ROOT/usr/share/man/man8/sudo.8"   "$DESTDIR/usr/share/man/man8/sudo.8"
+install -m 0444 "$SUDO_ROOT/usr/share/man/man8/visudo.8" "$DESTDIR/usr/share/man/man8/visudo.8"
+needed_check "$DESTDIR/usr/bin/sudo" "libpam"
+
 # =============================================================================
 # TIER 3 — on-image test binaries (freebsd-launchd-mach suite).
 # build.sh builds these natively and installs them to

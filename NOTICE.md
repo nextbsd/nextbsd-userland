@@ -32,6 +32,7 @@ provenance; it does not relicense anything.
 | `DiskArbitration` | apple-oss-distributions/DiskArbitration | APSL-2.0 |
 | `hostnamed` | NextBSD (Apple-shape) | APSL-2.0 *(component header)* |
 | `caffeinate` | apple-oss-distributions/PowerManagement | APSL-2.0 |
+| `sudo` | apple-oss-distributions/sudo (sudo-114.100.11; upstream 1.9.17p2), trimmed to sudo + visudo | ISC-style (`src/sudo/dist/LICENSE.md`) |
 
 Two license families dominate: **APSL-2.0** (classic Apple open source) and
 **Apache-2.0** (the swift.org-era projects + mDNSResponder). Both are permissive

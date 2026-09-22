@@ -93,10 +93,13 @@ jobs:
       # (A2) Host build deps the toolchain image doesn't ship: the two CMake
       #      components (libdispatch, swift-foundation-icu) need cmake/ninja on
       #      the BUILD host. bison/flex/gcc/bmake are already in the image.
-      - name: Install host build deps (cmake/ninja for the CMake components)
+      - name: Install host build deps (cmake/ninja for the CMake components; llvm-19 for sudo)
         run: |
           apt-get update -qq
-          apt-get install -y --no-install-recommends cmake ninja-build
+          # llvm-19: llvm-ar/llvm-ranlib/llvm-strip for sudo's autoconf cross build
+          # (libtool archives). The image has clang-19 + lld-19 only; the
+          # apt.llvm.org noble-19 source is already configured in it.
+          apt-get install -y --no-install-recommends cmake ninja-build llvm-19
 
       # (B) Cross-build Tiers 0-2 into /stage. build-userland.sh enters
       #     `make.py buildenv` per component (reusing the baked kernel-toolchain
@@ -130,8 +133,11 @@ jobs:
           # master.passwd must be 0600 (git can't store sub-0644 modes); the
           # /etc symlink is created by the consumer's apple_private_layout.
           [ -f /stage/private/etc/master.passwd ] && chmod 0600 /stage/private/etc/master.passwd
-          # (placeholder) re-apply setuid bits the unprivileged cross-install
-          # drops — none in the Tier 0-2 system layer today.
+          # Re-apply setuid bits the unprivileged cross-install drops (it runs
+          # with INSTALL_OWNER= and no chown). sudo must be setuid root, mode 4511 as on
+          # Darwin; the image
+          # assembly chowns the staged tree to 0:0.
+          chmod 4511 /stage/usr/bin/sudo   # Darwin: -r-s--x--x
           tar -C /stage -czf "/tmp/nextbsd-userland-${{ inputs.arch }}.tar.gz" .
 
       - uses: actions/upload-artifact@v4

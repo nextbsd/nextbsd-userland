@@ -635,6 +635,16 @@ expect {
     "GETTY-OK" { puts "\nOK: one getty job, serving the terminal the loader settings pick" }
 }
 
+# SUDO — base sudo from src/sudo (#247): setuid root, runs, and with
+# /etc/sudoers from nextbsd-overlays, visudo -c passes and root can run a
+# command as nobody. SKIP (warn) until /etc/sudoers is seeded.
+expect {
+    timeout { puts "\nWARN: SUDO marker not seen (image predates base sudo — informational)" }
+    "SUDO-FAIL" { puts "\nFAIL: SUDO-FAIL — base sudo is missing, not setuid root, or its policy is broken"; exit 1 }
+    "SUDO-SKIP" { puts "\nWARN: SUDO-SKIP — sudo runs, but /etc/sudoers is not seeded yet" }
+    "SUDO-OK"   { puts "\nOK: base sudo is setuid root and its policy works" }
+}
+
 # Stage 3+ Phase J runtime: syslogd + notifyd RunAtLoad via plists,
 # then syslog(1) post + read-back round-trip via Mach IPC into the
 # ASL store. See run.sh tail for the test sequence.

@@ -198,8 +198,13 @@ fixup_rootfs() {
     # staged kexts are 1001:1001 -> kextd load fails "authentication problems"
     # (OSReturn 0xdc00800d) and NO driver binds (e1000 stays unattached, 0 NICs).
     # chown the whole staged tree to 0:0; makefs has no -F manifest so it
-    # packages this ownership verbatim. (No setuid bits in this tree to clear.)
+    # packages this ownership verbatim.
     chown -R 0:0 "$ROOTFS"
+    # Linux chown(2) clears S_ISUID/S_ISGID even when root does it, so re-apply
+    # the setuid bits after the chown (build-arch.yml sets them at staging).
+    for suid in usr/bin/sudo; do
+        [ -f "$ROOTFS/$suid" ] && chmod 4511 "$ROOTFS/$suid"   # Darwin: -r-s--x--x
+    done
 }
 
 # ---------------------------------------------------------------------------
