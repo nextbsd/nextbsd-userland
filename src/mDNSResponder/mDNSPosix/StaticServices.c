@@ -99,11 +99,29 @@ struct StaticService
     ServiceRecordSet srs;
 };
 
+// A file that could not be registered, with the identity it had then. It
+// is retried only when it changes (a writer that creates the file and then
+// fills it produces one directory event, at creation, when it is still
+// empty), and logged once per identity, not on every rescan.
+typedef struct SkippedFile SkippedFile;
+struct SkippedFile
+{
+    SkippedFile     *next;
+    char            *file;
+    ino_t            ino;
+    struct timespec  mtim;
+    off_t            size;
+};
+
 static StaticService *gServices;
+static SkippedFile   *gSkipped;
 static mDNS          *gM;
 static int            gDirFD = -1;
 static int            gKQ    = -1;
 static time_t         gNextRetry;
+static time_t         gRescanAt;      // a rescan is due (0 = none)
+
+#define STATIC_RESCAN_SECS 2
 
 // ---- registration -----------------------------------------------------------
 
@@ -346,6 +364,69 @@ mDNSlocal mDNSBool IsServiceFile(const char *name)
     return name[0] != '.' && n > 6 && strcmp(name + n - 6, ".plist") == 0;
 }
 
+mDNSlocal mDNSBool SameIdentity(ino_t ino, const struct timespec *mtim, off_t size, const struct stat *st)
+{
+    return ino == st->st_ino && size == st->st_size &&
+           mtim->tv_sec == st->st_mtim.tv_sec && mtim->tv_nsec == st->st_mtim.tv_nsec;
+}
+
+mDNSlocal SkippedFile *FindSkipped(const char *file)
+{
+    SkippedFile *k;
+    for (k = gSkipped; k != NULL; k = k->next)
+        if (strcmp(k->file, file) == 0) return k;
+    return NULL;
+}
+
+mDNSlocal void RememberSkipped(const char *file, const struct stat *st)
+{
+    SkippedFile *k = FindSkipped(file);
+    if (k == NULL)
+    {
+        k = calloc(1, sizeof(*k));
+        if (k == NULL) return;
+        k->file = strdup(file);
+        if (k->file == NULL) { free(k); return; }
+        k->next = gSkipped;
+        gSkipped = k;
+    }
+    k->ino = st->st_ino;
+    k->mtim = st->st_mtim;
+    k->size = st->st_size;
+}
+
+mDNSlocal void ForgetSkipped(const char *file)
+{
+    SkippedFile **pp, *k;
+    for (pp = &gSkipped; (k = *pp) != NULL; pp = &k->next)
+        if (strcmp(k->file, file) == 0)
+        {
+            *pp = k->next;
+            free(k->file);
+            free(k);
+            return;
+        }
+}
+
+// Drop skipped entries whose file is gone.
+mDNSlocal void PruneSkipped(void)
+{
+    SkippedFile **pp, *k;
+    struct stat st;
+    pp = &gSkipped;
+    while ((k = *pp) != NULL)
+    {
+        if (fstatat(gDirFD, k->file, &st, 0) == -1)
+        {
+            *pp = k->next;
+            free(k->file);
+            free(k);
+        }
+        else
+            pp = &k->next;
+    }
+}
+
 mDNSlocal void Rescan(void)
 {
     DIR *dir;
@@ -366,16 +447,18 @@ mDNSlocal void Rescan(void)
     // Move every entry that is still present (and unchanged) to `seen`;
     // whatever is left in gServices afterwards has gone away.
     tail = &seen;
+    gRescanAt = 0;
     while ((de = readdir(dir)) != NULL)
     {
+        SkippedFile *k;
+
         if (!IsServiceFile(de->d_name)) continue;
         if (fstatat(gDirFD, de->d_name, &st, 0) == -1 || !S_ISREG(st.st_mode)) continue;
         for (s = gServices; s != NULL; s = s->next)
             if (strcmp(s->file, de->d_name) == 0) break;
         if (s != NULL)
         {
-            if (s->ino == st.st_ino && s->size == st.st_size &&
-                s->mtim.tv_sec == st.st_mtim.tv_sec && s->mtim.tv_nsec == st.st_mtim.tv_nsec)
+            if (SameIdentity(s->ino, &s->mtim, s->size, &st))
             {
                 // unchanged: keep the registration
                 StaticService **pp;
@@ -388,8 +471,22 @@ mDNSlocal void Rescan(void)
             LogMsg("MDNS-STATIC: %s changed; re-registering", s->file);
             Withdraw(s);
         }
+        k = FindSkipped(de->d_name);
+        if (k != NULL && SameIdentity(k->ino, &k->mtim, k->size, &st))
+            continue;                         // already reported; unchanged
         s = RegisterFile(de->d_name, &st);
-        if (s != NULL) { *tail = s; tail = &s->next; }
+        if (s != NULL)
+        {
+            ForgetSkipped(de->d_name);
+            *tail = s; tail = &s->next;
+        }
+        else
+        {
+            // Perhaps still being written: look again shortly. A file that
+            // has not changed by then is left alone until it does.
+            RememberSkipped(de->d_name, &st);
+            gRescanAt = time(NULL) + STATIC_RESCAN_SECS;
+        }
     }
     closedir(dir);
 
@@ -399,6 +496,7 @@ mDNSlocal void Rescan(void)
         Withdraw(s);
     }
     gServices = seen;
+    PruneSkipped();
 }
 
 // ---- watch --------------------------------------------------------------------
@@ -492,11 +590,17 @@ mDNSexport void StaticServicesInit(mDNS *m)
     Rescan();
 }
 
-// Called from the main loop; only does work while the watch is disarmed.
+// Called from the main loop. Re-arms the watch if it is down, and re-reads
+// the directory when a file that failed to parse may have been completed.
 mDNSexport void StaticServicesIdle(mDNS *m)
 {
     (void)m;
-    if (gKQ != -1 || gM == NULL) return;
+    if (gM == NULL) return;
+    if (gKQ != -1)
+    {
+        if (gRescanAt != 0 && time(NULL) >= gRescanAt) Rescan();
+        return;
+    }
     if (time(NULL) < gNextRetry) return;
     if (ArmWatch() == -1)
     {
