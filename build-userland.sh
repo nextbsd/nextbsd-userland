@@ -903,6 +903,7 @@ note "sudo archiver: $SUDO_AR"
 (
     cd "$SUDO_BUILD"
     CC="$CROSS_CC --sysroot=$SYSROOT" \
+    CFLAGS="-O2 -pipe -MD" \
     CPPFLAGS="-I$SYSROOT/usr/include" \
     LDFLAGS="-L$SYSROOT/usr/lib" \
     AR="$SUDO_AR" RANLIB="$SUDO_RANLIB" STRIP="$SUDO_STRIP" \
@@ -941,6 +942,24 @@ note "sudo archiver: $SUDO_AR"
     install -m 0444 "docs/sudo.$mt"   "$SUDO_ROOT/usr/share/man/man8/sudo.8"
     install -m 0444 "docs/visudo.$mt" "$SUDO_ROOT/usr/share/man/man8/visudo.8"
 )
+# TEMPORARY (trim measurement): list every dist/ file the FreeBSD build read.
+python3 - "$SUDO_BUILD" "$SRC/sudo/dist" <<'PYEOF'
+import os, re, sys
+build, dist = sys.argv[1], os.path.realpath(sys.argv[2])
+used = set()
+for root, _, files in os.walk(build):
+    for f in files:
+        if not f.endswith('.d'):
+            continue
+        for tok in re.split(r'[\s\\]+', open(os.path.join(root, f), errors='ignore').read()):
+            if tok and not tok.endswith(':'):
+                p = os.path.realpath(os.path.join(root, tok))
+                if p.startswith(dist + '/'):
+                    used.add(p[len(dist) + 1:])
+for u in sorted(used):
+    print('SUDO-USED: ' + u)
+print('SUDO-USED-COUNT: %d' % len(used))
+PYEOF
 # Stage sudo (4511, set in CI after staging) and visudo (0111), matching Darwin,
 # plus their two man pages. The sudoers policy and libsudo_util are linked in
 # (--enable-static-sudoers --disable-shared-libutil): no /usr/libexec/sudo.
