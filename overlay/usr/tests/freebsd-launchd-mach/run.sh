@@ -1136,17 +1136,19 @@ else
     if [ -z "$acct_fail" ] && ! echo secret | /usr/sbin/dscli user verify bob >/dev/null 2>&1; then
         acct_fail="an unlocked bob does not verify"
     fi
-    # 6. Groups: a directory group through pw, a system group through FreeBSD's.
-    [ -z "$acct_fail" ] && acct_try "pw groupadd staff -M bob" /usr/sbin/pw groupadd staff -M bob
+    # 6. Groups: a directory group through pw (not "staff": FreeBSD's /etc/group
+    #    has one, and pw rightly refuses the duplicate), a system group through
+    #    FreeBSD's pw.
+    [ -z "$acct_fail" ] && acct_try "pw groupadd dsproj -M bob" /usr/sbin/pw groupadd dsproj -M bob
     if [ -z "$acct_fail" ]; then
-        acct_out=$(/usr/sbin/pw groupshow staff 2>&1)
+        acct_out=$(/usr/sbin/pw groupshow dsproj 2>&1)
         case $acct_out in
-            staff:x:*:bob) ;;
-            *) acct_fail="pw groupshow staff: $acct_out" ;;
+            dsproj:x:*:bob) ;;
+            *) acct_fail="pw groupshow dsproj: $acct_out" ;;
         esac
     fi
-    [ -z "$acct_fail" ] && acct_try "pw groupmod staff -d bob" /usr/sbin/pw groupmod staff -d bob
-    [ -z "$acct_fail" ] && acct_try "pw groupdel staff" /usr/sbin/pw groupdel staff
+    [ -z "$acct_fail" ] && acct_try "pw groupmod dsproj -d bob" /usr/sbin/pw groupmod dsproj -d bob
+    [ -z "$acct_fail" ] && acct_try "pw groupdel dsproj" /usr/sbin/pw groupdel dsproj
     if [ -z "$acct_fail" ] && ! /usr/sbin/pw groupshow wheel 2>/dev/null | grep -q '^wheel:'; then
         acct_fail="pw groupshow wheel (a system group) failed: $(/usr/sbin/pw groupshow wheel 2>&1 | tr '\n' ' ')"
     fi
