@@ -640,7 +640,7 @@ expect {
 # command as nobody. SKIP (warn) until /etc/sudoers is seeded.
 expect {
     timeout { puts "\nWARN: SUDO marker not seen (image predates base sudo — informational)" }
-    "SUDO-FAIL" { puts "\nFAIL: SUDO-FAIL — base sudo is missing, not setuid root, or its policy is broken"; exit 1 }
+    -re {SUDO-FAIL[^\r\n]*} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
     "SUDO-SKIP" { puts "\nWARN: SUDO-SKIP — sudo runs, but /etc/sudoers is not seeded yet" }
     "SUDO-OK"   { puts "\nOK: base sudo is setuid root and its policy works" }
 }
