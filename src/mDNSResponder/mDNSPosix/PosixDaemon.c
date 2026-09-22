@@ -67,6 +67,10 @@ static mDNS_PlatformSupport PlatformStorage;
 // here (above mDNS_StatusCallback) since the callback calls it.
 extern void mDNSConfigStorePublishResolvedHostName(void);
 
+// NextBSD: static Bonjour registrations from service files (StaticServices.c).
+extern void StaticServicesInit(mDNS *m);
+extern void StaticServicesIdle(mDNS *m);
+
 mDNSlocal void mDNS_StatusCallback(mDNS *const m, mStatus result)
 {
     (void)m; // Unused
@@ -212,9 +216,6 @@ mDNSlocal mStatus MainLoop(mDNS *m) // Loop until we quit.
 // service before any engine init. See ../mach_bridge.c.
 extern int mDNSResponderMachBridgeInit(void);
 extern int mDNSConfigStoreInit(void);
-// NextBSD: static Bonjour registrations from service files (StaticServices.c).
-extern void StaticServicesInit(mDNS *m);
-extern void StaticServicesIdle(mDNS *m);
 
 int main(int argc, char **argv)
 {
