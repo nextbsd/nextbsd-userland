@@ -44,6 +44,13 @@
  * buffer that is too small sets *errnop = ERANGE and returns NS_RETURN so
  * the caller retries with a larger one, and enumeration keeps a per-process
  * cursor between setpwent(3) and endpwent(3).
+ *
+ * The plist format and the lookup rules (the /Network over /Local choice,
+ * the passwd field rules, wheel for members of admin, the hardware-access
+ * groups) come from Gershwin's DirectoryServices, by Simon Peter
+ * (https://github.com/gershwin-desktop/gershwin-components, BSD-2-Clause),
+ * so that Gershwin's dshelper and this module read the same files. The
+ * code here is a new implementation for FreeBSD's nsswitch interface.
  */
 
 #include <sys/param.h>
