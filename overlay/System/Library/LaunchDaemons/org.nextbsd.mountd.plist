@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  org.nextbsd.mountd.plist
+
+  The NFS mount daemon (E18 U6, nextbsd/nextbsd-userland#252). It serves
+  /etc/exports, which `dscli promote` writes before loading this job:
+
+      /Network/Library/DirectoryServices -ro
+      /Local/Users
+
+  -d is mountd's only way to stay in the foreground; it also logs each
+  mount request to stderr, which goes to /var/log/mountd.stderr. -r lets
+  a single file be mounted, as FreeBSD's rc.d/mountd passes it.
+
+  mountd registers with rpcbind and exits when it cannot, so it starts
+  through nfs-wait-rpcbind, which waits for rpcinfo to answer and then
+  execs mountd. KeepAlive restarts it if it still loses the race.
+
+  Disabled by default; see org.nextbsd.rpcbind.plist.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.nextbsd.mountd</string>
+    <key>Disabled</key>
+    <true/>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/libexec/nextbsd/nfs-wait-rpcbind</string>
+        <string>/usr/sbin/mountd</string>
+        <string>-d</string>
+        <string>-r</string>
+        <string>/etc/exports</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/var/log/mountd.stderr</string>
+</dict>
+</plist>

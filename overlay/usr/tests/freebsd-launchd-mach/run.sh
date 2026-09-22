@@ -896,6 +896,152 @@ else
     fi
 fi
 
+# NTP / NFS — the E18 service LaunchDaemons (nextbsd/nextbsd-userland#251,
+# #252): org.nextbsd.ntpd, .rpcbind, .mountd, .nfsd and .network-mount all
+# ship Disabled, so none may be in the job table after boot. Each is then
+# turned on the way dscli does (load -w), exercised, and turned off
+# (unload -w), which leaves the overrides database saying Disabled, the same
+# as a fresh image. /etc/ntp.conf (when the overlay has not shipped it yet),
+# /etc/exports and the binding plist are written for the duration and removed.
+# The two-VM join is a manual test; here the server is proved by a loopback
+# NFSv3 mount and the client by its script's behaviour with and without a
+# binding.
+echo "==> E18 services: ntpd, rpcbind, mountd, nfsd, network-mount LaunchDaemons"
+svc_ld=/System/Library/LaunchDaemons
+svc_loaded() { launchctl list 2>/dev/null | awk -v l="$1" '$3 == l { f = 1 } END { exit !f }'; }
+svc_pid() { launchctl list 2>/dev/null | awk -v l="$1" '$3 == l { print $1 }'; }
+svc_fail=""
+for svc_l in org.nextbsd.ntpd org.nextbsd.rpcbind org.nextbsd.mountd org.nextbsd.nfsd org.nextbsd.network-mount; do
+    if [ ! -f "$svc_ld/$svc_l.plist" ]; then
+        svc_fail="$svc_fail $svc_l.plist missing;"
+    elif svc_loaded "$svc_l"; then
+        svc_fail="$svc_fail $svc_l loaded at boot although Disabled;"
+    fi
+done
+[ -x /usr/libexec/nextbsd/nfs-wait-rpcbind ] || svc_fail="$svc_fail nfs-wait-rpcbind missing;"
+[ -x /usr/libexec/nextbsd/network-mount ] || svc_fail="$svc_fail network-mount missing;"
+if [ -n "$svc_fail" ]; then
+    echo "NTP-FAIL:$svc_fail"
+    echo "NFS-FAIL:$svc_fail"
+else
+    # ---- NTP: the job runs ntpd in the foreground and ntpq can talk to it.
+    ntp_fail=""
+    ntp_tmpconf=""
+    if [ ! -f /etc/ntp.conf ]; then
+        # nextbsd-overlays ships the real file; a stand-in proves the job.
+        ntp_tmpconf=1
+        printf 'pool 0.freebsd.pool.ntp.org iburst\nrestrict default limited kod nomodify notrap noquery nopeer\nrestrict 127.0.0.1\nrestrict ::1\ndriftfile /var/db/ntpd.drift\n# BEGIN dscli directory server (managed by dscli join and leave; do not edit)\n# END dscli directory server\n' > /etc/ntp.conf
+    fi
+    launchctl load -w "$svc_ld/org.nextbsd.ntpd.plist"
+    i=0
+    while [ "$i" -lt 10 ]; do
+        sleep 1; i=$((i + 1))
+        case "$(svc_pid org.nextbsd.ntpd)" in ''|-) ;; *) break ;; esac
+    done
+    ntp_pid=$(svc_pid org.nextbsd.ntpd)
+    case "$ntp_pid" in
+        ''|-) ntp_fail="ntpd has no process under launchd after ${i}s: $(tail -3 /var/log/ntpd.stderr 2>/dev/null | tr '\n' ' ')" ;;
+    esac
+    if [ -z "$ntp_fail" ] && ! ps -p "$ntp_pid" -o command= 2>/dev/null | grep -q ntpd; then
+        ntp_fail="launchd's pid $ntp_pid for org.nextbsd.ntpd is not ntpd"
+    fi
+    if [ -z "$ntp_fail" ]; then
+        # Peers may be unreachable in CI; the query itself must succeed.
+        ntpq_out=$(timeout 15 ntpq -p 2>&1) || ntp_fail="ntpq -p failed: $(echo "$ntpq_out" | head -2 | tr '\n' ' ')"
+    fi
+    if [ -z "$ntp_fail" ] && ! grep -q '^# BEGIN dscli directory server' /etc/ntp.conf; then
+        ntp_fail="/etc/ntp.conf lacks the block dscli join manages"
+    fi
+    launchctl unload -w "$svc_ld/org.nextbsd.ntpd.plist"
+    sleep 1
+    svc_loaded org.nextbsd.ntpd && ntp_fail="${ntp_fail:+$ntp_fail; }org.nextbsd.ntpd still loaded after unload -w"
+    [ -n "$ntp_tmpconf" ] && rm -f /etc/ntp.conf
+    if [ -n "$ntp_fail" ]; then
+        echo "NTP-FAIL: $ntp_fail"
+    else
+        echo "NTP-OK: org.nextbsd.ntpd ran ntpd foreground under launchd (pid $ntp_pid), ntpq -p answered, dscli block present${ntp_tmpconf:+ (stand-in ntp.conf)}"
+    fi
+
+    # ---- NFS server: the three jobs, the contract exports, a loopback mount.
+    nfs_fail=""
+    nfs_made=""
+    for d in /Network/Library/DirectoryServices /Local/Users; do
+        [ -d "$d" ] || { mkdir -p "$d"; nfs_made="$d $nfs_made"; }
+    done
+    if [ -e /etc/exports ]; then
+        nfs_fail="/etc/exports already exists; not touching it"
+    else
+        printf '# Written by dscli promote; dscli demote removes this file.\n/Network/Library/DirectoryServices -ro\n/Local/Users\n' > /etc/exports
+        for svc_l in org.nextbsd.rpcbind org.nextbsd.mountd org.nextbsd.nfsd; do
+            launchctl load -w "$svc_ld/$svc_l.plist"
+        done
+        i=0; nfs_exports=""
+        while [ "$i" -lt 30 ]; do
+            nfs_exports=$(timeout 5 showmount -e 127.0.0.1 2>/dev/null)
+            if echo "$nfs_exports" | grep -q '^/Local/Users' && echo "$nfs_exports" | grep -q '^/Network/Library/DirectoryServices'; then
+                break
+            fi
+            sleep 1; i=$((i + 1))
+        done
+        if [ "$i" -ge 30 ]; then
+            nfs_fail="showmount -e did not list both exports within 30s: [$(echo "$nfs_exports" | tr '\n' ' ')] rpcinfo: [$(timeout 5 rpcinfo -p 127.0.0.1 2>&1 | awk 'NR > 1 { print $5 }' | sort -u | tr '\n' ' ')] mountd: [$(tail -2 /var/log/mountd.stderr 2>/dev/null | tr '\n' ' ')] nfsd: [$(tail -2 /var/log/nfsd.stderr 2>/dev/null | tr '\n' ' ')]"
+        else
+            for svc_l in org.nextbsd.rpcbind org.nextbsd.mountd org.nextbsd.nfsd; do
+                case "$(svc_pid "$svc_l")" in ''|-) nfs_fail="$nfs_fail $svc_l has no process;" ;; esac
+            done
+            timeout 5 rpcinfo -p 127.0.0.1 2>/dev/null | grep -q ' nfs$' || nfs_fail="$nfs_fail nfs not registered with rpcbind;"
+            mkdir -p /tmp/nfs.test
+            if timeout 30 mount -t nfs -o nfsv3,soft,retrycnt=2 127.0.0.1:/Local/Users /tmp/nfs.test 2>/tmp/nfs.mount.err; then
+                mount -t nfs | grep -q ' on /tmp/nfs.test ' || nfs_fail="$nfs_fail loopback mount not in the mount table;"
+                umount /tmp/nfs.test 2>/dev/null || umount -f /tmp/nfs.test 2>/dev/null
+            else
+                nfs_fail="$nfs_fail loopback NFSv3 mount of 127.0.0.1:/Local/Users failed: $(tr '\n' ' ' < /tmp/nfs.mount.err);"
+            fi
+            rmdir /tmp/nfs.test 2>/dev/null
+        fi
+        for svc_l in org.nextbsd.nfsd org.nextbsd.mountd org.nextbsd.rpcbind; do
+            launchctl unload -w "$svc_ld/$svc_l.plist"
+        done
+        sleep 2
+        for svc_l in org.nextbsd.nfsd org.nextbsd.mountd org.nextbsd.rpcbind; do
+            svc_loaded "$svc_l" && nfs_fail="$nfs_fail $svc_l still loaded after unload -w;"
+        done
+        rm -f /etc/exports /tmp/nfs.mount.err
+    fi
+
+    # ---- NFS client: the script does nothing without a binding, and attempts
+    # both mounts with one (an unreachable TEST-NET host; -o bg backgrounds the
+    # retry, which is then cleared so later tests see a quiet machine).
+    nfs_bind=/Local/Library/DirectoryServices/Binding.plist
+    if [ -z "$nfs_fail" ]; then
+        if [ -e "$nfs_bind" ]; then
+            nfs_fail="$nfs_bind already exists; not touching it"
+        else
+            nfs_out=$(/usr/libexec/nextbsd/network-mount 2>&1); nfs_rc=$?
+            [ "$nfs_rc" -eq 0 ] || nfs_fail="network-mount without a binding: rc=$nfs_rc [$nfs_out];"
+            nfs_made_bind=""
+            [ -d /Local/Library/DirectoryServices ] || { mkdir -p /Local/Library/DirectoryServices; nfs_made_bind=1; }
+            printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n\t<key>server</key>\n\t<string>192.0.2.1</string>\n\t<key>version</key>\n\t<integer>1</integer>\n</dict>\n</plist>\n' > "$nfs_bind"
+            nfs_out=$(timeout 25 /usr/libexec/nextbsd/network-mount 2>&1); nfs_rc=$?
+            echo "$nfs_out" | grep -q 'mounting 192.0.2.1:/Network/Library/DirectoryServices on /Network/Library/DirectoryServices' \
+                || nfs_fail="$nfs_fail network-mount did not attempt the mounts: rc=$nfs_rc [$nfs_out];"
+            pkill -f mount_nfs 2>/dev/null; sleep 1
+            for m in /Network/Users /Network/Library/DirectoryServices; do
+                mount | grep -q " on $m " && umount -f "$m" 2>/dev/null
+            done
+            rm -f "$nfs_bind"
+            [ -n "$nfs_made_bind" ] && rmdir /Local/Library/DirectoryServices 2>/dev/null
+            rmdir /Network/Users 2>/dev/null
+        fi
+    fi
+    for d in $nfs_made; do rmdir "$d" 2>/dev/null; done
+    if [ -n "$nfs_fail" ]; then
+        echo "NFS-FAIL:$nfs_fail"
+    else
+        echo "NFS-OK: rpcbind + mountd + nfsd served the contract exports (showmount, loopback NFSv3 mount), all Disabled again after unload -w; network-mount idle without a binding and attempts both mounts with one"
+    fi
+fi
+
 # 10. ASL runtime smoke (Phase J). Task #41 move_member wire-up
 # landed but a follow-on halt-after-bootstrap-remote regression is
 # under investigation. Keep test at SKIP for now.

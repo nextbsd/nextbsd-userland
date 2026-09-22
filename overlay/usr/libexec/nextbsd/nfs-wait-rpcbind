@@ -1,0 +1,23 @@
+#!/bin/sh
+# nfs-wait-rpcbind PROGRAM [ARGS...] -- exec PROGRAM once rpcbind answers.
+#
+# mountd and nfsd register with rpcbind at startup and exit when it is not
+# there yet. launchd starts the three NFS server jobs together, so this
+# wrapper gives rpcbind (org.nextbsd.rpcbind, KeepAlive) up to a minute to
+# answer rpcinfo before execing the real daemon; launchd's KeepAlive covers
+# the case where it never does. E18 U6, nextbsd/nextbsd-userland#252.
+set -u
+if [ $# -lt 1 ]; then
+    echo "usage: nfs-wait-rpcbind program [args...]" >&2
+    exit 64
+fi
+i=0
+while ! /usr/bin/rpcinfo -p 127.0.0.1 >/dev/null 2>&1; do
+    i=$((i + 1))
+    if [ "$i" -ge 60 ]; then
+        echo "nfs-wait-rpcbind: rpcbind did not answer in 60s; not starting $1" >&2
+        exit 1
+    fi
+    sleep 1
+done
+exec "$@"

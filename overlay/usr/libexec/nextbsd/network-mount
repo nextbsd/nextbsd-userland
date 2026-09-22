@@ -1,0 +1,53 @@
+#!/bin/sh
+# network-mount -- mount the directory server's exports (org.nextbsd.network-mount).
+#
+# Reads the server name from the binding plist that `dscli join` writes,
+#
+#     /Local/Library/DirectoryServices/Binding.plist
+#     <dict><key>server</key><string>HOST</string><key>version</key><integer>1</integer></dict>
+#
+# and mounts the two exports with -o bg: a first attempt that fails is
+# retried by mount_nfs in the background, so this returns at once and a
+# boot never waits on the network. Mounts already present are left alone.
+# With no binding plist there is nothing to do and that is not an error.
+# E18 U6, nextbsd/nextbsd-userland#252; the plist format is a contract with
+# dscli (U7, #253).
+set -u
+
+BINDING=/Local/Library/DirectoryServices/Binding.plist
+OPTS=nfsv3,bg,intr,soft
+
+if [ ! -f "$BINDING" ]; then
+    echo "network-mount: no $BINDING; not joined to a directory server" >&2
+    exit 0
+fi
+
+# The value of the `server` key, wherever the writer put its line breaks.
+server=$(tr -d '\n\r' < "$BINDING" | sed -E \
+    's|.*<key>[[:space:]]*server[[:space:]]*</key>[[:space:]]*<string>([^<]*)</string>.*|\1|')
+case "$server" in
+    "" | *"<"* | *[!A-Za-z0-9.:-]*)
+        echo "network-mount: $BINDING has no usable server name" >&2
+        exit 1
+        ;;
+esac
+
+mounted() {
+    /sbin/mount -t nfs | /usr/bin/awk -v m="$1" '$3 == m { found = 1 } END { exit !found }'
+}
+
+mount_one() {
+    # $1 export on the server, $2 mount point
+    /bin/mkdir -p "$2" || return 1
+    if mounted "$2"; then
+        echo "network-mount: $2 is already mounted" >&2
+        return 0
+    fi
+    echo "network-mount: mounting $server:$1 on $2" >&2
+    /sbin/mount -t nfs -o "$OPTS" "$server:$1" "$2"
+}
+
+rc=0
+mount_one /Network/Library/DirectoryServices /Network/Library/DirectoryServices || rc=1
+mount_one /Local/Users /Network/Users || rc=1
+exit $rc

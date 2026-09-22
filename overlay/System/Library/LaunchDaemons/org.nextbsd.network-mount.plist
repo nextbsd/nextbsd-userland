@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  org.nextbsd.network-mount.plist
+
+  The directory client's boot-time mount (E18 U6, nextbsd/nextbsd-userland
+  #252). Nothing else would remount NFS after a reboot: NextBSD ships no
+  /etc/fstab, and launchctl bootstrap's `mount -vat nonfs` skips NFS by
+  design. So this job runs /usr/libexec/nextbsd/network-mount once at
+  load, which reads the server from the binding plist that `dscli join`
+  wrote and mounts
+
+      server:/Network/Library/DirectoryServices  on  /Network/Library/DirectoryServices
+      server:/Local/Users                        on  /Network/Users
+
+  with -o bg, so a boot never waits on the network: a first attempt that
+  fails is retried in the background by mount_nfs itself and the script
+  returns at once. That is also why the job is not KeepAlive.
+
+  Disabled by default; `dscli join` runs load -w and mounts immediately,
+  `dscli leave` runs unload -w and unmounts.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.nextbsd.network-mount</string>
+    <key>Disabled</key>
+    <true/>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/libexec/nextbsd/network-mount</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/var/log/network-mount.stderr</string>
+</dict>
+</plist>

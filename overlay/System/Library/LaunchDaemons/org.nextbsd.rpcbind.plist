@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  org.nextbsd.rpcbind.plist
+
+  The RPC port mapper, first of the three NFSv3 server jobs (E18 U6,
+  nextbsd/nextbsd-userland#252). -d keeps rpcbind in the foreground; in
+  that mode it also prints its registrations to stderr as well as syslog,
+  hence StandardErrorPath. mountd and nfsd wait for it through
+  /usr/libexec/nextbsd/nfs-wait-rpcbind.
+
+  Disabled by default; `dscli promote` runs load -w on this, mountd and
+  nfsd, and `dscli demote` runs unload -w.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.nextbsd.rpcbind</string>
+    <key>Disabled</key>
+    <true/>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/sbin/rpcbind</string>
+        <string>-d</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/var/log/rpcbind.stderr</string>
+</dict>
+</plist>
