@@ -12,4 +12,4 @@ LIBDS_DIR:=	${.PARSEDIR}
 .PATH:		${LIBDS_DIR}
 CFLAGS+=	-I${LIBDS_DIR}
 SRCS+=		dsrec.c dscrypt.c dsio.c dsnet.c plist.c
-LDADD+=		-lcrypt
+LIBADD+=	crypt
