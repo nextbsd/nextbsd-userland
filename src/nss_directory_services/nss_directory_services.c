@@ -47,10 +47,11 @@
  *
  * The plist format and the lookup rules (the /Network over /Local choice,
  * the passwd field rules, wheel for members of admin, the hardware-access
- * groups) come from Gershwin's DirectoryServices, by Simon Peter
- * (https://github.com/gershwin-desktop/gershwin-components, BSD-2-Clause),
- * so that Gershwin's dshelper and this module read the same files. The
- * code here is a new implementation for FreeBSD's nsswitch interface.
+ * groups) are those of Gershwin's DirectoryServices (dshelper, nss_gershwin
+ * and dscli), written by Joe Maloney for Gershwin in 2026 and published
+ * under BSD-2-Clause in gershwin-desktop/gershwin-components, so that
+ * Gershwin's dshelper and this module read the same files. The code here
+ * is a new implementation for FreeBSD's nsswitch interface.
  */
 
 #include <sys/param.h>
