@@ -14,7 +14,7 @@ LIB=		nss_directory_services
 SHLIB_MAJOR=	1
 SHLIB_NAME=	${LIB}.so.${SHLIB_MAJOR}
 LIBDIR=		/usr/lib
-NO_INSTALLLIB=
+MK_INSTALLLIB=	no
 MK_PROFILE=	no
 MAN=
 
