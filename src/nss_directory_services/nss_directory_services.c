@@ -279,6 +279,10 @@ static ns_mtab methods[] = {
 	{ NSDB_GROUP, "getgroupmembership", ds_getgroupmembership, NULL },
 };
 
+/* nsswitch.h declares the type of this entry point but not the function. */
+ns_mtab	*nss_module_register(const char *, unsigned int *,
+	    nss_module_unregister_fn *);
+
 static pthread_once_t atfork_once = PTHREAD_ONCE_INIT;
 
 static void
