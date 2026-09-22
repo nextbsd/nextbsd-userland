@@ -190,6 +190,10 @@ mDNSlocal mStatus MainLoop(mDNS *m) // Loop until we quit.
 
         (void) mDNSPosixRunEventLoopOnce(m, &timeout, &signals, &gotData);
 
+        // NextBSD: re-arm the static-services directory watch if it could
+        // not be set up at start (StaticServices.c). No-op otherwise.
+        StaticServicesIdle(m);
+
         if (sigismember(&signals, SIGHUP )) Reconfigure(m);
         if (sigismember(&signals, SIGUSR1)) DumpStateLog();
         if (sigismember(&signals, SIGUSR2))
@@ -208,6 +212,9 @@ mDNSlocal mStatus MainLoop(mDNS *m) // Loop until we quit.
 // service before any engine init. See ../mach_bridge.c.
 extern int mDNSResponderMachBridgeInit(void);
 extern int mDNSConfigStoreInit(void);
+// NextBSD: static Bonjour registrations from service files (StaticServices.c).
+extern void StaticServicesInit(mDNS *m);
+extern void StaticServicesIdle(mDNS *m);
 
 int main(int argc, char **argv)
 {
@@ -244,6 +251,12 @@ int main(int argc, char **argv)
     (void)mDNSConfigStoreInit();
 
     Reconfigure(&mDNSStorage);
+
+    // NextBSD: register the static service files and start watching their
+    // directory. Done while still root so the directory can be created;
+    // the watch and the reads work as "nobody" afterwards.
+    if (mStatus_NoError == err)
+        StaticServicesInit(&mDNSStorage);
 
     // Now that we're finished with anything privileged, switch over to running as "nobody"
     if (mStatus_NoError == err)

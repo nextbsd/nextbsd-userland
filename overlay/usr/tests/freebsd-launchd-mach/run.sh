@@ -896,6 +896,86 @@ else
     fi
 fi
 
+# MDNS-STATIC — static Bonjour service files (nextbsd/nextbsd-userland#250).
+# mDNSResponder registers every *.plist in
+# /Local/Library/Preferences/mDNSResponder/Services and follows the directory
+# with kqueue, so a one-shot tool (dscli promote) can announce a service and
+# exit. Checked end to end through the wire: drop a file, browse for it with
+# dns-sd, remove it, browse again, then restart the daemon with the file
+# present and browse once more. Every dns-sd run is bounded (background +
+# kill), so this can never hang. The daemon's own lines use the distinct
+# spellings "MDNS-STATIC:" and "MDNS-STATIC-WATCH:" so a later dump of its
+# log cannot trip the boot-test tokens MDNS-STATIC-OK/FAIL.
+echo "==> mDNSResponder: static service files announce and withdraw"
+mdns_svcdir=/Local/Library/Preferences/mDNSResponder/Services
+mdns_static_fail=""
+mdns_browse() {
+    # $1 = seconds to listen; prints what dns-sd -B saw for _nbsdtest._tcp
+    /usr/bin/dns-sd -B _nbsdtest._tcp local. > /tmp/mdns_browse.out 2>&1 &
+    mdns_bpid=$!
+    sleep "$1"
+    kill "$mdns_bpid" 2>/dev/null
+    wait "$mdns_bpid" 2>/dev/null
+    cat /tmp/mdns_browse.out
+    rm -f /tmp/mdns_browse.out
+}
+mdns_write_service() {
+    cat > "$mdns_svcdir/nbsdtest.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>Name</key><string>nbsd static test</string>
+  <key>Type</key><string>_nbsdtest._tcp</string>
+  <key>Port</key><integer>12345</integer>
+  <key>TXT</key><dict><key>path</key><string>/Network/Library/DirectoryServices</string><key>v</key><string>1</string></dict>
+</dict>
+</plist>
+PLIST
+}
+if [ ! -x /usr/bin/dns-sd ]; then
+    mdns_static_fail="/usr/bin/dns-sd missing"
+elif [ ! -d "$mdns_svcdir" ]; then
+    mdns_static_fail="$mdns_svcdir was not created by mDNSResponder at start"
+elif ! grep -q 'MDNS-STATIC-WATCH' /var/log/mDNSResponder.stderr 2>/dev/null; then
+    mdns_static_fail="daemon never logged MDNS-STATIC-WATCH (see /var/log/mDNSResponder.stderr)"
+else
+    mdns_write_service
+    sleep 3
+    if [ "$(mdns_browse 4 | grep -c 'nbsd static test')" -eq 0 ]; then
+        mdns_static_fail="service file dropped in, but dns-sd -B never saw it ($(grep 'MDNS-STATIC' /var/log/mDNSResponder.stderr | tail -2 | tr '\n' ' '))"
+    else
+        rm -f "$mdns_svcdir/nbsdtest.plist"
+        sleep 3
+        if [ "$(mdns_browse 4 | grep -c 'nbsd static test')" -ne 0 ]; then
+            mdns_static_fail="service file removed, but dns-sd -B still lists it"
+        else
+            # Restart the daemon with the file present: it must come back.
+            mdns_write_service
+            mdns_oldpid=$(pgrep -x mDNSResponder | head -1)
+            kill -TERM "$mdns_oldpid" 2>/dev/null
+            mdns_tries=0
+            while [ "$mdns_tries" -lt 30 ]; do
+                mdns_newpid=$(pgrep -x mDNSResponder | head -1)
+                [ -n "$mdns_newpid" ] && [ "$mdns_newpid" != "$mdns_oldpid" ] && [ -S /var/run/mDNSResponder ] && break
+                sleep 1
+                mdns_tries=$((mdns_tries + 1))
+            done
+            sleep 3
+            if [ -z "$mdns_newpid" ] || [ "$mdns_newpid" = "$mdns_oldpid" ]; then
+                mdns_static_fail="mDNSResponder did not come back after SIGTERM (KeepAlive)"
+            elif [ "$(mdns_browse 6 | grep -c 'nbsd static test')" -eq 0 ]; then
+                mdns_static_fail="after a daemon restart the service file was not announced again"
+            fi
+            rm -f "$mdns_svcdir/nbsdtest.plist"
+        fi
+    fi
+fi
+if [ -n "$mdns_static_fail" ]; then
+    echo "MDNS-STATIC-FAIL: $mdns_static_fail"
+else
+    echo "MDNS-STATIC-OK: a service file is announced within seconds, withdrawn on removal, and announced again after a daemon restart"
+fi
+
 # 10. ASL runtime smoke (Phase J). Task #41 move_member wire-up
 # landed but a follow-on halt-after-bootstrap-remote regression is
 # under investigation. Keep test at SKIP for now.
