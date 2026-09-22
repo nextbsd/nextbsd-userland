@@ -645,6 +645,16 @@ expect {
     "SUDO-OK"   { puts "\nOK: base sudo is setuid root and its policy works" }
 }
 
+# DSCLI — dscli (#253): local accounts in the DirectoryServices plists on
+# the booted image (init, add, passwd, verify, groups, homes, delete) and the
+# promote/join preflight. SKIP (warn) if a real database exists.
+expect {
+    timeout { puts "\nWARN: DSCLI marker not seen (image predates dscli — informational)" }
+    -re {DSCLI-FAIL[^\r\n]*} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    -re {DSCLI-SKIP[^\r\n]*} { puts "\nWARN: $expect_out(0,string)" }
+    "DSCLI-OK" { puts "\nOK: dscli manages local accounts and refuses promote/join cleanly without the jobs" }
+}
+
 # Stage 3+ Phase J runtime: syslogd + notifyd RunAtLoad via plists,
 # then syslog(1) post + read-back round-trip via Mach IPC into the
 # ASL store. See run.sh tail for the test sequence.

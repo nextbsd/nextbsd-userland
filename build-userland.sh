@@ -874,6 +874,21 @@ DESTDIR="$DESTDIR" ninja -C "$NBI_BUILD" install
 test -x "$DESTDIR/usr/sbin/nextbsd-installer" || { echo "FAIL: /usr/sbin/nextbsd-installer not installed"; exit 1; }
 test -f "$DESTDIR/usr/libexec/nextbsd-installer/do-install.sh" || { echo "FAIL: installer engine (do-install.sh) not installed"; exit 1; }
 
+# ---- dscli (nextbsd/nextbsd-userland#253, E18 U7) ---------------------------
+# NextBSD's DirectoryServices tool: users and groups in the plists that
+# nss_directory_services reads, plus promote / demote / join / leave. Plain
+# C on libc + libcrypt, with libds (src/dscli/libds) compiled in; links
+# libdns_sd for the Bonjour browse, so it comes after the mDNSResponder
+# section synced the sysroot. (The nss_directory_services section, when it
+# lands, sits just above this one.)
+comp "dscli"
+mkdir -p "$DESTDIR/usr/sbin"
+run_buildenv "make -C $SRC/dscli/dscli DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/sbin/dscli" || { echo "FAIL: /usr/sbin/dscli not installed"; exit 1; }
+needed_check "$DESTDIR/usr/sbin/dscli" "libdns_sd"
+needed_check "$DESTDIR/usr/sbin/dscli" "libcrypt"
+echo "==> dscli built"
+
 # =============================================================================
 # TIER 3 — on-image test binaries (freebsd-launchd-mach suite).
 # build.sh builds these natively and installs them to

@@ -896,6 +896,147 @@ else
     fi
 fi
 
+# DSCLI — dscli (nextbsd/nextbsd-userland#253): local accounts in the
+# DirectoryServices plists. init non-interactively, add an admin user with
+# a password, read both back through dscli's own reader, check the home and
+# skeleton, verify and change the password, group edits, user edit, delete
+# with and without the home, status, and the network verbs' preflight: with
+# the U6 LaunchDaemons absent, promote and join must refuse cleanly and
+# write nothing; with them present, --dry-run must list the steps. Every
+# file it creates is removed again. (Resolution through nsswitch is the
+# NSS-DS check's job.)
+echo "==> dscli: local accounts, and promote/join preflight"
+dscli_dir=/Local/Library/DirectoryServices
+dscli_fail=""
+dscli_try() {
+    dscli_label=$1; shift
+    if dscli_out=$("$@" 2>&1); then
+        return 0
+    fi
+    [ -n "$dscli_fail" ] || dscli_fail="$dscli_label: $(echo "$dscli_out" | tr '\n' ' ')"
+    return 1
+}
+dscli_expect() {   # dscli_expect LABEL PATTERN cmd...  (output must contain PATTERN)
+    dscli_label=$1; dscli_pat=$2; shift 2
+    dscli_out=$("$@" 2>&1)
+    if echo "$dscli_out" | grep -q -- "$dscli_pat"; then
+        return 0
+    fi
+    [ -n "$dscli_fail" ] || dscli_fail="$dscli_label: expected '$dscli_pat' in: $(echo "$dscli_out" | tr '\n' ' ')"
+    return 1
+}
+if [ ! -x /usr/sbin/dscli ]; then
+    echo "DSCLI-FAIL: /usr/sbin/dscli is missing"
+elif [ -e "$dscli_dir/Users.plist" ] || [ -e /Network/Library/DirectoryServices/Users.plist ] || \
+     [ -e /Local/Users/jane ] || [ -e /Local/Users/dsadmin ]; then
+    echo "DSCLI-SKIP: a DirectoryServices database or a test home already exists; not touching it"
+else
+    dscli_try "init" /usr/sbin/dscli init --admin-user dsadmin --real-name "DS Admin" --no-password &&
+    dscli_expect "status" "Role:       standalone" /usr/sbin/dscli status &&
+    dscli_try "user add jane" /usr/sbin/dscli user add jane --admin --password secret --real-name "Jane Doe" &&
+    dscli_expect "user show jane (name)" "^Username:   jane" /usr/sbin/dscli user show jane &&
+    dscli_expect "user show jane (real name)" "^Real name:  Jane Doe" /usr/sbin/dscli user show jane &&
+    dscli_expect "user show jane (password)" "^Password:   set" /usr/sbin/dscli user show jane &&
+    dscli_expect "user show jane (groups)" "admin" /usr/sbin/dscli user show jane &&
+    dscli_expect "group show admin" "jane" /usr/sbin/dscli group show admin &&
+    dscli_expect "group show admin (first admin)" "dsadmin" /usr/sbin/dscli group show admin &&
+    dscli_expect "user list" "^jane " /usr/sbin/dscli user list &&
+    dscli_expect "init twice is a no-op" "nothing to do" /usr/sbin/dscli init --admin-user other --no-password
+    if [ -z "$dscli_fail" ]; then
+        jane_uid=$(/usr/sbin/dscli user show jane | awk '/^UID:/ { print $2 }')
+        if [ ! -d /Local/Users/jane ]; then
+            dscli_fail="home /Local/Users/jane was not created"
+        elif [ "$(stat -f %u /Local/Users/jane)" != "$jane_uid" ]; then
+            dscli_fail="home owner is $(stat -f %u /Local/Users/jane), not uid $jane_uid"
+        elif [ -f /usr/share/skel/dot.zshrc ] && [ ! -f /Local/Users/jane/.zshrc ]; then
+            dscli_fail="skeleton dot.zshrc was not copied into the home"
+        elif [ "$jane_uid" -lt 1001 ]; then
+            dscli_fail="jane got uid $jane_uid, below 1001"
+        elif ! grep -q '<key>passwordHash</key>' "$dscli_dir/Users.plist"; then
+            dscli_fail="Users.plist has no passwordHash for jane"
+        elif [ "$(stat -f %Lp "$dscli_dir/Users.plist")" != 644 ]; then
+            dscli_fail="Users.plist mode is $(stat -f %Lp "$dscli_dir/Users.plist"), not 644"
+        fi
+    fi
+    if [ -z "$dscli_fail" ]; then
+        # Passwords: verify reads stdin when it is not a terminal.
+        if ! echo secret | /usr/sbin/dscli user verify jane >/dev/null 2>&1; then
+            dscli_fail="verify jane with the right password failed"
+        elif echo wrong | /usr/sbin/dscli user verify jane >/dev/null 2>&1; then
+            dscli_fail="verify jane with the wrong password succeeded"
+        elif ! echo newpass | /usr/sbin/dscli user passwd jane >/dev/null 2>&1; then
+            dscli_fail="user passwd jane via stdin failed"
+        elif ! echo newpass | /usr/sbin/dscli user verify jane >/dev/null 2>&1; then
+            dscli_fail="verify jane after passwd failed"
+        elif ! /usr/sbin/dscli user passwd jane --no-password >/dev/null 2>&1; then
+            dscli_fail="user passwd --no-password failed"
+        elif ! echo "" | /usr/sbin/dscli user verify jane >/dev/null 2>&1; then
+            dscli_fail="verify with an empty password after --no-password failed"
+        fi
+    fi
+    if [ -z "$dscli_fail" ]; then
+        dscli_try "group add staff" /usr/sbin/dscli group add staff &&
+        dscli_try "group addmember" /usr/sbin/dscli group addmember staff jane &&
+        dscli_expect "group show staff" "jane" /usr/sbin/dscli group show staff &&
+        dscli_try "group removemember" /usr/sbin/dscli group removemember staff jane &&
+        dscli_expect "group show staff (empty)" "(none)" /usr/sbin/dscli group show staff &&
+        dscli_try "group delete staff" /usr/sbin/dscli group delete staff &&
+        dscli_try "user edit --shell" /usr/sbin/dscli user edit jane --shell /bin/sh &&
+        dscli_expect "user show (shell)" "^Shell:      /bin/sh" /usr/sbin/dscli user show jane &&
+        dscli_try "user delete (keep home)" /usr/sbin/dscli user delete jane
+        if [ -z "$dscli_fail" ]; then
+            if [ ! -d /Local/Users/jane ]; then
+                dscli_fail="user delete without --remove-home removed the home"
+            elif /usr/sbin/dscli user show jane >/dev/null 2>&1; then
+                dscli_fail="jane still resolves after delete"
+            elif /usr/sbin/dscli group show jane >/dev/null 2>&1; then
+                dscli_fail="jane's private group survived the delete"
+            elif ! /usr/sbin/dscli user add jane --no-password >/dev/null 2>&1; then
+                dscli_fail="re-adding jane failed"
+            elif ! /usr/sbin/dscli user delete jane --remove-home >/dev/null 2>&1; then
+                dscli_fail="user delete --remove-home failed"
+            elif [ -e /Local/Users/jane ]; then
+                dscli_fail="--remove-home left /Local/Users/jane"
+            elif /usr/sbin/dscli user delete dsadmin >/dev/null 2>&1; then
+                dscli_fail="the last admin could be deleted"
+            fi
+        fi
+    fi
+    if [ -z "$dscli_fail" ]; then
+        # Network verbs: preflight without the U6 jobs, dry run with them.
+        if [ -f /System/Library/LaunchDaemons/org.nextbsd.rpcbind.plist ]; then
+            dscli_expect "promote --dry-run" "would launchctl load -w org.nextbsd.nfsd" /usr/sbin/dscli --dry-run promote
+        else
+            dscli_out=$(/usr/sbin/dscli promote 2>&1) && dscli_fail="promote succeeded without the NFS server jobs"
+            if [ -z "$dscli_fail" ] && ! echo "$dscli_out" | grep -q 'org.nextbsd.rpcbind.plist is missing'; then
+                dscli_fail="promote without the jobs: $(echo "$dscli_out" | tr '\n' ' ')"
+            elif [ -e /etc/exports ] || [ -e /Local/Library/Preferences/mDNSResponder/Services/org.nextbsd.directory.plist ]; then
+                dscli_fail="a refused promote still wrote /etc/exports or the service file"
+            fi
+        fi
+    fi
+    if [ -z "$dscli_fail" ]; then
+        if [ -f /System/Library/LaunchDaemons/org.nextbsd.network-mount.plist ] && [ -x /usr/libexec/nextbsd/network-mount ]; then
+            dscli_expect "join --dry-run" "would launchctl load -w org.nextbsd.network-mount" /usr/sbin/dscli --dry-run join server.local
+        else
+            dscli_out=$(/usr/sbin/dscli join server.local 2>&1) && dscli_fail="join succeeded without the NFS client job"
+            if [ -z "$dscli_fail" ] && ! echo "$dscli_out" | grep -q 'org.nextbsd.network-mount'; then
+                dscli_fail="join without the job: $(echo "$dscli_out" | tr '\n' ' ')"
+            elif [ -e "$dscli_dir/Binding.plist" ]; then
+                dscli_fail="a refused join still wrote Binding.plist"
+            fi
+        fi
+    fi
+    dscli_expect "status (still standalone)" "Role:       standalone" /usr/sbin/dscli status
+    # Leave no trace: the test database, the homes, and nothing else.
+    rm -rf /Local/Library/DirectoryServices /Local/Users/jane /Local/Users/dsadmin
+    if [ -n "$dscli_fail" ]; then
+        echo "DSCLI-FAIL: $dscli_fail"
+    else
+        echo "DSCLI-OK: init, user add/show/passwd/verify/edit/delete, group edits, homes with skeleton, promote/join preflight; all cleaned up"
+    fi
+fi
+
 # 10. ASL runtime smoke (Phase J). Task #41 move_member wire-up
 # landed but a follow-on halt-after-bootstrap-remote regression is
 # under investigation. Keep test at SKIP for now.

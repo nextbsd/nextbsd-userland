@@ -1,0 +1,273 @@
+.\"-
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" Copyright (c) 2026 The NextBSD Project
+.\"
+.Dd September 22, 2026
+.Dt DSCLI 8
+.Os
+.Sh NAME
+.Nm dscli
+.Nd manage NextBSD DirectoryServices accounts, servers and clients
+.Sh SYNOPSIS
+.Nm
+.Op Fl -dry-run
+.Cm init
+.Op Fl -admin-user Ar name
+.Op Fl -real-name Ar string
+.Op Fl -password Ar string | Fl -no-password
+.Nm
+.Cm status | list
+.Nm
+.Cm user Cm list
+.Nm
+.Cm user Cm show Ar name
+.Nm
+.Cm user Cm add Ar name
+.Op Fl -admin
+.Op Fl -uid Ar n
+.Op Fl -gid Ar n
+.Op Fl -shell Ar path
+.Op Fl -real-name Ar string
+.Op Fl -password Ar string | Fl -no-password
+.Nm
+.Cm user Cm delete Ar name Op Fl -remove-home
+.Nm
+.Cm user Cm passwd Ar name Op Fl -no-password
+.Nm
+.Cm user Cm verify Ar name
+.Nm
+.Cm user Cm edit Ar name
+.Op Fl -real-name Ar string
+.Op Fl -shell Ar path
+.Op Fl -uid Ar n
+.Op Fl -gid Ar n
+.Nm
+.Cm group Cm list
+.Nm
+.Cm group Cm show Ar name
+.Nm
+.Cm group Cm add Ar name Op Fl -gid Ar n
+.Nm
+.Cm group Cm delete Ar name
+.Nm
+.Cm group Cm addmember Ar group Ar user
+.Nm
+.Cm group Cm removemember Ar group Ar user
+.Nm
+.Op Fl -dry-run
+.Cm promote Op Fl -name Ar displayname
+.Nm
+.Op Fl -dry-run
+.Cm demote
+.Nm
+.Op Fl -dry-run
+.Cm join Op Ar host Op Fl -yes
+.Nm
+.Op Fl -dry-run
+.Cm leave
+.Sh DESCRIPTION
+.Nm
+manages the accounts that NextBSD keeps in its DirectoryServices plists,
+and turns a machine into a directory server, or a client of one.
+.Pp
+Users and groups live in
+.Pa /Local/Library/DirectoryServices/Users.plist
+and
+.Pa Groups.plist .
+They are read by
+.Xr nss_directory_services 5
+through
+.Xr nsswitch.conf 5 ,
+so
+.Xr id 1 ,
+.Xr getent 1 ,
+.Xr login 1
+and
+.Xr sudo 8
+see them like any other account.
+Root and the system users stay in
+.Xr master.passwd 5 .
+On a machine joined to a directory server, the same files under
+.Pa /Network/Library/DirectoryServices
+are used instead, mounted read-only from the server, and accounts are
+edited on the server.
+.Pp
+Every command that writes must be run as root.
+With
+.Fl -dry-run ,
+the network commands print what they would do and change nothing.
+.Ss Local accounts
+.Bl -tag -width indent
+.It Cm init
+Create
+.Pa /Local/Library/DirectoryServices
+and
+.Pa /Local/Users ,
+the two plists, the
+.Li admin
+group (gid 5000) and a first administrator who is a member of it.
+The name, real name and password are prompted for on a terminal;
+scripts pass
+.Fl -admin-user ,
+.Fl -real-name
+and
+.Fl -password
+or
+.Fl -no-password .
+An empty password lets the user log in without one.
+.It Cm user Cm add Ar name
+Create a user.
+The default shell is
+.Pa /bin/zsh ;
+the uid is the first free one from 1001, checked against both plists and
+every other name service; a private group of the same name and gid is
+created; the home
+.Pa /Local/Users/ Ns Ar name
+is created with the skeleton dot files from
+.Pa /usr/share/skel .
+.Fl -admin
+adds the user to
+.Li admin ,
+which also grants
+.Li wheel
+and
+.Xr sudo 8 .
+The password is prompted for unless
+.Fl -password
+or
+.Fl -no-password
+is given; when standard input is not a terminal it is read from there.
+.It Cm user Cm delete Ar name
+Remove the user from the plist and from every group; the private group
+goes with it when nothing else uses it.
+The home is kept unless
+.Fl -remove-home
+is given.
+The last member of
+.Li admin
+cannot be deleted.
+.It Cm user Cm passwd Ar name
+Set the password (SHA-512 crypt, as Gershwin's dscli writes it), or with
+.Fl -no-password
+remove it so the user logs in without one.
+.It Cm user Cm verify Ar name
+Read a password from the terminal or standard input and exit 0 when it
+matches; for scripts and for Gershwin's SudoAskPass.
+.It Cm user Cm edit Ar name
+Change the real name, shell, uid or gid.
+.It Cm group Cm add , Cm delete , Cm addmember , Cm removemember
+Manage groups and their members.
+The
+.Li admin
+group and any user's primary group cannot be deleted.
+.It Cm status
+Report whether this machine is standalone, a directory server, or joined
+to one, and which directory is in use.
+.El
+.Ss Directory server
+.Bl -tag -width indent
+.It Cm promote Op Fl -name Ar displayname
+Create
+.Pa /Network/Library/DirectoryServices ,
+seeded from the local plists; write
+.Pa /etc/exports
+so that directory (read-only) and
+.Pa /Local/Users
+are served over NFS; enable the
+.Li org.nextbsd.rpcbind ,
+.Li org.nextbsd.mountd
+and
+.Li org.nextbsd.nfsd
+jobs with
+.Nm launchctl Cm load Fl w ,
+which persists across reboots; and announce the server over Bonjour as
+.Li _nextbsd-ds._tcp
+by writing a service file under
+.Pa /Local/Library/Preferences/mDNSResponder/Services
+for
+.Xr mDNSResponder 8
+to hold.
+Nothing is changed when any of the three jobs is not installed.
+.It Cm demote
+Withdraw the announcement, disable the three jobs and remove
+.Pa /etc/exports .
+.Pa /Network/Library/DirectoryServices
+is kept.
+.El
+.Ss Client
+.Bl -tag -width indent
+.It Cm join Op Ar host
+Without
+.Ar host ,
+browse for servers over Bonjour and let the user pick one
+.Pq Fl -yes No takes a single result without asking .
+Record the server in
+.Pa /Local/Library/DirectoryServices/Binding.plist ,
+enable
+.Li org.nextbsd.network-mount
+so the mounts return after a reboot, mount the server's directory on
+.Pa /Network/Library/DirectoryServices
+and its
+.Pa /Local/Users
+on
+.Pa /Network/Users
+now, and make the server the preferred time source in
+.Xr ntp.conf 5 .
+.It Cm leave
+Disable the mount job, unmount both, remove the binding and restore the
+default time sources.
+Accounts come from
+.Pa /Local
+again at once.
+.El
+.Sh FILES
+.Bl -tag -width "/Local/Library/Preferences/mDNSResponder/Services/" -compact
+.It Pa /Local/Library/DirectoryServices/Users.plist
+.It Pa /Local/Library/DirectoryServices/Groups.plist
+The local accounts.
+Hashes are world-readable, as in Gershwin.
+.It Pa /Local/Library/DirectoryServices/Binding.plist
+The server this client is joined to.
+.It Pa /Network/Library/DirectoryServices/
+The directory served to clients, or mounted from the server.
+.It Pa /Local/Users/ , Pa /Network/Users/
+Home directories.
+.It Pa /etc/exports
+Written by
+.Cm promote .
+.It Pa /Local/Library/Preferences/mDNSResponder/Services/org.nextbsd.directory.plist
+The Bonjour announcement.
+.El
+.Sh EXIT STATUS
+0 on success, 1 on failure, 2 on a usage error.
+.Cm user Cm verify
+exits 1 when the password does not match.
+.Sh EXAMPLES
+Set up a machine with an administrator, then add a user who can
+.Xr sudo 8 :
+.Bd -literal -offset indent
+# dscli init
+# dscli user add jane --admin
+.Ed
+.Pp
+Make it a directory server, and join it from another machine:
+.Bd -literal -offset indent
+server# dscli promote --name Office
+client# dscli join
+.Ed
+.Sh SEE ALSO
+.Xr getent 1 ,
+.Xr id 1 ,
+.Xr launchctl 1 ,
+.Xr crypt 3 ,
+.Xr exports 5 ,
+.Xr nsswitch.conf 5 ,
+.Xr mDNSResponder 8 ,
+.Xr mountd 8 ,
+.Xr nfsd 8 ,
+.Xr rpcbind 8
+.Sh HISTORY
+.Nm
+was written for Gershwin by Joe Maloney and ported to NextBSD as plain C,
+without GNUstep or gdomap.
