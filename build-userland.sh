@@ -874,6 +874,18 @@ DESTDIR="$DESTDIR" ninja -C "$NBI_BUILD" install
 test -x "$DESTDIR/usr/sbin/nextbsd-installer" || { echo "FAIL: /usr/sbin/nextbsd-installer not installed"; exit 1; }
 test -f "$DESTDIR/usr/libexec/nextbsd-installer/do-install.sh" || { echo "FAIL: installer engine (do-install.sh) not installed"; exit 1; }
 
+# ---- nss_directory_services (nextbsd/nextbsd-userland#249, E18 U3) ---------
+# The `directory_services` source for passwd and group: users and groups
+# straight from /Local (or /Network) Library/DirectoryServices/{Users,Groups}
+# .plist, no daemon. Plain libc, bsd.lib.mk, one shared object at the name
+# nsdispatch(3) dlopens. nsswitch.conf itself comes from nextbsd-overlays.
+comp "nss_directory_services"
+mkdir -p "$DESTDIR/usr/lib"
+run_buildenv "make -C $SRC/nss_directory_services DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -f "$DESTDIR/usr/lib/nss_directory_services.so.1" || { echo "FAIL: /usr/lib/nss_directory_services.so.1 not installed"; exit 1; }
+test ! -e "$DESTDIR/usr/lib/libnss_directory_services.a" || { echo "FAIL: nss_directory_services must not install a static library"; exit 1; }
+echo "==> nss_directory_services built"
+
 # =============================================================================
 # TIER 3 — on-image test binaries (freebsd-launchd-mach suite).
 # build.sh builds these natively and installs them to

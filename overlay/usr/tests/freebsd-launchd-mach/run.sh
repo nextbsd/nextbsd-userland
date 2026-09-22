@@ -896,6 +896,109 @@ else
     fi
 fi
 
+# NSS-DS — nss_directory_services (nextbsd/nextbsd-userland#249). With a
+# Users.plist and Groups.plist under /Local/Library/DirectoryServices and
+# nsswitch.conf naming directory_services first, a plist user must resolve
+# through libc: getpwnam/getpwuid (getent, ls -l), getgrouplist (id, with
+# wheel for an admin member), enumeration (getent passwd lists it and still
+# lists root from files), and a /Network copy must take over without any
+# restart. The switch lines are changed only for the duration of the check
+# and restored; the overlay's nsswitch.conf is nextbsd-overlays' business.
+echo "==> nss_directory_services: plist users and groups resolve through nsswitch"
+nssds_dir=/Local/Library/DirectoryServices
+nssds_net=/Network/Library/DirectoryServices
+nssds_fail=""
+if [ ! -f /usr/lib/nss_directory_services.so.1 ]; then
+    echo "NSS-DS-FAIL: /usr/lib/nss_directory_services.so.1 is missing"
+elif [ -e "$nssds_dir/Users.plist" ] || [ -e "$nssds_net/Users.plist" ]; then
+    echo "NSS-DS-SKIP: a DirectoryServices database already exists; not touching it"
+else
+    mkdir -p "$nssds_dir" "$nssds_net"
+    cat > "$nssds_dir/Users.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>nsstest</key>
+  <dict>
+    <key>username</key><string>nsstest</string>
+    <key>uid</key><integer>5001</integer>
+    <key>gid</key><integer>5001</integer>
+    <key>realName</key><string>NSS Test</string>
+    <key>shell</key><string>/bin/sh</string>
+    <key>passwordHash</key><string>$6$saltsalt$nothashofanything</string>
+  </dict>
+</dict>
+</plist>
+PLIST
+    cat > "$nssds_dir/Groups.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>nsstest</key>
+  <dict>
+    <key>groupname</key><string>nsstest</string>
+    <key>gid</key><integer>5001</integer>
+    <key>members</key><array/>
+  </dict>
+  <key>admin</key>
+  <dict>
+    <key>groupname</key><string>admin</string>
+    <key>gid</key><integer>5000</integer>
+    <key>members</key><array><string>nsstest</string></array>
+  </dict>
+</dict>
+</plist>
+PLIST
+    cp -p /etc/nsswitch.conf /tmp/nsswitch.conf.nssds
+    sed -e 's/^passwd:.*/passwd: directory_services files/' \
+        -e 's/^group:.*/group: directory_services files/' \
+        /tmp/nsswitch.conf.nssds > /etc/nsswitch.conf
+    nssds_pw=$(getent passwd nsstest 2>&1)
+    nssds_gr=$(getent group admin 2>&1)
+    nssds_gids=$(id -G nsstest 2>&1)
+    if [ "$nssds_pw" != 'nsstest:$6$saltsalt$nothashofanything:5001:5001:NSS Test:/Local/Users/nsstest:/bin/sh' ]; then
+        nssds_fail="getent passwd nsstest: $nssds_pw"
+    elif [ "$nssds_gr" != "admin:x:5000:nsstest" ]; then
+        nssds_fail="getent group admin: $nssds_gr"
+    elif [ "$(id -u nsstest 2>&1)" != 5001 ]; then
+        nssds_fail="id -u nsstest: $(id -u nsstest 2>&1)"
+    elif ! echo " $nssds_gids " | grep -q ' 5000 ' || ! echo " $nssds_gids " | grep -q ' 0 '; then
+        nssds_fail="id -G nsstest lacks admin (5000) or wheel (0): $nssds_gids"
+    elif [ "$(getent passwd | grep -c '^nsstest:')" != 1 ] || ! getent passwd | grep -q '^root:'; then
+        nssds_fail="enumeration: getent passwd must list nsstest once and still list root"
+    elif [ "$(getent passwd 5001 | cut -d: -f1)" != nsstest ]; then
+        nssds_fail="getpwuid 5001: $(getent passwd 5001 2>&1)"
+    else
+        : > /tmp/nssds.file && chown 5001:5000 /tmp/nssds.file
+        nssds_ls=$(ls -l /tmp/nssds.file | awk '{ print $3 ":" $4 }')
+        rm -f /tmp/nssds.file
+        if [ "$nssds_ls" != "nsstest:admin" ]; then
+            nssds_fail="ls -l shows $nssds_ls, not nsstest:admin"
+        else
+            # /Network takes over the moment its file exists, then /Local returns.
+            sed 's/5001/5002/g' "$nssds_dir/Users.plist" > "$nssds_net/Users.plist"
+            nssds_netpw=$(getent passwd nsstest 2>&1)
+            rm -f "$nssds_net/Users.plist"
+            nssds_backpw=$(getent passwd nsstest 2>&1 | cut -d: -f3,6)
+            if [ "$(echo "$nssds_netpw" | cut -d: -f3,6)" != "5002:/Network/Users/nsstest" ]; then
+                nssds_fail="/Network switch: $nssds_netpw"
+            elif [ "$nssds_backpw" != "5001:/Local/Users/nsstest" ]; then
+                nssds_fail="/Local restore: $nssds_backpw"
+            elif ! getent passwd root >/dev/null 2>&1; then
+                nssds_fail="root no longer resolves with directory_services first"
+            fi
+        fi
+    fi
+    cp -p /tmp/nsswitch.conf.nssds /etc/nsswitch.conf
+    rm -f /tmp/nsswitch.conf.nssds "$nssds_dir/Users.plist" "$nssds_dir/Groups.plist"
+    rmdir "$nssds_net" "$nssds_dir" 2>/dev/null || true
+    if [ -n "$nssds_fail" ]; then
+        echo "NSS-DS-FAIL: $nssds_fail"
+    else
+        echo "NSS-DS-OK: plist user resolves via getent/id/ls -l with admin + wheel; enumeration merges with files; /Network preferred live"
+    fi
+fi
+
 # 10. ASL runtime smoke (Phase J). Task #41 move_member wire-up
 # landed but a follow-on halt-after-bootstrap-remote regression is
 # under investigation. Keep test at SKIP for now.

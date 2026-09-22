@@ -645,6 +645,16 @@ expect {
     "SUDO-OK"   { puts "\nOK: base sudo is setuid root and its policy works" }
 }
 
+# NSS-DS — nss_directory_services (#249): a plist user resolves through
+# nsswitch on the booted image (getent, id with wheel, ls -l, enumeration),
+# and a /Network copy takes over live. SKIP (warn) if a real database exists.
+expect {
+    timeout { puts "\nWARN: NSS-DS marker not seen (image predates nss_directory_services — informational)" }
+    -re {NSS-DS-FAIL[^\r\n]*} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    -re {NSS-DS-SKIP[^\r\n]*} { puts "\nWARN: $expect_out(0,string)" }
+    "NSS-DS-OK" { puts "\nOK: nss_directory_services resolves plist users and groups" }
+}
+
 # Stage 3+ Phase J runtime: syslogd + notifyd RunAtLoad via plists,
 # then syslog(1) post + read-back round-trip via Mach IPC into the
 # ASL store. See run.sh tail for the test sequence.
