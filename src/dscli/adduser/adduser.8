@@ -1,0 +1,43 @@
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\" Copyright (c) 2026 The NextBSD Project
+.Dd September 22, 2026
+.Dt ADDUSER 8
+.Os
+.Sh NAME
+.Nm adduser
+.Nd add a user interactively
+.Sh SYNOPSIS
+.Nm
+.Op Fl S
+.Op Ar username
+.Sh DESCRIPTION
+.Nm
+asks for a user name, full name, uid, shell, whether the user is an
+administrator
+.Pq a member of Dq admin , who may use Xr sudo 8
+and a password, shows the summary, and on confirmation creates the user
+with
+.Xr dscli 8 :
+a record in
+.Pa /Local/Library/DirectoryServices/Users.plist ,
+a private group, and a home under
+.Pa /Local/Users
+seeded from
+.Pa /usr/share/skel .
+The default shell is
+.Pa /bin/zsh .
+An empty password lets the user log in without one.
+.Pp
+Every user
+.Nm
+creates is a directory user.
+System accounts are created with
+.Xr pw 8 .
+.Pp
+.Fl S
+skips the introductory and closing lines.
+.Sh SEE ALSO
+.Xr passwd 1 ,
+.Xr dscli 8 ,
+.Xr pw 8 ,
+.Xr rmuser 8

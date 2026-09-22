@@ -33,6 +33,7 @@ provenance; it does not relicense anything.
 | `hostnamed` | NextBSD (Apple-shape) | APSL-2.0 *(component header)* |
 | `caffeinate` | apple-oss-distributions/PowerManagement | APSL-2.0 |
 | `dscli` (+ libds) | NextBSD; ported from Gershwin's dscli by Joe Maloney (gershwin-desktop/gershwin-components) | BSD-2-Clause |
+| `passwd`, `chpass`, `pw`, `adduser`, `rmuser` (src/dscli) | NextBSD; FreeBSD command lines, routed to the plists or master.passwd | BSD-2-Clause |
 
 Two license families dominate: **APSL-2.0** (classic Apple open source) and
 **Apache-2.0** (the swift.org-era projects + mDNSResponder). Both are permissive

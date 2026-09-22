@@ -1,0 +1,93 @@
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\" Copyright (c) 2026 The NextBSD Project
+.Dd September 22, 2026
+.Dt PASSWD 1
+.Os
+.Sh NAME
+.Nm passwd
+.Nd change a user's password
+.Sh SYNOPSIS
+.Nm
+.Op Fl l
+.Op Fl d
+.Op Ar user
+.Sh DESCRIPTION
+.Nm
+changes the password of
+.Ar user ,
+or of the caller when no user is given.
+.Pp
+On NextBSD an account lives in one of two places, and
+.Nm
+edits whichever holds it:
+.Bl -bullet
+.It
+Proper users are records in
+.Pa Users.plist
+under
+.Pa /Local/Library/DirectoryServices
+.Po
+or
+.Pa /Network/Library/DirectoryServices
+on a machine joined to a directory server
+.Pc .
+Their password is the
+.Va passwordHash
+field, an SHA-512
+.Xr crypt 3
+hash in the form Gershwin uses.
+.It
+Root and the system users are in
+.Pa /etc/master.passwd .
+Their hash is rewritten there and
+.Xr pwd_mkdb 8
+is run, as on FreeBSD.
+.El
+.Pp
+A user changes their own password after typing the old one; root sets
+anyone's without it.
+On a joined client the accounts in use are the server's and
+.Nm
+refuses to edit them; change the password on the server.
+.Pp
+The options are:
+.Bl -tag -width indent
+.It Fl d
+Remove the password of a directory user, so they log in without one
+.Po
+the record's
+.Va noPassword
+flag
+.Pc .
+Root only.
+.It Fl l
+Accepted for compatibility; every password is local.
+.El
+.Pp
+When standard input is not a terminal, the passwords are read from it
+one per line, the old one first when it is required.
+.Sh FILES
+.Bl -tag -width "/Network/Library/DirectoryServices/Users.plist" -compact
+.It Pa /Local/Library/DirectoryServices/Users.plist
+directory users
+.It Pa /Network/Library/DirectoryServices/Users.plist
+the server's users, when joined
+.It Pa /etc/master.passwd
+root and the system users
+.El
+.Sh SEE ALSO
+.Xr chpass 1 ,
+.Xr crypt 3 ,
+.Xr passwd 5 ,
+.Xr dscli 8 ,
+.Xr pw 8 ,
+.Xr pwd_mkdb 8 ,
+.Xr vipw 8
+.Sh HISTORY
+This
+.Nm
+replaced FreeBSD's on NextBSD when user accounts moved to the
+DirectoryServices plists.
+NIS is not supported;
+.Nm yppasswd
+says so.

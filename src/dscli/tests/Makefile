@@ -8,16 +8,23 @@ CFLAGS?=	-O1 -g -Wall -Wextra -Werror
 CFLAGS+=	-I../libds
 LDLIBS?=
 
-SRCS=		ds_test.c ../libds/dsrec.c ../libds/dscrypt.c ../libds/dsio.c \
-		../libds/dsnet.c ../libds/plist.c
+LIBSRCS=	../libds/dsrec.c ../libds/dscrypt.c ../libds/dsio.c \
+		../libds/dsnet.c ../libds/dsroute.c ../libds/plist.c
+SRCS=		ds_test.c ${LIBSRCS}
 
 ds_test: ${SRCS} ../libds/ds.h ../libds/plist.h
 	${CC} ${CFLAGS} -o $@ ${SRCS} ${LDLIBS}
 
-check: ds_test
+# The account tools' routing (E18 U9): where an account is and where a
+# new one goes, over fixture copies of the plists and the system files.
+route_test: route_test.c ${LIBSRCS} ../libds/ds.h
+	${CC} ${CFLAGS} -o $@ route_test.c ${LIBSRCS} ${LDLIBS}
+
+check: ds_test route_test
 	./ds_test
+	./route_test
 
 clean:
-	rm -rf ds_test ds_test.dSYM
+	rm -rf ds_test ds_test.dSYM route_test route_test.dSYM
 
 .PHONY: check clean

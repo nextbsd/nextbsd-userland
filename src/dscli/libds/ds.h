@@ -218,4 +218,56 @@ int		ds_ntp_set_server(const char *host);
 /* Escape &, <, > for XML text; malloc'd. */
 char	*ds_xml_escape(const char *s);
 
+/* ---- routing (E18 U9: passwd, chpass, pw) -------------------------------- */
+
+/*
+ * Where an account lives. Proper users are in Users.plist; root and the
+ * system users are in master.passwd. The rule for new accounts: a uid
+ * below DS_SYSTEM_UID_MAX + 1, or the nologin shell with no real home,
+ * is a system account; everything else is a directory user. Groups: a
+ * gid below DS_SYSTEM_UID_MAX + 1, or a name starting with '_', is a
+ * system group; everything else is a directory group.
+ */
+enum ds_where {
+	DS_WHERE_NONE,		/* unknown */
+	DS_WHERE_PLIST,		/* Users.plist / Groups.plist */
+	DS_WHERE_SYSTEM		/* master.passwd / group */
+};
+
+#define DS_SYSTEM_UID_MAX	499
+#define DS_NOLOGIN		"/usr/sbin/nologin"
+#define DS_NONEXISTENT		"/nonexistent"
+#define DS_MASTER_PASSWD	"/etc/master.passwd"
+#define DS_PASSWD		"/etc/passwd"
+#define DS_GROUP		"/etc/group"
+#define DS_SHELLS		"/etc/shells"
+#define DS_BSD_DIR		"/usr/libexec/bsd"
+
+enum ds_where	ds_route_user(const char *name);
+enum ds_where	ds_route_uid(uid_t uid, char *name, size_t len);
+enum ds_where	ds_route_group(const char *name);
+enum ds_where	ds_route_gid(gid_t gid, char *name, size_t len);
+enum ds_where	ds_route_new_user(bool have_uid, uid_t uid, const char *shell,
+		    const char *home);
+enum ds_where	ds_route_new_group(bool have_gid, gid_t gid, const char *name);
+
+/*
+ * The system files, read directly (never through nsswitch, which may be
+ * the plists): master.passwd when readable, else passwd. Returns 0 and
+ * fills namebuf/idp when found, -1 otherwise.
+ */
+int	ds_system_user(const char *name, uid_t uid, char *namebuf, size_t len,
+	    uid_t *uidp);
+int	ds_system_group(const char *name, gid_t gid, char *namebuf, size_t len,
+	    gid_t *gidp);
+/* True when the shell is listed in /etc/shells. */
+bool	ds_shell_listed(const char *shell);
+
+/*
+ * The FreeBSD tool to exec for a system account: DS_BSD_DIR/name when it
+ * exists, else `legacy` (the tool's original path) provided it is not the
+ * running program itself. -1 with ENOENT when neither will do.
+ */
+int	ds_bsd_tool(const char *name, const char *legacy, char *buf, size_t len);
+
 #endif /* LIBDS_DS_H */

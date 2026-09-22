@@ -655,6 +655,16 @@ expect {
     "DSCLI-OK" { puts "\nOK: dscli manages local accounts and refuses promote/join cleanly without the jobs" }
 }
 
+# ACCT — passwd, chpass, pw, adduser, rmuser (#255): a system account goes
+# to master.passwd through FreeBSD's tools, a directory user to the plists;
+# passwd edits both. SKIP (warn) if a real database or test account exists.
+expect {
+    timeout { puts "\nWARN: ACCT marker not seen (image predates the account tools — informational)" }
+    -re {ACCT-FAIL[^\r\n]*} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    -re {ACCT-SKIP[^\r\n]*} { puts "\nWARN: $expect_out(0,string)" }
+    "ACCT-OK" { puts "\nOK: the account tools route between the plists and master.passwd" }
+}
+
 # Stage 3+ Phase J runtime: syslogd + notifyd RunAtLoad via plists,
 # then syslog(1) post + read-back round-trip via Mach IPC into the
 # ASL store. See run.sh tail for the test sequence.

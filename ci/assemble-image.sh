@@ -99,6 +99,21 @@ stage_rootfs() {
     # (LaunchDaemons, services/protocols, usr/tests). The user-editable /etc
     # (accounts, sshd_config, pam.d, fstab, the loader fragment) is NOT in the
     # package any more; it is seeded from nextbsd-overlays next (mirrors build.sh).
+    # The account wrappers in the userland (pw, chpass; src/dscli) exec
+    # FreeBSD's originals from /usr/libexec/bsd for root, the system users and
+    # /etc/group. nextbsd-freebsd-compat relocates them there in its base
+    # build; until a base with that directory ships, mirror the relocation
+    # here from the base copies, before the userland overwrites the paths.
+    # A no-op once the base carries /usr/libexec/bsd.
+    if [ ! -e "$ROOTFS/usr/libexec/bsd/pw" ]; then
+        mkdir -p "$ROOTFS/usr/libexec/bsd"
+        [ -f "$ROOTFS/usr/sbin/pw" ] && cp -p "$ROOTFS/usr/sbin/pw" "$ROOTFS/usr/libexec/bsd/pw"
+        [ -f "$ROOTFS/usr/bin/chpass" ] && cp -p "$ROOTFS/usr/bin/chpass" "$ROOTFS/usr/libexec/bsd/chpass"
+        for l in chfn chsh ypchpass ypchfn ypchsh; do
+            ln -sf chpass "$ROOTFS/usr/libexec/bsd/$l"
+        done
+        log "kept FreeBSD's pw and chpass under /usr/libexec/bsd (until the base ships them there)"
+    fi
     tar -C "$ROOTFS" -xzf "$USERLAND_TGZ"
     # Third-party base programs from nextbsd-contrib (sudo, zsh, pico). Optional
     # so a local run without the artifact still assembles; CI always passes it.
@@ -211,9 +226,12 @@ fixup_rootfs() {
     # packages this ownership verbatim.
     chown -R 0:0 "$ROOTFS"
     # Linux chown(2) clears S_ISUID/S_ISGID even when root does it, so re-apply
-    # the setuid bits after the chown. nextbsd-contrib stages sudo as 4511.
-    for suid in usr/bin/sudo; do
-        [ -f "$ROOTFS/$suid" ] && chmod 4511 "$ROOTFS/$suid"   # Darwin: -r-s--x--x
+    # the setuid bits after the chown. nextbsd-contrib stages sudo as 4511
+    # (Darwin: -r-s--x--x); passwd and chpass (src/dscli) and FreeBSD's chpass
+    # kept under /usr/libexec/bsd are 4555 as FreeBSD ships them.
+    for suid in usr/bin/sudo:4511 usr/bin/passwd:4555 usr/bin/chpass:4555 \
+                usr/libexec/bsd/chpass:4555; do
+        [ -f "$ROOTFS/${suid%:*}" ] && chmod "${suid#*:}" "$ROOTFS/${suid%:*}"
     done
 }
 

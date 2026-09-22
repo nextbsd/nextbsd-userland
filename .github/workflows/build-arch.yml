@@ -130,8 +130,12 @@ jobs:
           # master.passwd must be 0600 (git can't store sub-0644 modes); the
           # /etc symlink is created by the consumer's apple_private_layout.
           [ -f /stage/private/etc/master.passwd ] && chmod 0600 /stage/private/etc/master.passwd
-          # (placeholder) re-apply setuid bits the unprivileged cross-install
-          # drops — none in the Tier 0-2 system layer today.
+          # Re-apply setuid bits the unprivileged cross-install drops: passwd
+          # and chpass from src/dscli are 4555 as FreeBSD ships them (their
+          # hard links chfn, chsh, yppasswd share the inode and the mode).
+          for f in usr/bin/passwd usr/bin/chpass; do
+            [ -f "/stage/$f" ] && chmod 4555 "/stage/$f"
+          done
           tar -C /stage -czf "/tmp/nextbsd-userland-${{ inputs.arch }}.tar.gz" .
 
       - uses: actions/upload-artifact@v4

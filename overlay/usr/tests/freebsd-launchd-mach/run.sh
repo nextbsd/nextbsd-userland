@@ -1037,6 +1037,159 @@ else
     fi
 fi
 
+# ACCT — passwd, chpass/chfn/chsh, pw, adduser and rmuser (nextbsd/
+# nextbsd-userland#255, E18 U9). Every familiar command routes: a system
+# account (uid <= 499, or nologin with no home) goes to master.passwd
+# through FreeBSD's pw and chpass kept at /usr/libexec/bsd, and passwd edits
+# master.passwd itself with libutil; everything else goes to the
+# DirectoryServices plists. A throwaway system user _acct and a directory
+# user bob exercise both sides, adduser and rmuser run scripted, and every
+# trace is removed afterwards.
+echo "==> account tools: passwd, chpass, pw, adduser, rmuser route to the plists or master.passwd"
+acct_dir=/Local/Library/DirectoryServices
+acct_fail=""
+acct_try() {   # acct_try LABEL cmd...  (must succeed)
+    acct_label=$1; shift
+    if acct_out=$("$@" 2>&1); then
+        return 0
+    fi
+    [ -n "$acct_fail" ] || acct_fail="$acct_label: $(echo "$acct_out" | tr '\n' ' ')"
+    return 1
+}
+acct_missing=""
+for f in /usr/bin/passwd /usr/bin/chpass /usr/bin/chfn /usr/bin/chsh /usr/sbin/pw /usr/sbin/adduser /usr/sbin/rmuser /usr/sbin/dscli; do
+    [ -x "$f" ] || acct_missing="$acct_missing $f"
+done
+if [ -n "$acct_missing" ]; then
+    echo "ACCT-FAIL: missing:$acct_missing"
+elif [ -e "$acct_dir/Users.plist" ] || [ -e /Network/Library/DirectoryServices/Users.plist ] || \
+     [ -e /Local/Users/bob ] || [ -e /Local/Users/carol ] || [ -e /Local/Users/acctadmin ] || \
+     grep -qE '^(_acct|bob|carol):' /etc/master.passwd; then
+    echo "ACCT-SKIP: a DirectoryServices database or a test account already exists; not touching it"
+else
+    if [ ! -u /usr/bin/passwd ] || [ ! -u /usr/bin/chpass ]; then
+        acct_fail="passwd or chpass is not setuid root ($(ls -l /usr/bin/passwd /usr/bin/chpass | awk '{ print $1 }' | tr '\n' ' '))"
+    elif [ ! -x /usr/libexec/bsd/pw ]; then
+        acct_fail="/usr/libexec/bsd/pw (FreeBSD's pw, for system accounts) is missing"
+    fi
+    # 1. A system account: FreeBSD's pw, master.passwd.
+    [ -z "$acct_fail" ] && acct_try "pw useradd _acct (system)" /usr/sbin/pw useradd -n _acct -u 499 -s /usr/sbin/nologin -d /nonexistent -c "ACCT test"
+    if [ -z "$acct_fail" ]; then
+        acct_out=$(/usr/sbin/pw usershow _acct 2>&1)
+        if ! grep -q '^_acct:' /etc/master.passwd; then
+            acct_fail="_acct did not land in master.passwd"
+        elif ! echo "$acct_out" | grep -q '^_acct:\*:499:'; then
+            acct_fail="pw usershow _acct: $acct_out"
+        fi
+    fi
+    # 2. A directory user through pw: the plists, a home, passwd(5) output.
+    [ -z "$acct_fail" ] && acct_try "dscli init" /usr/sbin/dscli init --admin-user acctadmin --real-name "Acct Admin" --no-password
+    [ -z "$acct_fail" ] && acct_try "pw useradd bob -m" /usr/sbin/pw useradd -n bob -c "Bob" -m
+    if [ -z "$acct_fail" ]; then
+        acct_out=$(/usr/sbin/pw usershow bob 2>&1)
+        if ! /usr/sbin/dscli user show bob >/dev/null 2>&1; then
+            acct_fail="bob is not in Users.plist"
+        elif grep -q '^bob:' /etc/master.passwd; then
+            acct_fail="bob landed in master.passwd"
+        elif [ ! -d /Local/Users/bob ]; then
+            acct_fail="pw useradd -m did not create /Local/Users/bob"
+        elif ! echo "$acct_out" | grep -q '^bob:\*:[0-9]*:[0-9]*::0:0:Bob:/Local/Users/bob:/bin/zsh$'; then
+            acct_fail="pw usershow bob: $acct_out"
+        elif [ "$(/usr/sbin/pw usershow -a 2>/dev/null | grep -c '^bob:')" != 1 ] || ! /usr/sbin/pw usershow -a 2>/dev/null | grep -q '^root:'; then
+            acct_fail="pw usershow -a must list bob once and root from FreeBSD's pw"
+        fi
+    fi
+    # 3. passwd: root sets a directory user's (plist) and a system user's (master.passwd).
+    if [ -z "$acct_fail" ]; then
+        if ! printf 'secret\n' | /usr/bin/passwd bob >/dev/null 2>&1; then
+            acct_fail="passwd bob via stdin failed: $(printf 'secret\n' | /usr/bin/passwd bob 2>&1 | tr '\n' ' ')"
+        elif ! echo secret | /usr/sbin/dscli user verify bob >/dev/null 2>&1; then
+            acct_fail="the password passwd set for bob does not verify"
+        elif ! printf 'secret\n' | /usr/bin/passwd _acct >/dev/null 2>&1; then
+            acct_fail="passwd _acct (master.passwd) failed: $(printf 'secret\n' | /usr/bin/passwd _acct 2>&1 | tr '\n' ' ')"
+        elif ! grep -q '^_acct:\$6\$' /etc/master.passwd; then
+            acct_fail="passwd _acct did not write a SHA-512 hash to master.passwd: $(grep '^_acct:' /etc/master.passwd | cut -d: -f1,2)"
+        elif [ "$(getent passwd _acct | cut -d: -f2 | cut -c1-3)" != '$6$' ]; then
+            acct_fail="pwd_mkdb did not run after passwd _acct (getent shows $(getent passwd _acct | cut -d: -f2))"
+        fi
+    fi
+    # 4. chsh and chfn on a directory user.
+    [ -z "$acct_fail" ] && acct_try "chsh -s /bin/sh bob" /usr/bin/chsh -s /bin/sh bob
+    [ -z "$acct_fail" ] && acct_try "chfn -f 'Bob B' bob" /usr/bin/chfn -f "Bob B" bob
+    if [ -z "$acct_fail" ]; then
+        acct_out=$(/usr/sbin/dscli user show bob 2>&1)
+        if ! echo "$acct_out" | grep -q '^Shell:      /bin/sh'; then
+            acct_fail="chsh did not change bob's shell: $(echo "$acct_out" | tr '\n' ' ')"
+        elif ! echo "$acct_out" | grep -q '^Real name:  Bob B'; then
+            acct_fail="chfn did not change bob's real name: $(echo "$acct_out" | tr '\n' ' ')"
+        elif /usr/bin/chsh -s /nonexistent/sh bob >/dev/null 2>&1; then
+            : # root may set an unlisted shell (warned); nothing to check
+        fi
+        /usr/bin/chsh -s /bin/sh bob >/dev/null 2>&1
+    fi
+    # 5. pw lock / unlock on a directory user.
+    [ -z "$acct_fail" ] && acct_try "pw lock bob" /usr/sbin/pw lock bob
+    if [ -z "$acct_fail" ] && echo secret | /usr/sbin/dscli user verify bob >/dev/null 2>&1; then
+        acct_fail="a locked bob still verifies"
+    fi
+    [ -z "$acct_fail" ] && acct_try "pw unlock bob" /usr/sbin/pw unlock bob
+    if [ -z "$acct_fail" ] && ! echo secret | /usr/sbin/dscli user verify bob >/dev/null 2>&1; then
+        acct_fail="an unlocked bob does not verify"
+    fi
+    # 6. Groups: a directory group through pw, a system group through FreeBSD's.
+    [ -z "$acct_fail" ] && acct_try "pw groupadd staff -M bob" /usr/sbin/pw groupadd staff -M bob
+    if [ -z "$acct_fail" ]; then
+        acct_out=$(/usr/sbin/pw groupshow staff 2>&1)
+        case $acct_out in
+            staff:x:*:bob) ;;
+            *) acct_fail="pw groupshow staff: $acct_out" ;;
+        esac
+    fi
+    [ -z "$acct_fail" ] && acct_try "pw groupmod staff -d bob" /usr/sbin/pw groupmod staff -d bob
+    [ -z "$acct_fail" ] && acct_try "pw groupdel staff" /usr/sbin/pw groupdel staff
+    if [ -z "$acct_fail" ] && ! /usr/sbin/pw groupshow wheel 2>/dev/null | grep -q '^wheel:'; then
+        acct_fail="pw groupshow wheel (a system group) failed: $(/usr/sbin/pw groupshow wheel 2>&1 | tr '\n' ' ')"
+    fi
+    # 7. adduser and rmuser, scripted through their prompts.
+    if [ -z "$acct_fail" ]; then
+        if ! printf 'carol\nCarol C\n\n/bin/sh\nno\nsecret\nsecret\nyes\n' | /usr/sbin/adduser >/dev/null 2>&1; then
+            acct_fail="adduser scripted run failed: $(printf 'carol\nCarol C\n\n/bin/sh\nno\nsecret\nsecret\nyes\n' | /usr/sbin/adduser 2>&1 | tail -3 | tr '\n' ' ')"
+        elif ! /usr/sbin/dscli user show carol >/dev/null 2>&1; then
+            acct_fail="adduser did not create carol"
+        elif ! echo secret | /usr/sbin/dscli user verify carol >/dev/null 2>&1; then
+            acct_fail="the password adduser set for carol does not verify"
+        elif ! printf 'yes\nyes\n' | /usr/sbin/rmuser carol >/dev/null 2>&1; then
+            acct_fail="rmuser scripted run failed: $(printf 'yes\nyes\n' | /usr/sbin/rmuser carol 2>&1 | tail -3 | tr '\n' ' ')"
+        elif /usr/sbin/dscli user show carol >/dev/null 2>&1; then
+            acct_fail="rmuser did not remove carol"
+        elif [ -e /Local/Users/carol ]; then
+            acct_fail="rmuser left /Local/Users/carol"
+        fi
+    fi
+    # 8. Deletion on both sides.
+    [ -z "$acct_fail" ] && acct_try "pw userdel bob -r" /usr/sbin/pw userdel -n bob -r
+    if [ -z "$acct_fail" ]; then
+        if [ -e /Local/Users/bob ]; then
+            acct_fail="pw userdel -r left /Local/Users/bob"
+        elif /usr/sbin/dscli user show bob >/dev/null 2>&1; then
+            acct_fail="bob is still in Users.plist after pw userdel"
+        fi
+    fi
+    [ -z "$acct_fail" ] && acct_try "pw userdel _acct" /usr/sbin/pw userdel -n _acct
+    if [ -z "$acct_fail" ] && grep -q '^_acct:' /etc/master.passwd; then
+        acct_fail="_acct is still in master.passwd after pw userdel"
+    fi
+    # Leave no trace, whatever happened above.
+    /usr/sbin/pw userdel -n _acct >/dev/null 2>&1
+    grep -q '^_acct:' /etc/master.passwd && /usr/libexec/bsd/pw userdel -n _acct >/dev/null 2>&1
+    rm -rf /Local/Library/DirectoryServices /Local/Users/bob /Local/Users/carol /Local/Users/acctadmin
+    if [ -n "$acct_fail" ]; then
+        echo "ACCT-FAIL: $acct_fail"
+    else
+        echo "ACCT-OK: pw routes _acct to master.passwd and bob to the plists; passwd edits both; chsh/chfn, lock/unlock, groups, adduser/rmuser work; all cleaned up"
+    fi
+fi
+
 # 10. ASL runtime smoke (Phase J). Task #41 move_member wire-up
 # landed but a follow-on halt-after-bootstrap-remote regression is
 # under investigation. Keep test at SKIP for now.

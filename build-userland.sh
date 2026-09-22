@@ -889,6 +889,27 @@ needed_check "$DESTDIR/usr/sbin/dscli" "libdns_sd"
 needed_check "$DESTDIR/usr/sbin/dscli" "libcrypt"
 echo "==> dscli built"
 
+# ---- account tools: passwd, chpass, pw, adduser, rmuser (#255, E18 U9) -----
+# FreeBSD's command lines, routed: a proper user's record is in the
+# DirectoryServices plists (edited through libds), root and the system users
+# stay in master.passwd (passwd edits it with libutil; chpass and pw exec
+# FreeBSD's originals, which nextbsd-freebsd-compat keeps at
+# /usr/libexec/bsd). passwd and chpass are setuid root like FreeBSD's; the
+# bit is applied here and again after the image assembly's chown.
+comp "account tools (passwd, chpass, pw, adduser, rmuser)"
+for d in passwd chpass pw adduser; do
+    run_buildenv "make -C $SRC/dscli/$d DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+done
+for f in usr/bin/passwd usr/bin/yppasswd usr/bin/chpass usr/bin/chfn usr/bin/chsh \
+         usr/bin/ypchpass usr/bin/ypchfn usr/bin/ypchsh usr/sbin/pw \
+         usr/sbin/adduser usr/sbin/rmuser; do
+    test -x "$DESTDIR/$f" || { echo "FAIL: /$f not installed"; exit 1; }
+done
+chmod 4555 "$DESTDIR/usr/bin/passwd" "$DESTDIR/usr/bin/chpass"   # hard links share the mode
+needed_check "$DESTDIR/usr/bin/passwd" "libutil"
+needed_check "$DESTDIR/usr/bin/passwd" "libcrypt"
+echo "==> account tools built"
+
 # =============================================================================
 # TIER 3 — on-image test binaries (freebsd-launchd-mach suite).
 # build.sh builds these natively and installs them to

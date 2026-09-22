@@ -1,0 +1,94 @@
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\" Copyright (c) 2026 The NextBSD Project
+.Dd September 22, 2026
+.Dt CHPASS 1
+.Os
+.Sh NAME
+.Nm chpass ,
+.Nm chfn ,
+.Nm chsh
+.Nd change a user's full name or shell
+.Sh SYNOPSIS
+.Nm chpass
+.Op Fl f Ar full-name
+.Op Fl s Ar shell
+.Op Ar user
+.Nm chfn
+.Op Fl f Ar full-name
+.Op Ar user
+.Nm chsh
+.Op Fl s Ar shell
+.Op Ar user
+.Sh DESCRIPTION
+.Nm
+edits the account of
+.Ar user ,
+or the caller's when no user is given.
+.Pp
+On NextBSD an account lives in one of two places, and
+.Nm
+edits whichever holds it:
+.Bl -bullet
+.It
+A proper user is a record in
+.Pa Users.plist
+under
+.Pa /Local/Library/DirectoryServices
+.Po
+or under
+.Pa /Network/Library/DirectoryServices
+on a machine joined to a directory server
+.Pc .
+.Fl f
+sets its
+.Va realName
+and
+.Fl s
+its
+.Va shell .
+With neither, the record is printed.
+The other fields of a directory user
+.Pq uid, gid, groups, password
+belong to
+.Xr dscli 8
+and
+.Xr passwd 1 .
+.It
+Root and the system users are in
+.Pa /etc/master.passwd .
+For them FreeBSD's
+.Nm ,
+kept at
+.Pa /usr/libexec/bsd/chpass ,
+is run with the same arguments and behaves as documented there.
+.El
+.Pp
+A user may change their own full name and shell after typing their
+password; root may change anyone's.
+A user's new shell must be listed in
+.Pa /etc/shells ;
+root is only warned.
+On a joined client the accounts in use are the server's and
+.Nm
+refuses to edit them.
+.Sh FILES
+.Bl -tag -width "/Network/Library/DirectoryServices/Users.plist" -compact
+.It Pa /Local/Library/DirectoryServices/Users.plist
+directory users
+.It Pa /Network/Library/DirectoryServices/Users.plist
+the server's users, when joined
+.It Pa /etc/master.passwd
+root and the system users
+.It Pa /etc/shells
+the shells a user may choose
+.It Pa /usr/libexec/bsd/chpass
+FreeBSD's
+.Nm ,
+for system accounts
+.El
+.Sh SEE ALSO
+.Xr passwd 1 ,
+.Xr shells 5 ,
+.Xr dscli 8 ,
+.Xr pw 8 ,
+.Xr vipw 8

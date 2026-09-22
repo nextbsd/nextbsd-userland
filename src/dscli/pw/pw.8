@@ -1,0 +1,153 @@
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\" Copyright (c) 2026 The NextBSD Project
+.Dd September 22, 2026
+.Dt PW 8
+.Os
+.Sh NAME
+.Nm pw
+.Nd create, remove, modify and display users and groups
+.Sh SYNOPSIS
+.Nm
+.Op Fl q
+.Ar command
+.Op Ar name Ns | Ns Ar id
+.Op Ar options
+.Sh DESCRIPTION
+.Nm
+takes the same command line as FreeBSD's
+.Nm :
+.Cm useradd , userdel , usermod , usershow , usernext , lock , unlock ,
+.Cm groupadd , groupdel , groupmod , groupshow
+and
+.Cm groupnext ,
+in their
+.Cm user add
+and
+.Cm adduser
+spellings too.
+What differs on NextBSD is where an account goes.
+.Ss Where accounts live
+.Bl -bullet
+.It
+Root, the system users and every group in
+.Pa /etc/group
+stay in
+.Pa /etc/master.passwd
+and
+.Pa /etc/group .
+For them FreeBSD's
+.Nm ,
+kept at
+.Pa /usr/libexec/bsd/pw ,
+is run with exactly the arguments given, so a package install script's
+.Dl pw useradd -n _svc -u 123 -s /usr/sbin/nologin -d /nonexistent
+lands where it always has.
+.It
+Proper users and their groups are records in
+.Pa Users.plist
+and
+.Pa Groups.plist
+under
+.Pa /Local/Library/DirectoryServices ,
+the same files
+.Xr dscli 8
+edits and the name service reads.
+.El
+.Pp
+An existing account is found where it is.
+A new user is a system account when its uid
+.Pq Fl u
+is 499 or below, or its shell is
+.Pa /usr/sbin/nologin
+with no home
+.Pq Fl d Pa /nonexistent No or none ;
+otherwise it is a directory user.
+A new group is a system group when its gid
+.Pq Fl g
+is 499 or below, or it has no gid and a name starting with
+.Ql _ ;
+otherwise it is a directory group.
+.Ss Directory accounts
+For a directory user
+.Nm
+honours
+.Fl n , u , c , d , g , G , m , s , o , w , h , H
+and
+.Fl l ,
+with these differences from FreeBSD:
+.Bl -bullet
+.It
+The home is always
+.Pa /Local/Users/ Ns Ar name ;
+.Fl d
+must name it and
+.Fl m
+creates it with the skeleton from
+.Pa /usr/share/skel .
+.It
+.Fl c
+sets the record's
+.Va realName .
+The default shell is
+.Pa /bin/zsh .
+.It
+.Fl w
+accepts
+.Cm no
+.Pq no usable password, the default ,
+.Cm none
+.Po
+log in without one: the record's
+.Va noPassword
+.Pc
+and
+.Cm yes
+.Pq the user name .
+.Fl h
+reads the password from a file descriptor and
+.Fl H
+a pre-encrypted SHA-512 hash.
+.It
+.Fl G
+lists directory groups only; a directory user cannot be put into a group
+from
+.Pa /etc/group .
+.It
+Login classes, expiry dates and the other FreeBSD-only fields
+.Pq Fl L , e , p , i , b
+are refused.
+.El
+.Pp
+.Cm usershow -a
+and
+.Cm groupshow -a
+print the directory records and then FreeBSD's.
+.Cm lock
+and
+.Cm unlock
+prefix the hash with
+.Ql *LOCKED* ,
+as FreeBSD does.
+.Pp
+On a joined client the accounts in use are the server's and
+.Nm
+refuses to edit them.
+.Sh FILES
+.Bl -tag -width "/Local/Library/DirectoryServices/Groups.plist" -compact
+.It Pa /Local/Library/DirectoryServices/Users.plist
+directory users
+.It Pa /Local/Library/DirectoryServices/Groups.plist
+directory groups
+.It Pa /etc/master.passwd , /etc/group
+root, the system users and groups
+.It Pa /usr/libexec/bsd/pw
+FreeBSD's
+.Nm
+.El
+.Sh SEE ALSO
+.Xr chpass 1 ,
+.Xr passwd 1 ,
+.Xr adduser 8 ,
+.Xr dscli 8 ,
+.Xr rmuser 8 ,
+.Xr vipw 8
