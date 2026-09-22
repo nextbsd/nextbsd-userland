@@ -44,6 +44,11 @@
 #ifndef nitems
 #define nitems(x)	(sizeof((x)) / sizeof((x)[0]))
 #endif
+/* The lock is taken and released in separate calls by design; clang's
+ * thread-safety analysis cannot follow that through these wrappers. */
+#ifndef __no_lock_analysis
+#define __no_lock_analysis
+#endif
 #if defined(__APPLE__) && !defined(st_mtim)
 #define st_mtim		st_mtimespec	/* host-side tests only */
 #endif
@@ -81,13 +86,13 @@ static size_t nusers;
 static struct ds_group *groups;
 static size_t ngroups;
 
-void
+void __no_lock_analysis
 dsdb_lock(void)
 {
 	(void)pthread_mutex_lock(&dsdb_mutex);
 }
 
-void
+void __no_lock_analysis
 dsdb_unlock(void)
 {
 	(void)pthread_mutex_unlock(&dsdb_mutex);
@@ -97,7 +102,7 @@ dsdb_unlock(void)
  * After fork(2) the child has one thread and inherits the mutex in
  * whatever state it was in; make it usable again.
  */
-void
+void __no_lock_analysis
 dsdb_atfork_child(void)
 {
 	pthread_mutex_t fresh = PTHREAD_MUTEX_INITIALIZER;
