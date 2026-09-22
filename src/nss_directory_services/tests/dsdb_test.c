@@ -1,6 +1,6 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause
- * Copyright (c) 2026 The NextBSD Project
+ * Copyright (c) 2026 Joseph Maloney
  *
  * Host-side tests for the plist reader and the database layer. Fixtures
  * are written into a temporary directory tree that stands in for /Local

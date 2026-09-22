@@ -1,7 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * Copyright (c) 2026 The NextBSD Project
+ * Copyright (c) 2026 Joseph Maloney
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -45,13 +45,15 @@
  * the caller retries with a larger one, and enumeration keeps a per-process
  * cursor between setpwent(3) and endpwent(3).
  *
- * The plist format and the lookup rules (the /Network over /Local choice,
- * the passwd field rules, wheel for members of admin, the hardware-access
- * groups) are those of Gershwin's DirectoryServices (dshelper, nss_gershwin
- * and dscli), written by Joe Maloney for Gershwin in 2026 and published
- * under BSD-2-Clause in gershwin-desktop/gershwin-components, so that
- * Gershwin's dshelper and this module read the same files. The code here
- * is a new implementation for FreeBSD's nsswitch interface.
+ * Adapted by Joseph Maloney from his DirectoryServices NSS module for
+ * Gershwin (nss_gershwin and dshelper in gershwin-desktop/
+ * gershwin-components, BSD-2-Clause), which resolves the same plists
+ * through a helper daemon over a socket. This version is integrated for
+ * NextBSD: it reads the plists directly through FreeBSD's nsswitch
+ * interface, keeping the file format and the lookup rules (the /Network
+ * over /Local choice, the passwd field rules, wheel for members of admin,
+ * the hardware-access groups) so Gershwin's dshelper and this module
+ * read the same files.
  */
 
 #include <sys/param.h>
