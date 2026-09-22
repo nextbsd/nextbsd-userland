@@ -163,12 +163,17 @@ jobs:
           BASE_TGZ: /tmp/base.tar.gz
           KERNEL_TGZ: ${{ github.workspace }}/art/nextbsd-kernel-${{ inputs.arch }}.tar.gz
           USERLAND_TGZ: /tmp/nextbsd-userland-${{ inputs.arch }}.tar.gz
+          CONTRIB_TGZ: ${{ github.workspace }}/art/nextbsd-contrib-${{ inputs.arch }}.tar.gz
           OVERLAY: ${{ github.workspace }}/overlay
           WORK: ${{ github.workspace }}/nbimg
         run: |
           mkdir -p art
           gh release download continuous -R nextbsd-redux/nextbsd-kernel \
             --pattern 'nextbsd-kernel-${{ inputs.arch }}.tar.gz' --dir art --clobber
+          # Third-party base programs (sudo, zsh, pico) from nextbsd-contrib, so
+          # the boot test's SUDO check runs against the real image layout.
+          gh release download continuous -R nextbsd/nextbsd-contrib \
+            --pattern 'nextbsd-contrib-${{ inputs.arch }}.tar.gz' --dir art --clobber
           # Kext tarballs are per-arch, but the release also carries legacy
           # UNSUFFIXED ones that are x86-64 builds. assemble-image.sh extracts
           # every tarball into the same /System/Library/Extensions in `ls`

@@ -863,6 +863,39 @@ else
     fi
 fi
 
+# SUDO — base sudo from nextbsd-contrib (nextbsd/nextbsd-userland#247). The
+# binary must be setuid root (assemble-image.sh re-applies the bit after its
+# chown), it must run, and its policy plugin must load. /etc/sudoers and
+# /etc/pam.d/sudo come from nextbsd-overlays; until /etc/sudoers is there, the
+# policy checks SKIP.
+echo "==> sudo: setuid binary, plugin, policy"
+if [ ! -x /usr/bin/sudo ]; then
+    echo "SUDO-FAIL: /usr/bin/sudo missing"
+elif [ ! -u /usr/bin/sudo ] || [ "$(stat -f %Su /usr/bin/sudo)" != root ]; then
+    echo "SUDO-FAIL: /usr/bin/sudo is not setuid root ($(stat -f '%Sp %Su' /usr/bin/sudo))"
+else
+    sudo_ver=$(/usr/bin/sudo -V 2>&1 | awk '/^Sudo version/ { print $3; exit }')
+    sudo_man_missing=""
+    for m in man8/sudo.8 man8/visudo.8; do
+        ls /usr/share/man/$m* >/dev/null 2>&1 || sudo_man_missing="$sudo_man_missing $m"
+    done
+    if [ -n "$sudo_man_missing" ]; then
+        echo "SUDO-FAIL: man pages missing:$sudo_man_missing"
+    elif [ -e /usr/libexec/sudo ] || [ -e /usr/bin/sudoedit ]; then
+        echo "SUDO-FAIL: extras beyond sudo and visudo are installed (/usr/libexec/sudo or sudoedit)"
+    elif [ -z "$sudo_ver" ]; then
+        echo "SUDO-FAIL: sudo -V did not run: $(/usr/bin/sudo -V 2>&1 | head -2 | tr '\n' ' ')"
+    elif [ ! -f /etc/sudoers ]; then
+        echo "SUDO-SKIP: sudo $sudo_ver runs setuid root; no /etc/sudoers yet (nextbsd-overlays)"
+    elif ! sudo_chk=$(/usr/sbin/visudo -c 2>&1); then
+        echo "SUDO-FAIL: visudo -c: $(echo "$sudo_chk" | tr '\n' ' ')"
+    elif [ "$(/usr/bin/sudo -n -u nobody /usr/bin/id -un 2>&1)" != nobody ]; then
+        echo "SUDO-FAIL: sudo -n -u nobody id -un: $(/usr/bin/sudo -n -u nobody /usr/bin/id -un 2>&1 | head -2 | tr '\n' ' ')"
+    else
+        echo "SUDO-OK: sudo $sudo_ver setuid root; sudo + visudo + man pages only; visudo -c clean; root -> nobody works"
+    fi
+fi
+
 # 10. ASL runtime smoke (Phase J). Task #41 move_member wire-up
 # landed but a follow-on halt-after-bootstrap-remote regression is
 # under investigation. Keep test at SKIP for now.

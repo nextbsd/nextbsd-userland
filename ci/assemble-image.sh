@@ -16,6 +16,7 @@
 #   KERNEL_TGZ  nextbsd-kernel-$ARCH.tar.gz          (-> /boot/kernel/kernel)
 #   MODULES_TGZ space-separated kext tarball(s)      (-> /System/Library/Extensions)
 #   USERLAND_TGZ nextbsd-userland-$ARCH.tar.gz       (Darwin system layer)
+#   CONTRIB_TGZ nextbsd-contrib-$ARCH.tar.gz         (third-party base programs: sudo, zsh, pico; optional)
 #   OVERLAY     dir whose contents overlay the rootfs (authoritative /etc + plists)
 #   SRC         freebsd-src checkout                 (default /usr/src)
 # Output: $OUT/disk.img
@@ -99,6 +100,12 @@ stage_rootfs() {
     # (accounts, sshd_config, pam.d, fstab, the loader fragment) is NOT in the
     # package any more; it is seeded from nextbsd-overlays next (mirrors build.sh).
     tar -C "$ROOTFS" -xzf "$USERLAND_TGZ"
+    # Third-party base programs from nextbsd-contrib (sudo, zsh, pico). Optional
+    # so a local run without the artifact still assembles; CI always passes it.
+    if [ -n "${CONTRIB_TGZ:-}" ]; then
+        [ -f "$CONTRIB_TGZ" ] || { echo "ERROR: CONTRIB_TGZ=$CONTRIB_TGZ not found" >&2; exit 1; }
+        tar -C "$ROOTFS" -xzf "$CONTRIB_TGZ"
+    fi
     seed_overlays
     apple_private_runtime
 }
@@ -198,8 +205,13 @@ fixup_rootfs() {
     # staged kexts are 1001:1001 -> kextd load fails "authentication problems"
     # (OSReturn 0xdc00800d) and NO driver binds (e1000 stays unattached, 0 NICs).
     # chown the whole staged tree to 0:0; makefs has no -F manifest so it
-    # packages this ownership verbatim. (No setuid bits in this tree to clear.)
+    # packages this ownership verbatim.
     chown -R 0:0 "$ROOTFS"
+    # Linux chown(2) clears S_ISUID/S_ISGID even when root does it, so re-apply
+    # the setuid bits after the chown. nextbsd-contrib stages sudo as 4511.
+    for suid in usr/bin/sudo; do
+        [ -f "$ROOTFS/$suid" ] && chmod 4511 "$ROOTFS/$suid"   # Darwin: -r-s--x--x
+    done
 }
 
 # ---------------------------------------------------------------------------
