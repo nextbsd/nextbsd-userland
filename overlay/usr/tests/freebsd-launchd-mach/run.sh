@@ -1010,7 +1010,8 @@ else
             timeout 5 rpcinfo -p 127.0.0.1 2>/dev/null | grep -q ' nfs$' || nfs_fail="$nfs_fail nfs not registered with rpcbind;"
             mkdir -p /tmp/nfs.test
             if timeout 30 mount -t nfs -o nfsv3,soft,retrycnt=2 127.0.0.1:/Local/Users /tmp/nfs.test 2>/tmp/nfs.mount.err; then
-                mount -t nfs | grep -q ' on /tmp/nfs.test ' || nfs_fail="$nfs_fail loopback mount not in the mount table;"
+                # /tmp is a symlink to private/tmp here; the mount table shows the resolved path.
+                mount -t nfs | grep -q " on $(realpath /tmp/nfs.test) " || nfs_fail="$nfs_fail loopback mount not in the mount table: [$(mount -t nfs | tr '\n' ' ')];"
                 umount /tmp/nfs.test 2>/dev/null || umount -f /tmp/nfs.test 2>/dev/null
             else
                 nfs_fail="$nfs_fail loopback NFSv3 mount of 127.0.0.1:/Local/Users failed: $(tr '\n' ' ' < /tmp/nfs.mount.err);"

@@ -33,7 +33,9 @@ case "$server" in
 esac
 
 mounted() {
-    /sbin/mount -t nfs | /usr/bin/awk -v m="$1" '$3 == m { found = 1 } END { exit !found }'
+    # The mount table shows resolved paths (/tmp -> private/tmp and so on).
+    /sbin/mount -t nfs | /usr/bin/awk -v m="$(/bin/realpath "$1" 2>/dev/null || echo "$1")" \
+        '$3 == m { found = 1 } END { exit !found }'
 }
 
 mount_one() {
