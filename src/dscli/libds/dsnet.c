@@ -131,16 +131,55 @@ ds_binding_remove(void)
 
 /* ---- exports ------------------------------------------------------------- */
 
+/*
+ * One line per filesystem: the kernel takes a single default export per
+ * filesystem (a second line for the same one fails with EPERM, whatever
+ * its options), and both directories normally sit on /. So the exported
+ * directories are grouped by st_dev and each group is one line listing
+ * all of them. No -ro: root maps to nobody, and the plists are root-owned,
+ * so clients cannot alter them. A directory that does not exist yet is
+ * grouped with the root filesystem.
+ */
 int
 ds_exports_write(void)
 {
-	static const char text[] = EXPORTS_HEADER
-	    "/Network/Library/DirectoryServices -ro\n"
-	    "/Local/Users\n";
-	char path[PATH_MAX];
+	static const char *const dirs[] = { DS_LOCAL_USERS, DS_NETWORK_DIR };
+	char path[PATH_MAX], sys[PATH_MAX], text[1024];
+	struct stat st;
+	dev_t dev[2];
+	size_t i, j, n;
+	int done[2] = { 0, 0 };
 
+	for (i = 0; i < 2; i++) {
+		ds_syspath(sys, sizeof(sys), dirs[i]);
+		if (stat(sys, &st) == -1) {
+			ds_syspath(sys, sizeof(sys), "/");
+			if (stat(sys, &st) == -1)
+				return (-1);
+		}
+		dev[i] = st.st_dev;
+	}
+	n = strlcpy(text, EXPORTS_HEADER, sizeof(text));
+	for (i = 0; i < 2; i++) {
+		if (done[i])
+			continue;
+		n = strlcat(text, dirs[i], sizeof(text));
+		done[i] = 1;
+		for (j = i + 1; j < 2; j++) {
+			if (done[j] || dev[j] != dev[i])
+				continue;
+			(void)strlcat(text, " ", sizeof(text));
+			n = strlcat(text, dirs[j], sizeof(text));
+			done[j] = 1;
+		}
+		n = strlcat(text, "\n", sizeof(text));
+	}
+	if (n >= sizeof(text)) {
+		errno = ENAMETOOLONG;
+		return (-1);
+	}
 	ds_syspath(path, sizeof(path), DS_EXPORTS);
-	return (ds_write_atomic(path, text, sizeof(text) - 1, 0644));
+	return (ds_write_atomic(path, text, n, 0644));
 }
 
 bool

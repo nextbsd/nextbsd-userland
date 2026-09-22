@@ -332,11 +332,13 @@ test_network_files(void)
 	CHECK(ds_exports_write() == 0);
 	snprintf(path, sizeof(path), "%s%s", sysroot, DS_EXPORTS);
 	text = ds_read_file(path, NULL);
+	/* Both directories are absent in the test root, so both group with
+	 * the root filesystem: the single-filesystem layout, one line. */
 	CHECK(text != NULL && strcmp(text,
 	    "# Written by dscli promote; dscli demote removes this file.\n"
-	    "/Network/Library/DirectoryServices -ro\n"
-	    "/Local/Users\n") == 0);
+	    "/Local/Users /Network/Library/DirectoryServices\n") == 0);
 	free(text);
+	CHECK(text == NULL || strstr(text, "-ro") == NULL);
 	CHECK(ds_exports_ours());
 	CHECK(ds_role(server, sizeof(server)) == DS_SERVER);
 	put_file(path, "/export/foo -ro\n");

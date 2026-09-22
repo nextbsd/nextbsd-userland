@@ -172,9 +172,11 @@ Create
 .Pa /Network/Library/DirectoryServices ,
 seeded from the local plists; write
 .Pa /etc/exports
-so that directory (read-only) and
+so that directory and
 .Pa /Local/Users
-are served over NFS; enable the
+are served over NFS, one line per filesystem as the kernel requires
+(root maps to nobody, so clients cannot alter the root-owned plists);
+enable the
 .Li org.nextbsd.rpcbind ,
 .Li org.nextbsd.mountd
 and
