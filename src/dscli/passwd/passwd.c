@@ -245,7 +245,12 @@ change_system(const char *name, uid_t ruid, bool delete)
 		warn("lock %s", DS_MASTER_PASSWD);
 		goto out;
 	}
-	tfd = pw_tmp(pfd);
+	/*
+	 * An empty temp file: pw_copy() below copies master.passwd into it
+	 * with the one record replaced, as pam_unix does. (pw_tmp(pfd) would
+	 * copy the file first and leave the record to be appended twice.)
+	 */
+	tfd = pw_tmp(-1);
 	if (tfd == -1) {
 		warn("temporary passwd file");
 		goto out;
