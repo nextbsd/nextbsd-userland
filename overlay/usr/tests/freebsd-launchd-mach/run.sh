@@ -965,6 +965,22 @@ else
     # ---- NFS server: the three jobs, the contract exports, a loopback mount.
     nfs_fail=""
     nfs_made=""
+    # libtirpc needs /etc/netconfig for any transport at all, and rpcinfo
+    # needs /etc/rpc for program names. nextbsd-overlays ships the real
+    # files; until that image exists, minimal stand-ins let the jobs run.
+    nfs_standins=""
+    if [ ! -f /etc/netconfig ]; then
+        printf 'udp6 tpi_clts v inet6 udp - -\ntcp6 tpi_cots_ord v inet6 tcp - -\nudp tpi_clts v inet udp - -\ntcp tpi_cots_ord v inet tcp - -\nlocal tpi_cots_ord - loopback - - -\n' > /etc/netconfig
+        nfs_standins="/etc/netconfig $nfs_standins"
+    fi
+    if [ ! -f /etc/rpc ]; then
+        printf 'portmapper 100000 portmap sunrpc rpcbind\nnfs 100003 nfsprog\nmountd 100005 mount showmount\n' > /etc/rpc
+        nfs_standins="/etc/rpc $nfs_standins"
+    fi
+    if [ ! -f /etc/services ]; then
+        printf 'sunrpc 111/tcp rpcbind\nsunrpc 111/udp rpcbind\nnfsd 2049/tcp nfs\nnfsd 2049/udp nfs\n' > /etc/services
+        nfs_standins="/etc/services $nfs_standins"
+    fi
     for d in /Network/Library/DirectoryServices /Local/Users; do
         [ -d "$d" ] || { mkdir -p "$d"; nfs_made="$d $nfs_made"; }
     done
@@ -986,7 +1002,7 @@ else
             sleep 1; i=$((i + 1))
         done
         if [ "$i" -ge 30 ]; then
-            nfs_fail="showmount -e did not list both exports within 30s: [$(echo "$nfs_exports" | tr '\n' ' ')] rpcinfo: [$(timeout 5 rpcinfo -p 127.0.0.1 2>&1 | awk 'NR > 1 { print $5 }' | sort -u | tr '\n' ' ')] mountd: [$(tail -2 /var/log/mountd.stderr 2>/dev/null | tr '\n' ' ')] nfsd: [$(tail -2 /var/log/nfsd.stderr 2>/dev/null | tr '\n' ' ')]"
+            nfs_fail="showmount -e did not list both exports within 30s: [$(echo "$nfs_exports" | tr '\n' ' ')] rpcinfo: [$(timeout 5 rpcinfo -p 127.0.0.1 2>&1 | awk 'NR > 1 { print $5 }' | sort -u | tr '\n' ' ')] rpcbind: [$(grep -v os_assumes /var/log/rpcbind.stderr 2>/dev/null | tail -2 | tr '\n' ' ')] mountd: [$(grep -v os_assumes /var/log/mountd.stderr 2>/dev/null | tail -2 | tr '\n' ' ')] nfsd: [$(grep -v os_assumes /var/log/nfsd.stderr 2>/dev/null | tail -2 | tr '\n' ' ')]"
         else
             for svc_l in org.nextbsd.rpcbind org.nextbsd.mountd org.nextbsd.nfsd; do
                 case "$(svc_pid "$svc_l")" in ''|-) nfs_fail="$nfs_fail $svc_l has no process;" ;; esac
@@ -1010,6 +1026,7 @@ else
         done
         rm -f /etc/exports /tmp/nfs.mount.err
     fi
+    for f in $nfs_standins; do rm -f "$f"; done
 
     # ---- NFS client: the script does nothing without a binding, and attempts
     # both mounts with one (an unreachable TEST-NET host; -o bg backgrounds the
@@ -1040,7 +1057,7 @@ else
     if [ -n "$nfs_fail" ]; then
         echo "NFS-FAIL:$nfs_fail"
     else
-        echo "NFS-OK: rpcbind + mountd + nfsd served the contract exports (showmount, loopback NFSv3 mount), all Disabled again after unload -w; network-mount idle without a binding and attempts both mounts with one"
+        echo "NFS-OK: rpcbind + mountd + nfsd served the contract exports (showmount, loopback NFSv3 mount), all Disabled again after unload -w; network-mount idle without a binding and attempts both mounts with one${nfs_standins:+ (stand-ins:$nfs_standins)}"
     fi
 fi
 
