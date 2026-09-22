@@ -924,7 +924,7 @@ mdns_write_service() {
 <?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
-  <key>Name</key><string>nbsd static test</string>
+  <key>Name</key><string>nbsdtest-instance</string>
   <key>Type</key><string>_nbsdtest._tcp</string>
   <key>Port</key><integer>12345</integer>
   <key>TXT</key><dict><key>path</key><string>/Network/Library/DirectoryServices</string><key>v</key><string>1</string></dict>
@@ -941,12 +941,12 @@ elif ! grep -q 'MDNS-STATIC-WATCH' /var/log/mDNSResponder.stderr 2>/dev/null; th
 else
     mdns_write_service
     sleep 3
-    if [ "$(mdns_browse 4 | grep -c 'nbsd static test')" -eq 0 ]; then
+    if [ "$(mdns_browse 4 | grep -c 'nbsdtest-instance')" -eq 0 ]; then
         mdns_static_fail="service file dropped in, but dns-sd -B never saw it ($(grep 'MDNS-STATIC' /var/log/mDNSResponder.stderr | tail -2 | tr '\n' ' '))"
     else
         rm -f "$mdns_svcdir/nbsdtest.plist"
         sleep 3
-        if [ "$(mdns_browse 4 | grep -c 'nbsd static test')" -ne 0 ]; then
+        if [ "$(mdns_browse 4 | grep -c 'nbsdtest-instance')" -ne 0 ]; then
             mdns_static_fail="service file removed, but dns-sd -B still lists it"
         else
             # Restart the daemon with the file present: it must come back.
@@ -963,7 +963,7 @@ else
             sleep 3
             if [ -z "$mdns_newpid" ] || [ "$mdns_newpid" = "$mdns_oldpid" ]; then
                 mdns_static_fail="mDNSResponder did not come back after SIGTERM (KeepAlive)"
-            elif [ "$(mdns_browse 6 | grep -c 'nbsd static test')" -eq 0 ]; then
+            elif [ "$(mdns_browse 6 | grep -c 'nbsdtest-instance')" -eq 0 ]; then
                 mdns_static_fail="after a daemon restart the service file was not announced again"
             fi
             rm -f "$mdns_svcdir/nbsdtest.plist"

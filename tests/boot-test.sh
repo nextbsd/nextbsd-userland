@@ -652,7 +652,7 @@ expect {
 # "MDNS-STATIC-WATCH:", which do not match these tokens.
 expect {
     timeout { puts "\nWARN: MDNS-STATIC marker not seen (image predates static service files — informational)" }
-    -re {MDNS-STATIC-FAIL[^\r\n]*} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    -re {MDNS-STATIC-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
     "MDNS-STATIC-OK" { puts "\nOK: mDNSResponder announces and withdraws static service files, across a restart" }
 }
 
