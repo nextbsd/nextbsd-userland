@@ -1110,7 +1110,7 @@ else
         elif ! grep -q '^_acct:\$6\$' /etc/master.passwd; then
             acct_fail="passwd _acct did not write a SHA-512 hash to master.passwd: $(grep '^_acct:' /etc/master.passwd | cut -d: -f1,2)"
         elif [ "$(getent passwd _acct | cut -d: -f2 | cut -c1-3)" != '$6$' ]; then
-            acct_fail="pwd_mkdb did not run after passwd _acct (getent shows $(getent passwd _acct | cut -d: -f2))"
+            acct_fail="pwd_mkdb did not run after passwd _acct (getent shows '$(getent passwd _acct | cut -d: -f2 | cut -c1-12)'; file has '$(grep '^_acct:' /etc/master.passwd | cut -d: -f2 | cut -c1-12)'; $(ls -l /etc/spwd.db /etc/master.passwd 2>&1 | awk '{ print $6, $7, $8, $9 }' | tr '\n' ' '))"
         fi
     fi
     # 4. chsh and chfn on a directory user.

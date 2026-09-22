@@ -254,7 +254,13 @@ change_system(const char *name, uid_t ruid, bool delete)
 		warn("update %s", DS_MASTER_PASSWD);
 		goto out;
 	}
-	if (pw_mkdb(name) == -1) {
+	/*
+	 * Rebuild the whole database from the new file, as vipw does, rather
+	 * than pwd_mkdb's per-user update: master.passwd holds only root and
+	 * the system users here, so a full rebuild is cheap and cannot leave
+	 * pwd.db and spwd.db out of step with the file.
+	 */
+	if (pw_mkdb(NULL) == -1) {
 		warn("pwd_mkdb");
 		goto out;
 	}
