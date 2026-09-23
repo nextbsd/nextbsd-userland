@@ -896,6 +896,87 @@ else
     fi
 fi
 
+# HOMEDIR — the user template and createhomedir (nextbsd/nextbsd-userland#277).
+# Creates a throwaway plist user, points nsswitch at directory_services for the
+# duration so getpwent(3) can see them, builds their home, and checks the
+# template landed: the directory set, Public/Drop Box at 0733, the skeleton dot
+# files, and ownership. Then removes everything it made and restores the switch.
+echo "==> createhomedir: build a home from the user template"
+hd_tmpl="/System/Library/User Template"
+hd_dir=/Local/Library/DirectoryServices
+hd_home=/Local/Users/hdtest
+hd_fail=""
+if [ ! -x /usr/sbin/createhomedir ]; then
+    echo "HOMEDIR-FAIL: /usr/sbin/createhomedir is missing"
+elif [ ! -d "$hd_tmpl/Non_localized" ]; then
+    echo "HOMEDIR-FAIL: $hd_tmpl/Non_localized is missing"
+elif [ -e "$hd_dir/Users.plist" ] || [ -e "$hd_home" ]; then
+    echo "HOMEDIR-SKIP: a DirectoryServices database or $hd_home already exists; not touching it"
+else
+    mkdir -p "$hd_dir"
+    cat > "$hd_dir/Users.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>hdtest</key>
+  <dict>
+    <key>username</key><string>hdtest</string>
+    <key>uid</key><integer>5007</integer>
+    <key>gid</key><integer>5007</integer>
+    <key>realName</key><string>Home Dir Test</string>
+    <key>shell</key><string>/bin/sh</string>
+  </dict>
+</dict>
+PLIST
+    cp -p /etc/nsswitch.conf /tmp/nsswitch.conf.hd
+    sed -e 's/^passwd:.*/passwd: directory_services files/' \
+        /tmp/nsswitch.conf.hd > /etc/nsswitch.conf
+
+    if [ "$(getent passwd hdtest | cut -d: -f6)" != "$hd_home" ]; then
+        hd_fail="hdtest does not resolve to $hd_home: $(getent passwd hdtest 2>&1)"
+    elif ! hd_out=$(/usr/sbin/createhomedir -u hdtest -v 2>&1); then
+        hd_fail="createhomedir: $(echo "$hd_out" | tr '\n' ' ')"
+    elif [ ! -d "$hd_home" ]; then
+        hd_fail="createhomedir made no $hd_home"
+    else
+        # Every template directory, the dot files, and the two declared modes.
+        for d in Desktop Documents Downloads Library Movies Music Pictures Public; do
+            [ -d "$hd_home/$d" ] || hd_fail="missing $hd_home/$d"
+        done
+        [ -d "$hd_home/Public/Drop Box" ] || hd_fail="missing $hd_home/Public/Drop Box"
+        [ -f "$hd_home/.zshrc" ] || hd_fail="missing $hd_home/.zshrc"
+        [ -f "$hd_home/.zprofile" ] || hd_fail="missing $hd_home/.zprofile"
+        if [ -z "$hd_fail" ]; then
+            hd_mode=$(stat -f %Lp "$hd_home/Public/Drop Box")
+            [ "$hd_mode" = 733 ] || hd_fail="Public/Drop Box is $hd_mode, not 733 (__permissions.plist not applied)"
+        fi
+        if [ -z "$hd_fail" ]; then
+            hd_own=$(stat -f %u:%g "$hd_home/Desktop")
+            [ "$hd_own" = "5007:5007" ] || hd_fail="Desktop is owned by $hd_own, not 5007:5007"
+        fi
+        # A second run must be a no-op, not an error: this command repairs.
+        if [ -z "$hd_fail" ] && ! /usr/sbin/createhomedir -u hdtest >/dev/null 2>&1; then
+            hd_fail="createhomedir is not idempotent"
+        fi
+        # A user's own file must survive a re-run.
+        if [ -z "$hd_fail" ]; then
+            echo mine > "$hd_home/.zshrc"
+            /usr/sbin/createhomedir -u hdtest >/dev/null 2>&1
+            [ "$(cat "$hd_home/.zshrc")" = mine ] || hd_fail="createhomedir overwrote an existing dot file"
+        fi
+    fi
+
+    cp -p /tmp/nsswitch.conf.hd /etc/nsswitch.conf
+    rm -f /tmp/nsswitch.conf.hd "$hd_dir/Users.plist"
+    rm -rf "$hd_home"
+    rmdir "$hd_dir" 2>/dev/null || true
+    if [ -n "$hd_fail" ]; then
+        echo "HOMEDIR-FAIL: $hd_fail"
+    else
+        echo "HOMEDIR-OK: template copied, Drop Box 0733, owned by the user, idempotent, keeps existing files"
+    fi
+fi
+
 # NSS-DS — nss_directory_services (nextbsd/nextbsd-userland#249). With a
 # Users.plist and Groups.plist under /Local/Library/DirectoryServices and
 # nsswitch.conf naming directory_services first, a plist user must resolve

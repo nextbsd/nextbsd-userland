@@ -33,6 +33,7 @@ provenance; it does not relicense anything.
 | `hostnamed` | NextBSD (Apple-shape) | APSL-2.0 *(component header)* |
 | `caffeinate` | apple-oss-distributions/PowerManagement | APSL-2.0 |
 | `nss_directory_services` | Joseph Maloney; adapted from his Gershwin DirectoryServices NSS module (gershwin-desktop/gershwin-components) for NextBSD | BSD-2-Clause |
+| `accounts/createhomedir` | NextBSD | BSD-2-Clause |
 
 Two license families dominate: **APSL-2.0** (classic Apple open source) and
 **Apache-2.0** (the swift.org-era projects + mDNSResponder). Both are permissive

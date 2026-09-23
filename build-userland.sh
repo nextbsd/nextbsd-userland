@@ -874,6 +874,16 @@ DESTDIR="$DESTDIR" ninja -C "$NBI_BUILD" install
 test -x "$DESTDIR/usr/sbin/nextbsd-installer" || { echo "FAIL: /usr/sbin/nextbsd-installer not installed"; exit 1; }
 test -f "$DESTDIR/usr/libexec/nextbsd-installer/do-install.sh" || { echo "FAIL: installer engine (do-install.sh) not installed"; exit 1; }
 
+# ---- createhomedir (nextbsd/nextbsd-userland#277, E18 U10) -----------------
+# Builds a home from /System/Library/User Template, which ships in overlay/.
+# Plain libc plus the XML plist reader shared with nss_directory_services;
+# users are enumerated through getpwent(3), so it needs no directory library.
+comp "createhomedir"
+mkdir -p "$DESTDIR/usr/sbin"
+run_buildenv "make -C $SRC/accounts/createhomedir DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/sbin/createhomedir" || { echo "FAIL: /usr/sbin/createhomedir not installed"; exit 1; }
+echo "==> createhomedir built"
+
 # ---- nss_directory_services (nextbsd/nextbsd-userland#249, E18 U3) ---------
 # The `directory_services` source for passwd and group: users and groups
 # straight from /Local (or /Network) Library/DirectoryServices/{Users,Groups}
