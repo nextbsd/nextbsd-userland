@@ -221,7 +221,7 @@ jobs:
           # pkg-free /etc seed: fetch nextbsd-overlays via the API (no git needed
           # in the container) so the stripped userland package's missing /etc is
           # seeded, exactly like nextbsd/build.sh does for the real image.
-          gh api repos/nextbsd-redux/nextbsd-overlays/tarball/main > /tmp/overlays.tar.gz
+          gh api repos/nextbsd-redux/nextbsd-overlays/tarball/seed-admin > /tmp/overlays.tar.gz  # TEMP: verify #278
           mkdir -p "$WORK/seed"
           tar -C "$WORK/seed" --strip-components=1 -xzf /tmp/overlays.tar.gz
           export SEED_ROOTFS="$WORK/seed/rootfs"
