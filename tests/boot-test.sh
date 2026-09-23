@@ -335,12 +335,21 @@ expect {
 # Stage 1b: wait for the getty "login:" prompt. Boot is complete:
 # loader preloaded mach.ko -> kernel mounts the freebsd-ufs root rw ->
 # /sbin/launchd as PID 1 -> getty plist -> login.
+# An image that logs in automatically (nextbsd-userland#278: one user,
+# admin, no password) never prints "login:", because getty's al capability
+# makes it exec login -f. So accept either: the prompt, or a shell prompt
+# of the form user@host ... % that only appears once a shell is running.
+set at_login 1
 expect {
     timeout {
-        puts "\nFAIL: 'login:' prompt not seen within 8 minutes"
+        puts "\nFAIL: neither a 'login:' prompt nor a shell within 8 minutes"
         exit 2
     }
     "login:" { puts "\nOK: boot reached the login prompt" }
+    -re {\r\n\[?\w+@\w[^\r\n]*[%#$] $} {
+        set at_login 0
+        puts "\nOK: boot reached a shell (logged in automatically)"
+    }
 }
 
 # BOOT_GATE=login: stop here — boot proven through kernel + mach + launchd +
@@ -357,21 +366,23 @@ if {$env(BOOT_GATE) eq "login"} {
 # either drops straight to the shell or asks "Password:" and accepts an
 # empty password. Both paths land at a shell prompt; failure is
 # "Login incorrect" or silence.
-send "root\r"
-expect {
-    timeout {
-        puts "\nFAIL: no response after sending root"
-        exit 1
+if {$at_login} {
+    send "root\r"
+    expect {
+        timeout {
+            puts "\nFAIL: no response after sending root"
+            exit 1
+        }
+        "Password:" {
+            send "\r"
+            exp_continue
+        }
+        "Login incorrect" {
+            puts "\nFAIL: root login rejected"
+            exit 1
+        }
+        -re {[#%$] $} { puts "\nOK: at root shell prompt" }
     }
-    "Password:" {
-        send "\r"
-        exp_continue
-    }
-    "Login incorrect" {
-        puts "\nFAIL: root login rejected"
-        exit 1
-    }
-    -re {[#%$] $} { puts "\nOK: at root shell prompt" }
 }
 
 # Stage 3: invoke the on-ISO mach smoke test. Test scripts live under
@@ -381,7 +392,10 @@ expect {
 #   LIBSYSTEM-KERNEL-OK / LIBSYSTEM-KERNEL-FAIL — userland test_libmach
 # Both must pass.
 set saved_marker_timeout $timeout
-send "/usr/tests/freebsd-launchd-mach/run.sh\r"
+# The suite needs root. A manual login above was as root; an automatic one
+# lands as admin, who is in the admin group and so sudoes with no password
+# (pam_unix nullok, since the account has none). One line covers both.
+send "if \[ \"\$(id -u)\" = 0 \]; then /usr/tests/freebsd-launchd-mach/run.sh; else sudo /usr/tests/freebsd-launchd-mach/run.sh; fi\r"
 expect {
     timeout {
         puts "\nFAIL: /usr/tests/freebsd-launchd-mach/run.sh timed out"
