@@ -46,6 +46,14 @@
     the class in nextbsd-overlays, so an image may have one without the
     other, and the fallback is always the ordinary login prompt.
 
+    The home is built here, synchronously, before getty is exec'd. Automatic
+    login happens the instant getty starts, so a one-shot job racing it would
+    lose about as often as not, and login would report "No home directory.
+    Logging in with home = /" on a first boot. createhomedir is idempotent
+    and skips a home that exists, so this costs one stat on every later boot.
+    Repairing every user's home, rather than this one account's, is what
+    createhomedir -a is for, run by hand.
+
     The class must inherit 3wire.9600 rather than FreeBSD's stock autologin
     entries, which chain to std.9600 and hardcode al=root. The 3wire
     settings are load-bearing here: nc (no carrier) is what stopped the
@@ -72,7 +80,7 @@
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>cls=3wire.9600; u=$(/usr/libexec/nextbsd/autologin-user 2>/dev/null) &amp;&amp; [ -n "$u" ] &amp;&amp; grep -q '^nextbsd-autologin' /etc/gettytab 2>/dev/null &amp;&amp; cls=nextbsd-autologin; case "$(kenv -q console)" in *comconsole*) exec /usr/libexec/getty "$cls" console ;; esac; case "$(kenv -q boot_serial)" in [Yy][Ee][Ss]) exec /usr/libexec/getty "$cls" console ;; esac; test -c /dev/ttyv0 &amp;&amp; exec /usr/libexec/getty "$cls" ttyv0; exec /usr/libexec/getty "$cls" console</string>
+        <string>cls=3wire.9600; u=$(/usr/libexec/nextbsd/autologin-user 2>/dev/null) &amp;&amp; [ -n "$u" ] &amp;&amp; grep -q '^nextbsd-autologin' /etc/gettytab 2>/dev/null &amp;&amp; { /usr/sbin/createhomedir -u "$u" &gt;/dev/null 2&gt;&amp;1; cls=nextbsd-autologin; }; case "$(kenv -q console)" in *comconsole*) exec /usr/libexec/getty "$cls" console ;; esac; case "$(kenv -q boot_serial)" in [Yy][Ee][Ss]) exec /usr/libexec/getty "$cls" console ;; esac; test -c /dev/ttyv0 &amp;&amp; exec /usr/libexec/getty "$cls" ttyv0; exec /usr/libexec/getty "$cls" console</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
