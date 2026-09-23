@@ -1,0 +1,155 @@
+.\"-
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" Copyright (c) 2026 Joseph Maloney
+.\"
+.Dd September 23, 2026
+.Dt CREATEHOMEDIR 8
+.Os NextBSD
+.Sh NAME
+.Nm createhomedir
+.Nd create and populate home directories from the user template
+.Sh SYNOPSIS
+.Nm
+.Op Fl bcs
+.Op Fl nv
+.Fl a
+.Nm
+.Op Fl bcs
+.Op Fl nv
+.Fl u Ar user Op Fl u Ar user ...
+.Nm
+.Op Fl bcs
+.Op Fl nv
+.Fl i
+.Sh DESCRIPTION
+.Nm
+creates a user's home directory and fills it from the user template in
+.Pa /System/Library/User Template .
+.Pp
+Home directories are normally created when the account is, by
+.Xr adduser 8
+or
+.Xr pw 8 ,
+and that covers network accounts too, because a network user is created on
+the directory server, where the home lives and is exported to clients.
+.Nm
+therefore exists for repair: a home missing because a plist was restored,
+hand-edited, or copied between machines.
+.Xr login 1
+degrades rather than failing in that case, reporting
+.Dq No home directory. Logging in with home = / ,
+so an affected user is not locked out and
+.Nm
+can be run afterwards.
+.Pp
+Users are enumerated with
+.Xr getpwent 3 ,
+so accounts are read through
+.Xr nsswitch.conf 5
+and any name source is treated alike.
+Only homes under
+.Pa /Local/Users
+or
+.Pa /Network/Users
+are considered; system accounts in
+.Xr master.passwd 5
+point at
+.Pa /var/empty ,
+.Pa /nonexistent
+and similar paths, which must stay absent.
+.Pp
+An existing home is left alone, and within a home an existing file is never
+overwritten, so a user's own dot files outrank the template's.
+.Pp
+The options are:
+.Bl -tag -width indent
+.It Fl a
+Create homes for every user the system can enumerate.
+This is the default when none of
+.Fl a , u
+or
+.Fl i
+is given.
+.It Fl b
+Consider both local and network homes.
+This is the default.
+.It Fl c
+Consider only homes under
+.Pa /Local/Users .
+.It Fl i
+Read user names from standard input, one per line.
+.It Fl n
+Dry run: report what would be done and change nothing.
+This differs from Darwin, where
+.Fl n
+names a directory domain; NextBSD has no equivalent to select.
+.It Fl s
+Consider only homes under
+.Pa /Network/Users .
+.It Fl u Ar user
+Create the home for
+.Ar user .
+May be repeated.
+.It Fl v
+Report each path as it is created.
+.El
+.Sh THE USER TEMPLATE
+.Pa /System/Library/User Template/Non_localized
+is copied into each new home.
+Its directories each contain an empty
+.Pa .localized
+marker, which is both what lets the set be stored and shipped and Darwin's hook
+for
+displaying a translated folder name: the names on disk are the same in
+every language, and only a file manager's display is localised.
+.Pp
+.Pa __permissions.plist
+is applied afterwards, for the modes the copied tree cannot carry.
+It is an array of
+.Ql { Command , Argument , Paths }
+applied in order, where
+.Ql Command
+is
+.Cm CHMOD
+or
+.Cm CHGRP ,
+and each path is relative to the home directory.
+.Sh FILES
+.Bl -tag -width "/System/Library/User Template/__permissions.plist" -compact
+.It Pa /System/Library/User Template/Non_localized
+the tree copied into each home
+.It Pa /System/Library/User Template/__permissions.plist
+modes applied after the copy
+.It Pa /usr/share/skel
+empty, as on
+Darwin ;
+the template replaces it
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Sh EXAMPLES
+Repair every missing home:
+.Pp
+.Dl # createhomedir -a -v
+.Pp
+See what would be created for one user, without changing anything:
+.Pp
+.Dl $ createhomedir -n -v -u jane
+.Sh SEE ALSO
+.Xr nsswitch.conf 5 ,
+.Xr adduser 8 ,
+.Xr pw 8
+.Sh HISTORY
+A
+.Nm
+command first appeared in
+Mac OS X, in section 1 and driven by Open Directory domains.
+The
+.Nm
+described here was written for NextBSD and reads accounts through the
+name-service switch instead.
+.Sh CAVEATS
+.Nm
+does not create the account itself, and will not invent a home for a user the
+system cannot resolve.

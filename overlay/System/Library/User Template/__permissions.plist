@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Modes that cannot be carried by the template tree itself, applied after
+  it is copied into a new home. Darwin ships a file of this name and this
+  schema; NextBSD keeps both, minus the Sites/Streaming entry, since we
+  ship no Sites directory.
+
+  An array of { Command, Argument, Paths }, applied in order. Commands:
+
+    CHMOD   set the mode of the path to Argument
+    CHGRP   set the group of the path to Argument
+
+  Every path is relative to the home directory and begins with "/".
+  createhomedir(8) and the account tools apply this file; nothing reads
+  it at run time.
+-->
+<plist version="1.0">
+<array>
+	<dict>
+		<key>Command</key>
+		<string>CHMOD</string>
+		<key>Argument</key>
+		<string>0755</string>
+		<key>Paths</key>
+		<array>
+			<string>/Public</string>
+		</array>
+	</dict>
+	<dict>
+		<key>Command</key>
+		<string>CHMOD</string>
+		<key>Argument</key>
+		<string>0733</string>
+		<key>Paths</key>
+		<array>
+			<string>/Public/Drop Box</string>
+		</array>
+	</dict>
+</array>
+</plist>

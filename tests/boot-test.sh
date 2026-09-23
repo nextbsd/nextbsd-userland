@@ -645,6 +645,16 @@ expect {
     "SUDO-OK"   { puts "\nOK: base sudo is setuid root and its policy works" }
 }
 
+# HOMEDIR — createhomedir builds a home from the user template (#277): the
+# directory set, Public/Drop Box at 0733, ownership, idempotence, and that it
+# never overwrites a user's own file.
+expect {
+    timeout { puts "\nWARN: HOMEDIR marker not seen (image predates createhomedir — informational)" }
+    -re {HOMEDIR-FAIL[^\r\n]*} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    -re {HOMEDIR-SKIP[^\r\n]*} { puts "\nWARN: $expect_out(0,string)" }
+    "HOMEDIR-OK" { puts "\nOK: createhomedir builds a home from the user template" }
+}
+
 # NSS-DS — nss_directory_services (#249): a plist user resolves through
 # nsswitch on the booted image (getent, id with wheel, ls -l, enumeration),
 # and a /Network copy takes over live. SKIP (warn) if a real database exists.

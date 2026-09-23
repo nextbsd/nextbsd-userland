@@ -896,6 +896,90 @@ else
     fi
 fi
 
+# HOMEDIR — the user template and createhomedir (nextbsd/nextbsd-userland#277).
+# Creates a throwaway plist user, points nsswitch at directory_services for the
+# duration so getpwent(3) can see them, builds their home, and checks the
+# template landed: the directory set, Public/Drop Box at 0733, the skeleton dot
+# files, and ownership. Then removes everything it made and restores the switch.
+# Every failure carries a number, so a bare marker on the console still says
+# which check failed.
+echo "==> createhomedir: build a home from the user template"
+hd_tmpl="/System/Library/User Template"
+hd_dir=/Local/Library/DirectoryServices
+hd_home=/Local/Users/hdtest
+hd_fail=""
+hd_note() { [ -n "$hd_fail" ] || hd_fail="$*"; }
+
+if [ ! -x /usr/sbin/createhomedir ]; then
+    hd_fail="1: /usr/sbin/createhomedir is missing"
+elif [ ! -d "$hd_tmpl/Non_localized" ]; then
+    hd_fail="2: $hd_tmpl/Non_localized is missing"
+elif [ -e "$hd_dir/Users.plist" ] || [ -e "$hd_home" ]; then
+    echo "HOMEDIR-SKIP: a DirectoryServices database or $hd_home already exists; not touching it"
+    hd_fail="skip"
+else
+    mkdir -p "$hd_dir" || hd_note "3: cannot create $hd_dir"
+    {
+        echo '<?xml version="1.0" encoding="UTF-8"?>'
+        echo '<plist version="1.0">'
+        echo '<dict>'
+        echo '  <key>hdtest</key>'
+        echo '  <dict>'
+        echo '    <key>username</key><string>hdtest</string>'
+        echo '    <key>uid</key><integer>5007</integer>'
+        echo '    <key>gid</key><integer>5007</integer>'
+        echo '    <key>realName</key><string>Home Dir Test</string>'
+        echo '    <key>shell</key><string>/bin/sh</string>'
+        echo '  </dict>'
+        echo '</dict>'
+        echo '</plist>'
+    } > "$hd_dir/Users.plist" || hd_note "4: cannot write $hd_dir/Users.plist"
+
+    cp -p /etc/nsswitch.conf /tmp/nsswitch.conf.hd || hd_note "5: cannot save nsswitch.conf"
+    sed -e 's/^passwd:.*/passwd: directory_services files/' \
+        /tmp/nsswitch.conf.hd > /etc/nsswitch.conf || hd_note "6: cannot rewrite nsswitch.conf"
+
+    hd_got=$(getent passwd hdtest 2>&1)
+    if [ -n "$hd_fail" ]; then
+        :
+    elif [ "$(echo "$hd_got" | cut -d: -f6)" != "$hd_home" ]; then
+        hd_note "7: hdtest resolves to [$hd_got], wanted home $hd_home"
+    elif ! hd_out=$(/usr/sbin/createhomedir -u hdtest -v 2>&1); then
+        hd_note "8: createhomedir failed: $(echo "$hd_out" | tr '\n' ' ')"
+    elif [ ! -d "$hd_home" ]; then
+        hd_note "9: createhomedir reported success but made no $hd_home"
+    else
+        for d in Desktop Documents Downloads Library Movies Music Pictures Public; do
+            [ -d "$hd_home/$d" ] || hd_note "10: missing $hd_home/$d"
+        done
+        [ -d "$hd_home/Public/Drop Box" ] || hd_note "11: missing Public/Drop Box"
+        [ -f "$hd_home/.zshrc" ] || hd_note "12: missing .zshrc"
+        [ -f "$hd_home/.zprofile" ] || hd_note "13: missing .zprofile"
+        hd_mode=$(stat -f %Lp "$hd_home/Public/Drop Box" 2>&1)
+        [ "$hd_mode" = 733 ] || hd_note "14: Public/Drop Box is [$hd_mode], not 733"
+        hd_own=$(stat -f %u:%g "$hd_home/Desktop" 2>&1)
+        [ "$hd_own" = "5007:5007" ] || hd_note "15: Desktop owned by [$hd_own], not 5007:5007"
+        # A second run must be a no-op, not an error: this command repairs.
+        /usr/sbin/createhomedir -u hdtest >/dev/null 2>&1 || hd_note "16: not idempotent"
+        # A user's own file must survive a re-run.
+        echo mine > "$hd_home/.zshrc"
+        /usr/sbin/createhomedir -u hdtest >/dev/null 2>&1
+        [ "$(cat "$hd_home/.zshrc" 2>&1)" = mine ] || hd_note "17: overwrote an existing dot file"
+    fi
+
+    cp -p /tmp/nsswitch.conf.hd /etc/nsswitch.conf 2>/dev/null
+    rm -f /tmp/nsswitch.conf.hd "$hd_dir/Users.plist"
+    rm -rf "$hd_home"
+    rmdir "$hd_dir" 2>/dev/null || true
+fi
+if [ "$hd_fail" = skip ]; then
+    :
+elif [ -n "$hd_fail" ]; then
+    echo "HOMEDIR-FAIL: $hd_fail"
+else
+    echo "HOMEDIR-OK: template copied, Drop Box 0733, owned by the user, idempotent, keeps existing files"
+fi
+
 # NSS-DS — nss_directory_services (nextbsd/nextbsd-userland#249). With a
 # Users.plist and Groups.plist under /Local/Library/DirectoryServices and
 # nsswitch.conf naming directory_services first, a plist user must resolve
