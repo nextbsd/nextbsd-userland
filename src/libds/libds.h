@@ -147,7 +147,12 @@ enum ds_error	 ds_user_at(struct ds_handle *h, size_t i,
 
 /* Fails with DS_EEXIST when the name is taken. */
 enum ds_error	 ds_user_add(struct ds_handle *h, const struct ds_userrec *u);
-/* Replaces an existing record wholesale. DS_ENOENT when absent. */
+/*
+ * Update an existing record. DS_ENOENT when absent. Keys libds does not
+ * know about are preserved, because Gershwin's dscli writes these same
+ * files and an admin may have added something by hand. The keys libds does
+ * own are cleared when the caller clears them.
+ */
 enum ds_error	 ds_user_set(struct ds_handle *h, const struct ds_userrec *u);
 enum ds_error	 ds_user_del(struct ds_handle *h, const char *name);
 

@@ -430,6 +430,94 @@ test_xml_escaping_round_trip(void)
 	pl_free(root);
 }
 
+/*
+ * We are not the only writer of these files. Gershwin's dscli manages the
+ * same Users.plist, and an admin may have hand-added something. A modify
+ * must therefore preserve keys libds knows nothing about, while still
+ * clearing the ones it owns when the caller clears them.
+ */
+static void
+test_unknown_keys_survive_a_modify(void)
+{
+	static const char with_extra[] =
+"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+"<plist version=\"1.0\">\n"
+"<dict>\n"
+"\t<key>admin</key>\n"
+"\t<dict>\n"
+"\t\t<key>gid</key>\n"
+"\t\t<integer>5000</integer>\n"
+"\t\t<key>gershwinPicture</key>\n"
+"\t\t<string>/Local/Library/Images/admin.tiff</string>\n"
+"\t\t<key>passwordHash</key>\n"
+"\t\t<string>$6$keepme</string>\n"
+"\t\t<key>realName</key>\n"
+"\t\t<string>Local Administrator</string>\n"
+"\t\t<key>shell</key>\n"
+"\t\t<string>/bin/zsh</string>\n"
+"\t\t<key>uid</key>\n"
+"\t\t<integer>5000</integer>\n"
+"\t\t<key>username</key>\n"
+"\t\t<string>admin</string>\n"
+"\t</dict>\n"
+"</dict>\n"
+"</plist>\n";
+	struct ds_handle *h;
+	struct ds_userrec u;
+	struct pl_node *root;
+	const struct pl_node *rec;
+	const char *s;
+	char path[PATH_MAX], *buf;
+	size_t len;
+
+	fixture_path(path, sizeof(path), DS_USERS_PLIST);
+	write_file(path, with_extra);
+	fixture_path(path, sizeof(path), DS_GROUPS_PLIST);
+	write_file(path, seed_groups);
+
+	ck(ds_open(DS_LOCAL, DS_RDWR, &h) == DS_OK, "open with an extra key");
+	if (h == NULL)
+		return;
+	ck(ds_user_get(h, "admin", &u) == DS_OK, "read admin");
+	ck(u.hasHash, "the existing hash was read");
+	/* Change one field we own, and clear another. */
+	(void)strlcpy(u.shell, "/bin/sh", sizeof(u.shell));
+	u.realName[0] = '\0';
+	ck(ds_user_set(h, &u) == DS_OK, "modify admin");
+	ck(ds_commit(h) == DS_OK, "commit");
+	ds_close(h);
+
+	fixture_path(path, sizeof(path), DS_USERS_PLIST);
+	if ((buf = slurp(path, &len)) == NULL) {
+		ck(false, "could not read back the users plist");
+		return;
+	}
+	root = pl_parse(buf, len);
+	free(buf);
+	ck(root != NULL, "the rewritten file still parses");
+	if (root == NULL)
+		return;
+	rec = pl_dict_get(root, "admin");
+	ck(rec != NULL, "admin is still there");
+	if (rec != NULL) {
+		s = pl_dict_string(rec, "gershwinPicture");
+		ck(s != NULL &&
+		    strcmp(s, "/Local/Library/Images/admin.tiff") == 0,
+		    "a key libds does not know survived: got [%s]",
+		    s == NULL ? "(gone)" : s);
+		s = pl_dict_string(rec, "passwordHash");
+		ck(s != NULL && strcmp(s, "$6$keepme") == 0,
+		    "the hash we did not touch survived");
+		s = pl_dict_string(rec, "shell");
+		ck(s != NULL && strcmp(s, "/bin/sh") == 0,
+		    "the field we changed was changed");
+		s = pl_dict_string(rec, "realName");
+		ck(s == NULL, "the field we cleared was removed, got [%s]",
+		    s == NULL ? "(absent)" : s);
+	}
+	pl_free(root);
+}
+
 /* Mode and owner come from the file being replaced. */
 static void
 test_mode_preserved(void)
@@ -673,6 +761,7 @@ main(void)
 	test_name_validation();
 	test_next_uid();
 	test_xml_escaping_round_trip();
+	test_unknown_keys_survive_a_modify();
 	test_mode_preserved();
 	test_no_temp_files_left();
 	test_groups_committed_first();

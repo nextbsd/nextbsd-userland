@@ -659,11 +659,22 @@ ds_user_get_by_uid(struct ds_handle *h, uid_t uid, struct ds_userrec *out)
 	return (DS_ENOENT);
 }
 
-/* Build the record dictionary for a user. */
+/*
+ * Build or update the record dictionary for a user.
+ *
+ * On a modify we start from a copy of the record already on disk and set
+ * only the fields we understand, so any key we do not know about survives.
+ * That matters because we are not the only writer: Gershwin's dscli
+ * manages these same two files, and an admin may have hand-added
+ * something. Replacing the record wholesale would silently discard it.
+ *
+ * The keys we do own are cleared explicitly when the caller clears them,
+ * so dropping a hash or a realName still works.
+ */
 static enum ds_error
 put_user(struct ds_handle *h, const struct ds_userrec *u, bool replace)
 {
-	CFMutableDictionaryRef rec;
+	CFMutableDictionaryRef rec, old;
 	CFStringRef key;
 
 	if (!name_ok(u->username))
@@ -673,20 +684,33 @@ put_user(struct ds_handle *h, const struct ds_userrec *u, bool replace)
 	    strlen(u->passwordHash) >= DS_HASH_MAX)
 		return (DS_EINVAL);
 
-	rec = newdict();
+	old = replace ? urec(h, u->username) : NULL;
+	if (old != NULL)
+		rec = CFDictionaryCreateMutableCopy(kCFAllocatorDefault, 0, old);
+	else
+		rec = newdict();
 	if (rec == NULL)
 		return (DS_EIO);
+
 	dict_set_str(rec, "username", u->username);
 	dict_set_num(rec, "uid", (long long)u->uid);
 	dict_set_num(rec, "gid", (long long)u->gid);
 	if (u->realName[0] != '\0')
 		dict_set_str(rec, "realName", u->realName);
+	else
+		dict_unset(rec, "realName");
 	if (u->shell[0] != '\0')
 		dict_set_str(rec, "shell", u->shell);
+	else
+		dict_unset(rec, "shell");
 	if (u->hasHash && u->passwordHash[0] != '\0')
 		dict_set_str(rec, "passwordHash", u->passwordHash);
+	else
+		dict_unset(rec, "passwordHash");
 	if (u->noPassword)
 		dict_set_bool(rec, "noPassword", true);
+	else
+		dict_unset(rec, "noPassword");
 
 	if ((key = mkstr(u->username)) == NULL) {
 		CFRelease(rec);
