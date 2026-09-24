@@ -233,7 +233,7 @@ main(int argc, char **argv)
 {
 	char line[LINE_MAX], *nl;
 	struct passwd *pw;
-	char **names;
+	const char **names;
 	size_t nnames = 0, i;
 	bool all = false, from_stdin = false, both = false, from_pam = false;
 	const char *pam_user;
@@ -278,7 +278,7 @@ main(int argc, char **argv)
 		if ((pam_user = getenv("PAM_USER")) == NULL ||
 		    pam_user[0] == '\0')
 			return (0);
-		names[nnames++] = (char *)pam_user;
+		names[nnames++] = pam_user;
 	}
 	/* With no selection at all, every user is the sensible default. */
 	if (!all && !from_stdin && nnames == 0 && !from_pam)
