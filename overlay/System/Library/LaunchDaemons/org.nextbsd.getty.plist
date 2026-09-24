@@ -36,29 +36,6 @@
     amd64 ThinkPad T460s and an arm64 virt VM: one job, getty on v0, no
     log spam; with boot_serial=YES set in kenv the job moves to the UART.
 
-  Automatic login (nextbsd/nextbsd-userland#278):
-    /usr/libexec/nextbsd/autologin-user prints an account name when, and
-    only when, exactly one user exists, it is "admin", and it has no
-    password. When it does, and /etc/gettytab actually defines the class,
-    getty runs with nextbsd-autologin, whose "al" capability makes getty
-    exec login -f and skip the prompt. Both conditions are checked because
-    either half can be absent: the helper ships in the userland package and
-    the class in nextbsd-overlays, so an image may have one without the
-    other, and the fallback is always the ordinary login prompt.
-
-    The home is built here, synchronously, before getty is exec'd. Automatic
-    login happens the instant getty starts, so a one-shot job racing it would
-    lose about as often as not, and login would report "No home directory.
-    Logging in with home = /" on a first boot. createhomedir is idempotent
-    and skips a home that exists, so this costs one stat on every later boot.
-    Repairing every user's home, rather than this one account's, is what
-    createhomedir -a is for, run by hand.
-
-    The class must inherit 3wire.9600 rather than FreeBSD's stock autologin
-    entries, which chain to std.9600 and hardcode al=root. The 3wire
-    settings are load-bearing here: nc (no carrier) is what stopped the
-    arm64 pl011 hanging after login (nextbsd#355).
-
   Why ttyv0 is there early enough on arm64:
     vt(4) attaches with the kernel's own virtio_gpu / efifb driver before
     launchd starts; the DRM kext loaded later only replaces the driver
