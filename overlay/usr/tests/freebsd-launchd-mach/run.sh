@@ -1655,20 +1655,35 @@ if [ -z "$acct_fail" ] && [ -x /usr/sbin/pw ]; then
     #      Every account a port creates is a system account, and the pw that
     #      handles those is vendored into this binary, so there is one path
     #      and one behaviour to check rather than two.
-    /usr/sbin/pw useradd _imgtest -u 299 -g 299 -d /nonexistent \
-        -s /usr/sbin/nologin -c "Image Test" >/dev/null 2>&1 ||
-        acct_note "11b: pw useradd of a system account failed"
+    # A port creates the group before the user, because -g <gid> requires the
+    # group to exist. do-users-groups.sh emits them in that order, so the test
+    # does too -- calling useradd alone tests a sequence no port performs.
+    #
+    # Each step reports what the command actually said. An exit status alone
+    # cannot tell a refusal from a failure, which is how the first version of
+    # this block spent two CI runs saying only "it failed".
+    acct_out=$(/usr/sbin/pw groupadd _imgtest -g 299 2>&1) ||
+        acct_note "11b: pw groupadd of a system group failed: [$(echo "$acct_out" | head -1)]"
+    acct_out=$(/usr/sbin/pw useradd _imgtest -u 299 -g 299 -d /nonexistent \
+        -s /usr/sbin/nologin -c "Image Test" 2>&1) ||
+        acct_note "11b: pw useradd of a system account failed: [$(echo "$acct_out" | head -1)]"
     grep -q '_imgtest' "$plist" &&
         acct_note "11b: a system account was filed in the directory"
     getent passwd _imgtest >/dev/null 2>&1 ||
         acct_note "11b: the system account is not resolvable"
     # A high uid with a real shell and home is still a system account:
     # the postgres case a 499 threshold would have got wrong.
-    /usr/sbin/pw useradd _imgpg -u 770 -g 770 -d /var/db/imgpg \
-        -s /bin/sh >/dev/null 2>&1 ||
-        acct_note "11b: pw useradd at uid 770 failed"
+    acct_out=$(/usr/sbin/pw groupadd _imgpg -g 770 2>&1) ||
+        acct_note "11b: pw groupadd at gid 770 failed: [$(echo "$acct_out" | head -1)]"
+    acct_out=$(/usr/sbin/pw useradd _imgpg -u 770 -g 770 -d /var/db/imgpg \
+        -s /bin/sh 2>&1) ||
+        acct_note "11b: pw useradd at uid 770 failed: [$(echo "$acct_out" | head -1)]"
     grep -q '_imgpg' "$plist" &&
         acct_note "11b: uid 770 was filed in the directory"
+    # master.passwd is where they belong, so say so rather than inferring it
+    # from the directory not holding them.
+    grep -q '^_imgtest:' /etc/master.passwd ||
+        acct_note "11b: the system account is not in master.passwd"
     /usr/sbin/pw userdel _imgtest >/dev/null 2>&1
     /usr/sbin/pw userdel _imgpg >/dev/null 2>&1
     /usr/sbin/pw groupdel _imgtest >/dev/null 2>&1

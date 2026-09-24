@@ -63,6 +63,9 @@ int master_mode;
 static void	baduser(void);
 static void	usage(void);
 
+/* NextBSD: declared here so the front end's call is checked against it. */
+int chpass_bsd_main(int, char **);
+
 int
 chpass_bsd_main(int argc, char *argv[])
 {

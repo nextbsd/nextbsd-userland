@@ -21,6 +21,9 @@ One file, and one line in it:
 
   chpass.c -> bsd_main.c, and its main() renamed to chpass_bsd_main().
 
+The entry point also gains a prototype immediately above itself, so the front
+end's call is checked against the definition. That is the whole diff.
+
 pw_scan.c and pw_scan.h are copied from lib/libc/gen because upstream's build
 reaches into the libc source tree for them; they are unmodified.
 

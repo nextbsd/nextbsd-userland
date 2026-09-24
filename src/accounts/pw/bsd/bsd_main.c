@@ -107,6 +107,9 @@ static int	which = -1;
 static int	getindex(const char *words[], const char *word);
 static void	cmdhelp(int mode, int which);
 
+/* NextBSD: declared here so the front end's call is checked against it. */
+int pw_bsd_main(int, char **);
+
 int
 pw_bsd_main(int argc, char *argv[])
 {
