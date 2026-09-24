@@ -1468,11 +1468,14 @@ elif [ ! -x /usr/sbin/adduser ] || [ ! -x /usr/bin/passwd ]; then
     acct_note "0: adduser or passwd not installed"
 else
     # 1. passwd must be setuid, or a user cannot change their own password.
-    acct_mode=$(stat -f '%Lp' /usr/bin/passwd 2>/dev/null)
-    case "$acct_mode" in
-        4???) ;;
-        *) acct_note "1: /usr/bin/passwd is mode $acct_mode, not setuid" ;;
-    esac
+    #    Use test -u, not stat: stat's %Lp gives only the low nine permission
+    #    bits, so a setuid 4555 binary reports 555 and looks unprivileged.
+    #    That is what this check first claimed, wrongly.
+    if [ -u /usr/bin/passwd ]; then
+        :
+    else
+        acct_note "1: /usr/bin/passwd is not setuid (mode $(stat -f '%Mp%Lp' /usr/bin/passwd 2>/dev/null))"
+    fi
 
     # 2. Create joe with a password, answering the two prompts.
     if ! "$pty" -i 'first-secret' -i 'first-secret' -- \
