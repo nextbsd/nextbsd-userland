@@ -727,6 +727,19 @@ expect {
     "LIBDS-OK" { puts "\nOK: libds reads, writes and locks the DirectoryServices plists" }
 }
 
+# ACCT — the account tools on the image (E18). One marker per tool, so a
+# failure names the tool. These are the only tests that prove a tool links and
+# runs on a real image, and that an account it creates is then resolvable
+# through nss_directory_services; the host-side suites cannot reach either.
+#
+# As passwd, chpass, rmuser and pw land, each gets a block here in the same
+# shape. Keep these in the order run.sh emits them.
+expect {
+    timeout { puts "\nWARN: ACCT-ADDUSER marker not seen (image predates adduser — informational)" }
+    -re {ACCT-ADDUSER-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    "ACCT-ADDUSER-OK" { puts "\nOK: adduser creates an account the directory resolves" }
+}
+
 # Stage 3+ Phase J runtime: syslogd + notifyd RunAtLoad via plists,
 # then syslog(1) post + read-back round-trip via Mach IPC into the
 # ASL store. See run.sh tail for the test sequence.

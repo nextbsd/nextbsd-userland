@@ -1390,6 +1390,132 @@ else
     fi
 fi
 
+# ---- Account tools on the image (E18 U9, U14) -------------------------------
+# What the host-side suites cannot prove, and this can:
+#
+#   that the binary links and runs on a real image at all. adduser needed
+#   libcrypt, which is in libc on the build host and in a separate library
+#   here, so nothing on the host could have caught it;
+#
+#   that an account these tools create is then visible through getpwnam(3),
+#   which is the one path tying the tool, libds and nss_directory_services
+#   together. Each is tested alone elsewhere; only here are they tested as a
+#   chain.
+#
+# Shape for the tools still to come (passwd, chpass, chfn, chsh, rmuser, pw):
+# one block each, one marker each, sharing the save and restore below, so a
+# failure names the tool and a new tool is a block rather than a rewrite.
+# Markers are ACCT-<TOOL>-OK / ACCT-<TOOL>-FAIL.
+#
+# These write the live database, so the real plists are saved first and put
+# back in an unconditional restore, the same approach the HOMEDIR and NSS-DS
+# checks above take. Anything the tools create under /Local/Users is removed
+# too, since restoring a plist does not remove a home.
+acct_su=$(ds_save Users.plist)
+acct_sg=$(ds_save Groups.plist)
+acct_homes=""
+
+acct_cleanup() {
+    ds_restore Users.plist "$acct_su"
+    ds_restore Groups.plist "$acct_sg"
+    for _h in $acct_homes; do
+        case "$_h" in /Local/Users/?*) rm -rf "$_h" ;; esac
+    done
+}
+
+# ---- adduser ----------------------------------------------------------------
+echo "==> adduser: create an account on the image and resolve it"
+au_fail=""
+au_note() { au_fail="${au_fail:+$au_fail; }$*"; }
+
+if [ ! -x /usr/sbin/adduser ]; then
+    au_note "1: /usr/sbin/adduser not installed"
+else
+    # 2. It runs at all. A missing shared library fails here and nowhere else.
+    if ! /usr/sbin/adduser -h >/dev/null 2>&1; then
+        au_note "2: adduser -h failed: $(/usr/sbin/adduser -h 2>&1 | head -1)"
+    fi
+fi
+
+if [ -z "$au_fail" ]; then
+    # 3. Create a plain account with no password.
+    if ! au_out=$(/usr/sbin/adduser -q -w none -c "On Image" acctest 2>&1); then
+        au_note "3: adduser failed: $(echo "$au_out" | head -1)"
+    else
+        acct_homes="$acct_homes /Local/Users/acctest"
+    fi
+fi
+
+if [ -z "$au_fail" ]; then
+    # 4. The NSS module resolves what adduser wrote. This is the chain.
+    au_ent=$(getent passwd acctest 2>/dev/null)
+    case "$au_ent" in
+        acctest:*) ;;
+        *) au_note "4: getent passwd acctest returned [$au_ent]" ;;
+    esac
+    # 5. uid in the regular range, and the computed home.
+    au_uid=$(id -u acctest 2>/dev/null)
+    case "$au_uid" in
+        ''|*[!0-9]*) au_note "5: id -u acctest gave [$au_uid]" ;;
+        *) [ "$au_uid" -ge 5001 ] || au_note "5: uid $au_uid is below 5001" ;;
+    esac
+    case "$au_ent" in
+        *:/Local/Users/acctest:*) ;;
+        *) au_note "6: home is not /Local/Users/acctest in [$au_ent]" ;;
+    esac
+    # 7. The home was built from the user template, not left empty.
+    for d in Desktop Documents Library; do
+        [ -d "/Local/Users/acctest/$d" ] || au_note "7: /Local/Users/acctest/$d missing"
+    done
+    [ -f /Local/Users/acctest/.zshrc ] || au_note "7: .zshrc missing from the home"
+    # 8. Owned by the new user, not by root.
+    au_owner=$(stat -f '%Su' /Local/Users/acctest 2>/dev/null)
+    [ "$au_owner" = acctest ] || au_note "8: home owned by [$au_owner], not acctest"
+fi
+
+if [ -z "$au_fail" ]; then
+    # 9. An administrator lands in the admin group, and the module maps that
+    #    to gid 0, which is what sudoers keys on.
+    if ! au_out=$(/usr/sbin/adduser -q --admin -w none -c "On Image Admin" acctadm 2>&1); then
+        au_note "9: adduser --admin failed: $(echo "$au_out" | head -1)"
+    else
+        acct_homes="$acct_homes /Local/Users/acctadm"
+        au_groups=$(id -Gn acctadm 2>/dev/null)
+        case " $au_groups " in
+            *" admin "*) ;;
+            *) au_note "9: acctadm groups are [$au_groups], no admin" ;;
+        esac
+        case " $au_groups " in
+            *" wheel "*) ;;
+            *) au_note "10: acctadm is not in wheel, so sudo would not work: [$au_groups]" ;;
+        esac
+    fi
+fi
+
+if [ -z "$au_fail" ]; then
+    # 11. Refusals still refuse on a real image, and write nothing.
+    au_before=$(grep -c '<key>username</key>' "$ds_dir/Users.plist" 2>/dev/null || echo 0)
+    /usr/sbin/adduser -q -w none acctest >/dev/null 2>&1
+    [ $? -eq 2 ] || au_note "11: a duplicate name did not exit 2"
+    /usr/sbin/adduser -q -w none 9bad >/dev/null 2>&1
+    [ $? -eq 2 ] || au_note "11: a leading-digit name did not exit 2"
+    /usr/sbin/adduser -q -w none _svc >/dev/null 2>&1
+    [ $? -eq 2 ] || au_note "11: a system account name did not exit 2"
+    /usr/sbin/adduser -q -w none -u 500 lowuid >/dev/null 2>&1
+    [ $? -eq 2 ] || au_note "11: a system-range uid did not exit 2"
+    au_after=$(grep -c '<key>username</key>' "$ds_dir/Users.plist" 2>/dev/null || echo 0)
+    [ "$au_after" = "$au_before" ] ||
+        au_note "11: a refusal wrote a record ($au_before -> $au_after)"
+fi
+
+if [ -n "$au_fail" ]; then
+    echo "ACCT-ADDUSER-FAIL: $au_fail"
+else
+    echo "ACCT-ADDUSER-OK: created and resolved a user and an administrator through the plists, home built from the template, refusals refused"
+fi
+
+acct_cleanup
+
 # 10. ASL runtime smoke (Phase J). Task #41 move_member wire-up
 # landed but a follow-on halt-after-bootstrap-remote regression is
 # under investigation. Keep test at SKIP for now.
