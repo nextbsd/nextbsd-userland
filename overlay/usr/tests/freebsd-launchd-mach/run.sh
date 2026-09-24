@@ -896,6 +896,230 @@ else
     fi
 fi
 
+# ---- DirectoryServices test-database helpers --------------------------------
+# The two checks below put a known user in the plists and assert what libc
+# resolves. nextbsd-overlays now seeds a real admin account
+# (nextbsd/nextbsd-userland#278), and these checks used to skip on any database
+# they found, which would mean skipping on every image and testing nothing.
+#
+# So they save what is there, write their own, and put the original back in the
+# same unconditional cleanup that restores nsswitch.conf. Replacing rather than
+# merging keeps the assertions exact: the module resolves the group named
+# "admin" by name for its wheel rule, so a test that had to share that record
+# would be asserting on whatever the image happened to seed.
+#
+# The seeded account is unresolvable for the few seconds each check runs. That
+# is safe here because nothing logs in during the suite, and it is why the
+# restore is unconditional rather than on the success path.
+ds_dir=/Local/Library/DirectoryServices
+
+# ds_save <file> -> prints a backup path, or nothing when the file is absent
+ds_save() {
+    if [ -e "$ds_dir/$1" ]; then
+        cp -p "$ds_dir/$1" "/tmp/$1.bak" && echo "/tmp/$1.bak"
+    fi
+}
+
+# ds_restore <file> <backup-or-empty>
+ds_restore() {
+    if [ -n "$2" ]; then
+        cp -p "$2" "$ds_dir/$1" && rm -f "$2"
+    else
+        rm -f "$ds_dir/$1"
+    fi
+}
+
+# HOMEDIR — the user template and createhomedir (nextbsd/nextbsd-userland#277).
+# Creates a throwaway plist user, points nsswitch at directory_services for the
+# duration so getpwent(3) can see them, builds their home, and checks the
+# template landed: the directory set, Public/Drop Box at 0733, the skeleton dot
+# files, and ownership. Then removes everything it made and restores the switch.
+# Every failure carries a number, so a bare marker on the console still says
+# which check failed.
+echo "==> createhomedir: build a home from the user template"
+hd_tmpl="/System/Library/User Template"
+hd_dir=/Local/Library/DirectoryServices
+hd_home=/Local/Users/hdtest
+hd_fail=""
+hd_note() { [ -n "$hd_fail" ] || hd_fail="$*"; }
+
+if [ ! -x /usr/sbin/createhomedir ]; then
+    hd_fail="1: /usr/sbin/createhomedir is missing"
+elif [ ! -d "$hd_tmpl/Non_localized" ]; then
+    hd_fail="2: $hd_tmpl/Non_localized is missing"
+elif [ -e "$hd_home" ]; then
+    echo "HOMEDIR-SKIP: $hd_home already exists; not touching it"
+    hd_fail="skip"
+else
+    mkdir -p "$hd_dir" || hd_note "3: cannot create $hd_dir"
+    hd_saved=$(ds_save Users.plist)
+    {
+        echo '<?xml version="1.0" encoding="UTF-8"?>'
+        echo '<plist version="1.0">'
+        echo '<dict>'
+        echo '  <key>hdtest</key>'
+        echo '  <dict>'
+        echo '    <key>username</key><string>hdtest</string>'
+        echo '    <key>uid</key><integer>5007</integer>'
+        echo '    <key>gid</key><integer>5007</integer>'
+        echo '    <key>realName</key><string>Home Dir Test</string>'
+        echo '    <key>shell</key><string>/bin/sh</string>'
+        echo '  </dict>'
+        echo '</dict>'
+        echo '</plist>'
+    } > "$hd_dir/Users.plist" || hd_note "4: cannot write $hd_dir/Users.plist"
+
+    cp -p /etc/nsswitch.conf /tmp/nsswitch.conf.hd || hd_note "5: cannot save nsswitch.conf"
+    sed -e 's/^passwd:.*/passwd: directory_services files/' \
+        /tmp/nsswitch.conf.hd > /etc/nsswitch.conf || hd_note "6: cannot rewrite nsswitch.conf"
+
+    hd_got=$(getent passwd hdtest 2>&1)
+    if [ -n "$hd_fail" ]; then
+        :
+    elif [ "$(echo "$hd_got" | cut -d: -f6)" != "$hd_home" ]; then
+        hd_note "7: hdtest resolves to [$hd_got], wanted home $hd_home"
+    elif ! hd_out=$(/usr/sbin/createhomedir -u hdtest -v 2>&1); then
+        hd_note "8: createhomedir failed: $(echo "$hd_out" | tr '\n' ' ')"
+    elif [ ! -d "$hd_home" ]; then
+        hd_note "9: createhomedir reported success but made no $hd_home"
+    else
+        for d in Desktop Documents Downloads Library Movies Music Pictures Public; do
+            [ -d "$hd_home/$d" ] || hd_note "10: missing $hd_home/$d"
+        done
+        [ -d "$hd_home/Public/Drop Box" ] || hd_note "11: missing Public/Drop Box"
+        [ -f "$hd_home/.zshrc" ] || hd_note "12: missing .zshrc"
+        [ -f "$hd_home/.zprofile" ] || hd_note "13: missing .zprofile"
+        hd_mode=$(stat -f %Lp "$hd_home/Public/Drop Box" 2>&1)
+        [ "$hd_mode" = 733 ] || hd_note "14: Public/Drop Box is [$hd_mode], not 733"
+        hd_own=$(stat -f %u:%g "$hd_home/Desktop" 2>&1)
+        [ "$hd_own" = "5007:5007" ] || hd_note "15: Desktop owned by [$hd_own], not 5007:5007"
+        # A second run must be a no-op, not an error: this command repairs.
+        /usr/sbin/createhomedir -u hdtest >/dev/null 2>&1 || hd_note "16: not idempotent"
+        # A user's own file must survive a re-run.
+        echo mine > "$hd_home/.zshrc"
+        /usr/sbin/createhomedir -u hdtest >/dev/null 2>&1
+        [ "$(cat "$hd_home/.zshrc" 2>&1)" = mine ] || hd_note "17: overwrote an existing dot file"
+    fi
+
+    cp -p /tmp/nsswitch.conf.hd /etc/nsswitch.conf 2>/dev/null
+    rm -f /tmp/nsswitch.conf.hd
+    ds_restore Users.plist "$hd_saved"
+    rm -rf "$hd_home"
+    rmdir "$hd_dir" 2>/dev/null || true
+fi
+if [ "$hd_fail" = skip ]; then
+    :
+elif [ -n "$hd_fail" ]; then
+    echo "HOMEDIR-FAIL: $hd_fail"
+else
+    echo "HOMEDIR-OK: template copied, Drop Box 0733, owned by the user, idempotent, keeps existing files"
+fi
+
+# NSS-DS — nss_directory_services (nextbsd/nextbsd-userland#249). With a
+# Users.plist and Groups.plist under /Local/Library/DirectoryServices and
+# nsswitch.conf naming directory_services first, a plist user must resolve
+# through libc: getpwnam/getpwuid (getent, ls -l), getgrouplist (id, with
+# wheel for an admin member), enumeration (getent passwd lists it and still
+# lists root from files), and a /Network copy must take over without any
+# restart. The switch lines are changed only for the duration of the check
+# and restored; the overlay's nsswitch.conf is nextbsd-overlays' business.
+echo "==> nss_directory_services: plist users and groups resolve through nsswitch"
+nssds_dir=/Local/Library/DirectoryServices
+nssds_net=/Network/Library/DirectoryServices
+nssds_fail=""
+if [ ! -f /usr/lib/nss_directory_services.so.1 ]; then
+    echo "NSS-DS-FAIL: /usr/lib/nss_directory_services.so.1 is missing"
+elif [ -e "$nssds_net/Users.plist" ]; then
+    echo "NSS-DS-SKIP: this machine is joined to a directory server; not touching it"
+else
+    mkdir -p "$nssds_dir" "$nssds_net"
+    nssds_su=$(ds_save Users.plist)
+    nssds_sg=$(ds_save Groups.plist)
+    cat > "$nssds_dir/Users.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>nsstest</key>
+  <dict>
+    <key>username</key><string>nsstest</string>
+    <key>uid</key><integer>5001</integer>
+    <key>gid</key><integer>5001</integer>
+    <key>realName</key><string>NSS Test</string>
+    <key>shell</key><string>/bin/sh</string>
+    <key>passwordHash</key><string>$6$saltsalt$nothashofanything</string>
+  </dict>
+</dict>
+</plist>
+PLIST
+    cat > "$nssds_dir/Groups.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>nsstest</key>
+  <dict>
+    <key>groupname</key><string>nsstest</string>
+    <key>gid</key><integer>5001</integer>
+    <key>members</key><array/>
+  </dict>
+  <key>admin</key>
+  <dict>
+    <key>groupname</key><string>admin</string>
+    <key>gid</key><integer>5000</integer>
+    <key>members</key><array><string>nsstest</string></array>
+  </dict>
+</dict>
+</plist>
+PLIST
+    cp -p /etc/nsswitch.conf /tmp/nsswitch.conf.nssds
+    sed -e 's/^passwd:.*/passwd: directory_services files/' \
+        -e 's/^group:.*/group: directory_services files/' \
+        /tmp/nsswitch.conf.nssds > /etc/nsswitch.conf
+    nssds_pw=$(getent passwd nsstest 2>&1)
+    nssds_gr=$(getent group admin 2>&1)
+    nssds_gids=$(id -G nsstest 2>&1)
+    if [ "$nssds_pw" != 'nsstest:$6$saltsalt$nothashofanything:5001:5001:NSS Test:/Local/Users/nsstest:/bin/sh' ]; then
+        nssds_fail="getent passwd nsstest: $nssds_pw"
+    elif [ "$nssds_gr" != "admin:x:5000:nsstest" ]; then
+        nssds_fail="getent group admin: $nssds_gr"
+    elif [ "$(id -u nsstest 2>&1)" != 5001 ]; then
+        nssds_fail="id -u nsstest: $(id -u nsstest 2>&1)"
+    elif ! echo " $nssds_gids " | grep -q ' 5000 ' || ! echo " $nssds_gids " | grep -q ' 0 '; then
+        nssds_fail="id -G nsstest lacks admin (5000) or wheel (0): $nssds_gids"
+    elif [ "$(getent passwd | grep -c '^nsstest:')" != 1 ] || ! getent passwd | grep -q '^root:'; then
+        nssds_fail="enumeration: getent passwd must list nsstest once and still list root"
+    elif [ "$(getent passwd 5001 | cut -d: -f1)" != nsstest ]; then
+        nssds_fail="getpwuid 5001: $(getent passwd 5001 2>&1)"
+    else
+        : > /tmp/nssds.file && chown 5001:5000 /tmp/nssds.file
+        nssds_ls=$(ls -l /tmp/nssds.file | awk '{ print $3 ":" $4 }')
+        rm -f /tmp/nssds.file
+        if [ "$nssds_ls" != "nsstest:admin" ]; then
+            nssds_fail="ls -l shows $nssds_ls, not nsstest:admin"
+        else
+            # /Network takes over the moment its file exists, then /Local returns.
+            sed 's/5001/5002/g' "$nssds_dir/Users.plist" > "$nssds_net/Users.plist"
+            nssds_netpw=$(getent passwd nsstest 2>&1)
+            rm -f "$nssds_net/Users.plist"
+            nssds_backpw=$(getent passwd nsstest 2>&1 | cut -d: -f3,6)
+            if [ "$(echo "$nssds_netpw" | cut -d: -f3,6)" != "5002:/Network/Users/nsstest" ]; then
+                nssds_fail="/Network switch: $nssds_netpw"
+            elif [ "$nssds_backpw" != "5001:/Local/Users/nsstest" ]; then
+                nssds_fail="/Local restore: $nssds_backpw"
+            elif ! getent passwd root >/dev/null 2>&1; then
+                nssds_fail="root no longer resolves with directory_services first"
+            fi
+        fi
+    fi
+    cp -p /tmp/nsswitch.conf.nssds /etc/nsswitch.conf
+    rm -f /tmp/nsswitch.conf.nssds
+    ds_restore Users.plist "$nssds_su"
+    ds_restore Groups.plist "$nssds_sg"
+    rmdir "$nssds_net" "$nssds_dir" 2>/dev/null || true
+    if [ -n "$nssds_fail" ]; then
+        echo "NSS-DS-FAIL: $nssds_fail"
+    else
+        echo "NSS-DS-OK: plist user resolves via getent/id/ls -l with admin + wheel; enumeration merges with files; /Network preferred live"
+    fi
 # MDNS-STATIC — static Bonjour service files (nextbsd/nextbsd-userland#250).
 # mDNSResponder registers every *.plist in
 # /Local/Library/Preferences/mDNSResponder/Services and follows the directory

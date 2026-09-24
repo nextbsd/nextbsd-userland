@@ -874,6 +874,37 @@ DESTDIR="$DESTDIR" ninja -C "$NBI_BUILD" install
 test -x "$DESTDIR/usr/sbin/nextbsd-installer" || { echo "FAIL: /usr/sbin/nextbsd-installer not installed"; exit 1; }
 test -f "$DESTDIR/usr/libexec/nextbsd-installer/do-install.sh" || { echo "FAIL: installer engine (do-install.sh) not installed"; exit 1; }
 
+# ---- createhomedir (nextbsd/nextbsd-userland#277, E18 U10) -----------------
+# Builds a home from /System/Library/User Template, which ships in overlay/.
+# Plain libc plus the XML plist reader shared with nss_directory_services;
+# users are enumerated through getpwent(3), so it needs no directory library.
+comp "createhomedir"
+mkdir -p "$DESTDIR/usr/sbin"
+run_buildenv "make -C $SRC/accounts/createhomedir DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/sbin/createhomedir" || { echo "FAIL: /usr/sbin/createhomedir not installed"; exit 1; }
+echo "==> createhomedir built"
+
+# ---- autologin-user (nextbsd/nextbsd-userland#278, E18 U11) ----------------
+# Names the account the console logs in automatically, or prints nothing. The
+# getty job runs it; the rule is in one place rather than in a shell one-liner.
+comp "autologin-user"
+mkdir -p "$DESTDIR/usr/libexec/nextbsd"
+run_buildenv "make -C $SRC/accounts/autologin-user DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/libexec/nextbsd/autologin-user" || { echo "FAIL: /usr/libexec/nextbsd/autologin-user not installed"; exit 1; }
+echo "==> autologin-user built"
+
+# ---- nss_directory_services (nextbsd/nextbsd-userland#249, E18 U3) ---------
+# The `directory_services` source for passwd and group: users and groups
+# straight from /Local (or /Network) Library/DirectoryServices/{Users,Groups}
+# .plist, no daemon. Plain libc, bsd.lib.mk, one shared object at the name
+# nsdispatch(3) dlopens. nsswitch.conf itself comes from nextbsd-overlays.
+comp "nss_directory_services"
+mkdir -p "$DESTDIR/usr/lib"
+run_buildenv "make -C $SRC/nss_directory_services DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -f "$DESTDIR/usr/lib/nss_directory_services.so.1" || { echo "FAIL: /usr/lib/nss_directory_services.so.1 not installed"; exit 1; }
+test ! -e "$DESTDIR/usr/lib/libnss_directory_services.a" || { echo "FAIL: nss_directory_services must not install a static library"; exit 1; }
+echo "==> nss_directory_services built"
+
 # =============================================================================
 # TIER 3 — on-image test binaries (freebsd-launchd-mach suite).
 # build.sh builds these natively and installs them to
