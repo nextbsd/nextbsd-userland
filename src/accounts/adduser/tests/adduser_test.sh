@@ -17,9 +17,12 @@ fix=${TMPDIR:-/tmp}/adduser_test.$$
 trap 'rm -rf "$fix"' EXIT
 mkdir -p "$fix"
 
+# crypt(3) is in libc on Darwin and in libcrypt on FreeBSD. The shipped
+# Makefile says LIBADD+= crypt for that reason; a host build here has to make
+# the same distinction or it links on one platform and not the other.
 case "$(uname -s)" in
 Darwin)	cflib="-framework CoreFoundation" ;;
-*)	cflib="-lCoreFoundation" ;;
+*)	cflib="-lCoreFoundation -lcrypt" ;;
 esac
 
 ${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes \

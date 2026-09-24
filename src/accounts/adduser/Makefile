@@ -34,9 +34,11 @@ CFLAGS+=	-I${.CURDIR}/../../Libnotify/freebsd-shims
 # -lCoreFoundation for the property lists, via libds.
 # libutil for login_cap: acct.c reads passwd_format from login.conf so the
 # hashing policy is stated in one place rather than compiled in.
+# libcrypt for crypt(3). On Darwin that is in libc, so a host build of the
+# tests links without it and this is only caught cross-building.
 LDADD+=		-lCoreFoundation -lsystem_dispatch -lsystem_blocks
 LDADD+=		-lsystem_kernel
-LIBADD+=	util
+LIBADD+=	util crypt
 
 SYSROOT?=
 .if !empty(SYSROOT)
