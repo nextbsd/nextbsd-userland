@@ -439,8 +439,16 @@ if {$at_login} {
     # has to survive Tcl, the shell, and an 80-column console. The verdict
     # tokens are ok/bad literals, so the echoed command line -- which still
     # holds the unexpanded $nbs -- cannot be mistaken for the answer.
+    #
+    # 120s, not 20s. The six commands are sent back to back and the tty
+    # buffers them, so this waits for the console to work through the queue,
+    # not for one command. On arm64 under TCG the console runs about 17
+    # seconds behind: at 20s this failed with "never reported" while the log
+    # showed it still echoing the third command. A genuine failure still
+    # reports in the same time as a pass, because the verdict line arrives
+    # either way -- the timeout only bites when nothing arrives at all.
     set saved_diag $timeout
-    set timeout 20
+    set timeout 120
 
     send "nbwant=\$(getent passwd \$(id -un) | cut -d: -f7)\r"
     send "nbgot=\$(ps -p \$\$ -o comm= | tr -d ' ')\r"
