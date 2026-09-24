@@ -1122,6 +1122,86 @@ PLIST
     fi
 fi
 
+# MDNS-STATIC — static Bonjour service files (nextbsd/nextbsd-userland#250).
+# mDNSResponder registers every *.plist in
+# /Local/Library/Preferences/mDNSResponder/Services and follows the directory
+# with kqueue, so a one-shot tool (dscli promote) can announce a service and
+# exit. Checked end to end through the wire: drop a file, browse for it with
+# dns-sd, remove it, browse again, then restart the daemon with the file
+# present and browse once more. Every dns-sd run is bounded (background +
+# kill), so this can never hang. The daemon's own lines use the distinct
+# spellings "MDNS-STATIC:" and "MDNS-STATIC-WATCH:" so a later dump of its
+# log cannot trip the boot-test tokens MDNS-STATIC-OK/FAIL.
+echo "==> mDNSResponder: static service files announce and withdraw"
+mdns_svcdir=/Local/Library/Preferences/mDNSResponder/Services
+mdns_static_fail=""
+mdns_browse() {
+    # $1 = seconds to listen; prints what dns-sd -B saw for _nbsdtest._tcp
+    /usr/bin/dns-sd -B _nbsdtest._tcp local. > /tmp/mdns_browse.out 2>&1 &
+    mdns_bpid=$!
+    sleep "$1"
+    kill "$mdns_bpid" 2>/dev/null
+    wait "$mdns_bpid" 2>/dev/null
+    cat /tmp/mdns_browse.out
+    rm -f /tmp/mdns_browse.out
+}
+mdns_write_service() {
+    cat > "$mdns_svcdir/nbsdtest.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>Name</key><string>nbsdtest-instance</string>
+  <key>Type</key><string>_nbsdtest._tcp</string>
+  <key>Port</key><integer>12345</integer>
+  <key>TXT</key><dict><key>path</key><string>/Network/Library/DirectoryServices</string><key>v</key><string>1</string></dict>
+</dict>
+</plist>
+PLIST
+}
+if [ ! -x /usr/bin/dns-sd ]; then
+    mdns_static_fail="/usr/bin/dns-sd missing"
+elif [ ! -d "$mdns_svcdir" ]; then
+    mdns_static_fail="$mdns_svcdir was not created by mDNSResponder at start"
+elif ! grep -q 'MDNS-STATIC-WATCH' /var/log/mDNSResponder.stderr 2>/dev/null; then
+    mdns_static_fail="daemon never logged MDNS-STATIC-WATCH (see /var/log/mDNSResponder.stderr)"
+else
+    mdns_write_service
+    sleep 3
+    if [ "$(mdns_browse 4 | grep -c 'nbsdtest-instance')" -eq 0 ]; then
+        mdns_static_fail="service file dropped in, but dns-sd -B never saw it ($(grep 'MDNS-STATIC' /var/log/mDNSResponder.stderr | tail -2 | tr '\n' ' '))"
+    else
+        rm -f "$mdns_svcdir/nbsdtest.plist"
+        sleep 3
+        if [ "$(mdns_browse 4 | grep -c 'nbsdtest-instance')" -ne 0 ]; then
+            mdns_static_fail="service file removed, but dns-sd -B still lists it"
+        else
+            # Restart the daemon with the file present: it must come back.
+            mdns_write_service
+            mdns_oldpid=$(pgrep -x mDNSResponder | head -1)
+            kill -TERM "$mdns_oldpid" 2>/dev/null
+            mdns_tries=0
+            while [ "$mdns_tries" -lt 30 ]; do
+                mdns_newpid=$(pgrep -x mDNSResponder | head -1)
+                [ -n "$mdns_newpid" ] && [ "$mdns_newpid" != "$mdns_oldpid" ] && [ -S /var/run/mDNSResponder ] && break
+                sleep 1
+                mdns_tries=$((mdns_tries + 1))
+            done
+            sleep 3
+            if [ -z "$mdns_newpid" ] || [ "$mdns_newpid" = "$mdns_oldpid" ]; then
+                mdns_static_fail="mDNSResponder did not come back after SIGTERM (KeepAlive)"
+            elif [ "$(mdns_browse 6 | grep -c 'nbsdtest-instance')" -eq 0 ]; then
+                mdns_static_fail="after a daemon restart the service file was not announced again"
+            fi
+            rm -f "$mdns_svcdir/nbsdtest.plist"
+        fi
+    fi
+fi
+if [ -n "$mdns_static_fail" ]; then
+    echo "MDNS-STATIC-FAIL: $mdns_static_fail"
+else
+    echo "MDNS-STATIC-OK: a service file is announced within seconds, withdrawn on removal, and announced again after a daemon restart"
+fi
+
 # NTP / NFS — the E18 service LaunchDaemons (nextbsd/nextbsd-userland#251,
 # #252): org.nextbsd.ntpd, .rpcbind, .mountd, .nfsd and .network-mount all
 # ship Disabled, so none may be in the job table after boot. Each is then
@@ -1288,60 +1368,6 @@ else
     fi
 fi
 
-# 10. ASL runtime smoke (Phase J). Task #41 move_member wire-up
-# landed but a follow-on halt-after-bootstrap-remote regression is
-# under investigation. Keep test at SKIP for now.
-sleep 2
-
-# Task #39 debugging: each daemon plist redirects stderr to its own
-# /var/log/<daemon>.stderr file. Dump those into the boot console
-# BEFORE the proc check so [T39-bs] / [T39-ll] traces (and any other
-# diagnostic output) survive the halt that follows a PROC-FAIL exit.
-for slog in /var/log/syslogd.stderr /var/log/notifyd.stderr /var/log/aslmanager.stderr /var/log/configd.stderr; do
-    if [ -s "$slog" ]; then
-        echo "=== begin $slog ==="
-        cat "$slog" || true
-        echo "=== end $slog ==="
-    fi
-done
-
-if pgrep -x notifyd >/dev/null 2>&1; then
-    echo "NOTIFYD-PROC-OK: notifyd running as pid $(pgrep -x notifyd)"
-else
-    # DIAG: dump launchd's view BEFORE the FAIL token (the expect harness
-    # kills the VM on NOTIFYD-PROC-FAIL). launchctl list's Status column =
-    # the job's last wait status: a small +N is exit(N); a value encoding a
-    # signal (or 0x8N / negative) means killed by signal N (e.g. 9=SIGKILL).
-    echo "=== NOTIFYD-PROC diagnostics (pre-FAIL) ==="
-    echo "--- pgrep -fl notifyd (any process, any name) ---"
-    pgrep -fl notifyd || echo "(no process matches 'notifyd')"
-    echo "--- ps auxww | grep notifyd ---"
-    ps auxww | grep -E 'notifyd' | grep -v grep || echo "(none in ps)"
-    echo "--- launchctl list | grep notifyd (PID Status Label) ---"
-    launchctl list 2>/dev/null | grep -iE 'notifyd' || echo "(notifyd not in launchctl list)"
-    echo "--- launchctl list com.apple.notifyd (LastExitStatus) ---"
-    launchctl list com.apple.notifyd 2>&1 | grep -iE 'PID|Status|LastExit|Label' || true
-    echo "=== end NOTIFYD-PROC diagnostics ==="
-    echo "NOTIFYD-PROC-FAIL: notifyd not running"
-    exit 1
-fi
-
-if pgrep -x syslogd >/dev/null 2>&1; then
-    echo "SYSLOGD-PROC-OK: syslogd running as pid $(pgrep -x syslogd)"
-else
-    # Diagnostics first — the expect harness kills the VM on the
-    # SYSLOGD-PROC-FAIL token, so emit that marker last.
-    echo "=== SYSLOGD-PROC diagnostics ==="
-    ps auxww | grep -E 'syslogd|notifyd' || true
-    ls -la /System/Library/LaunchDaemons/ 2>&1 || true
-    echo "--- syslogd main checkpoints (/tmp/syslogd_main.log) ---"
-    cat /tmp/syslogd_main.log 2>/dev/null || echo "(no syslogd_main.log)"
-    echo "--- process_message log (/tmp/process_msg.log) ---"
-    cat /tmp/process_msg.log 2>/dev/null || echo "(no process_msg.log)"
-    echo "=== end diagnostics ==="
-    echo "SYSLOGD-PROC-FAIL: syslogd not running"
-    exit 1
-fi
 
 # 10. ASL runtime smoke (Phase J). Task #41 move_member wire-up
 # landed but a follow-on halt-after-bootstrap-remote regression is

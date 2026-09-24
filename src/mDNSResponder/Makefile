@@ -41,6 +41,12 @@ SRCS+=		mDNS.c DNSDigest.c uDNS.c DNSCommon.c
 SRCS+=		uds_daemon.c mDNSDebug.c dnssd_ipc.c GenLinkedList.c
 SRCS+=		PlatformCommon.c ClientRequests.c dnssd_clientshim.c
 SRCS+=		mdns_addr_tailq.c misc_utilities.c
+# NextBSD (BSD-2): static service registrations from
+# /Local/Library/Preferences/mDNSResponder/Services/*.plist, held by the
+# daemon so one-shot tools (dscli promote) can announce and exit
+# (nextbsd-userland#250). nbsd_plist.c is the XML plist reader, copied
+# from src/nss_directory_services/plist.c.
+SRCS+=		StaticServices.c nbsd_plist.c
 
 .PATH:		${.CURDIR}/mDNSCore
 .PATH:		${.CURDIR}/mDNSPosix

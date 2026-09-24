@@ -689,6 +689,17 @@ expect {
     "NSS-DS-OK" { puts "\nOK: nss_directory_services resolves plist users and groups" }
 }
 
+# MDNS-STATIC — static Bonjour service files (#250): a *.plist dropped into
+# /Local/Library/Preferences/mDNSResponder/Services is announced (seen by
+# dns-sd -B), withdrawn when removed, and announced again after the daemon
+# restarts. The daemon's own log spellings are "MDNS-STATIC:" and
+# "MDNS-STATIC-WATCH:", which do not match these tokens.
+expect {
+    timeout { puts "\nWARN: MDNS-STATIC marker not seen (image predates static service files — informational)" }
+    -re {MDNS-STATIC-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    "MDNS-STATIC-OK" { puts "\nOK: mDNSResponder announces and withdraws static service files, across a restart" }
+}
+
 # NTP / NFS — the E18 service LaunchDaemons (#251, #252): all five ship
 # Disabled; ntpd runs foreground under launchd and answers ntpq; rpcbind +
 # mountd + nfsd serve the contract exports (loopback NFSv3 mount); the

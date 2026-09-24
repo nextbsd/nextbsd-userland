@@ -36,4 +36,19 @@ Two changes to `main()`:
 1. Right after `ParseCmdLineArgs(argc, argv);`, call `mDNSResponderMachBridgeInit()` so the daemon claims `com.apple.mDNSResponder` via `bootstrap_check_in` before the engine starts. Logs `MDNS-BOOT-OK`.
 2. After `mDNS_Init` returns `mStatus_NoError`, log `MDNS-ENGINE-OK` (the iter-2 marker the boot test gates on).
 
-See `mach_bridge.c` for the bridge implementation. Everything else in PosixDaemon.c is unchanged.
+See `mach_bridge.c` for the bridge implementation.
+
+### `mDNSPosix/PosixDaemon.c` — static service files (nextbsd-userland#250)
+
+Two more NextBSD hooks in `main()` and `MainLoop()`: `StaticServicesInit()`
+after `Reconfigure()` (still root, so the directory can be created) and
+`StaticServicesIdle()` once per loop pass (re-arms the directory watch if it
+failed at start; a no-op otherwise). The implementation is NextBSD code,
+BSD-2-Clause, in two new files that are not upstream's:
+
+| File | Purpose |
+|---|---|
+| `mDNSPosix/StaticServices.c` | Registers every `*.plist` in `/Local/Library/Preferences/mDNSResponder/Services/` through `mDNS_RegisterService()` and keeps the set in step with the directory via `kqueue(2)` `EVFILT_VNODE`, so a one-shot tool such as `dscli promote` can announce a service and exit. File format: `Name`, `Type`, `Port`, optional `Domain`, `Host`, `TXT` dict. |
+| `mDNSPosix/nbsd_plist.[ch]` | The small XML plist reader, copied from `src/nss_directory_services/plist.[ch]` (same repo, BSD-2); keep in sync by copying. |
+
+Everything else in PosixDaemon.c is unchanged.
