@@ -896,6 +896,39 @@ else
     fi
 fi
 
+# ---- DirectoryServices test-database helpers --------------------------------
+# The two checks below put a known user in the plists and assert what libc
+# resolves. nextbsd-overlays now seeds a real admin account
+# (nextbsd/nextbsd-userland#278), and these checks used to skip on any database
+# they found, which would mean skipping on every image and testing nothing.
+#
+# So they save what is there, write their own, and put the original back in the
+# same unconditional cleanup that restores nsswitch.conf. Replacing rather than
+# merging keeps the assertions exact: the module resolves the group named
+# "admin" by name for its wheel rule, so a test that had to share that record
+# would be asserting on whatever the image happened to seed.
+#
+# The seeded account is unresolvable for the few seconds each check runs. That
+# is safe here because nothing logs in during the suite, and it is why the
+# restore is unconditional rather than on the success path.
+ds_dir=/Local/Library/DirectoryServices
+
+# ds_save <file> -> prints a backup path, or nothing when the file is absent
+ds_save() {
+    if [ -e "$ds_dir/$1" ]; then
+        cp -p "$ds_dir/$1" "/tmp/$1.bak" && echo "/tmp/$1.bak"
+    fi
+}
+
+# ds_restore <file> <backup-or-empty>
+ds_restore() {
+    if [ -n "$2" ]; then
+        cp -p "$2" "$ds_dir/$1" && rm -f "$2"
+    else
+        rm -f "$ds_dir/$1"
+    fi
+}
+
 # HOMEDIR — the user template and createhomedir (nextbsd/nextbsd-userland#277).
 # Creates a throwaway plist user, points nsswitch at directory_services for the
 # duration so getpwent(3) can see them, builds their home, and checks the
@@ -914,11 +947,12 @@ if [ ! -x /usr/sbin/createhomedir ]; then
     hd_fail="1: /usr/sbin/createhomedir is missing"
 elif [ ! -d "$hd_tmpl/Non_localized" ]; then
     hd_fail="2: $hd_tmpl/Non_localized is missing"
-elif [ -e "$hd_dir/Users.plist" ] || [ -e "$hd_home" ]; then
-    echo "HOMEDIR-SKIP: a DirectoryServices database or $hd_home already exists; not touching it"
+elif [ -e "$hd_home" ]; then
+    echo "HOMEDIR-SKIP: $hd_home already exists; not touching it"
     hd_fail="skip"
 else
     mkdir -p "$hd_dir" || hd_note "3: cannot create $hd_dir"
+    hd_saved=$(ds_save Users.plist)
     {
         echo '<?xml version="1.0" encoding="UTF-8"?>'
         echo '<plist version="1.0">'
@@ -968,7 +1002,8 @@ else
     fi
 
     cp -p /tmp/nsswitch.conf.hd /etc/nsswitch.conf 2>/dev/null
-    rm -f /tmp/nsswitch.conf.hd "$hd_dir/Users.plist"
+    rm -f /tmp/nsswitch.conf.hd
+    ds_restore Users.plist "$hd_saved"
     rm -rf "$hd_home"
     rmdir "$hd_dir" 2>/dev/null || true
 fi
@@ -994,10 +1029,12 @@ nssds_net=/Network/Library/DirectoryServices
 nssds_fail=""
 if [ ! -f /usr/lib/nss_directory_services.so.1 ]; then
     echo "NSS-DS-FAIL: /usr/lib/nss_directory_services.so.1 is missing"
-elif [ -e "$nssds_dir/Users.plist" ] || [ -e "$nssds_net/Users.plist" ]; then
-    echo "NSS-DS-SKIP: a DirectoryServices database already exists; not touching it"
+elif [ -e "$nssds_net/Users.plist" ]; then
+    echo "NSS-DS-SKIP: this machine is joined to a directory server; not touching it"
 else
     mkdir -p "$nssds_dir" "$nssds_net"
+    nssds_su=$(ds_save Users.plist)
+    nssds_sg=$(ds_save Groups.plist)
     cat > "$nssds_dir/Users.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
@@ -1074,7 +1111,9 @@ PLIST
         fi
     fi
     cp -p /tmp/nsswitch.conf.nssds /etc/nsswitch.conf
-    rm -f /tmp/nsswitch.conf.nssds "$nssds_dir/Users.plist" "$nssds_dir/Groups.plist"
+    rm -f /tmp/nsswitch.conf.nssds
+    ds_restore Users.plist "$nssds_su"
+    ds_restore Groups.plist "$nssds_sg"
     rmdir "$nssds_net" "$nssds_dir" 2>/dev/null || true
     if [ -n "$nssds_fail" ]; then
         echo "NSS-DS-FAIL: $nssds_fail"
