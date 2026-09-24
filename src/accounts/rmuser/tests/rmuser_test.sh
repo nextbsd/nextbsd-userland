@@ -139,6 +139,41 @@ ckhas "and admin survived"        '<string>admin</string>' Users.plist
 ./rmuser -y --keep-home admin >/dev/null 2>&1 </dev/null; ck "-y forces it" "$?" 0
 cknot "admin is gone"             '<key>admin</key>' Users.plist
 
+# ---- the private group goes, a shared one does not
+seed
+# joe's own group: same name, same gid, no other members.
+python3 - "$fix" <<'PYEOF' 2>/dev/null || true
+import sys, re
+p = sys.argv[1] + "/Groups.plist"
+t = open(p).read()
+t = t.replace("<dict>\n<key>admin</key>", """<dict>
+<key>joe</key><dict>
+<key>gid</key><integer>5001</integer><key>groupname</key><string>joe</string>
+<key>members</key><array/></dict>
+<key>admin</key>""", 1)
+open(p, "w").write(t)
+PYEOF
+./rmuser -y --keep-home joe >/dev/null 2>&1 </dev/null
+ck "remove a user with a private group" "$?" 0
+cknot "the private group went too" '<key>joe</key>' Groups.plist
+ckhas "the shared group stayed"    '<key>project</key>' Groups.plist
+
+# A group sharing the name but with a different gid is somebody else's.
+seed
+python3 - "$fix" <<'PYEOF' 2>/dev/null || true
+import sys
+p = sys.argv[1] + "/Groups.plist"
+t = open(p).read()
+t = t.replace("<dict>\n<key>admin</key>", """<dict>
+<key>joe</key><dict>
+<key>gid</key><integer>9999</integer><key>groupname</key><string>joe</string>
+<key>members</key><array/></dict>
+<key>admin</key>""", 1)
+open(p, "w").write(t)
+PYEOF
+./rmuser -y --keep-home joe >/dev/null 2>&1 </dev/null
+ckhas "a same-name group with another gid stays" '<key>joe</key>' Groups.plist
+
 # ---- group cleanup across several groups
 seed
 ./rmuser -y --keep-home joe >/dev/null 2>&1 </dev/null; ck "remove a user in two groups" "$?" 0

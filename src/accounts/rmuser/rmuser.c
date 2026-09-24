@@ -172,6 +172,7 @@ remove_one(const struct opts *o, const char *name, bool interactive)
 {
 	struct ds_handle *h;
 	struct ds_userrec u;
+	struct ds_grouprec pg;
 	char server[256];
 	enum ds_error err;
 	int sessions, killed, rc;
@@ -273,6 +274,29 @@ remove_one(const struct opts *o, const char *name, bool interactive)
 		ds_close(h);
 		return (EX_DATABASE);
 	}
+	/*
+	 * The private group adduser(8) creates alongside the account: same
+	 * name, same gid, and nobody else in it once the user has been
+	 * dropped. Leaving it behind means every removed account leaves an
+	 * orphan group forever, and the next user allocated that gid would
+	 * inherit a group named after somebody else.
+	 *
+	 * All three conditions are required. A group that merely shares the
+	 * name, or that still has members, belongs to somebody and is left
+	 * alone.
+	 */
+	if (ds_group_get(h, name, &pg) == DS_OK && pg.gid == u.gid &&
+	    ds_group_member_count(h, name) == 0) {
+		if ((err = ds_group_del(h, name)) != DS_OK) {
+			warnx("could not remove the private group %s: %s",
+			    name, ds_strerror(err));
+			ds_close(h);
+			return (EX_DATABASE);
+		}
+		if (o->verbose)
+			(void)printf("  removed the private group %s\n", name);
+	}
+
 	if ((err = ds_user_del(h, name)) != DS_OK) {
 		warnx("could not remove %s: %s", name, ds_strerror(err));
 		ds_close(h);

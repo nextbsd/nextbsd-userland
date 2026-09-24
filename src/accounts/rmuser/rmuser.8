@@ -61,6 +61,20 @@ machine.
 The count is printed whether or not
 .Fl v
 was given.
+.Ss The private group
+.Xr adduser 8
+gives each account a group of its own: same name, same gid, no other
+members.
+.Nm
+removes that group along with the account.
+A group is only treated as private when all three hold \(em it shares the
+name, it shares the gid, and nothing else is left in it.
+A group that merely shares the name, or that still has members, belongs to
+somebody and is left alone.
+.Pp
+Without this every removed account would leave an orphan group behind, and
+the next account allocated that gid would inherit a group named after
+somebody else.
 .Ss The last administrator
 .Nm
 refuses to remove the only remaining member of the

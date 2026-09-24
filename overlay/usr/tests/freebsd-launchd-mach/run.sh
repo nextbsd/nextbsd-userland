@@ -1725,8 +1725,26 @@ if [ -z "$acct_fail" ] && [ -x /usr/sbin/rmuser ]; then
             acct_note "12: joe's crontab survived removal"
         getent passwd joe >/dev/null 2>&1 &&
             acct_note "12: the directory still resolves joe after removal"
-        grep -q '<string>joe</string>' "$ds_dir/Groups.plist" &&
-            acct_note "12: joe is still a member of a group"
+        # A plain grep for joe in Groups.plist cannot tell a membership
+        # from the group's own name, and adduser gives every user a
+        # private group named after them -- so the grep this replaces
+        # matched that group and failed no matter what rmuser did.
+        # Look inside the members arrays only.
+        if awk '
+            /<key>members<\/key>/ { inm = 1 }
+            inm && /<string>joe<\/string>/ { found = 1 }
+            # An empty members list is written <array/>, which closes on
+            # its own line and never matches </array>. Without this the
+            # flag stays set and the next group name counts as a member.
+            inm && /<\/array>|<array\/>/ { inm = 0 }
+            END { exit(found ? 0 : 1) }
+        ' "$ds_dir/Groups.plist" 2>/dev/null; then
+            acct_note "12: joe is still listed in a group's members"
+        fi
+        # And his private group goes with him, or every removed account
+        # leaves an orphan group behind for good.
+        getent group joe >/dev/null 2>&1 &&
+            acct_note "12: joe's private group survived removal"
     fi
 fi
 
