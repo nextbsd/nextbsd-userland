@@ -874,6 +874,24 @@ DESTDIR="$DESTDIR" ninja -C "$NBI_BUILD" install
 test -x "$DESTDIR/usr/sbin/nextbsd-installer" || { echo "FAIL: /usr/sbin/nextbsd-installer not installed"; exit 1; }
 test -f "$DESTDIR/usr/libexec/nextbsd-installer/do-install.sh" || { echo "FAIL: installer engine (do-install.sh) not installed"; exit 1; }
 
+# ---- libds (nextbsd/nextbsd-userland#287, E18 U15) -------------------------
+# Reads and writes the DirectoryServices plists through CoreFoundation's own
+# property list implementation, so nothing here serialises XML by hand. A
+# static internal library: the account tools and the ds* commands link it in,
+# and nothing is installed, so there is no ABI to keep.
+#
+# NOT used by nss_directory_services, which links libc alone because it is
+# dlopened into every process that calls getpwnam(3) and keeps its own
+# read-only parser. Built here purely so a break shows up on both arches.
+#
+# The unit tests also build for the image (TIER 3, LIBDS marker) and run on
+# the boot lane, because the Ubuntu runners have no CoreFoundation. The same
+# sources run on a developer's machine with `cd tests && make check`.
+comp "libds"
+run_buildenv "make -C $SRC/libds SYSROOT=$SYSROOT all"
+test ! -e "$DESTDIR/usr/lib/libds.a" || { echo "FAIL: libds is internal and must not be installed"; exit 1; }
+echo "==> libds built"
+
 # ---- createhomedir (nextbsd/nextbsd-userland#277, E18 U10) -----------------
 # Builds a home from /System/Library/User Template, which ships in overlay/.
 # Plain libc plus the XML plist reader shared with nss_directory_services;
@@ -961,6 +979,19 @@ $TCC -o "$TESTDIR/test_libdispatch" "$SRC/libdispatch-tests/test_libdispatch.c" 
 $TCC -o "$TESTDIR/test_libdispatch_mach" "$SRC/libdispatch-tests/test_libdispatch_mach.c" -lsystem_dispatch -lsystem_kernel -lpthread
 $TCC -o "$TESTDIR/test_libxpc" "$SRC/libxpc-tests/test_libxpc.c" -lxpc -llaunch -lsystem_dispatch -lsystem_kernel -lpthread
 $TCC -fblocks -o "$TESTDIR/test_corefoundation" "$SRC/libCoreFoundation-tests/test_corefoundation.c" -lCoreFoundation -lsystem_dispatch -lsystem_blocks -lsystem_kernel -lpthread
+# libds_test (LIBDS marker): the DirectoryServices plist writer, exercised
+# against NextBSD's own CoreFoundation. Its unit tests cannot run on the
+# Ubuntu runners, which have no CF at all, so this is the only place they
+# run. It works inside its own mkdtemp fixture and never touches the real
+# database. Links the NSS module's independent parser too, because one of
+# the things it asserts is that both halves agree on the format.
+$TCC -fblocks -DLIBDS_TEST -I"$SRC/libds" -I"$SRC/nss_directory_services" \
+    -I"$SRC/Libnotify/freebsd-shims" \
+    -o "$TESTDIR/libds_test" \
+    "$SRC/libds/tests/libds_test.c" "$SRC/libds/libds.c" \
+    "$SRC/nss_directory_services/plist.c" \
+    -lCoreFoundation -lsystem_dispatch -lsystem_blocks -lsystem_kernel -lpthread
+test -x "$TESTDIR/libds_test" || { echo "FAIL: libds_test not built"; exit 1; }
 # test_bsd_logger (SYSLOG-RUN marker): plain libc BSD syslog() round-trip; source
 # lives in tests/ (build.sh ~1076). No Darwin libs needed.
 $TCC -o "$TESTDIR/test_bsd_logger" "$ROOT/tests/test_bsd_logger.c"

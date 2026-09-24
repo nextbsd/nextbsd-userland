@@ -1369,6 +1369,27 @@ else
 fi
 
 
+# LIBDS — the DirectoryServices plist writer (nextbsd/nextbsd-userland#287,
+# E18 U15). libds writes Users.plist and Groups.plist through CoreFoundation,
+# and its unit tests cannot run on the Ubuntu build runners because they have
+# no CoreFoundation, so they run here against NextBSD's own. The binary works
+# inside its own mkdtemp fixture and never touches the real database. Its own
+# output is captured rather than echoed, so the child's marker cannot be
+# mistaken for this one.
+echo "==> libds: DirectoryServices plist read and write"
+libds_bin=/usr/tests/freebsd-launchd-mach/libds_test
+if [ ! -x "$libds_bin" ]; then
+    echo "LIBDS-FAIL: $libds_bin not installed"
+else
+    libds_out=$("$libds_bin" 2>&1)
+    libds_tally=$(echo "$libds_out" | grep -E '^[0-9]+ checks' | tr '\n' ' ')
+    if echo "$libds_out" | grep -q '^LIBDS-OK'; then
+        echo "LIBDS-OK: ${libds_tally:-passed}"
+    else
+        echo "LIBDS-FAIL: ${libds_tally:-no tally} $(echo "$libds_out" | grep -E '^FAIL' | head -4 | tr '\n' ' ')"
+    fi
+fi
+
 # 10. ASL runtime smoke (Phase J). Task #41 move_member wire-up
 # landed but a follow-on halt-after-bootstrap-remote regression is
 # under investigation. Keep test at SKIP for now.
