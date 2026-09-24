@@ -337,15 +337,39 @@ expect {
 # /sbin/launchd as PID 1 -> getty plist -> login.
 # An image that logs in automatically (nextbsd-userland#278: one user,
 # admin, no password) never prints "login:", because getty's al capability
-# makes it exec login -f. Discriminate on what login(1) itself reports to
-# the console rather than on a prompt: in the manual case "login:" arrives
-# first, and in the automatic case the session message arrives with no
-# prompt before it.
+# makes it exec login -f. So there are three ways this can go, and the
+# block below accepts all of them: a "login:" prompt, login(1)'s session
+# message, or a shell that answers a probe.
+#
+# The session message cannot be relied on, which is the subtle part.
+# It is a syslog message, not console output:
+# usr.bin/login/login.c opens the log with LOG_CONS and then calls
+# syslog(LOG_INFO, "login on %s as %s", ...). LOG_CONS means it reaches
+# /dev/console only when it CANNOT be delivered to syslogd. Our asl.conf
+# sends nothing to the console and the getty job declares no ordering
+# against com.apple.syslogd, so whether that line appears at all is a race
+# the test used to depend on winning. It lost on arm64 under qemu while a
+# working shell sat on the console (nextbsd-userland#289). So on timeout,
+# probe for a shell before concluding anything. The probe is sent only
+# after the timeout, never before, because at a real "login:" prompt those
+# keystrokes would be typed as a username.
 set at_login 1
 expect {
     timeout {
-        puts "\nFAIL: neither a 'login:' prompt nor an automatic session within 8 minutes"
-        exit 2
+        puts "\n... no login prompt and no session message; probing for a shell"
+        send "\r"
+        send "echo NB-SHELL-READY\r"
+        expect {
+            -timeout 90
+            timeout {
+                puts "\nFAIL: no 'login:' prompt, no session message, and no shell responded"
+                exit 2
+            }
+            "NB-SHELL-READY" {
+                set at_login 0
+                puts "\nOK: automatic session confirmed by probe (login's console message never arrived)"
+            }
+        }
     }
     "login:" { puts "\nOK: boot reached the login prompt" }
     -re {login on console as ([a-z_][a-z0-9_.-]*)} {
