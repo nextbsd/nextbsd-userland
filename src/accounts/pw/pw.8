@@ -1,0 +1,200 @@
+.\"-
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" Copyright (c) 2026 Joseph Maloney
+.\"
+.Dd September 24, 2026
+.Dt PW 8
+.Os NextBSD
+.Sh NAME
+.Nm pw
+.Nd account and group maintenance
+.Sh SYNOPSIS
+.Nm
+.Cm useradd | userdel | usermod | usershow | usernext
+.Op Ar name
+.Op Ar options
+.Nm
+.Cm groupadd | groupdel | groupmod | groupshow | groupnext
+.Op Ar name
+.Op Ar options
+.Nm
+.Cm lock | unlock
+.Ar name
+.Sh DESCRIPTION
+.Nm
+creates, edits and removes accounts and groups.
+NextBSD keeps regular accounts in the DirectoryServices property lists and
+system accounts in
+.Pa /etc/master.passwd ,
+and
+.Nm
+works on both.
+.Pp
+.Sy Which store an operation uses is decided for you .
+An account that already exists is edited wherever it lives.
+A new one is placed by its shape, which is the only part worth learning:
+.Bl -bullet -offset indent
+.It
+A uid or gid of 999 or below is a system account.
+.It
+A name beginning with an underscore is a system account.
+.It
+A shell of
+.Pa nologin
+with no home, or a home of
+.Pa /nonexistent ,
+is a system account.
+.It
+Anything else is a directory account.
+.El
+.Pp
+Everything belonging in
+.Pa /etc/master.passwd
+is handed to the copy of
+.Nm
+the base system ships, at
+.Pa /usr/libexec/bsd/pw ,
+with the command line untouched.
+So a system account is managed by exactly the program that has always managed
+it, which is how packages that create daemon users keep working.
+.Ss Why the threshold is 999
+The ports collection registers 647 users, and 267 of them sit between 500 and
+999.
+Most would be caught by the shell-and-home rule, but around twenty would not:
+.Li postgres
+at 770,
+.Li jenkins
+at 818 and
+.Li ejabberd
+at 543 all have a real shell and a real home.
+A lower threshold would file those in the property lists, give them a computed
+home that is not where their data lives, and hide them from
+.Xr pwd_mkdb 8 .
+.Pp
+That leaves 1000 to 5000 unallocated, and NextBSD's own users start at 5001
+with the
+.Li admin
+group at 5000.
+.Sh WHAT A DIRECTORY ACCOUNT CANNOT HAVE
+These are refused rather than quietly ignored, because a flag that appears to
+work and does nothing is worse than one that fails:
+.Bl -tag -width "-l newname" -compact
+.It Fl L
+a login class.
+The property lists have no such field.
+.It Fl d
+a home directory.
+It is always
+.Pa /Local/Users/ Ns Ar name ,
+computed from the name.
+.It Fl l
+renaming.
+The record is keyed by name.
+.El
+.Pp
+All three are accepted normally for a system account, since the base copy
+handles those and understands them.
+.Sh SUBCOMMANDS
+.Bl -tag -width "groupshow" -compact
+.It Cm useradd
+Create an account.
+With no
+.Fl u
+the first free uid at or above 5001 is used.
+A new directory account is created locked, with no usable password; set one
+with
+.Xr passwd 1 .
+.It Cm userdel
+Remove an account.
+.Fl r
+removes the home directory as well.
+.Xr rmuser 8
+is the fuller tool, and also removes group memberships, the crontab and any
+running processes.
+.It Cm usermod
+Change an account.
+.It Cm usershow
+Print an account in
+.Xr passwd 5
+form, or a readable form with
+.Fl P .
+The exit status says whether it exists, which is what scripts use it for.
+.It Cm groupadd , groupdel , groupmod , groupshow
+The same for groups.
+.Cm groupmod Fl m
+adds members and
+.Fl d
+removes them.
+.It Cm lock , unlock
+Disable and re-enable an account by marking its stored hash.
+The same marker
+.Xr passwd 1
+uses, so the two agree.
+.It Cm usernext , groupnext
+Report the next free id.
+Handled by the base copy, since a caller asking for an id is about to create a
+system account.
+.El
+.Pp
+.Cm "pw useradd"
+and
+.Cm "pw user add"
+are both accepted.
+.Sh FILES
+.Bl -tag -width "/Local/Library/DirectoryServices/Users.plist" -compact
+.It Pa /Local/Library/DirectoryServices/Users.plist
+.It Pa /Local/Library/DirectoryServices/Groups.plist
+.It Pa /Local/Library/DirectoryServices/Binding.plist
+present when this machine is a directory client, in which case
+.Nm
+refuses to write
+.It Pa /etc/master.passwd
+.It Pa /usr/libexec/bsd/pw
+the base copy, which handles system accounts
+.El
+.Sh EXIT STATUS
+Values from
+.In sysexits.h :
+.Ev EX_USAGE
+for a flag that cannot be represented,
+.Ev EX_NOPERM
+for a non-root caller or a machine joined to a directory server,
+.Ev EX_NOUSER
+for a name that does not exist,
+.Ev EX_UNAVAILABLE
+when the base copy is missing,
+.Ev EX_DATAERR
+for a property list that will not parse, and
+.Ev EX_IOERR
+for a failed write.
+.Sh EXAMPLES
+Create a regular account and give it a password:
+.Pp
+.Dl # pw useradd joe
+.Dl # passwd joe
+.Pp
+Create a daemon account, which goes to
+.Pa /etc/master.passwd
+without being asked to:
+.Pp
+.Dl # pw useradd _builder -u 300 -g 300 -d /nonexistent -s /usr/sbin/nologin
+.Pp
+Add somebody to a group:
+.Pp
+.Dl # pw groupmod staff -m joe
+.Sh SEE ALSO
+.Xr chpass 1 ,
+.Xr passwd 1 ,
+.Xr adduser 8 ,
+.Xr rmuser 8 ,
+.Xr vipw 8
+.Sh HISTORY
+This
+.Nm
+was written for NextBSD.
+It keeps the command line of the tool it replaces, because package install
+scripts depend on it, and adds the routing between the two stores that this
+system needs.
+.Sh AUTHORS
+.An Joseph Maloney

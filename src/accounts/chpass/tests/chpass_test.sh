@@ -132,8 +132,8 @@ ckfield "shell" joe shell "/bin/sh"
 # ---- printing a record changes nothing and succeeds
 seed
 out=$(./chpass joe 2>&1 </dev/null); ck "a bare chpass succeeds" "$?" 0
-printf '%s' "$out" | grep -q 'Joe Original' || { fail=$((fail+1)); printf 'FAIL the record was not printed\n'; }
-[ $? -eq 0 ] && pass=$((pass+1))
+if printf '%s' "$out" | grep -q 'Joe Original'; then pass=$((pass+1)); else
+	fail=$((fail+1)); printf 'FAIL the record was not printed\n'; fi
 ckfield "and nothing changed" joe realName "Joe Original"
 
 # ---- shell validation

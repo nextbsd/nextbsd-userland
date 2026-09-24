@@ -1627,6 +1627,41 @@ if [ -z "$acct_fail" ]; then
     esac
 fi
 
+if [ -z "$acct_fail" ] && [ -x /usr/sbin/pw ]; then
+    # 11b. pw, whose caller is not a person: the forms a ports install script
+    #      emits have to keep working. Every account a port creates is a
+    #      system account, so each of these must reach master.passwd, not the
+    #      plists. That is what the routing exists to get right.
+    /usr/sbin/pw useradd _imgtest -u 299 -g 299 -d /nonexistent \
+        -s /usr/sbin/nologin -c "Image Test" >/dev/null 2>&1 ||
+        acct_note "11b: pw useradd of a system account failed"
+    grep -q '_imgtest' "$plist" &&
+        acct_note "11b: a system account was filed in the directory"
+    getent passwd _imgtest >/dev/null 2>&1 ||
+        acct_note "11b: the system account is not resolvable"
+    # A high uid with a real shell and home is still a system account: this is
+    # the postgres case a 499 threshold would have got wrong.
+    /usr/sbin/pw useradd _imgpg -u 770 -g 770 -d /var/db/imgpg -s /bin/sh \
+        >/dev/null 2>&1 || acct_note "11b: pw useradd at uid 770 failed"
+    grep -q '_imgpg' "$plist" &&
+        acct_note "11b: uid 770 was filed in the directory"
+    # And a directory account stays here.
+    /usr/sbin/pw usershow joe >/dev/null 2>&1 ||
+        acct_note "11b: pw usershow of a directory user failed"
+    case "$(/usr/sbin/pw usershow joe 2>/dev/null)" in
+        joe:*) ;;
+        *) acct_note "11b: pw usershow gave the wrong shape for a directory user" ;;
+    esac
+    # A flag we cannot store is refused rather than ignored.
+    /usr/sbin/pw usermod joe -L staff >/dev/null 2>&1 &&
+        acct_note "11b: pw accepted -L on a directory account"
+    # Clean up what this step made in master.passwd.
+    /usr/sbin/pw userdel _imgtest >/dev/null 2>&1
+    /usr/sbin/pw userdel _imgpg >/dev/null 2>&1
+    /usr/sbin/pw groupdel _imgtest >/dev/null 2>&1
+    /usr/sbin/pw groupdel _imgpg >/dev/null 2>&1
+fi
+
 if [ -z "$acct_fail" ] && [ -x /usr/sbin/rmuser ]; then
     # 12. Removal, for real: the record, the home, the group memberships and
     #     the crontab all go, and the module stops resolving the name.
@@ -1667,7 +1702,7 @@ fi
 if [ -n "$acct_fail" ]; then
     echo "ACCT-LIFECYCLE-FAIL: $acct_fail"
 else
-    echo "ACCT-LIFECYCLE-OK: created a user with a password, changed it, rejected a mismatch, locked and unlocked without losing it, cleared it, made an administrator, changed the shell and name as root and as the user themselves, and removed both with and without their home"
+    echo "ACCT-LIFECYCLE-OK: created a user with a password, changed it, rejected a mismatch, locked and unlocked without losing it, cleared it, made an administrator, changed the shell and name as root and as the user themselves, routed system accounts to master.passwd through pw, and removed both with and without their home"
 fi
 
 acct_cleanup

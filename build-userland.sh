@@ -950,6 +950,21 @@ for l in chfn chsh ypchpass ypchfn ypchsh; do
 done
 echo "==> chpass built"
 
+# ---- pw (nextbsd/nextbsd-userland#255, E18 U9) -----------------------------
+# Routes: an existing account is served wherever it lives, a new one by its
+# shape, and anything belonging in master.passwd is handed to the base copy at
+# /usr/libexec/bsd/pw with argv untouched. That delegation is what keeps the
+# contract with ports, whose install scripts call pw with a positional name.
+#
+# The relocation of the base binary is a nextbsd-freebsd-compat change and
+# must not land before this: until it does, pw here reports that system
+# accounts cannot be managed rather than doing the wrong thing silently.
+comp "pw"
+mkdir -p "$DESTDIR/usr/sbin"
+run_buildenv "make -C $SRC/accounts/pw DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/sbin/pw" || { echo "FAIL: /usr/sbin/pw not installed"; exit 1; }
+echo "==> pw built"
+
 # ---- autologin-user (nextbsd/nextbsd-userland#278, E18 U11) ----------------
 # Names the account the console logs in automatically, or prints nothing. The
 # getty job runs it; the rule is in one place rather than in a shell one-liner.
