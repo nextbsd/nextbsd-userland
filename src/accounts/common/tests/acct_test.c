@@ -43,8 +43,9 @@ ck(bool cond, const char *what)
 int
 main(void)
 {
-	const char *h1, *h2;
+	char h1[512], h2[512];
 	char locked[1024];
+	bool hashed;
 
 	/* Things that hold whatever crypt(3) can do. */
 	ck(!acct_hash_locked(NULL), "a null hash is not locked");
@@ -77,8 +78,9 @@ main(void)
 	 * here is a correct answer on a host whose crypt is weaker, not a
 	 * failure of this code. Say which happened instead of hiding it.
 	 */
-	h1 = acct_hash_password("correct horse battery staple");
-	if (h1 == NULL) {
+	hashed = acct_hash_password("correct horse battery staple", h1,
+	    sizeof(h1));
+	if (!hashed) {
 		printf("SKIP: crypt(3) here cannot produce the required "
 		    "format, so hashing is unverified on this platform\n");
 		printf("      (this is why the image runs this same binary)\n");
@@ -93,9 +95,15 @@ main(void)
 		ck(!acct_verify_password("correct horse battery staple ", h1),
 		    "a trailing space does not");
 
-		/* The salt is random, so the same password hashes differently. */
-		h2 = acct_hash_password("correct horse battery staple");
-		ck(h2 != NULL && strcmp(h1, h2) != 0,
+		/*
+		 * The salt is random, so the same password hashes
+		 * differently. h1 is a copy, not a borrowed pointer: when
+		 * this helper returned static storage, both names referred
+		 * to the same buffer and this check compared it with
+		 * itself and always passed.
+		 */
+		ck(acct_hash_password("correct horse battery staple", h2,
+		    sizeof(h2)) && strcmp(h1, h2) != 0,
 		    "two hashes of one password differ");
 
 		/* And a locked copy of a real hash still refuses. */

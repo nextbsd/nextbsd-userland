@@ -205,6 +205,7 @@ add_one(const struct opts *o, bool interactive, const char *bname,
 	char name[DS_NAME_MAX], real[DS_REAL_MAX], shell[DS_SHELL_MAX];
 	char gname[DS_NAME_MAX], server[256];
 	char extra[1024], *tok, *brk;
+	char hashbuf[DS_HASH_MAX];
 	const char *hash = NULL;
 	enum ds_error err;
 	enum pwmode mode = o->pwmode;
@@ -434,13 +435,15 @@ add_one(const struct opts *o, bool interactive, const char *bname,
 				return (EX_REFUSED);
 			}
 			acct_zero(p2, strlen(p2));
-			hash = acct_hash_password(first);
-			acct_zero(first, sizeof(first));
-			if (hash == NULL) {
+			if (!acct_hash_password(first, hashbuf,
+			    sizeof(hashbuf))) {
+				acct_zero(first, sizeof(first));
 				warnx("could not hash the password");
 				ds_close(h);
 				return (EX_DATABASE);
 			}
+			acct_zero(first, sizeof(first));
+			hash = hashbuf;
 		}
 	} else if (!interactive && hash != NULL && hash[0] != '\0') {
 		/* a batch line's password field is already a hash */

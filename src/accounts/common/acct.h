@@ -79,14 +79,23 @@
 #endif
 
 /*
- * Hash a password for storage in passwordHash. SHA-512 crypt with a
- * random 16-character salt, which is what crypt(3) verifies and what
- * Gershwin's dscli writes, so either tool's hashes work with the other.
- * The format is taken from login.conf's passwd_format capability when it
- * names one crypt(3) understands, so an admin can change the policy in
- * one place. Returns a pointer to static storage, or NULL on failure.
+ * Hash a password for storage in passwordHash, into the caller's buffer.
+ * The format comes from login.conf's passwd_format when it names one
+ * crypt(3) implements, defaulting to SHA-512, which is what Gershwin's
+ * dscli also writes, so either tool's hashes work with the other.
+ *
+ * Refuses rather than downgrading: if crypt(3) cannot produce the format
+ * asked for it falls back silently, and this returns false instead of
+ * storing something weaker.
+ *
+ * The caller passes a buffer rather than getting a pointer back because an
+ * earlier version returned static storage, and the first test to hold two
+ * results at once compared the same buffer with itself. A function whose
+ * second call invalidates the first result is a trap however well it is
+ * documented.
  */
-const char	*acct_hash_password(const char *password);
+bool		 acct_hash_password(const char *password, char *out,
+		     size_t len);
 
 /*
  * True when this name must go to master.passwd rather than the directory:

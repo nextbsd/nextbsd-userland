@@ -90,16 +90,17 @@ setting_prefix(const char *format)
 	return ("$6$");
 }
 
-const char *
-acct_hash_password(const char *password)
+bool
+acct_hash_password(const char *password, char *out, size_t len)
 {
-	static char stored[512];
+	char stored[512];
 	char salt[17], setting[64];
 	const char *format = NULL, *prefix;
 	char *hash;
 
-	if (password == NULL)
-		return (NULL);
+	if (password == NULL || out == NULL || len == 0)
+		return (false);
+	out[0] = '\0';
 
 	/*
 	 * login.conf's passwd_format is the one place the policy is stated,
@@ -125,9 +126,9 @@ acct_hash_password(const char *password)
 	(void)strlcat(setting, "$", sizeof(setting));
 
 	if ((hash = crypt(password, setting)) == NULL)
-		return (NULL);
+		return (false);
 	if (strlcpy(stored, hash, sizeof(stored)) >= sizeof(stored))
-		return (NULL);
+		return (false);
 	/*
 	 * Refuse anything that is not the format we asked for.
 	 *
@@ -148,10 +149,17 @@ acct_hash_password(const char *password)
 		    strlen(stored) <= plen) {
 			warnx("crypt(3) does not implement %s on this system; "
 			    "refusing to store a weaker hash", prefix);
-			return (NULL);
+			acct_zero(stored, sizeof(stored));
+			return (false);
 		}
 	}
-	return (stored);
+	if (strlcpy(out, stored, len) >= len) {
+		acct_zero(stored, sizeof(stored));
+		acct_zero(out, len);
+		return (false);
+	}
+	acct_zero(stored, sizeof(stored));
+	return (true);
 }
 
 const char *

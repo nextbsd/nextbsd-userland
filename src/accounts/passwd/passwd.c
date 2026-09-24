@@ -147,7 +147,6 @@ do_directory(const char *name, enum action act, uid_t ruid)
 	struct ds_userrec u;
 	char newpw[256], server[256];
 	enum ds_error err;
-	const char *hash;
 	int rc;
 
 	/*
@@ -250,14 +249,14 @@ do_directory(const char *name, enum action act, uid_t ruid)
 			ds_close(h);
 			return (rc == 0 ? 0 : 1);
 		}
-		hash = acct_hash_password(newpw);
-		acct_zero(newpw, sizeof(newpw));
-		if (hash == NULL) {
+		if (!acct_hash_password(newpw, u.passwordHash,
+		    sizeof(u.passwordHash))) {
+			acct_zero(newpw, sizeof(newpw));
 			warnx("could not hash the password");
 			ds_close(h);
 			return (1);
 		}
-		(void)strlcpy(u.passwordHash, hash, sizeof(u.passwordHash));
+		acct_zero(newpw, sizeof(newpw));
 		u.hasHash = true;
 		u.noPassword = false;
 		break;
@@ -290,8 +289,7 @@ static int
 do_files(const char *name, enum action act, uid_t ruid)
 {
 	struct passwd *pw, newpw;
-	char newpass[256];
-	const char *hash;
+	char newpass[256], hashbuf[512];
 	int pfd, tfd, rc;
 
 	if ((pw = getpwnam(name)) == NULL) {
@@ -331,15 +329,15 @@ do_files(const char *name, enum action act, uid_t ruid)
 	rc = ask_new(newpass, sizeof(newpass));
 	if (rc <= 0)
 		return (rc == 0 ? 0 : 1);
-	hash = acct_hash_password(newpass);
-	acct_zero(newpass, sizeof(newpass));
-	if (hash == NULL) {
+	if (!acct_hash_password(newpass, hashbuf, sizeof(hashbuf))) {
+		acct_zero(newpass, sizeof(newpass));
 		warnx("could not hash the password");
 		return (1);
 	}
+	acct_zero(newpass, sizeof(newpass));
 
 	newpw = *pw;
-	newpw.pw_passwd = (char *)hash;
+	newpw.pw_passwd = hashbuf;
 
 	if (pw_init(NULL, NULL) == -1) {
 		warn("pw_init");
