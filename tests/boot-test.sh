@@ -717,6 +717,16 @@ expect {
     "NFS-OK" { puts "\nOK: NFS server jobs serve the exports and the client job's script behaves" }
 }
 
+# LIBDS — libds's unit tests, run on the image against NextBSD's own
+# CoreFoundation (#287). The build runners have no CF, so this is the only
+# place they can run. The suite includes a concurrent-writer race and a
+# cross-check that the NSS module's separate parser reads what libds wrote.
+expect {
+    timeout { puts "\nWARN: LIBDS marker not seen (image predates libds — informational)" }
+    -re {LIBDS-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    "LIBDS-OK" { puts "\nOK: libds reads, writes and locks the DirectoryServices plists" }
+}
+
 # Stage 3+ Phase J runtime: syslogd + notifyd RunAtLoad via plists,
 # then syslog(1) post + read-back round-trip via Mach IPC into the
 # ASL store. See run.sh tail for the test sequence.

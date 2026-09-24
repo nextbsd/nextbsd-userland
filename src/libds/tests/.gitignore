@@ -1,0 +1,3 @@
+libds_test
+*.o
+*.dSYM
