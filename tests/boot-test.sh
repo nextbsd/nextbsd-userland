@@ -335,44 +335,68 @@ expect {
 # Stage 1b: wait for the getty "login:" prompt. Boot is complete:
 # loader preloaded mach.ko -> kernel mounts the freebsd-ufs root rw ->
 # /sbin/launchd as PID 1 -> getty plist -> login.
+# An image that logs in automatically (nextbsd-userland#278: one user,
+# admin, no password) never prints "login:", because getty's al capability
+# makes it exec login -f. Discriminate on what login(1) itself reports to
+# the console rather than on a prompt: in the manual case "login:" arrives
+# first, and in the automatic case the session message arrives with no
+# prompt before it.
+set at_login 1
 expect {
     timeout {
-        puts "\nFAIL: 'login:' prompt not seen within 8 minutes"
+        puts "\nFAIL: neither a 'login:' prompt nor an automatic session within 8 minutes"
         exit 2
     }
     "login:" { puts "\nOK: boot reached the login prompt" }
+    -re {login on console as ([a-z_][a-z0-9_.-]*)} {
+        set at_login 0
+        puts "\nOK: boot logged in automatically as $expect_out(1,string)"
+    }
 }
 
-# BOOT_GATE=login: stop here — boot proven through kernel + mach + launchd +
-# all daemons + getty to the login prompt. Opt-in smoke gate for new-arch
-# bring-up; both current arches run BOOT_GATE=full.
-if {$env(BOOT_GATE) eq "login"} {
-    puts "\nOK: BOOT-LOGIN-OK — $env(ARCH) reached the login prompt (login gate PASSED)"
-    close
-    wait
-    exit 0
+# Stage 2: get to a usable shell. Manually, log in as root: the live ISO has
+# no root password, so login either drops straight to a shell or asks and
+# accepts an empty one. Automatically, we are already in a shell.
+if {$at_login} {
+    send "root\r"
+    expect {
+        timeout {
+            puts "\nFAIL: no response after sending root"
+            exit 1
+        }
+        "Password:" {
+            send "\r"
+            exp_continue
+        }
+        "Login incorrect" {
+            puts "\nFAIL: root login rejected"
+            exit 1
+        }
+        -re {[#%$] $} { puts "\nOK: at root shell prompt" }
+    }
+} else {
+    # Do NOT match a prompt here. Automatic login lands far earlier in the
+    # boot than a human could, so driver attach messages are still arriving
+    # and the prompt is usually not the last thing in the buffer -- a real
+    # run showed "pc-q35-8-2% " followed immediately by drmn0 and em0
+    # probing. Ask the shell for a marker instead; characters typed before
+    # it is ready are buffered by the tty and run when it starts.
+    send "\r"
+    send "echo NB-SHELL-READY\r"
+    expect {
+        timeout {
+            puts "\nFAIL: no shell response after automatic login"
+            exit 1
+        }
+        "NB-SHELL-READY" { puts "\nOK: shell is responding" }
+    }
 }
 
-# Stage 2: log in as root. The live ISO has no root password, so login
-# either drops straight to the shell or asks "Password:" and accepts an
-# empty password. Both paths land at a shell prompt; failure is
-# "Login incorrect" or silence.
-send "root\r"
-expect {
-    timeout {
-        puts "\nFAIL: no response after sending root"
-        exit 1
-    }
-    "Password:" {
-        send "\r"
-        exp_continue
-    }
-    "Login incorrect" {
-        puts "\nFAIL: root login rejected"
-        exit 1
-    }
-    -re {[#%$] $} { puts "\nOK: at root shell prompt" }
-}
+# Everything below this point needs root. A manual login above was as root;
+# an automatic one lands as admin, who is in the admin group and sudoes with
+# no password. Define one helper in the shell rather than repeating the test,
+# as a function so it behaves the same in sh (root's shell) and zsh (admin's).
+send "r() { if \[ \"\$(id -u)\" = 0 \]; then \"\$@\"; else sudo \"\$@\"; fi; }\r"
 
 # Stage 3: invoke the on-ISO mach smoke test. Test scripts live under
 # /usr/tests/<component>/ following the FreeBSD convention. The script
@@ -381,7 +405,7 @@ expect {
 #   LIBSYSTEM-KERNEL-OK / LIBSYSTEM-KERNEL-FAIL — userland test_libmach
 # Both must pass.
 set saved_marker_timeout $timeout
-send "/usr/tests/freebsd-launchd-mach/run.sh\r"
+send "r /usr/tests/freebsd-launchd-mach/run.sh\r"
 expect {
     timeout {
         puts "\nFAIL: /usr/tests/freebsd-launchd-mach/run.sh timed out"
@@ -1483,7 +1507,7 @@ expect {
 # non-fatal so this stays green on older continuous images (e.g. when
 # nextbsd-kernel's smoke test boots an image built before kextd/K2 shipped);
 # only an explicit IOCATALOGUE-FAIL gates.
-send "/usr/tests/nextbsd-iokit/run.sh\r"
+send "r /usr/tests/nextbsd-iokit/run.sh\r"
 
     # Pull model (no fixed per-marker sleeps): nextbsd-iokit/run.sh prints its
     # markers then a final IOKIT-RUN-DONE sentinel. Match whatever it emits (in
@@ -1525,13 +1549,13 @@ set timeout 150
 #   "Rebooting"           = wrong reboot_flags (RB_AUTOBOOT) -> FAIL
 #   timeout               = the #398 stall -> FAIL (fall back to halt -p, which
 #                           bypasses init, so the runner is never left hanging)
-send "shutdown -p now\r"
+send "r shutdown -p now\r"
 expect {
     timeout {
         puts "\nFAIL: SHUTDOWN-P — no poweroff within 150s of shutdown -p (launchd init-protocol stall, nextbsd#398)"
         send "\r"
         sleep 1
-        send "halt -p\r"
+        send "r halt -p\r"
         expect { timeout {} eof {} "Uptime:" {} }
         catch { close }
         catch { wait }

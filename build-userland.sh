@@ -884,6 +884,15 @@ run_buildenv "make -C $SRC/accounts/createhomedir DESTDIR=$DESTDIR SYSROOT=$SYSR
 test -x "$DESTDIR/usr/sbin/createhomedir" || { echo "FAIL: /usr/sbin/createhomedir not installed"; exit 1; }
 echo "==> createhomedir built"
 
+# ---- autologin-user (nextbsd/nextbsd-userland#278, E18 U11) ----------------
+# Names the account the console logs in automatically, or prints nothing. The
+# getty job runs it; the rule is in one place rather than in a shell one-liner.
+comp "autologin-user"
+mkdir -p "$DESTDIR/usr/libexec/nextbsd"
+run_buildenv "make -C $SRC/accounts/autologin-user DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/libexec/nextbsd/autologin-user" || { echo "FAIL: /usr/libexec/nextbsd/autologin-user not installed"; exit 1; }
+echo "==> autologin-user built"
+
 # ---- nss_directory_services (nextbsd/nextbsd-userland#249, E18 U3) ---------
 # The `directory_services` source for passwd and group: users and groups
 # straight from /Local (or /Network) Library/DirectoryServices/{Users,Groups}
