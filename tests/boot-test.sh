@@ -392,6 +392,12 @@ if {$at_login} {
     }
 }
 
+# Everything below this point needs root. A manual login above was as root;
+# an automatic one lands as admin, who is in the admin group and sudoes with
+# no password. Define one helper in the shell rather than repeating the test,
+# as a function so it behaves the same in sh (root's shell) and zsh (admin's).
+send "r() { if \[ \"\$(id -u)\" = 0 \]; then \"\$@\"; else sudo \"\$@\"; fi; }\r"
+
 # Stage 3: invoke the on-ISO mach smoke test. Test scripts live under
 # /usr/tests/<component>/ following the FreeBSD convention. The script
 # emits two markers in sequence:
@@ -399,10 +405,7 @@ if {$at_login} {
 #   LIBSYSTEM-KERNEL-OK / LIBSYSTEM-KERNEL-FAIL — userland test_libmach
 # Both must pass.
 set saved_marker_timeout $timeout
-# The suite needs root. A manual login above was as root; an automatic one
-# lands as admin, who is in the admin group and so sudoes with no password
-# (pam_unix nullok, since the account has none). One line covers both.
-send "if \[ \"\$(id -u)\" = 0 \]; then /usr/tests/freebsd-launchd-mach/run.sh; else sudo /usr/tests/freebsd-launchd-mach/run.sh; fi\r"
+send "r /usr/tests/freebsd-launchd-mach/run.sh\r"
 expect {
     timeout {
         puts "\nFAIL: /usr/tests/freebsd-launchd-mach/run.sh timed out"
@@ -1504,7 +1507,7 @@ expect {
 # non-fatal so this stays green on older continuous images (e.g. when
 # nextbsd-kernel's smoke test boots an image built before kextd/K2 shipped);
 # only an explicit IOCATALOGUE-FAIL gates.
-send "/usr/tests/nextbsd-iokit/run.sh\r"
+send "r /usr/tests/nextbsd-iokit/run.sh\r"
 
     # Pull model (no fixed per-marker sleeps): nextbsd-iokit/run.sh prints its
     # markers then a final IOKIT-RUN-DONE sentinel. Match whatever it emits (in
@@ -1546,13 +1549,13 @@ set timeout 150
 #   "Rebooting"           = wrong reboot_flags (RB_AUTOBOOT) -> FAIL
 #   timeout               = the #398 stall -> FAIL (fall back to halt -p, which
 #                           bypasses init, so the runner is never left hanging)
-send "shutdown -p now\r"
+send "r shutdown -p now\r"
 expect {
     timeout {
         puts "\nFAIL: SHUTDOWN-P — no poweroff within 150s of shutdown -p (launchd init-protocol stall, nextbsd#398)"
         send "\r"
         sleep 1
-        send "halt -p\r"
+        send "r halt -p\r"
         expect { timeout {} eof {} "Uptime:" {} }
         catch { close }
         catch { wait }
