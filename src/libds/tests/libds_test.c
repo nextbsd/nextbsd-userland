@@ -518,6 +518,81 @@ test_unknown_keys_survive_a_modify(void)
 	pl_free(root);
 }
 
+/*
+ * A uid or gid hand-written as a string still reads. We always write
+ * <integer>, and so does Gershwin's dscli, but dscli tolerates a string on
+ * read and these files are admin-editable, so reading one as (uid_t)-1
+ * would be the worse failure. Writing normalises it back to <integer>.
+ */
+static void
+test_string_uid_is_tolerated(void)
+{
+	static const char stringy[] =
+"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+"<plist version=\"1.0\">\n"
+"<dict>\n"
+"\t<key>hand</key>\n"
+"\t<dict>\n"
+"\t\t<key>gid</key>\n"
+"\t\t<string>5003</string>\n"
+"\t\t<key>uid</key>\n"
+"\t\t<string>5003</string>\n"
+"\t\t<key>username</key>\n"
+"\t\t<string>hand</string>\n"
+"\t</dict>\n"
+"</dict>\n"
+"</plist>\n";
+	struct ds_handle *h;
+	struct ds_userrec u;
+	char path[PATH_MAX], *buf;
+	size_t len;
+
+	fixture_path(path, sizeof(path), DS_USERS_PLIST);
+	write_file(path, stringy);
+	fixture_path(path, sizeof(path), DS_GROUPS_PLIST);
+	write_file(path, seed_groups);
+
+	ck(ds_open(DS_LOCAL, DS_RDWR, &h) == DS_OK, "open a hand-edited file");
+	if (h == NULL)
+		return;
+	ck(ds_user_get(h, "hand", &u) == DS_OK, "read the hand-edited user");
+	ck(u.uid == 5003, "a string uid reads as 5003, got %d", (int)u.uid);
+	ck(u.gid == 5003, "a string gid reads as 5003, got %d", (int)u.gid);
+	ck(ds_user_get_by_uid(h, 5003, &u) == DS_OK,
+	    "and is findable by uid");
+	/* Rewriting normalises the type. */
+	ck(ds_user_set(h, &u) == DS_OK, "rewrite it");
+	ck(ds_commit(h) == DS_OK, "commit");
+	ds_close(h);
+
+	fixture_path(path, sizeof(path), DS_USERS_PLIST);
+	if ((buf = slurp(path, &len)) == NULL) {
+		ck(false, "read back");
+		return;
+	}
+	ck(strstr(buf, "<integer>5003</integer>") != NULL,
+	    "writing normalised the uid back to <integer>");
+	ck(strstr(buf, "<string>5003</string>") == NULL,
+	    "no string-typed id is left behind");
+	free(buf);
+
+	/* Garbage in a numeric field is still rejected, not guessed at. */
+	fixture_path(path, sizeof(path), DS_USERS_PLIST);
+	write_file(path,
+"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n<dict>\n"
+"\t<key>bad</key>\n\t<dict>\n"
+"\t\t<key>uid</key>\n\t\t<string>not-a-number</string>\n"
+"\t\t<key>username</key>\n\t\t<string>bad</string>\n"
+"\t</dict>\n</dict>\n</plist>\n");
+	ck(ds_open(DS_LOCAL, DS_RDONLY, &h) == DS_OK, "open with a bad uid");
+	if (h != NULL) {
+		ck(ds_user_get(h, "bad", &u) == DS_OK, "the record still reads");
+		ck(u.uid == (uid_t)-1,
+		    "an unparsable uid stays the no-value sentinel");
+		ds_close(h);
+	}
+}
+
 /* Mode and owner come from the file being replaced. */
 static void
 test_mode_preserved(void)
@@ -762,6 +837,7 @@ main(void)
 	test_next_uid();
 	test_xml_escaping_round_trip();
 	test_unknown_keys_survive_a_modify();
+	test_string_uid_is_tolerated();
 	test_mode_preserved();
 	test_no_temp_files_left();
 	test_groups_committed_first();

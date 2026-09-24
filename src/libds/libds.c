@@ -131,13 +131,35 @@ getstr(CFTypeRef v, char *buf, size_t buflen)
 	    kCFStringEncodingUTF8) ? true : false);
 }
 
+/*
+ * Tolerant on read, strict on write. We always emit <integer>, and so does
+ * Gershwin's dscli, but dscli accepts a uid written as a string and so
+ * should we: these files are admin-owned and documented as editable, and
+ * reading a hand-written <string>5001</string> as (uid_t)-1 would be worse
+ * than reading it as 5001.
+ */
 static bool
 getnum(CFTypeRef v, long long *out)
 {
-	if (v == NULL || CFGetTypeID(v) != CFNumberGetTypeID())
+	char buf[32], *end;
+	long long n;
+
+	if (v == NULL)
 		return (false);
-	return (CFNumberGetValue((CFNumberRef)v, kCFNumberLongLongType, out) ?
-	    true : false);
+	if (CFGetTypeID(v) == CFNumberGetTypeID())
+		return (CFNumberGetValue((CFNumberRef)v, kCFNumberLongLongType,
+		    out) ? true : false);
+	if (CFGetTypeID(v) != CFStringGetTypeID())
+		return (false);
+	if (!CFStringGetCString((CFStringRef)v, buf, (CFIndex)sizeof(buf),
+	    kCFStringEncodingUTF8))
+		return (false);
+	errno = 0;
+	n = strtoll(buf, &end, 10);
+	if (errno != 0 || end == buf || *end != '\0')
+		return (false);
+	*out = n;
+	return (true);
 }
 
 static bool
