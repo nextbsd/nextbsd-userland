@@ -414,6 +414,58 @@ if {$at_login} {
         }
         "NB-SHELL-READY" { puts "\nOK: shell is responding" }
     }
+
+    # Which shell the console session actually got, and whether it read the
+    # global rc file. INFORMATIONAL: nothing here gates, because what is
+    # correct has not been settled yet.
+    #
+    # Why it is worth asking: the prompt on this console is "<host>% ", which
+    # is zsh's compiled-in default (%m%#), not the PROMPT that /etc/zshrc
+    # sets. See the comment above, which recorded that prompt without anyone
+    # noticing what it implied. So one of three things is true -- the login
+    # shell is not zsh, /etc/zshrc is not on the image, or zsh is not reading
+    # it -- and these three probes say which.
+    #
+    # Each probe sends its sentinel as a SEPARATE line, so a command that a
+    # shell rejects outright (csh aborts a line on an undefined variable)
+    # cannot swallow the sentinel and turn a diagnosis into a timeout.
+    set saved_diag $timeout
+    set timeout 20
+
+    send "ps -p \$\$ -o comm=\r"
+    send "echo NB-DIAG-1\r"
+    expect {
+        timeout { puts "\nWARN: shell-name probe timed out" }
+        "NB-DIAG-1"
+    }
+
+    send "ls -l /etc/zshrc /private/etc/zshrc\r"
+    send "echo NB-DIAG-2\r"
+    expect {
+        timeout { puts "\nWARN: zshrc-presence probe timed out" }
+        "NB-DIAG-2"
+    }
+
+    # ZSH_VERSION is set only by zsh, and PROMPT is what it is prompting with.
+    # Delimited so an empty value is still legible in the log.
+    send "echo ver=:\$ZSH_VERSION: prompt=:\$PROMPT:\r"
+    send "echo NB-DIAG-3\r"
+    expect {
+        timeout { puts "\nWARN: zsh-identity probe timed out" }
+        "NB-DIAG-3"
+    }
+
+    # Whether /etc/zshrc would be read if it were sourced by hand: this
+    # separates "not on the image" from "on the image but not read".
+    send "test -r /etc/zshrc && echo NB-RC-READABLE || echo NB-RC-MISSING\r"
+    send "echo NB-DIAG-4\r"
+    expect {
+        timeout { puts "\nWARN: zshrc-readable probe timed out" }
+        "NB-DIAG-4"
+    }
+
+    puts "\nINFO: shell diagnostics above (see boot.log for the raw output)"
+    set timeout $saved_diag
 }
 
 # Everything below this point needs root. A manual login above was as root;
