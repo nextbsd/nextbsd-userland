@@ -60,11 +60,9 @@ wrong; supply
 or
 .Fl w Cm no ,
 or run without a name to be asked.
-.Ss What this version does not ask
-The property lists have no field for a home directory, a login class, or
-password ageing, so the questions FreeBSD's
-.Nm
-asks about them are gone rather than being asked and ignored:
+.Ss What is not asked
+NextBSD's property lists carry no home directory, no login class and no
+password ageing, so there is nothing to ask about them:
 .Bl -bullet -offset indent -compact
 .It
 The home is always
@@ -124,8 +122,7 @@ The primary group, by name or gid.
 It must already exist.
 Without this,
 .Nm
-creates a private group with the same name and gid as the user, which is
-what FreeBSD does.
+creates a private group with the same name and gid as the user.
 .It Fl h
 Print a usage summary and exit.
 .It Fl p Ar hash
@@ -170,8 +167,8 @@ the default, prompts, or takes
 .Fl p .
 .El
 .Pp
-Two of FreeBSD's flags are accepted and ignored, so existing scripts still
-run:
+Two flags are accepted and ignored, so a script written for another BSD
+still runs:
 .Fl k ,
 because homes come from the user template rather than a skeleton directory,
 and
@@ -205,10 +202,10 @@ Blank lines and lines starting with
 .Ql #
 are ignored.
 .Pp
-This is deliberately not FreeBSD's ten-field format.
-Four of its fields
-name things the property lists cannot hold, and keeping them as empty
-columns would suggest they might work.
+Six fields rather than the ten a batch file carries on other BSDs.
+The four
+left out name things NextBSD's property lists cannot hold, and keeping them
+as empty columns would suggest they might work.
 A first line of
 .Pp
 .Dl #format: nextbsd-1
@@ -217,10 +214,7 @@ is accepted, and records which format the file is in so a later one can be
 told apart.
 An unrecognised format is an error rather than a guess.
 .Pp
-A line that fails is reported and the rest of the file is still processed,
-as FreeBSD's
-.Nm
-does.
+A line that fails is reported and the rest of the file is still processed.
 The exit status is non-zero if any line failed.
 .Sh FILES
 .Bl -tag -width "/Local/Library/DirectoryServices/Groups.plist" -compact
@@ -275,13 +269,11 @@ Provision from a script with a hash computed elsewhere:
 .Xr pw 8 ,
 .Xr rmuser 8
 .Sh HISTORY
-A
+This
 .Nm
-command appeared in
-.Fx 2.2
-as a Perl script, later rewritten in
-.Xr sh 1 .
-This is NextBSD's own, written in C against the DirectoryServices property
-lists.
+was written for NextBSD in C, over the DirectoryServices property lists.
+It keeps the name and the conversational shape the command has carried on
+the BSDs since the 1990s, and drops the questions that only made sense for
+a flat password file.
 .Sh AUTHORS
 .An Joseph Maloney
