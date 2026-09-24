@@ -1,0 +1,142 @@
+/*-
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * Copyright (c) 2026 Joseph Maloney
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+/*
+ * Shared helpers for the NextBSD account tools (E18 U9, U14).
+ *
+ * libds owns the plists and nothing else, by the decision recorded on
+ * nextbsd-userland#287. The pieces below are the ones more than one tool
+ * needs and that are not about plists: hashing a password, deciding
+ * whether a new account belongs in the directory or in master.passwd, and
+ * noticing that this machine is a directory client and should not be
+ * growing local accounts at all.
+ *
+ * They live here rather than in each tool so the rules cannot drift
+ * between adduser(8), passwd(1) and pw(8).
+ */
+
+#ifndef ACCT_H
+#define ACCT_H
+
+#include <sys/types.h>
+
+#include <stdbool.h>
+#include <stddef.h>
+
+/*
+ * Identity ranges. System accounts stay in master.passwd; regular users
+ * and their private groups start above the gap. `admin` is reserved at
+ * the bottom of the range so it is stable across installs.
+ */
+#define ACCT_SYSTEM_MAX		999	/* <= this is a system account */
+#define ACCT_ADMIN_ID		5000	/* the admin group, and the seeded admin user */
+#define ACCT_FIRST_ID		5001	/* first regular user and private group */
+#define ACCT_LAST_ID		65533	/* stop before nobody */
+
+#define ACCT_ADMIN_GROUP	"admin"
+#define ACCT_DEFAULT_SHELL	"/bin/zsh"
+
+/*
+ * Paths, overridable at build time so the tools can be exercised against a
+ * fixture directory on a build host without running as root or touching the
+ * real system.
+ */
+#ifndef ACCT_SHELLS
+#define ACCT_SHELLS		"/etc/shells"
+#endif
+#ifndef ACCT_BINDING_PLIST
+#define ACCT_BINDING_PLIST	"/Local/Library/DirectoryServices/Binding.plist"
+#endif
+#ifndef ACCT_CREATEHOMEDIR
+#define ACCT_CREATEHOMEDIR	"/usr/sbin/createhomedir"
+#endif
+#ifndef ACCT_LOCAL_USERS
+#define ACCT_LOCAL_USERS	"/Local/Users"
+#endif
+
+/*
+ * Hash a password for storage in passwordHash. SHA-512 crypt with a
+ * random 16-character salt, which is what crypt(3) verifies and what
+ * Gershwin's dscli writes, so either tool's hashes work with the other.
+ * The format is taken from login.conf's passwd_format capability when it
+ * names one crypt(3) understands, so an admin can change the policy in
+ * one place. Returns a pointer to static storage, or NULL on failure.
+ */
+const char	*acct_hash_password(const char *password);
+
+/*
+ * True when this name must go to master.passwd rather than the directory:
+ * a leading underscore, which is Darwin's and the ports framework's
+ * convention for a service account.
+ */
+bool		 acct_is_system_name(const char *name);
+
+/*
+ * Why a name is unusable, as a phrase for a diagnostic, or NULL when it is
+ * fine. Here rather than in each tool so adduser(8), pw(8) and rmuser(8)
+ * cannot disagree about what a name may be.
+ *
+ * A leading digit is refused. A wholly numeric name is ambiguous with a uid
+ * everywhere it appears, and a leading digit still confuses chown(8) and
+ * anything else that accepts either form in the same argument.
+ */
+const char	*acct_name_problem(const char *name);
+
+/* True when the id is inside the system range. */
+bool		 acct_is_system_id(uid_t id);
+
+/*
+ * The shell is listed in /etc/shells. A missing or unreadable
+ * /etc/shells means we cannot tell, so this returns true rather than
+ * blocking every account on a broken file.
+ */
+bool		 acct_shell_listed(const char *shell);
+
+/*
+ * When this machine is bound to a directory server, copy its name into
+ * `server` and return true. Local account tools refuse in that case: the
+ * account belongs on the server, and a local one would be shadowed by
+ * the /Network copy of the plists anyway.
+ */
+bool		 acct_bound_server(char *server, size_t len);
+
+/*
+ * Build a home for `user` from /System/Library/User Template by running
+ * createhomedir(8). Returns 0, or -1 with a message already printed.
+ * Never fatal to the account itself: the account exists by this point,
+ * and createhomedir can be re-run.
+ */
+int		 acct_make_home(const char *user, bool quiet);
+
+/*
+ * Wipe a buffer that held a password. explicit_bzero(3) where the platform
+ * has it; a volatile-pointer memset otherwise, so the host build for the
+ * tests still compiles and still actually clears.
+ */
+void		 acct_zero(void *buf, size_t len);
+
+#endif /* ACCT_H */

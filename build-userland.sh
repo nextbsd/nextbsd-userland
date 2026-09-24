@@ -902,6 +902,17 @@ run_buildenv "make -C $SRC/accounts/createhomedir DESTDIR=$DESTDIR SYSROOT=$SYSR
 test -x "$DESTDIR/usr/sbin/createhomedir" || { echo "FAIL: /usr/sbin/createhomedir not installed"; exit 1; }
 echo "==> createhomedir built"
 
+# ---- adduser (nextbsd/nextbsd-userland#286, E18 U14) -----------------------
+# NextBSD's own adduser at FreeBSD's path: creates the account in the
+# DirectoryServices plists through libds, then builds the home by running
+# createhomedir. Links CoreFoundation (via libds) and libutil, the latter
+# for login.conf's passwd_format, so the hashing policy is not compiled in.
+comp "adduser"
+mkdir -p "$DESTDIR/usr/sbin"
+run_buildenv "make -C $SRC/accounts/adduser DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/sbin/adduser" || { echo "FAIL: /usr/sbin/adduser not installed"; exit 1; }
+echo "==> adduser built"
+
 # ---- autologin-user (nextbsd/nextbsd-userland#278, E18 U11) ----------------
 # Names the account the console logs in automatically, or prints nothing. The
 # getty job runs it; the rule is in one place rather than in a shell one-liner.
