@@ -1156,7 +1156,7 @@ else
     if [ ! -f /etc/ntp.conf ]; then
         # nextbsd-overlays ships the real file; a stand-in proves the job.
         ntp_tmpconf=1
-        printf 'pool 0.freebsd.pool.ntp.org iburst\nrestrict default limited kod nomodify notrap noquery nopeer\nrestrict 127.0.0.1\nrestrict ::1\ndriftfile /var/db/ntpd.drift\n# BEGIN directory server (managed by dsjoin and dsleave; do not edit)\n# END directory server\n' > /etc/ntp.conf
+        printf 'pool 0.pool.ntp.org iburst\nrestrict default limited kod nomodify notrap noquery nopeer\nrestrict 127.0.0.1\nrestrict ::1\ndriftfile /var/db/ntpd.drift\n# BEGIN directory server (managed by dsjoin and dsleave; do not edit)\n# END directory server\n' > /etc/ntp.conf
     fi
     launchctl load -w "$svc_ld/org.nextbsd.ntpd.plist"
     i=0
