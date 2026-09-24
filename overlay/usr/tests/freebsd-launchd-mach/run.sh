@@ -1584,14 +1584,47 @@ if [ -z "$acct_fail" ]; then
     esac
 fi
 
-# rmuser is not built yet (nextbsd/nextbsd-userland#255). When it lands, the
-# removal half of this lifecycle goes here and the cleanup below stops being
-# the only thing that takes these accounts away.
+if [ -z "$acct_fail" ] && [ -x /usr/sbin/rmuser ]; then
+    # 12. Removal, for real: the record, the home, the group memberships and
+    #     the crontab all go, and the module stops resolving the name.
+    : > "/var/cron/tabs/joe" 2>/dev/null
+    if ! /usr/sbin/rmuser -y joe >/dev/null 2>&1; then
+        acct_note "12: rmuser -y joe failed"
+    else
+        grep -q '<string>joe</string>' "$plist" &&
+            acct_note "12: joe's record survived removal"
+        [ -d /Local/Users/joe ] &&
+            acct_note "12: joe's home survived removal"
+        [ -f /var/cron/tabs/joe ] &&
+            acct_note "12: joe's crontab survived removal"
+        getent passwd joe >/dev/null 2>&1 &&
+            acct_note "12: the directory still resolves joe after removal"
+        grep -q '<string>joe</string>' "$ds_dir/Groups.plist" &&
+            acct_note "12: joe is still a member of a group"
+    fi
+fi
+
+if [ -z "$acct_fail" ] && [ -x /usr/sbin/rmuser ]; then
+    # 13. --keep-home leaves the files behind, which is the whole point of it.
+    if ! /usr/sbin/rmuser -y --keep-home joeadm >/dev/null 2>&1; then
+        acct_note "13: rmuser --keep-home failed"
+    else
+        grep -q '<string>joeadm</string>' "$plist" &&
+            acct_note "13: joeadm's record survived"
+        [ -d /Local/Users/joeadm ] ||
+            acct_note "13: --keep-home removed the home anyway"
+    fi
+fi
+
+# The last-administrator guard is covered by the host suite, not here. On the
+# image the seeded admin is the account this session is logged in as, so
+# removing it to watch the guard fire would take the console out from under the
+# test. The guard is pure record logic and does not need a live system.
 
 if [ -n "$acct_fail" ]; then
     echo "ACCT-LIFECYCLE-FAIL: $acct_fail"
 else
-    echo "ACCT-LIFECYCLE-OK: created a user with a password, changed it, rejected a mismatch, locked and unlocked without losing it, cleared it, and made an administrator"
+    echo "ACCT-LIFECYCLE-OK: created a user with a password, changed it, rejected a mismatch, locked and unlocked without losing it, cleared it, made an administrator, and removed both with and without their home"
 fi
 
 acct_cleanup

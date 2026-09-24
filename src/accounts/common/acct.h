@@ -162,6 +162,39 @@ bool		 acct_hash_locked(const char *hash);
  */
 bool		 acct_verify_password(const char *plain, const char *stored);
 
+/* Where per-user cron and at state lives, for removal. */
+#ifndef ACCT_CRON_TABS
+#define ACCT_CRON_TABS		"/var/cron/tabs"
+#endif
+#ifndef ACCT_AT_JOBS
+#define ACCT_AT_JOBS		"/var/at/jobs"
+#endif
+
+/*
+ * How many login sessions the named user has open, from the utmpx
+ * database. Used to warn before killing them, because a silent SIGKILL of
+ * somebody's shell is a surprise worth announcing.
+ */
+int		 acct_sessions(const char *name);
+
+/*
+ * SIGKILL every process owned by uid, except our own and our parent's, so
+ * a tool does not kill the shell that invoked it. Returns how many signals
+ * were sent, or -1 on failure to enumerate.
+ */
+int		 acct_kill_uid(uid_t uid);
+
+/*
+ * Remove a user's home. Refuses anything that is not directly under
+ * /Local/Users or /Network/Users, so a bad name cannot turn into a wider
+ * delete. Returns 0, -1 with errno set, or 1 when there was nothing there.
+ */
+int		 acct_remove_home(const char *name);
+
+/* Remove the user's crontab and queued at(1) jobs. Absent is success. */
+int		 acct_remove_cron(const char *name);
+int		 acct_remove_at(const char *name);
+
 /*
  * Wipe a buffer that held a password. explicit_bzero(3) where the platform
  * has it; a volatile-pointer memset otherwise, so the host build for the

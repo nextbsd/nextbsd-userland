@@ -926,6 +926,16 @@ run_buildenv "make -C $SRC/accounts/passwd DESTDIR=$DESTDIR SYSROOT=$SYSROOT all
 test -x "$DESTDIR/usr/bin/passwd" || { echo "FAIL: /usr/bin/passwd not installed"; exit 1; }
 echo "==> passwd built"
 
+# ---- rmuser (nextbsd/nextbsd-userland#255, E18 U9) -------------------------
+# The counterpart to adduser: removes a regular account from the plists, its
+# group memberships, its crontab, its at jobs and its home. Not setuid; this
+# is root's work and there is no self-service case.
+comp "rmuser"
+mkdir -p "$DESTDIR/usr/sbin"
+run_buildenv "make -C $SRC/accounts/rmuser DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/sbin/rmuser" || { echo "FAIL: /usr/sbin/rmuser not installed"; exit 1; }
+echo "==> rmuser built"
+
 # ---- autologin-user (nextbsd/nextbsd-userland#278, E18 U11) ----------------
 # Names the account the console logs in automatically, or prints nothing. The
 # getty job runs it; the rule is in one place rather than in a shell one-liner.

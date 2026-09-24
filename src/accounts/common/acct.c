@@ -29,7 +29,14 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h>
 #include <sys/wait.h>
+
+#include <dirent.h>
+#include <limits.h>
+#include <pwd.h>
+#include <signal.h>
+#include <utmpx.h>
 
 #include <ctype.h>
 #include <err.h>
@@ -53,6 +60,17 @@
 #endif
 
 #include "acct.h"
+
+/*
+ * kinfo_proc names its pid field differently on the two systems this builds
+ * for: ki_pid on FreeBSD, kp_proc.p_pid on Darwin. The host build only has
+ * to compile and run the tests; the target is FreeBSD.
+ */
+#ifdef __FreeBSD__
+#define ACCT_KP_PID	ki_pid
+#else
+#define ACCT_KP_PID	kp_proc.p_pid
+#endif
 
 /*
  * A salt for SHA-512 crypt: 16 characters from crypt(3)'s alphabet, which
@@ -367,4 +385,202 @@ acct_make_home(const char *user, bool quiet)
 		return (-1);
 	}
 	return (0);
+}
+
+/* ---- what rmuser needs beyond the record itself --------------------- */
+
+/*
+ * A name safe to paste into a path. Stricter than acct_name_problem: no
+ * dots at all, so neither "." nor ".." nor anything containing a slash can
+ * reach a path we are about to delete. A real account name never needs one
+ * here, and the cost of being wrong is a recursive delete of the wrong
+ * directory.
+ */
+static bool
+name_ok_for_path(const char *n)
+{
+	size_t i;
+
+	if (n == NULL || n[0] == '\0' || strlen(n) >= 33)
+		return (false);
+	for (i = 0; n[i] != '\0'; i++) {
+		unsigned char c = (unsigned char)n[i];
+
+		if (isalnum(c) || c == '_' || c == '-')
+			continue;
+		return (false);
+	}
+	return (true);
+}
+
+/* Remove a directory tree. No fork, no rm(1), nothing to quote wrongly. */
+static int
+remove_tree(const char *path)
+{
+	DIR *d;
+	struct dirent *de;
+	char child[PATH_MAX];
+	struct stat st;
+	int rc = 0;
+
+	if ((d = opendir(path)) == NULL)
+		return (-1);
+	while ((de = readdir(d)) != NULL) {
+		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+			continue;
+		if (snprintf(child, sizeof(child), "%s/%s", path,
+		    de->d_name) >= (int)sizeof(child)) {
+			rc = -1;
+			continue;
+		}
+		if (lstat(child, &st) == -1) {
+			rc = -1;
+			continue;
+		}
+		if (S_ISDIR(st.st_mode)) {
+			if (remove_tree(child) == -1)
+				rc = -1;
+		} else if (unlink(child) == -1) {
+			rc = -1;
+		}
+	}
+	(void)closedir(d);
+	if (rmdir(path) == -1)
+		rc = -1;
+	return (rc);
+}
+
+int
+acct_sessions(const char *name)
+{
+	struct utmpx *u;
+	int n = 0;
+
+	if (name == NULL)
+		return (0);
+	setutxent();
+	while ((u = getutxent()) != NULL)
+		if (u->ut_type == USER_PROCESS &&
+		    strncmp(u->ut_user, name, sizeof(u->ut_user)) == 0)
+			n++;
+	endutxent();
+	return (n);
+}
+
+int
+acct_kill_uid(uid_t uid)
+{
+	struct kinfo_proc *procs = NULL;
+	size_t len = 0;
+	int mib[4], n = 0;
+	unsigned int i, count;
+	pid_t self = getpid(), parent = getppid();
+
+	/*
+	 * sysctl rather than shelling out to pkill: one fewer thing that has
+	 * to exist on the image, and no pattern matching to get wrong. The
+	 * KERN_PROC_UID form is the same on both systems this builds for.
+	 */
+	mib[0] = CTL_KERN;
+	mib[1] = KERN_PROC;
+	mib[2] = KERN_PROC_UID;
+	mib[3] = (int)uid;
+	if (sysctl(mib, 4, NULL, &len, NULL, 0) == -1)
+		return (-1);
+	if (len == 0)
+		return (0);
+	/* Room for the table to grow between the sizing call and the read. */
+	len += len / 8 + sizeof(*procs);
+	if ((procs = malloc(len)) == NULL)
+		return (-1);
+	if (sysctl(mib, 4, procs, &len, NULL, 0) == -1) {
+		free(procs);
+		return (-1);
+	}
+	count = (unsigned int)(len / sizeof(*procs));
+	for (i = 0; i < count; i++) {
+		pid_t pid = procs[i].ACCT_KP_PID;
+
+		if (pid <= 1 || pid == self || pid == parent)
+			continue;
+		if (kill(pid, SIGKILL) == 0)
+			n++;
+	}
+	free(procs);
+	return (n);
+}
+
+int
+acct_remove_home(const char *name)
+{
+	char path[PATH_MAX];
+	struct stat st;
+	const char *roots[] = { ACCT_LOCAL_USERS, "/Network/Users", NULL };
+	size_t i;
+
+	if (!name_ok_for_path(name))
+		return (-1);
+	for (i = 0; roots[i] != NULL; i++) {
+		if (snprintf(path, sizeof(path), "%s/%s", roots[i], name) >=
+		    (int)sizeof(path))
+			return (-1);
+		if (lstat(path, &st) == -1)
+			continue;
+		/*
+		 * A symlink where a home should be is not something to follow
+		 * and delete the target of.
+		 */
+		if (!S_ISDIR(st.st_mode)) {
+			errno = ENOTDIR;
+			return (-1);
+		}
+		return (remove_tree(path));
+	}
+	return (1);		/* nothing there */
+}
+
+int
+acct_remove_cron(const char *name)
+{
+	char path[PATH_MAX];
+
+	if (!name_ok_for_path(name))
+		return (-1);
+	if (snprintf(path, sizeof(path), "%s/%s", ACCT_CRON_TABS, name) >=
+	    (int)sizeof(path))
+		return (-1);
+	if (unlink(path) == -1 && errno != ENOENT)
+		return (-1);
+	return (0);
+}
+
+int
+acct_remove_at(const char *name)
+{
+	char path[PATH_MAX];
+	DIR *d;
+	struct dirent *de;
+	struct passwd *pw;
+	struct stat st;
+	int rc = 0;
+
+	if (!name_ok_for_path(name) || (pw = getpwnam(name)) == NULL)
+		return (0);
+	if ((d = opendir(ACCT_AT_JOBS)) == NULL)
+		return (errno == ENOENT ? 0 : -1);
+	while ((de = readdir(d)) != NULL) {
+		if (de->d_name[0] == '.')
+			continue;
+		if (snprintf(path, sizeof(path), "%s/%s", ACCT_AT_JOBS,
+		    de->d_name) >= (int)sizeof(path))
+			continue;
+		if (lstat(path, &st) == -1 || !S_ISREG(st.st_mode))
+			continue;
+		if (st.st_uid != pw->pw_uid)
+			continue;
+		if (unlink(path) == -1 && errno != ENOENT)
+			rc = -1;
+	}
+	(void)closedir(d);
+	return (rc);
 }

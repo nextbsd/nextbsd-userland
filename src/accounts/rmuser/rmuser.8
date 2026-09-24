@@ -1,0 +1,172 @@
+.\"-
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" Copyright (c) 2026 Joseph Maloney
+.\"
+.Dd September 24, 2026
+.Dt RMUSER 8
+.Os NextBSD
+.Sh NAME
+.Nm rmuser
+.Nd remove a user account
+.Sh SYNOPSIS
+.Nm
+.Op Fl yvh
+.Op Fl -keep-home
+.Op Fl f Ar file
+.Op Ar name ...
+.Sh DESCRIPTION
+.Nm
+removes a user account from the DirectoryServices property lists, along with
+everything that belonged to it: its group memberships, its crontab, its queued
+.Xr at 1
+jobs, its processes and, unless told otherwise, its home directory.
+.Pp
+System accounts live in
+.Pa /etc/master.passwd
+and are removed with
+.Xr pw 8 .
+.Nm
+refuses them, and refuses root.
+.Pp
+Each named account is shown and confirmed before anything happens:
+.Bd -literal -offset indent
+# rmuser joe
+Matching password entry:
+
+joe:*:5001:5001:Joe Maloney:/Local/Users/joe:/bin/zsh
+
+Is this the entry you wish to remove? (yes/no) [yes]:
+Remove user's home directory (/Local/Users/joe)? (yes/no) [yes]:
+Removing user (joe): home passwd.
+.Ed
+.Pp
+Both questions default to yes, which is what someone removing an account
+usually means, while still leaving room to object.
+.Fl -keep-home
+answers the second one no without asking, and
+.Fl y
+answers both yes.
+.Ss Order of operations
+The record is removed before the home directory, deliberately.
+If the write fails the account still exists, and an account whose files have
+already been deleted is a worse position to be in than one with a home nobody
+is using.
+.Ss Live sessions
+A user with an open login session is reported before their processes are
+killed, because a
+.Dv SIGKILL
+arriving in somebody's shell without warning tends to get blamed on the
+machine.
+The count is printed whether or not
+.Fl v
+was given.
+.Ss The last administrator
+.Nm
+refuses to remove the only remaining member of the
+.Li admin
+group unless
+.Fl y
+is given.
+Root ships with no password, so
+.Li admin
+is the only way to reach
+.Xr sudo 8 ;
+removing the last one leaves single-user mode as the only way back in.
+.Sh OPTIONS
+.Bl -tag -width "--keep-home"
+.It Fl -keep-home
+Leave the home directory alone.
+.It Fl f Ar file
+Read account names from
+.Ar file ,
+one per line, or from standard input when it is
+.Fl .
+Blank lines and lines beginning with
+.Ql #
+are ignored.
+Nothing is confirmed, as with
+.Fl y .
+A name that fails is reported and the rest of the file is still processed.
+.It Fl h
+Print a usage summary and exit.
+.It Fl v
+Say what is being removed as each step happens.
+.It Fl y
+Answer yes to every question.
+.El
+.Sh WHAT IS NOT REMOVED
+Two things a reader coming from another BSD may expect:
+.Bl -bullet
+.It
+.Sy The mail spool .
+NextBSD ships no mail transport, so there is none to clean up.
+.It
+.Sy System V IPC objects .
+Removing those has not been verified against this kernel, so
+.Nm
+does not pretend to.
+An account that held semaphores or shared memory may leave them behind.
+.El
+.Pp
+Files the user owned outside their home are also left alone.
+Finding them means walking the filesystem, which on a large disk takes longer
+than an operator expects and can remove something shared.
+.Xr find 1
+with
+.Fl user
+is the right tool when that is wanted.
+.Sh FILES
+.Bl -tag -width "/Local/Library/DirectoryServices/Groups.plist" -compact
+.It Pa /Local/Library/DirectoryServices/Users.plist
+.It Pa /Local/Library/DirectoryServices/Groups.plist
+.It Pa /Local/Library/DirectoryServices/Binding.plist
+present when this machine is a directory client, in which case
+.Nm
+refuses: the account belongs on the server
+.It Pa /Local/Users/ Ns Ar name
+the home directory
+.It Pa /var/cron/tabs/ Ns Ar name
+.It Pa /var/at/jobs
+.El
+.Sh EXIT STATUS
+.Bl -tag -width 4n -compact
+.It 0
+The account was removed.
+.It 1
+Usage error, or a batch file with a failing line.
+.It 2
+Refused.
+Nothing was removed.
+.It 3
+Database error: a property list would not parse, the lock was held, or a write
+failed.
+.It 4
+The confirmation was answered no.
+.El
+.Sh EXAMPLES
+Remove an account, keeping the files:
+.Pp
+.Dl # rmuser --keep-home joe
+.Pp
+Remove several without being asked:
+.Pp
+.Dl # rmuser -y joe kate sam
+.Pp
+Remove a list, saying what happens:
+.Pp
+.Dl # rmuser -v -f /tmp/leavers
+.Sh SEE ALSO
+.Xr find 1 ,
+.Xr passwd 1 ,
+.Xr adduser 8 ,
+.Xr pw 8
+.Sh HISTORY
+This
+.Nm
+was written for NextBSD, to remove an account from the DirectoryServices
+property lists.
+It keeps the confirmation-first shape the command has always had, and drops the
+cleanup steps that no longer apply to this system.
+.Sh AUTHORS
+.An Joseph Maloney
