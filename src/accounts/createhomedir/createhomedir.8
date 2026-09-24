@@ -8,7 +8,7 @@
 .Os NextBSD
 .Sh NAME
 .Nm createhomedir
-.Nd create and populate home directories from the user template
+.Nd create home directories
 .Sh SYNOPSIS
 .Nm
 .Op Fl bcs
@@ -24,8 +24,8 @@
 .Fl i
 .Sh DESCRIPTION
 .Nm
-creates a user's home directory and fills it from the user template in
-.Pa /System/Library/User Template .
+creates a user's home directory, at mode 0755 owned by the user, and nothing
+inside it.
 .Pp
 Home directories are normally created when the account is, by
 .Xr adduser 8
@@ -34,8 +34,13 @@ or
 and that covers network accounts too, because a network user is created on
 the directory server, where the home lives and is exported to clients.
 .Nm
-therefore exists for repair: a home missing because a plist was restored,
-hand-edited, or copied between machines.
+therefore covers the rest: a home missing because a plist was restored,
+hand-edited or copied between machines, and a home for an account created by
+something other than
+.Xr adduser 8 ,
+such as Gershwin's
+.Nm dscli ,
+which writes the property lists directly.
 .Xr login 1
 degrades rather than failing in that case, reporting
 .Dq No home directory. Logging in with home = / ,
@@ -58,9 +63,9 @@ point at
 .Pa /var/empty ,
 .Pa /nonexistent
 and similar paths, which must stay absent.
+An account whose id is 999 or below is refused whatever its home field says.
 .Pp
-An existing home is left alone, and within a home an existing file is never
-overwritten, so a user's own dot files outrank the template's.
+An existing home is left alone.
 .Pp
 The options are:
 .Bl -tag -width indent
@@ -87,6 +92,15 @@ names a directory domain; NextBSD has no equivalent to select.
 .It Fl s
 Consider only homes under
 .Pa /Network/Users .
+.It Fl P
+Create the home for the user named by the
+.Ev PAM_USER
+environment variable, for use from
+.Xr pam_exec 8
+in a session.
+Does nothing and succeeds when
+.Ev PAM_USER
+is unset.
 .It Fl u Ar user
 Create the home for
 .Ar user .
@@ -94,37 +108,69 @@ May be repeated.
 .It Fl v
 Report each path as it is created.
 .El
-.Sh THE USER TEMPLATE
-.Pa /System/Library/User Template/Non_localized
-is copied into each new home.
-Its directories each contain an empty
-.Pa .localized
-marker, which is both what lets the set be stored and shipped and Darwin's hook
-for
-displaying a translated folder name: the names on disk are the same in
-every language, and only a file manager's display is localised.
+.Sh AT LOGIN
+An account can exist without a home: Gershwin's
+.Nm dscli
+writes the property lists directly, and a restored plist can name a home that
+is not there.
+So
+.Pa /etc/pam.d/login
+and
+.Pa /etc/pam.d/sshd
+run
+.Nm
+in the session phase:
 .Pp
-.Pa __permissions.plist
-is applied afterwards, for the modes the copied tree cannot carry.
-It is an array of
-.Ql { Command , Argument , Paths }
-applied in order, where
-.Ql Command
-is
-.Cm CHMOD
-or
-.Cm CHGRP ,
-and each path is relative to the home directory.
+.Dl session optional pam_exec.so /usr/sbin/createhomedir -P
+.Pp
+It is
+.Cm optional
+deliberately.
+A home that cannot be created is not a reason to refuse someone a shell \(em
+.Xr login 1
+already degrades to
+.Pa /
+and says so.
+.Pp
+.Xr pam_exec 8
+cannot substitute the user into an argument, which is why
+.Fl P
+reads
+.Ev PAM_USER
+rather than taking a name.
+.Sh WHAT IS NOT CREATED
+.Nm
+creates the home directory and stops.
+It does not create
+.Pa Desktop ,
+.Pa Documents ,
+.Pa Downloads
+or the rest: Gershwin's Workspace creates the set it wants at startup, and a
+second set shipped here only produced two of some and none of others.
+.Pp
+No dot files are placed either.
+.Pa /etc/zprofile
+and the global zshrc mean an account needs none of its own, and
+.Xr zsh 1
+is not prompted to write one.
+.Pp
+Earlier versions copied a tree from
+.Pa /System/Library/User Template
+and applied an
+.Pa __permissions.plist .
+Both are gone.
 .Sh FILES
-.Bl -tag -width "/System/Library/User Template/__permissions.plist" -compact
-.It Pa /System/Library/User Template/Non_localized
-the tree copied into each home
-.It Pa /System/Library/User Template/__permissions.plist
-modes applied after the copy
+.Bl -tag -width "/etc/pam.d/login" -compact
+.It Pa /Local/Users
+where a local home is created
+.It Pa /Network/Users
+where a network home is created
+.It Pa /etc/pam.d/login
+runs this at console login
+.It Pa /etc/pam.d/sshd
+runs this at ssh login
 .It Pa /usr/share/skel
-empty, as on
-Darwin ;
-the template replaces it
+empty, as on Darwin
 .El
 .Sh EXIT STATUS
 .Ex -std
