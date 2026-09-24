@@ -892,10 +892,10 @@ run_buildenv "make -C $SRC/libds SYSROOT=$SYSROOT all"
 test ! -e "$DESTDIR/usr/lib/libds.a" || { echo "FAIL: libds is internal and must not be installed"; exit 1; }
 echo "==> libds built"
 
-# ---- createhomedir (nextbsd/nextbsd-userland#277, E18 U10) -----------------
-# Builds a home from /System/Library/User Template, which ships in overlay/.
-# Plain libc plus the XML plist reader shared with nss_directory_services;
-# users are enumerated through getpwent(3), so it needs no directory library.
+# ---- createhomedir (E18 U10) ----------------------------------------------
+# Creates a user's home at 0755 and nothing inside it. Plain libc: users are
+# enumerated through getpwent(3), so it needs no directory library, and with
+# the user template gone it no longer needs the XML plist reader either.
 comp "createhomedir"
 mkdir -p "$DESTDIR/usr/sbin"
 run_buildenv "make -C $SRC/accounts/createhomedir DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"

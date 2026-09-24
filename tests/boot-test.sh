@@ -693,7 +693,7 @@ expect {
     "SUDO-OK"   { puts "\nOK: base sudo is setuid root and its policy works" }
 }
 
-# HOMEDIR — createhomedir builds a home from the user template (#277): the
+# HOMEDIR — createhomedir creates a user's home (E18 U10): the
 # directory set, Public/Drop Box at 0733, ownership, idempotence, and that it
 # never overwrites a user's own file.
 expect {

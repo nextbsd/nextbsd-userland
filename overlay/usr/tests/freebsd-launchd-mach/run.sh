@@ -947,15 +947,14 @@ ds_restore() {
     fi
 }
 
-# HOMEDIR — the user template and createhomedir (nextbsd/nextbsd-userland#277).
-# Creates a throwaway plist user, points nsswitch at directory_services for the
-# duration so getpwent(3) can see them, builds their home, and checks the
-# template landed: the directory set, Public/Drop Box at 0733, the skeleton dot
-# files, and ownership. Then removes everything it made and restores the switch.
-# Every failure carries a number, so a bare marker on the console still says
-# which check failed.
-echo "==> createhomedir: build a home from the user template"
-hd_tmpl="/System/Library/User Template"
+# HOMEDIR — createhomedir creates a user's home (E18 U10). Creates a throwaway
+# plist user, points nsswitch at directory_services for the duration so
+# getpwent(3) can see them, creates their home, and checks it is a 0755
+# directory owned by them containing NOTHING: the standard folders are
+# Gershwin Workspace's to create, and the dot files are /etc/zprofile's job.
+# Then removes everything it made and restores the switch. Every failure
+# carries a number, so a bare marker on the console still says which failed.
+echo "==> createhomedir: create a user's home"
 hd_dir=/Local/Library/DirectoryServices
 hd_home=/Local/Users/hdtest
 hd_fail=""
@@ -963,8 +962,8 @@ hd_note() { [ -n "$hd_fail" ] || hd_fail="$*"; }
 
 if [ ! -x /usr/sbin/createhomedir ]; then
     hd_fail="1: /usr/sbin/createhomedir is missing"
-elif [ ! -d "$hd_tmpl/Non_localized" ]; then
-    hd_fail="2: $hd_tmpl/Non_localized is missing"
+elif [ -d "/System/Library/User Template" ]; then
+    hd_fail="2: /System/Library/User Template is back; it is meant to be gone"
 elif [ -e "$hd_home" ]; then
     echo "HOMEDIR-SKIP: $hd_home already exists; not touching it"
     hd_fail="skip"
@@ -1001,22 +1000,38 @@ else
     elif [ ! -d "$hd_home" ]; then
         hd_note "9: createhomedir reported success but made no $hd_home"
     else
-        for d in Desktop Documents Downloads Library Movies Music Pictures Public; do
-            [ -d "$hd_home/$d" ] || hd_note "10: missing $hd_home/$d"
-        done
-        [ -d "$hd_home/Public/Drop Box" ] || hd_note "11: missing Public/Drop Box"
-        [ -f "$hd_home/.zshrc" ] || hd_note "12: missing .zshrc"
-        [ -f "$hd_home/.zprofile" ] || hd_note "13: missing .zprofile"
-        hd_mode=$(stat -f %Lp "$hd_home/Public/Drop Box" 2>&1)
-        [ "$hd_mode" = 733 ] || hd_note "14: Public/Drop Box is [$hd_mode], not 733"
-        hd_own=$(stat -f %u:%g "$hd_home/Desktop" 2>&1)
-        [ "$hd_own" = "5007:5007" ] || hd_note "15: Desktop owned by [$hd_own], not 5007:5007"
+        # Nothing inside. Anything here would be a template creeping back,
+        # and would fight Workspace's own set the way the old one did.
+        hd_kids=$(ls -A "$hd_home" 2>/dev/null | tr '\n' ' ')
+        [ -z "$hd_kids" ] ||
+            hd_note "10: the home is not empty, it holds [$hd_kids]"
+        hd_mode=$(stat -f %Lp "$hd_home" 2>&1)
+        [ "$hd_mode" = 755 ] || hd_note "11: the home is [$hd_mode], not 755"
+        hd_own=$(stat -f %u:%g "$hd_home" 2>&1)
+        [ "$hd_own" = "5007:5007" ] || hd_note "12: the home is owned by [$hd_own], not 5007:5007"
         # A second run must be a no-op, not an error: this command repairs.
-        /usr/sbin/createhomedir -u hdtest >/dev/null 2>&1 || hd_note "16: not idempotent"
-        # A user's own file must survive a re-run.
+        /usr/sbin/createhomedir -u hdtest >/dev/null 2>&1 || hd_note "13: not idempotent"
+        # And a re-run must not disturb what the user has put there since.
         echo mine > "$hd_home/.zshrc"
+        mkdir -p "$hd_home/Videos"
         /usr/sbin/createhomedir -u hdtest >/dev/null 2>&1
-        [ "$(cat "$hd_home/.zshrc" 2>&1)" = mine ] || hd_note "17: overwrote an existing dot file"
+        [ "$(cat "$hd_home/.zshrc" 2>&1)" = mine ] ||
+            hd_note "14: a re-run disturbed a file the user made"
+        [ -d "$hd_home/Videos" ] ||
+            hd_note "15: a re-run removed a folder the user made"
+        # -P is how the PAM session hook calls it. Unset PAM_USER must be
+        # silent and successful, or every session without it logs noise.
+        rm -rf "$hd_home"
+        PAM_USER=hdtest /usr/sbin/createhomedir -P >/dev/null 2>&1
+        [ -d "$hd_home" ] || hd_note "16: -P with PAM_USER=hdtest made no home"
+        if ! hd_out=$(/usr/sbin/createhomedir -P 2>&1) || [ -n "$hd_out" ]; then
+            hd_note "17: -P with no PAM_USER said [$hd_out] instead of nothing"
+        fi
+        # A system account is refused whatever its home says.
+        if PAM_USER=root /usr/sbin/createhomedir -P >/dev/null 2>&1; then
+            [ -d /Local/Users/root ] &&
+                hd_note "18: -P created a home for root"
+        fi
     fi
 
     cp -p /tmp/nsswitch.conf.hd /etc/nsswitch.conf 2>/dev/null

@@ -1,5 +1,5 @@
 # createhomedir(8) -- build a user's home directory from the user template
-# (nextbsd/nextbsd-userland#277, E18 U10).
+# (E18 U10).
 #
 # The XML plist reader is shared with nss_directory_services rather than
 # copied: both read the same kind of file, and a second copy would drift.
@@ -9,10 +9,7 @@ PROG=		createhomedir
 MAN=		createhomedir.8
 BINDIR=		/usr/sbin
 
-NSSDIR=		${.CURDIR}/../../nss_directory_services
-.PATH:		${NSSDIR}
-SRCS=		createhomedir.c plist.c
-CFLAGS+=	-I${NSSDIR}
+SRCS=		createhomedir.c
 
 WARNS?=		6
 SYSROOT?=
