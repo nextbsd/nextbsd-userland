@@ -94,10 +94,18 @@ jobs:
         if: github.event_name == 'repository_dispatch'
         env:
           GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+          SHA: ${{ github.event.client_payload.fbsd_sha }}
         run: |
-          gh api repos/nextbsd-redux/nextbsd/dispatches \
-            -f event_type=userland-updated \
-            -f "client_payload[fbsd_sha]=${{ github.event.client_payload.fbsd_sha }}"
-          gh api repos/nextbsd-redux/nextbsd-pkg/dispatches \
-            -f event_type=userland-updated \
-            -f "client_payload[fbsd_sha]=${{ github.event.client_payload.fbsd_sha }}"
+          # The userland artifact is already published by now, so a downstream
+          # repo the token cannot reach must not mark this build failed. Each
+          # dispatch reports on its own and a miss becomes a warning.
+          for repo in nextbsd/nextbsd nextbsd/nextbsd-pkg; do
+            if gh api "repos/$repo/dispatches" \
+                 -f event_type=userland-updated \
+                 -f "client_payload[fbsd_sha]=$SHA"; then
+              echo "dispatched userland-updated to $repo"
+            else
+              echo "::warning::could not dispatch userland-updated to $repo (DISPATCH_TOKEN may lack access); it will not rebuild against this userland"
+            fi
+          done
+          exit 0
