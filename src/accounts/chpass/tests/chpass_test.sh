@@ -28,7 +28,6 @@ ${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes \
     -Wmissing-prototypes -fblocks -DLIBDS_TEST -DCHPASS_TEST \
     -DACCT_BINDING_PLIST="\"$fix/Binding.plist\"" \
     -DACCT_SHELLS="\"$fix/shells\"" \
-    -DCHPASS_BSD_BINARY="\"$fix/no-such-bsd-chpass\"" \
     -I"$top/src/accounts/common" -I"$top/src/libds" \
     -o "$fix/chpass" \
     "$top/src/accounts/chpass/chpass.c" \

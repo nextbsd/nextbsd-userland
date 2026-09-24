@@ -1652,48 +1652,29 @@ if [ -z "$acct_fail" ] && [ -x /usr/sbin/pw ]; then
     # 11b. pw, whose caller is not a person: the forms a ports install script
     #      emits have to keep working.
     #
-    #      Every account a port creates is a system account, and pw hands
-    #      those to the base copy at /usr/libexec/bsd/pw. That copy arrives
-    #      with a nextbsd-freebsd-compat change which must not land before
-    #      this one, so on an image built in between it is simply absent.
-    #      Both states are correct and both are checked: without it, pw must
-    #      say so plainly rather than half-working, and with it the routing
-    #      must actually reach it.
-    if [ -x /usr/libexec/bsd/pw ]; then
-        /usr/sbin/pw useradd _imgtest -u 299 -g 299 -d /nonexistent \
-            -s /usr/sbin/nologin -c "Image Test" >/dev/null 2>&1 ||
-            acct_note "11b: pw useradd of a system account failed"
-        grep -q '_imgtest' "$plist" &&
-            acct_note "11b: a system account was filed in the directory"
-        getent passwd _imgtest >/dev/null 2>&1 ||
-            acct_note "11b: the system account is not resolvable"
-        # A high uid with a real shell and home is still a system account:
-        # the postgres case a 499 threshold would have got wrong.
-        /usr/sbin/pw useradd _imgpg -u 770 -g 770 -d /var/db/imgpg \
-            -s /bin/sh >/dev/null 2>&1 ||
-            acct_note "11b: pw useradd at uid 770 failed"
-        grep -q '_imgpg' "$plist" &&
-            acct_note "11b: uid 770 was filed in the directory"
-        /usr/sbin/pw userdel _imgtest >/dev/null 2>&1
-        /usr/sbin/pw userdel _imgpg >/dev/null 2>&1
-        /usr/sbin/pw groupdel _imgtest >/dev/null 2>&1
-        /usr/sbin/pw groupdel _imgpg >/dev/null 2>&1
-        echo "  pw: delegation to /usr/libexec/bsd/pw exercised"
-    else
-        # The window before the compat change lands. Degrading clearly is
-        # the behaviour under test here, so assert the message.
-        acct_out=$(/usr/sbin/pw useradd _imgtest -u 299 -g 299 \
-            -d /nonexistent -s /usr/sbin/nologin 2>&1)
-        case "$acct_out" in
-            *"is not installed"*) ;;
-            *) acct_note "11b: with no base pw, the failure was unclear: [$(echo "$acct_out" | head -1)]" ;;
-        esac
-        grep -q '_imgtest' "$plist" &&
-            acct_note "11b: a system account was filed in the directory when the base pw was missing"
-        echo "  pw: /usr/libexec/bsd/pw absent, so delegation is reported rather than attempted"
-    fi
+    #      Every account a port creates is a system account, and the pw that
+    #      handles those is vendored into this binary, so there is one path
+    #      and one behaviour to check rather than two.
+    /usr/sbin/pw useradd _imgtest -u 299 -g 299 -d /nonexistent \
+        -s /usr/sbin/nologin -c "Image Test" >/dev/null 2>&1 ||
+        acct_note "11b: pw useradd of a system account failed"
+    grep -q '_imgtest' "$plist" &&
+        acct_note "11b: a system account was filed in the directory"
+    getent passwd _imgtest >/dev/null 2>&1 ||
+        acct_note "11b: the system account is not resolvable"
+    # A high uid with a real shell and home is still a system account:
+    # the postgres case a 499 threshold would have got wrong.
+    /usr/sbin/pw useradd _imgpg -u 770 -g 770 -d /var/db/imgpg \
+        -s /bin/sh >/dev/null 2>&1 ||
+        acct_note "11b: pw useradd at uid 770 failed"
+    grep -q '_imgpg' "$plist" &&
+        acct_note "11b: uid 770 was filed in the directory"
+    /usr/sbin/pw userdel _imgtest >/dev/null 2>&1
+    /usr/sbin/pw userdel _imgpg >/dev/null 2>&1
+    /usr/sbin/pw groupdel _imgtest >/dev/null 2>&1
+    /usr/sbin/pw groupdel _imgpg >/dev/null 2>&1
 
-    # These need no base copy: a directory account is ours either way.
+    # A directory account never reaches the vendored half.
     /usr/sbin/pw usershow joe >/dev/null 2>&1 ||
         acct_note "11b: pw usershow of a directory user failed"
     case "$(/usr/sbin/pw usershow joe 2>/dev/null)" in

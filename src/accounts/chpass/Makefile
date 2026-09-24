@@ -32,9 +32,20 @@ MLINKS+=	chpass.1 ypchsh.1
 
 LIBDSDIR=	${.CURDIR}/../../libds
 COMMONDIR=	${.CURDIR}/../common
-.PATH:		${LIBDSDIR} ${COMMONDIR}
+BSDDIR=		${.CURDIR}/bsd
+.PATH:		${LIBDSDIR} ${COMMONDIR} ${BSDDIR}
 SRCS=		chpass.c acct.c libds.c
 CFLAGS+=	-I${LIBDSDIR} -I${COMMONDIR}
+
+# The chpass FreeBSD ships, vendored under bsd/ and entered as a function
+# instead of exec'd as a second binary. A master.passwd account gets the
+# behaviour it has always had, from one command at one path. bsd/README
+# records the upstream revision and how to re-sync.
+#
+# NIS is left out: -DYP is never defined, so the ypclnt paths compile out,
+# and our own front end refuses the yp* names before reaching this code.
+SRCS+=		bsd_main.c edit.c field.c table.c util.c pw_scan.c
+CFLAGS+=	-I${BSDDIR}
 
 # WARNS=0 then re-add what we want: the CoreFoundation public headers do not
 # survive the -Wsystem-headers -Werror that WARNS>0 turns on.

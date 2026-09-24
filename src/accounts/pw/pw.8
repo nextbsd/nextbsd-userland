@@ -51,13 +51,12 @@ Anything else is a directory account.
 .Pp
 Everything belonging in
 .Pa /etc/master.passwd
-is handed to the copy of
+is handed, with the command line untouched, to the
 .Nm
-the base system ships, at
-.Pa /usr/libexec/bsd/pw ,
-with the command line untouched.
-So a system account is managed by exactly the program that has always managed
-it, which is how packages that create daemon users keep working.
+.Fx
+ships, which is vendored into this program rather than run as a second binary.
+So a system account is managed by exactly the code that has always managed it,
+which is how packages that create daemon users keep working.
 .Ss Why the threshold is 999
 The ports collection registers 647 users, and 267 of them sit between 500 and
 999.
@@ -150,8 +149,9 @@ present when this machine is a directory client, in which case
 .Nm
 refuses to write
 .It Pa /etc/master.passwd
-.It Pa /usr/libexec/bsd/pw
-the base copy, which handles system accounts
+where a system account is filed
+.It Pa /etc/pw.conf
+read by the vendored half, as it always was
 .El
 .Sh EXIT STATUS
 Values from

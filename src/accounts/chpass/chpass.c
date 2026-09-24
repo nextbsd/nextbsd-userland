@@ -40,9 +40,24 @@
 #include "acct.h"
 #include "libds.h"
 
-/* Where the base copy lives once compat relocates it, for system accounts. */
-#ifndef CHPASS_BSD_BINARY
-#define CHPASS_BSD_BINARY	"/usr/libexec/bsd/chpass"
+/*
+ * An account in master.passwd is handled by the chpass FreeBSD ships, vendored
+ * under bsd/ and entered as a function rather than exec'd as a second binary.
+ * See bsd/README for the upstream revision and how to re-sync it.
+ *
+ * It is not built on Darwin: it needs libutil's pw_* and login_cap, neither of
+ * which exists there. On Darwin the master.passwd half is unreachable anyway,
+ * so the stub only has to keep the file compiling for a host syntax check.
+ */
+#ifdef __FreeBSD__
+int chpass_bsd_main(int, char **);
+#else
+static int
+chpass_bsd_main(int argc __unused, char **argv __unused)
+{
+	warnx("master.passwd accounts are not supported on this platform");
+	return (1);
+}
 #endif
 
 /* Which name we were invoked as, and so which fields may be edited. */
@@ -136,7 +151,16 @@ main(int argc, char *argv[])
 	enum mode m;
 	enum ds_error err;
 	uid_t ruid;
-	int ch;
+	int ch, orig_argc;
+	char **orig_argv;
+
+	/*
+	 * The vendored parser needs the command line as typed, and getopt is
+	 * about to consume it. Keep both, and reset getopt before handing
+	 * over -- optreset because this process has already scanned once.
+	 */
+	orig_argc = argc;
+	orig_argv = argv;
 
 	m = mode_from_name(argv[0]);
 	if (m == MODE_YP) {
@@ -207,13 +231,9 @@ main(int argc, char *argv[])
 		 * what to use instead rather than failing vaguely.
 		 */
 		if (getpwnam(name) != NULL) {
-			if (access(CHPASS_BSD_BINARY, X_OK) == 0) {
-				(void)execv(CHPASS_BSD_BINARY, argv - optind);
-				warn("%s", CHPASS_BSD_BINARY);
-				return (1);
-			}
-			warnx("%s is in master.passwd; use vipw(8)", name);
-			return (1);
+			optreset = 1;
+			optind = 1;
+			return (chpass_bsd_main(orig_argc, orig_argv));
 		}
 		warnx("%s: no such user", name);
 		return (1);

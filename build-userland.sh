@@ -953,7 +953,7 @@ echo "==> chpass built"
 # ---- pw (nextbsd/nextbsd-userland#255, E18 U9) -----------------------------
 # Routes: an existing account is served wherever it lives, a new one by its
 # shape, and anything belonging in master.passwd is handed to the base copy at
-# /usr/libexec/bsd/pw with argv untouched. That delegation is what keeps the
+# the pw vendored under src/accounts/pw/bsd with argv untouched. That is what keeps the
 # contract with ports, whose install scripts call pw with a positional name.
 #
 # The relocation of the base binary is a nextbsd-freebsd-compat change and

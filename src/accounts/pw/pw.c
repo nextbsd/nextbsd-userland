@@ -28,7 +28,7 @@
  *
  * The way all three are satisfied is by not reimplementing pw. Everything
  * that belongs in master.passwd is handed to the copy the base ships,
- * relocated to /usr/libexec/bsd/pw, with the original argv untouched. Since
+ * the vendored copy under bsd/, with the original argv untouched. Since
  * every account a port creates is a system account, the packaging contract
  * is met by delegation rather than by imitation, which is the only way to be
  * sure it stays met.
@@ -51,8 +51,25 @@
 #include "acct.h"
 #include "libds.h"
 
-#ifndef PW_BSD_BINARY
-#define PW_BSD_BINARY	"/usr/libexec/bsd/pw"
+/*
+ * A system account is handled by the pw FreeBSD ships, vendored under bsd/ and
+ * entered as a function rather than exec'd as a second binary. Every account a
+ * port creates is a system account, so this path is the packaging contract:
+ * it behaves exactly as it always has because it is the same code.
+ *
+ * Not built on Darwin -- it needs libutil's pw_* and login_cap, neither of
+ * which exists there. The master.passwd half is unreachable on Darwin anyway,
+ * so the stub only keeps the file compiling for a host syntax check.
+ */
+#ifdef __FreeBSD__
+int pw_bsd_main(int, char **);
+#else
+static int
+pw_bsd_main(int argc __unused, char **argv __unused)
+{
+	warnx("system accounts are not supported on this platform");
+	return (EX_UNAVAILABLE);
+}
 #endif
 
 enum verb {
@@ -106,17 +123,41 @@ verb_is_group(enum verb v)
 
 /* Hand the whole invocation to the copy the base ships. */
 static int
-delegate(char *argv[])
+delegate(int argc, char *argv[])
 {
-	if (access(PW_BSD_BINARY, X_OK) == -1) {
-		warnx("%s is not installed, so system accounts cannot be "
-		    "managed; this is the base pw, relocated there so this "
-		    "one can hand them over", PW_BSD_BINARY);
-		return (EX_UNAVAILABLE);
+#ifdef PW_TEST
+	/*
+	 * The vendored half needs libutil and does not build on the host, so
+	 * what the suite checks here is the routing decision: record the
+	 * command line that would have been handed over, and say no more.
+	 * Whether pw itself does the right thing with it is FreeBSD's own
+	 * test suite's business, and the on-image lifecycle's.
+	 */
+	{
+		const char *rec = getenv("PW_DELEGATED_TO");
+		FILE *f;
+		int i;
+
+		if (rec != NULL && rec[0] != '\0' &&
+		    (f = fopen(rec, "w")) != NULL) {
+			for (i = 1; i < argc; i++)
+				(void)fprintf(f, "%s%s", i > 1 ? " " : "",
+				    argv[i]);
+			(void)fputc('\n', f);
+			(void)fclose(f);
+		}
+		return (0);
 	}
-	(void)execv(PW_BSD_BINARY, argv);
-	warn("%s", PW_BSD_BINARY);
-	return (EX_UNAVAILABLE);
+#else
+	/*
+	 * The vendored parser scans the command line itself, and this process
+	 * has already scanned it once: optreset as well as optind, or getopt
+	 * resumes mid-line.
+	 */
+	optreset = 1;
+	optind = 1;
+	return (pw_bsd_main(argc, argv));
+#endif
 }
 
 /*
@@ -294,7 +335,7 @@ main(int argc, char *argv[])
 		rest_argv = argv + 3;
 	}
 	if (v == V_UNKNOWN)
-		return (delegate(argv));
+		return (delegate(argc, argv));
 
 	parse(rest_argc, rest_argv, &a);
 
@@ -321,7 +362,7 @@ main(int argc, char *argv[])
 	 * asking pw for an id is going to put the account.
 	 */
 	if (v == V_USERNEXT || v == V_GROUPNEXT)
-		return (delegate(argv));
+		return (delegate(argc, argv));
 
 	if ((err = ds_open(DS_LOCAL, DS_RDWR, &h)) != DS_OK) {
 		if (err == DS_ELOCK) {
@@ -335,7 +376,7 @@ main(int argc, char *argv[])
 
 	if (route_to_files(v, &a, h)) {
 		ds_close(h);
-		return (delegate(argv));
+		return (delegate(argc, argv));
 	}
 
 	/* From here the operation is ours, so refuse what we cannot store. */
@@ -548,7 +589,7 @@ main(int argc, char *argv[])
 
 	default:
 		ds_close(h);
-		return (delegate(argv));
+		return (delegate(argc, argv));
 	}
 
 	if (rc == EX_OK && v != V_USERSHOW && v != V_GROUPSHOW &&

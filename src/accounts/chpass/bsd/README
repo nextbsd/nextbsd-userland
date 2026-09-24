@@ -1,0 +1,37 @@
+FreeBSD's chpass(1), vendored.
+
+Upstream:  freebsd/freebsd-src, releng/15.0
+Path:      usr.bin/chpass, plus lib/libc/gen/pw_scan.[ch]
+Revision:  e9ac41698b2f322d55ccf9da50a3596edb2c1800 (2024-07-15)
+
+WHY IT IS HERE
+
+NextBSD's chpass edits the two fields a directory account has. An account in
+/etc/master.passwd has the rest -- login class, password ageing, expiry -- and
+editing those means the $EDITOR session this front end deliberately does not
+implement. Rather than reimplement that editor over fields the property lists
+do not model, the account gets the chpass it has always had.
+
+It used to be exec'd as a second binary that compat relocated to
+/usr/libexec/bsd/chpass. See ../../pw/bsd/README for why that arrangement went.
+
+WHAT WAS CHANGED
+
+One file, and one line in it:
+
+  chpass.c -> bsd_main.c, and its main() renamed to chpass_bsd_main().
+
+pw_scan.c and pw_scan.h are copied from lib/libc/gen because upstream's build
+reaches into the libc source tree for them; they are unmodified.
+
+NIS is left out. -DYP is never defined, so the ypclnt paths compile out, and
+the front end refuses the yp* names before reaching this code at all.
+
+Not built on Darwin: libutil's pw_* and login_cap do not exist there. The
+front end stubs chpass_bsd_main() out so a host syntax check still compiles.
+
+RE-SYNCING
+
+  1. Fetch the new upstream usr.bin/chpass and lib/libc/gen/pw_scan.[ch].
+  2. Diff against this directory, remembering bsd_main.c is upstream's chpass.c.
+  3. Apply, re-apply the main() rename, and update Revision: above.

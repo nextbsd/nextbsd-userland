@@ -7,7 +7,7 @@
 # pw with its argv intact, because that is the binary that has always served
 # them and the only way to be sure they keep working.
 #
-# A stub stands in for the relocated base binary and records what it was
+# The routing point records what it would have handed to the vendored
 # handed, so routing can be asserted exactly rather than inferred.
 #
 #   sh pw_test.sh
@@ -27,21 +27,16 @@ esac
 ${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes \
     -Wmissing-prototypes -fblocks -DLIBDS_TEST -DPW_TEST \
     -DACCT_BINDING_PLIST="\"$fix/Binding.plist\"" \
-    -DPW_BSD_BINARY="\"$fix/bsd-pw\"" \
     -I"$top/src/accounts/common" -I"$top/src/libds" \
     -o "$fix/pw" \
     "$top/src/accounts/pw/pw.c" \
     "$top/src/accounts/common/acct.c" \
     "$top/src/libds/libds.c" $cflib || exit 2
 
-# The stub that stands in for the relocated base pw. It records its argv so a
-# test can assert both THAT we delegated and WHAT we handed over.
-cat > "$fix/bsd-pw" <<'STUB'
-#!/bin/sh
-printf '%s\n' "$*" > "${PW_DELEGATED_TO:-/dev/null}"
-exit 0
-STUB
-chmod +x "$fix/bsd-pw"
+# The base pw is vendored into the binary now rather than exec'd, and it needs
+# libutil, so it is not compiled on the host. Under -DPW_TEST the routing point
+# records the command line it would have handed over to $PW_DELEGATED_TO, which
+# is what these tests assert: that we routed, and with what.
 
 seed() {
 	cat > "$fix/Users.plist" <<'P'
@@ -211,11 +206,10 @@ cksay "a joined machine refuses a write" "joined to ds.example.lan" \
 cklocal "and does not hand it to the base either" ./pw useradd newbie -u 5300 -g 5300
 rm -f "$fix/Binding.plist"
 
-# ---- the base copy missing is reported, not ignored ---------------------
-seed
-mv "$fix/bsd-pw" "$fix/bsd-pw.hidden"
-cksay "a missing base pw is reported" "is not installed" ./pw usershow root
-mv "$fix/bsd-pw.hidden" "$fix/bsd-pw"
+# The check that used to sit here asserted the message pw gave when the base
+# copy was missing from /usr/libexec/bsd. That copy is vendored into this
+# binary now, so the state it tested cannot arise: there is nothing to be
+# missing. Removed rather than reworded.
 
 if command -v plutil >/dev/null 2>&1; then
 	seed; ./pw useradd kate -u 5002 -g 5002 >/dev/null 2>&1 </dev/null

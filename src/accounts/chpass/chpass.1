@@ -60,6 +60,24 @@ Two fields do not need one, and dropping somebody into
 .Ev EDITOR
 over a whole record invites them to change a uid and then wonder why nothing
 happened.
+.Ss System accounts
+The account types differ, and so does what
+.Nm
+does with them.
+A regular account lives in the DirectoryServices property lists, which hold a
+real name and a shell and nothing else editable, so there is no editor session
+\(em the two fields are set from the command line.
+A system account lives in
+.Pa /etc/master.passwd
+and has the rest: a login class, password ageing, an expiry date.
+Those are handed to the
+.Nm
+.Fx
+ships, vendored into this program, so such an account gets the full editor
+session it has always had.
+.Pp
+Nothing has to be said about which is which.
+The account is looked up, and whichever store it is in decides.
 .Ss Proving who you are
 A user editing their own record is asked for their password first.
 This is a deliberate addition.

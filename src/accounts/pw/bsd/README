@@ -1,0 +1,46 @@
+FreeBSD's pw(8), vendored.
+
+Upstream:  freebsd/freebsd-src, releng/15.0
+Path:      usr.sbin/pw
+Revision:  1efb9810ba8caa550e0b8459117a36fde0daaec9 (2025-10-04)
+
+WHY IT IS HERE
+
+NextBSD's pw routes: a directory account is handled in the DirectoryServices
+property lists, and a system account belongs in /etc/master.passwd. The second
+half is a packaging contract -- every account a port creates is a system
+account, and ports emit five fixed command forms -- so it has to behave exactly
+as it always has. The surest way to behave exactly like FreeBSD's pw is to be
+FreeBSD's pw.
+
+It used to be exec'd as a second binary that compat relocated to
+/usr/libexec/bsd/pw. That left one command only half working on its own,
+depending on an undocumented path in another repository, and it meant the two
+repositories could only be merged in an order where one of them was broken.
+Vendoring removes all of that: one binary, at one path, from one tree.
+
+WHAT WAS CHANGED
+
+One file, and one line in it:
+
+  pw.c -> bsd_main.c, and its main() renamed to pw_bsd_main().
+
+The rename is in the filename so that the file we edit is the only file whose
+name differs from upstream. Everything else is byte-identical, so re-syncing is
+a diff and never a merge.
+
+NIS is not configured anywhere in NextBSD, so pw_nis.c and pw_vpw.c are
+unreachable; they are built only because pw_user.c and pw_group.c reference
+them.
+
+Not built on Darwin: libutil's pw_* and login_cap do not exist there. The
+front end stubs pw_bsd_main() out so a host syntax check still compiles.
+
+RE-SYNCING
+
+  1. Fetch the new upstream usr.sbin/pw.
+  2. Diff it against this directory, remembering bsd_main.c is upstream's pw.c.
+  3. Apply, re-apply the main() rename, and update Revision: above.
+
+A change to the five command forms ports use, or to how uids are allocated, is
+worth reading closely -- src/accounts/pw/tests covers both.
