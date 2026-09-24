@@ -687,6 +687,8 @@ expect {
     -re {NSS-DS-FAIL[^\r\n]*} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
     -re {NSS-DS-SKIP[^\r\n]*} { puts "\nWARN: $expect_out(0,string)" }
     "NSS-DS-OK" { puts "\nOK: nss_directory_services resolves plist users and groups" }
+}
+
 # MDNS-STATIC — static Bonjour service files (#250): a *.plist dropped into
 # /Local/Library/Preferences/mDNSResponder/Services is announced (seen by
 # dns-sd -B), withdrawn when removed, and announced again after the daemon

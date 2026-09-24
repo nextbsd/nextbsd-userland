@@ -1120,6 +1120,8 @@ PLIST
     else
         echo "NSS-DS-OK: plist user resolves via getent/id/ls -l with admin + wheel; enumeration merges with files; /Network preferred live"
     fi
+fi
+
 # MDNS-STATIC — static Bonjour service files (nextbsd/nextbsd-userland#250).
 # mDNSResponder registers every *.plist in
 # /Local/Library/Preferences/mDNSResponder/Services and follows the directory
@@ -1199,6 +1201,7 @@ if [ -n "$mdns_static_fail" ]; then
 else
     echo "MDNS-STATIC-OK: a service file is announced within seconds, withdrawn on removal, and announced again after a daemon restart"
 fi
+
 
 # 10. ASL runtime smoke (Phase J). Task #41 move_member wire-up
 # landed but a follow-on halt-after-bootstrap-remote regression is
