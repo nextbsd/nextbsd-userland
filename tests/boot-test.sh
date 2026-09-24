@@ -402,9 +402,16 @@ if {$at_login} {
     # Do NOT match a prompt here. Automatic login lands far earlier in the
     # boot than a human could, so driver attach messages are still arriving
     # and the prompt is usually not the last thing in the buffer -- a real
-    # run showed "pc-q35-8-2% " followed immediately by drmn0 and em0
-    # probing. Ask the shell for a marker instead; characters typed before
-    # it is ready are buffered by the tty and run when it starts.
+    # run showed the prompt followed immediately by drmn0 and em0 probing.
+    # Ask the shell for a marker instead; characters typed before it is ready
+    # are buffered by the tty and run when it starts.
+    #
+    # The prompt is "admin@<host> ~ %" with colour escapes between every
+    # field, from the PROMPT that /etc/zshrc sets. This comment used to quote
+    # it as "pc-q35-8-2% ", which was true before nextbsd-overlays#11 and is
+    # zsh's compiled-in default; left uncorrected it reads as evidence that
+    # /etc/zshrc is not being applied, which cost a long detour to disprove.
+    # The check below now asserts the real one, so it cannot rot again.
     send "\r"
     send "echo NB-SHELL-READY\r"
     expect {
@@ -415,56 +422,49 @@ if {$at_login} {
         "NB-SHELL-READY" { puts "\nOK: shell is responding" }
     }
 
-    # Which shell the console session actually got, and whether it read the
-    # global rc file. INFORMATIONAL: nothing here gates, because what is
-    # correct has not been settled yet.
+    # The login shell is the one the account asks for, and it read the global
+    # rc file. Nothing else checks either, and both fail silently: a shell
+    # that cannot be executed leaves login falling back to /bin/sh, and a
+    # /etc/zshrc that stops being seeded leaves zsh on its compiled-in
+    # default prompt. Either would still boot, still run every test, and
+    # still look approximately right on the console.
     #
-    # Why it is worth asking: the prompt on this console is "<host>% ", which
-    # is zsh's compiled-in default (%m%#), not the PROMPT that /etc/zshrc
-    # sets. See the comment above, which recorded that prompt without anyone
-    # noticing what it implied. So one of three things is true -- the login
-    # shell is not zsh, /etc/zshrc is not on the image, or zsh is not reading
-    # it -- and these three probes say which.
+    # Three facts, one verdict line:
+    #   the shell named in the account's passwd entry is the one running
+    #   PROMPT contains %n, so the username is shown -- the point of
+    #     nextbsd-overlays#11, and absent from zsh's default %m%#
+    #   /etc/zshrc is readable, separating "not seeded" from "not read"
     #
-    # Each probe sends its sentinel as a SEPARATE line, so a command that a
-    # shell rejects outright (csh aborts a line on an undefined variable)
-    # cannot swallow the sentinel and turn a diagnosis into a timeout.
+    # Built up in single commands rather than one long line, because every $
+    # has to survive Tcl, the shell, and an 80-column console. The verdict
+    # tokens are ok/bad literals, so the echoed command line -- which still
+    # holds the unexpanded $nbs -- cannot be mistaken for the answer.
     set saved_diag $timeout
     set timeout 20
 
-    send "ps -p \$\$ -o comm=\r"
-    send "echo NB-DIAG-1\r"
+    send "nbwant=\$(getent passwd \$(id -un) | cut -d: -f7)\r"
+    send "nbgot=\$(ps -p \$\$ -o comm= | tr -d ' ')\r"
+    send "case \"\$nbwant\" in *\"/\$nbgot\") nbs=ok ;; *) nbs=bad ;; esac\r"
+    send "case \"\$PROMPT\" in *%n*) nbp=ok ;; *) nbp=bad ;; esac\r"
+    send "test -r /etc/zshrc && nbr=ok || nbr=bad\r"
+    send "echo NBSHELL:\$nbs:\$nbp:\$nbr:\$nbwant:\$nbgot\r"
     expect {
-        timeout { puts "\nWARN: shell-name probe timed out" }
-        "NB-DIAG-1"
+        timeout {
+            puts "\nFAIL: the login-shell check never reported"
+            exit 1
+        }
+        -re {NBSHELL:ok:ok:ok:([^\r\n]*)} {
+            puts "\nOK: login shell is the account's, and /etc/zshrc is in effect ([string trim $expect_out(1,string)])"
+        }
+        -re {NBSHELL:(ok|bad):(ok|bad):(ok|bad):([^\r\n]*)} {
+            set d [string trim $expect_out(4,string)]
+            puts "\nFAIL: login shell check: shell=$expect_out(1,string) prompt=$expect_out(2,string) zshrc=$expect_out(3,string) ($d)"
+            puts "  shell=bad  login did not start the shell the account names (fallback to /bin/sh?)"
+            puts "  prompt=bad PROMPT has no %n, so /etc/zshrc was not applied"
+            puts "  zshrc=bad  /etc/zshrc is not on the image; check the overlays seed"
+            exit 1
+        }
     }
-
-    send "ls -l /etc/zshrc /private/etc/zshrc\r"
-    send "echo NB-DIAG-2\r"
-    expect {
-        timeout { puts "\nWARN: zshrc-presence probe timed out" }
-        "NB-DIAG-2"
-    }
-
-    # ZSH_VERSION is set only by zsh, and PROMPT is what it is prompting with.
-    # Delimited so an empty value is still legible in the log.
-    send "echo ver=:\$ZSH_VERSION: prompt=:\$PROMPT:\r"
-    send "echo NB-DIAG-3\r"
-    expect {
-        timeout { puts "\nWARN: zsh-identity probe timed out" }
-        "NB-DIAG-3"
-    }
-
-    # Whether /etc/zshrc would be read if it were sourced by hand: this
-    # separates "not on the image" from "on the image but not read".
-    send "test -r /etc/zshrc && echo NB-RC-READABLE || echo NB-RC-MISSING\r"
-    send "echo NB-DIAG-4\r"
-    expect {
-        timeout { puts "\nWARN: zshrc-readable probe timed out" }
-        "NB-DIAG-4"
-    }
-
-    puts "\nINFO: shell diagnostics above (see boot.log for the raw output)"
     set timeout $saved_diag
 }
 
