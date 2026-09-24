@@ -721,6 +721,10 @@ expect {
 expect {
     timeout { puts "\nWARN: MDNS-STATIC marker not seen (image predates static service files — informational)" }
     -re {MDNS-STATIC-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    "LAUNCHD-MACH-RUN-DONE" {
+        puts "\nFAIL: the suite finished without emitting MDNS-STATIC"
+        exit 1
+    }
     "MDNS-STATIC-OK" { puts "\nOK: mDNSResponder announces and withdraws static service files, across a restart" }
 }
 
@@ -732,12 +736,20 @@ expect {
 expect {
     timeout { puts "\nWARN: NTP marker not seen (image predates the E18 service jobs — informational)" }
     -re {NTP-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    "LAUNCHD-MACH-RUN-DONE" {
+        puts "\nFAIL: the suite finished without emitting NTP"
+        exit 1
+    }
     "NTP-OK" { puts "\nOK: org.nextbsd.ntpd runs ntpd under launchd" }
 }
 expect {
     -timeout 180
     timeout { puts "\nWARN: NFS marker not seen (image predates the E18 service jobs — informational)" }
     -re {NFS-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    "LAUNCHD-MACH-RUN-DONE" {
+        puts "\nFAIL: the suite finished without emitting NFS"
+        exit 1
+    }
     "NFS-OK" { puts "\nOK: NFS server jobs serve the exports and the client job's script behaves" }
 }
 
@@ -748,6 +760,10 @@ expect {
 expect {
     timeout { puts "\nWARN: LIBDS marker not seen (image predates libds — informational)" }
     -re {LIBDS-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    "LAUNCHD-MACH-RUN-DONE" {
+        puts "\nFAIL: the suite finished without emitting LIBDS"
+        exit 1
+    }
     "LIBDS-OK" { puts "\nOK: libds reads, writes and locks the DirectoryServices plists" }
 }
 
@@ -769,11 +785,19 @@ expect {
 expect {
     timeout { puts "\nWARN: ACCT-HELPERS marker not seen (image predates the account helpers — informational)" }
     -re {ACCT-HELPERS-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    "LAUNCHD-MACH-RUN-DONE" {
+        puts "\nFAIL: the suite finished without emitting ACCT-HELPERS"
+        exit 1
+    }
     "ACCT-HELPERS-OK" { puts "\nOK: account helpers, hashing included" }
 }
 expect {
     timeout { puts "\nWARN: ACCT-LIFECYCLE marker not seen (image predates adduser — informational)" }
     -re {ACCT-LIFECYCLE-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    "LAUNCHD-MACH-RUN-DONE" {
+        puts "\nFAIL: the suite finished without emitting ACCT-LIFECYCLE"
+        exit 1
+    }
     "ACCT-LIFECYCLE-OK" { puts "\nOK: the account lifecycle, from creation to a cleared password" }
 }
 

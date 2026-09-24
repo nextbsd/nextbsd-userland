@@ -1,4 +1,22 @@
 #!/bin/sh
+
+# Emit the done marker on ANY exit, not only a clean one. boot-test.sh treats
+# it as "no further markers are coming", so a suite that dies part way through
+# fails its remaining checks immediately instead of costing a full timeout in
+# each one. A run that ends normally prints it once at the bottom; this only
+# fires when that line was never reached.
+nbsd_done=0
+nbsd_finish() {
+    [ "$nbsd_done" = 1 ] && return
+    nbsd_done=1
+    echo "LAUNCHD-MACH-RUN-DONE"
+}
+trap 'nbsd_finish' EXIT
+# A signal trap that only prints would return and let the script carry on, and
+# the marker would then be emitted twice. Exit from these.
+trap 'nbsd_finish; exit 129' HUP
+trap 'nbsd_finish; exit 130' INT
+trap 'nbsd_finish; exit 143' TERM
 # /usr/tests/freebsd-launchd-mach/run.sh — phase B kernel-side smoke
 # check.
 #
@@ -1689,7 +1707,13 @@ fi
 if [ -z "$acct_fail" ] && [ -x /usr/sbin/rmuser ]; then
     # 12. Removal, for real: the record, the home, the group memberships and
     #     the crontab all go, and the module stops resolving the name.
-    : > "/var/cron/tabs/joe" 2>/dev/null
+    # Give joe a crontab to remove. /var/cron/tabs does not exist on an
+    # image, and "> file 2>/dev/null" does not hide the failure: the shell
+    # reports a redirection it could not open before the stderr redirection
+    # applies, so the message lands on the console.
+    if mkdir -p /var/cron/tabs 2>/dev/null; then
+        : > /var/cron/tabs/joe 2>/dev/null || :
+    fi
     if ! /usr/sbin/rmuser -y joe >/dev/null 2>&1; then
         acct_note "12: rmuser -y joe failed"
     else
@@ -2975,5 +2999,6 @@ else
     echo "(launchctl-snapshot.sh not installed — skipping the END freebsd-launchd-mach job-table dump)"
 fi
 
+nbsd_done=1
 echo "LAUNCHD-MACH-RUN-DONE"
 exit 0
