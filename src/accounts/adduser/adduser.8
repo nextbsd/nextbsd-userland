@@ -1,0 +1,279 @@
+.\"-
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" Copyright (c) 2026 Joseph Maloney
+.\"
+.Dd September 24, 2026
+.Dt ADDUSER 8
+.Os NextBSD
+.Sh NAME
+.Nm adduser
+.Nd create a user account
+.Sh SYNOPSIS
+.Nm
+.Op Fl DSqh
+.Op Fl u Ar uid
+.Op Fl g Ar group
+.Op Fl G Ar group , ...
+.Op Fl -admin
+.Op Fl c Ar "full name"
+.Op Fl s Ar shell
+.Op Fl w Cm no | none | yes
+.Op Fl p Ar hash
+.Op Fl f Ar file
+.Op Ar name
+.Sh DESCRIPTION
+.Nm
+creates a user account in the DirectoryServices property lists under
+.Pa /Local/Library/DirectoryServices ,
+which is where NextBSD keeps its regular users.
+System accounts stay in
+.Pa /etc/master.passwd
+and are created with
+.Xr pw 8 .
+.Pp
+Run with no arguments,
+.Nm
+asks six questions:
+.Bd -literal -offset indent
+Username: joe
+Full name: Joe Maloney
+Shell [/bin/zsh]:
+Administrator? (can use sudo) [no]: yes
+Password (empty for none):
+Password again:
+.Ed
+.Pp
+then prints a summary, asks for confirmation, and offers to add another
+account.
+.Pp
+Given a
+.Ar name
+on the command line,
+.Nm
+asks nothing: every field not supplied by a flag takes its default.
+The
+password is the one exception, because defaulting it silently would be
+wrong; supply
+.Fl p ,
+.Fl w Cm none
+or
+.Fl w Cm no ,
+or run without a name to be asked.
+.Ss What is not asked
+NextBSD's property lists carry no home directory, no login class and no
+password ageing, so there is nothing to ask about them:
+.Bl -bullet -offset indent -compact
+.It
+The home is always
+.Pa /Local/Users/ Ns Ar name ,
+computed on lookup.
+There is no
+.Fl d
+or
+.Fl M .
+.It
+There is no login class, so no
+.Fl L .
+.It
+There is no expiry or ageing.
+.El
+.Pp
+The home is built from
+.Pa /System/Library/User Template
+by
+.Xr createhomedir 8 ,
+which
+.Nm
+runs after the account exists.
+If that fails the account is still created;
+run
+.Nm createhomedir
+again by hand.
+.Sh OPTIONS
+.Bl -tag -width "-w no|none|yes"
+.It Fl -admin
+Make the account an administrator, which means adding it to the
+.Li admin
+group.
+That group is what the shipped
+.Xr sudoers 5
+grants, so the account can use
+.Xr sudo 8 .
+Equivalent to
+.Fl G Ar admin .
+.It Fl c Ar "full name"
+The real name, stored as
+.Li realName .
+.It Fl D
+Do not create the home directory.
+.It Fl f Ar file
+Read accounts from
+.Ar file ,
+or from standard input when it is
+.Fl .
+See
+.Sx BATCH FILES .
+.It Fl G Ar group , ...
+Additional groups.
+Each must already exist in the directory.
+.It Fl g Ar group
+The primary group, by name or gid.
+It must already exist.
+Without this,
+.Nm
+creates a private group with the same name and gid as the user.
+.It Fl h
+Print a usage summary and exit.
+.It Fl p Ar hash
+Use an already-hashed password, as
+.Xr crypt 3
+produces.
+For an installer or a provisioning script; nothing is prompted.
+.It Fl q
+Print only errors.
+The summary and the confirmation are suppressed.
+.It Fl S
+Do not check the shell against
+.Xr shells 5 .
+.It Fl s Ar shell
+The login shell.
+The default is
+.Pa /bin/zsh .
+Checked against
+.Pa /etc/shells
+unless
+.Fl S
+is given.
+.It Fl u Ar uid
+The exact uid.
+Without this the first free uid at or above 5001 is used.
+The gid matches unless
+.Fl g
+says otherwise.
+.It Fl w Cm no | none | yes
+How the account authenticates.
+.Cm none
+sets
+.Li noPassword ,
+so it logs in with no password, which is how the seeded
+.Li admin
+account works.
+.Cm no
+stores an unmatchable hash, so no password works and the account cannot log
+in until one is set.
+.Cm yes ,
+the default, prompts, or takes
+.Fl p .
+.El
+.Pp
+Two flags are accepted and ignored, so a script written for another BSD
+still runs:
+.Fl k ,
+because homes come from the user template rather than a skeleton directory,
+and
+.Fl m ,
+because NextBSD ships no mail transport to send a welcome message with.
+.Sh IDENTITY RANGES
+.Bl -column "5001 and above" "description" -offset indent
+.It Sy Range Ta Sy Use
+.It 0-999 Ta system accounts, in Pa /etc/master.passwd
+.It 1000-4999 Ta unused, a deliberate gap
+.It 5000 Ta the Li admin group, and the account seeded with the image
+.It 5001+ Ta regular users and their private groups
+.El
+.Sh BATCH FILES
+A batch file holds one account per line, six colon-separated fields:
+.Pp
+.Dl name:uid:gid:gecos:shell:password
+.Pp
+An empty
+.Va uid
+or
+.Va gid
+means allocate one.
+The
+.Va password
+field is a
+.Em hash ,
+not a plaintext password, the same as
+.Fl p .
+Blank lines and lines starting with
+.Ql #
+are ignored.
+.Pp
+Six fields rather than the ten a batch file carries on other BSDs.
+The four
+left out name things NextBSD's property lists cannot hold, and keeping them
+as empty columns would suggest they might work.
+A first line of
+.Pp
+.Dl #format: nextbsd-1
+.Pp
+is accepted, and records which format the file is in so a later one can be
+told apart.
+An unrecognised format is an error rather than a guess.
+.Pp
+A line that fails is reported and the rest of the file is still processed.
+The exit status is non-zero if any line failed.
+.Sh FILES
+.Bl -tag -width "/Local/Library/DirectoryServices/Groups.plist" -compact
+.It Pa /Local/Library/DirectoryServices/Users.plist
+.It Pa /Local/Library/DirectoryServices/Groups.plist
+.It Pa /Local/Library/DirectoryServices/Binding.plist
+Present when this machine is a directory client, in which case
+.Nm
+refuses: the account belongs on the server.
+.It Pa /System/Library/User Template
+What a new home is built from.
+.It Pa /etc/shells
+.It Pa /etc/login.conf
+.Va passwd_format
+here chooses the hash format.
+.El
+.Sh EXIT STATUS
+.Bl -tag -width 4n -compact
+.It 0
+The account was created.
+.It 1
+Usage error, or a batch file with a failing line.
+.It 2
+Refused.
+Nothing was written.
+.It 3
+Database error: a property list would not parse, the lock was held, or a
+write failed.
+.It 4
+Interrupted, or the confirmation was answered no.
+.El
+.Sh EXAMPLES
+Create an administrator without being asked anything except the password:
+.Pp
+.Dl # adduser --admin -c "Joe Maloney" joe
+.Pp
+Create an account with no password, the way the image's own
+.Li admin
+is seeded:
+.Pp
+.Dl # adduser -w none -c "Kiosk" kiosk
+.Pp
+Provision from a script with a hash computed elsewhere:
+.Pp
+.Dl # adduser -q -p '$6$...' -c "Build Robot" builder
+.Sh SEE ALSO
+.Xr chpass 1 ,
+.Xr passwd 1 ,
+.Xr login.conf 5 ,
+.Xr shells 5 ,
+.Xr createhomedir 8 ,
+.Xr pw 8 ,
+.Xr rmuser 8
+.Sh HISTORY
+This
+.Nm
+was written for NextBSD in C, over the DirectoryServices property lists.
+It keeps the name and the conversational shape the command has carried on
+the BSDs since the 1990s, and drops the questions that only made sense for
+a flat password file.
+.Sh AUTHORS
+.An Joseph Maloney

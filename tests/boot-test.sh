@@ -337,15 +337,39 @@ expect {
 # /sbin/launchd as PID 1 -> getty plist -> login.
 # An image that logs in automatically (nextbsd-userland#278: one user,
 # admin, no password) never prints "login:", because getty's al capability
-# makes it exec login -f. Discriminate on what login(1) itself reports to
-# the console rather than on a prompt: in the manual case "login:" arrives
-# first, and in the automatic case the session message arrives with no
-# prompt before it.
+# makes it exec login -f. So there are three ways this can go, and the
+# block below accepts all of them: a "login:" prompt, login(1)'s session
+# message, or a shell that answers a probe.
+#
+# The session message cannot be relied on, which is the subtle part.
+# It is a syslog message, not console output:
+# usr.bin/login/login.c opens the log with LOG_CONS and then calls
+# syslog(LOG_INFO, "login on %s as %s", ...). LOG_CONS means it reaches
+# /dev/console only when it CANNOT be delivered to syslogd. Our asl.conf
+# sends nothing to the console and the getty job declares no ordering
+# against com.apple.syslogd, so whether that line appears at all is a race
+# the test used to depend on winning. It lost on arm64 under qemu while a
+# working shell sat on the console (nextbsd-userland#289). So on timeout,
+# probe for a shell before concluding anything. The probe is sent only
+# after the timeout, never before, because at a real "login:" prompt those
+# keystrokes would be typed as a username.
 set at_login 1
 expect {
     timeout {
-        puts "\nFAIL: neither a 'login:' prompt nor an automatic session within 8 minutes"
-        exit 2
+        puts "\n... no login prompt and no session message; probing for a shell"
+        send "\r"
+        send "echo NB-SHELL-READY\r"
+        expect {
+            -timeout 90
+            timeout {
+                puts "\nFAIL: no 'login:' prompt, no session message, and no shell responded"
+                exit 2
+            }
+            "NB-SHELL-READY" {
+                set at_login 0
+                puts "\nOK: automatic session confirmed by probe (login's console message never arrived)"
+            }
+        }
     }
     "login:" { puts "\nOK: boot reached the login prompt" }
     -re {login on console as ([a-z_][a-z0-9_.-]*)} {
@@ -697,6 +721,10 @@ expect {
 expect {
     timeout { puts "\nWARN: MDNS-STATIC marker not seen (image predates static service files — informational)" }
     -re {MDNS-STATIC-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    "LAUNCHD-MACH-RUN-DONE" {
+        puts "\nFAIL: the suite finished without emitting MDNS-STATIC"
+        exit 1
+    }
     "MDNS-STATIC-OK" { puts "\nOK: mDNSResponder announces and withdraws static service files, across a restart" }
 }
 
@@ -708,12 +736,20 @@ expect {
 expect {
     timeout { puts "\nWARN: NTP marker not seen (image predates the E18 service jobs — informational)" }
     -re {NTP-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    "LAUNCHD-MACH-RUN-DONE" {
+        puts "\nFAIL: the suite finished without emitting NTP"
+        exit 1
+    }
     "NTP-OK" { puts "\nOK: org.nextbsd.ntpd runs ntpd under launchd" }
 }
 expect {
     -timeout 180
     timeout { puts "\nWARN: NFS marker not seen (image predates the E18 service jobs — informational)" }
     -re {NFS-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    "LAUNCHD-MACH-RUN-DONE" {
+        puts "\nFAIL: the suite finished without emitting NFS"
+        exit 1
+    }
     "NFS-OK" { puts "\nOK: NFS server jobs serve the exports and the client job's script behaves" }
 }
 
@@ -724,7 +760,45 @@ expect {
 expect {
     timeout { puts "\nWARN: LIBDS marker not seen (image predates libds — informational)" }
     -re {LIBDS-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    "LAUNCHD-MACH-RUN-DONE" {
+        puts "\nFAIL: the suite finished without emitting LIBDS"
+        exit 1
+    }
     "LIBDS-OK" { puts "\nOK: libds reads, writes and locks the DirectoryServices plists" }
+}
+
+# ACCT — the account tools on the image (E18).
+#
+# These are the only tests that reach the things a build host cannot: that a
+# tool links and runs on a real image, that password hashing produces the
+# format we require against the crypt(3) we ship, and that an account created
+# by one tool is then resolvable and editable by the others.
+#
+# The host suites are a development convenience and have twice caught bugs the
+# target would have hidden, but CI on the image is the authoritative coverage.
+#
+# Two markers. ACCT-HELPERS is the unit level, including hashing, which
+# nothing end-to-end can reach because the tools read secrets from /dev/tty.
+# ACCT-LIFECYCLE is a person's sequence: make a user, set a password, change
+# it, lock it, unlock it, clear it. As rmuser and pw land they extend that
+# block rather than adding new ones. Keep these in the order run.sh emits them.
+expect {
+    timeout { puts "\nWARN: ACCT-HELPERS marker not seen (image predates the account helpers — informational)" }
+    -re {ACCT-HELPERS-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    "LAUNCHD-MACH-RUN-DONE" {
+        puts "\nFAIL: the suite finished without emitting ACCT-HELPERS"
+        exit 1
+    }
+    "ACCT-HELPERS-OK" { puts "\nOK: account helpers, hashing included" }
+}
+expect {
+    timeout { puts "\nWARN: ACCT-LIFECYCLE marker not seen (image predates adduser — informational)" }
+    -re {ACCT-LIFECYCLE-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    "LAUNCHD-MACH-RUN-DONE" {
+        puts "\nFAIL: the suite finished without emitting ACCT-LIFECYCLE"
+        exit 1
+    }
+    "ACCT-LIFECYCLE-OK" { puts "\nOK: the account lifecycle, from creation to a cleared password" }
 }
 
 # Stage 3+ Phase J runtime: syslogd + notifyd RunAtLoad via plists,

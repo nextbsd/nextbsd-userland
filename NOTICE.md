@@ -35,8 +35,24 @@ provenance; it does not relicense anything.
 | `nss_directory_services` | Joseph Maloney; adapted from his Gershwin DirectoryServices NSS module (gershwin-desktop/gershwin-components) for NextBSD | BSD-2-Clause |
 | `accounts/createhomedir` | NextBSD | BSD-2-Clause |
 | `accounts/autologin-user` | NextBSD | BSD-2-Clause |
+| `accounts/adduser`, `passwd`, `rmuser` | NextBSD | BSD-2-Clause |
+| `accounts/pw/bsd` | freebsd/freebsd-src `usr.sbin/pw` (releng/15.0) | BSD-2-Clause *(per file header)* |
+| `accounts/chpass/bsd` | freebsd/freebsd-src `usr.bin/chpass` + `lib/libc/gen/pw_scan.[ch]` (releng/15.0) | BSD-4-Clause and BSD-3-Clause *(per file header)* |
 
-Two license families dominate: **APSL-2.0** (classic Apple open source) and
-**Apache-2.0** (the swift.org-era projects + mDNSResponder). Both are permissive
+The two `accounts/*/bsd` directories are the exception to "Darwin sources": they
+are FreeBSD's own `pw` and `chpass`, vendored so that a system account is
+managed by the code that has always managed it rather than by a reimplementation
+of it. Each directory's `README` records the upstream revision and how to
+re-sync; the file headers are authoritative for their license.
+
+The license mix is not uniform, so it is stated here rather than left to be
+discovered. `pw/bsd` is BSD-2-Clause throughout, except `pw_utils.c` and
+`strtounum.c`, which carry equivalent two-condition terms in full with no SPDX
+tag. `chpass/bsd` is older Berkeley code: `bsd_main.c`, `edit.c`, `field.c` and
+`chpass.h` are **BSD-4-Clause**, whose third clause is the advertising
+requirement, while `table.c` and the two `pw_scan` files are BSD-3-Clause.
+
+Two license families dominate the rest: **APSL-2.0** (classic Apple open source)
+and **Apache-2.0** (the swift.org-era projects + mDNSResponder). Both are permissive
 and OSI-recognized. Where a component carries its own `LICENSE`/headers, those
 control over this table.

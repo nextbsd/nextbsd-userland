@@ -1,0 +1,156 @@
+.\"-
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" Copyright (c) 2026 Joseph Maloney
+.\"
+.Dd September 24, 2026
+.Dt CHPASS 1
+.Os NextBSD
+.Sh NAME
+.Nm chpass ,
+.Nm chfn ,
+.Nm chsh
+.Nd change a user's full name or login shell
+.Sh SYNOPSIS
+.Nm chpass
+.Op Fl f Ar "full name"
+.Op Fl s Ar shell
+.Op Ar user
+.Nm chfn
+.Op Fl f Ar "full name"
+.Op Ar user
+.Nm chsh
+.Op Fl s Ar shell
+.Op Ar user
+.Sh DESCRIPTION
+These change the two fields of a DirectoryServices account that an ordinary
+user is allowed to change: the full name and the login shell.
+With no options the record is printed and nothing is altered.
+.Pp
+Run with no
+.Ar user ,
+they act on your own account.
+Only root may name somebody else.
+.Pp
+.Sy The three names are not interchangeable .
+.Nm chfn
+changes the full name and refuses
+.Fl s .
+.Nm chsh
+changes the shell and refuses
+.Fl f .
+Only
+.Nm chpass
+does both.
+This differs from other BSDs, where all three are one command under different
+names and any of them will edit anything: a command called
+.Nm chsh
+that can quietly rewrite your full name is a trap, and the restriction costs
+nothing.
+.Ss What cannot be changed
+Everything else in the record belongs to the administrator.
+There is no uid, gid, home directory or login class to edit here, because the
+property lists hold no such fields for a regular account: the home is computed
+from the name and there are no classes.
+.Xr pw 8
+is the tool for the rest.
+.Pp
+There is no editor session either.
+Two fields do not need one, and dropping somebody into
+.Ev EDITOR
+over a whole record invites them to change a uid and then wonder why nothing
+happened.
+.Ss System accounts
+The account types differ, and so does what
+.Nm
+does with them.
+A regular account lives in the DirectoryServices property lists, which hold a
+real name and a shell and nothing else editable, so there is no editor session
+\(em the two fields are set from the command line.
+A system account lives in
+.Pa /etc/master.passwd
+and has the rest: a login class, password ageing, an expiry date.
+Those are handed to the
+.Nm
+.Fx
+ships, vendored into this program, so such an account gets the full editor
+session it has always had.
+.Pp
+Nothing has to be said about which is which.
+The account is looked up, and whichever store it is in decides.
+.Ss Proving who you are
+A user editing their own record is asked for their password first.
+This is a deliberate addition.
+The record is owned by root and these commands are setuid, so the usual
+protection of file ownership proves nothing about who is at the keyboard, and
+a moment at an unlocked terminal would otherwise be enough to point somebody's
+login shell at a program of the attacker's choosing.
+Root is not asked.
+.Ss Shells
+A shell must be an absolute path.
+For an ordinary user it must also be listed in
+.Xr shells 5 ,
+and one that is not is refused.
+Root gets a warning and the change is made, because an administrator
+installing a shell outside
+.Pa /etc/shells
+generally knows what they are doing, while a user pointing their login at an
+arbitrary binary does not get to decide that.
+.Pp
+A shell that is not executable is a warning in both cases, not a refusal: the
+file may simply not be installed yet.
+.Sh OPTIONS
+.Bl -tag -width "-f full name"
+.It Fl f Ar "full name"
+Set the full name.
+It may not contain a colon.
+.It Fl s Ar shell
+Set the login shell.
+.El
+.Sh NIS
+.Nm ypchpass ,
+.Nm ypchfn
+and
+.Nm ypchsh
+exist and do nothing but report that NIS is not supported on NextBSD.
+They are shipped so that a script or a habit that reaches for them gets an
+answer, rather than a missing-command error about a name that exists
+everywhere else.
+.Sh FILES
+.Bl -tag -width "/Local/Library/DirectoryServices/Users.plist" -compact
+.It Pa /Local/Library/DirectoryServices/Users.plist
+.It Pa /Local/Library/DirectoryServices/Binding.plist
+present when this machine is a directory client, in which case these commands
+refuse: the record belongs to the server
+.It Pa /etc/shells
+.El
+.Sh EXIT STATUS
+.Ex -std chpass chfn chsh
+Printing a record without changing it is a success.
+.Sh EXAMPLES
+See your own record:
+.Pp
+.Dl $ chpass
+.Pp
+Change your shell:
+.Pp
+.Dl $ chsh -s /bin/sh
+.Pp
+Change somebody else's full name:
+.Pp
+.Dl # chfn -f "Joe Maloney" joe
+.Sh SEE ALSO
+.Xr passwd 1 ,
+.Xr shells 5 ,
+.Xr adduser 8 ,
+.Xr pw 8 ,
+.Xr rmuser 8 ,
+.Xr vipw 8
+.Sh HISTORY
+This
+.Nm
+was written for NextBSD, to edit the DirectoryServices property lists.
+It keeps the familiar names and drops the editor session and the fields that
+this system does not store.
+.Sh AUTHORS
+.An Joseph Maloney

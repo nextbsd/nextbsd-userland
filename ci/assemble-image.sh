@@ -212,9 +212,15 @@ fixup_rootfs() {
     chown -R 0:0 "$ROOTFS"
     # Linux chown(2) clears S_ISUID/S_ISGID even when root does it, so re-apply
     # the setuid bits after the chown. nextbsd-contrib stages sudo as 4511.
-    for suid in usr/bin/sudo; do
-        [ -f "$ROOTFS/$suid" ] && chmod 4511 "$ROOTFS/$suid"   # Darwin: -r-s--x--x
-    done
+    [ -f "$ROOTFS/usr/bin/sudo" ] && chmod 4511 "$ROOTFS/usr/bin/sudo"   # Darwin: -r-s--x--x
+    # passwd(1) is setuid so a user can change their own password: the plists
+    # are 0644 owned by root, and unlike Darwin we have no opendirectoryd to
+    # hand the write to. Anything else added here must be listed, or the chown
+    # above silently leaves it unprivileged and it fails at the write.
+    [ -f "$ROOTFS/usr/bin/passwd" ] && chmod 4555 "$ROOTFS/usr/bin/passwd"
+    # chpass and its links, for the same reason. The links are symlinks, so
+    # only the target needs the bit.
+    [ -f "$ROOTFS/usr/bin/chpass" ] && chmod 4555 "$ROOTFS/usr/bin/chpass"
 }
 
 # ---------------------------------------------------------------------------

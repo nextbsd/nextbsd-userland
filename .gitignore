@@ -5,12 +5,16 @@ sysroot/
 *.o
 *.so
 *.a
-# MIG / generated stubs
+# MIG / generated stubs.
+#
+# Every generated stub is written into one of these two directories, so the
+# directories are what we ignore. Do NOT add bare patterns like *User.c or
+# *Server.c: core.ignorecase is true on a case-insensitive filesystem, so
+# they also match ordinary sources such as adduser.c, bootstrap_server.c and
+# migcom.tproj/user.c, and a new file of that name is then silently left out
+# of the repository with no error from git add. That has happened twice.
 .mig/
 *-mig/
-*Server.c
-*Server.h
-*User.c
 # CI scratch
 artifacts/
 out/

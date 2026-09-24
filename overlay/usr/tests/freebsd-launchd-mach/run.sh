@@ -1,4 +1,22 @@
 #!/bin/sh
+
+# Emit the done marker on ANY exit, not only a clean one. boot-test.sh treats
+# it as "no further markers are coming", so a suite that dies part way through
+# fails its remaining checks immediately instead of costing a full timeout in
+# each one. A run that ends normally prints it once at the bottom; this only
+# fires when that line was never reached.
+nbsd_done=0
+nbsd_finish() {
+    [ "$nbsd_done" = 1 ] && return
+    nbsd_done=1
+    echo "LAUNCHD-MACH-RUN-DONE"
+}
+trap 'nbsd_finish' EXIT
+# A signal trap that only prints would return and let the script carry on, and
+# the marker would then be emitted twice. Exit from these.
+trap 'nbsd_finish; exit 129' HUP
+trap 'nbsd_finish; exit 130' INT
+trap 'nbsd_finish; exit 143' TERM
 # /usr/tests/freebsd-launchd-mach/run.sh — phase B kernel-side smoke
 # check.
 #
@@ -1390,6 +1408,367 @@ else
     fi
 fi
 
+# ---- Account tools on the image (E18 U9, U14) -------------------------------
+# What the host-side suites cannot prove, and this can:
+#
+#   that the binary links and runs on a real image at all. adduser needed
+#   libcrypt, which is in libc on the build host and in a separate library
+#   here, so nothing on the host could have caught it;
+#
+#   that an account these tools create is then visible through getpwnam(3),
+#   which is the one path tying the tool, libds and nss_directory_services
+#   together. Each is tested alone elsewhere; only here are they tested as a
+#   chain.
+#
+# Shape for the tools still to come (passwd, chpass, chfn, chsh, rmuser, pw):
+# one block each, one marker each, sharing the save and restore below, so a
+# failure names the tool and a new tool is a block rather than a rewrite.
+# Markers are ACCT-<TOOL>-OK / ACCT-<TOOL>-FAIL.
+#
+# These write the live database, so the real plists are saved first and put
+# back in an unconditional restore, the same approach the HOMEDIR and NSS-DS
+# checks above take. Anything the tools create under /Local/Users is removed
+# too, since restoring a plist does not remove a home.
+acct_su=$(ds_save Users.plist)
+acct_sg=$(ds_save Groups.plist)
+acct_homes=""
+
+acct_cleanup() {
+    ds_restore Users.plist "$acct_su"
+    ds_restore Groups.plist "$acct_sg"
+    for _h in $acct_homes; do
+        case "$_h" in /Local/Users/?*) rm -rf "$_h" ;; esac
+    done
+}
+
+# ---- the shared helpers, including hashing -----------------------------------
+# The only coverage password hashing gets. Nothing end-to-end can reach it:
+# adduser and passwd both read secrets from /dev/tty by design, so this calls
+# the helper directly against the crypt(3) we ship.
+echo "==> account helpers: names, ranges, the lock sentinel, hashing"
+if [ ! -x /usr/tests/freebsd-launchd-mach/acct_test ]; then
+    echo "ACCT-HELPERS-FAIL: acct_test not installed"
+else
+    ah_out=$(/usr/tests/freebsd-launchd-mach/acct_test 2>&1)
+    ah_tally=$(echo "$ah_out" | grep -E '^[0-9]+ checks' | tr '\n' ' ')
+    if echo "$ah_out" | grep -q '^ACCT-HELPERS-OK'; then
+        if echo "$ah_out" | grep -q '^SKIP'; then
+            echo "ACCT-HELPERS-FAIL: hashing was skipped on the image, which means crypt(3) here cannot produce the required format: $(echo "$ah_out" | grep '^SKIP' | head -1)"
+        else
+            echo "ACCT-HELPERS-OK: ${ah_tally:-passed}, hashing included"
+        fi
+    else
+        echo "ACCT-HELPERS-FAIL: ${ah_tally:-no tally} $(echo "$ah_out" | grep -E '^FAIL' | head -3 | tr '\n' ' ')"
+    fi
+fi
+
+# ---- the account lifecycle ---------------------------------------------------
+# Create a user with a password, change it, lock it, unlock it, clear it. This
+# is the chain nothing else covers: the tool, libds, crypt(3) and the NSS
+# module, in the order a person would actually use them.
+#
+# pty_run answers the prompts. passwd and adduser read secrets from /dev/tty,
+# which is right and also means a shell script cannot feed them.
+echo "==> account lifecycle: adduser, passwd, lock, unlock, clear"
+acct_fail=""
+acct_note() { acct_fail="${acct_fail:+$acct_fail; }$*"; }
+pty=/usr/tests/freebsd-launchd-mach/pty_run
+plist=$ds_dir/Users.plist
+
+# joe's hash, as stored. Empty when he has none.
+joe_hash() {
+    awk '/<key>joe<\/key>/{f=1} f&&/<key>passwordHash<\/key>/{getline; gsub(/.*<string>|<\/string>.*/,""); print; exit}' "$plist" 2>/dev/null
+}
+
+if [ ! -x "$pty" ]; then
+    acct_note "0: pty_run not installed, so the interactive paths cannot be driven"
+elif [ ! -x /usr/sbin/adduser ] || [ ! -x /usr/bin/passwd ]; then
+    acct_note "0: adduser or passwd not installed"
+else
+    # 1. passwd must be setuid, or a user cannot change their own password.
+    #    Use test -u, not stat: stat's %Lp gives only the low nine permission
+    #    bits, so a setuid 4555 binary reports 555 and looks unprivileged.
+    #    That is what this check first claimed, wrongly.
+    if [ -u /usr/bin/passwd ]; then
+        :
+    else
+        acct_note "1: /usr/bin/passwd is not setuid (mode $(stat -f '%Mp%Lp' /usr/bin/passwd 2>/dev/null))"
+    fi
+
+    # 2. Create joe with a password, answering the two prompts.
+    if ! "$pty" -i 'first-secret' -i 'first-secret' -- \
+            /usr/sbin/adduser -q -c "Lifecycle" joe >/dev/null 2>&1; then
+        acct_note "2: adduser did not create joe"
+    else
+        acct_homes="$acct_homes /Local/Users/joe"
+    fi
+fi
+
+if [ -z "$acct_fail" ]; then
+    # 3. The stored hash is the format we require, not a DES fallback.
+    h1=$(joe_hash)
+    case "$h1" in
+        '$6$'*) ;;
+        '') acct_note "3: joe has no stored hash" ;;
+        *) acct_note "3: joe's hash is not SHA-512 crypt: [$h1]" ;;
+    esac
+    [ "${#h1}" -gt 13 ] || acct_note "3: joe's hash is only ${#h1} characters, which is DES-sized"
+    # 4. And the module resolves him.
+    case "$(getent passwd joe 2>/dev/null)" in
+        joe:*) ;;
+        *) acct_note "4: getent passwd joe found nothing" ;;
+    esac
+fi
+
+if [ -z "$acct_fail" ]; then
+    # 5. Change the password. Root is not asked for the old one.
+    if ! "$pty" -i 'second-secret' -i 'second-secret' -- \
+            /usr/bin/passwd joe >/dev/null 2>&1; then
+        acct_note "5: passwd joe failed"
+    else
+        h2=$(joe_hash)
+        [ -n "$h2" ] || acct_note "5: joe lost his hash"
+        [ "$h2" != "$h1" ] || acct_note "5: the hash did not change"
+        case "$h2" in '$6$'*) ;; *) acct_note "5: the new hash is not SHA-512: [$h2]" ;; esac
+    fi
+fi
+
+if [ -z "$acct_fail" ]; then
+    # 6. A mismatched confirmation must change nothing.
+    before=$(joe_hash)
+    "$pty" -i 'one-thing' -i 'another-thing' -i '' -- \
+        /usr/bin/passwd joe >/dev/null 2>&1
+    [ "$(joe_hash)" = "$before" ] ||
+        acct_note "6: a mismatched confirmation changed the hash"
+fi
+
+if [ -z "$acct_fail" ]; then
+    # 7. Lock, then unlock, and the original hash must come back exactly.
+    before=$(joe_hash)
+    /usr/bin/passwd -l joe >/dev/null 2>&1 || acct_note "7: passwd -l failed"
+    case "$(joe_hash)" in
+        '*LOCKED*'*) ;;
+        *) acct_note "7: the lock sentinel is not in the stored hash" ;;
+    esac
+    /usr/bin/passwd -l joe >/dev/null 2>&1 && acct_note "7: locking twice was allowed"
+    /usr/bin/passwd -u joe >/dev/null 2>&1 || acct_note "7: passwd -u failed"
+    [ "$(joe_hash)" = "$before" ] || acct_note "7: unlock did not restore the hash"
+    /usr/bin/passwd -u joe >/dev/null 2>&1 && acct_note "7: unlocking twice was allowed"
+fi
+
+if [ -z "$acct_fail" ] && [ -x /usr/bin/chsh ]; then
+    # 7b. chsh and chfn, while joe still has a password, so the prompt a
+    #     non-root self-edit gets is exercised rather than skipped. Root is
+    #     not asked, so the su case is the only one that reaches it.
+    /usr/bin/chsh -s /bin/sh joe >/dev/null 2>&1 || acct_note "7b: chsh failed"
+    case "$(getent passwd joe 2>/dev/null)" in
+        *:/bin/sh) ;;
+        *) acct_note "7b: the shell change is not visible through getent" ;;
+    esac
+    /usr/bin/chfn -f "Renamed Here" joe >/dev/null 2>&1 || acct_note "7b: chfn failed"
+    case "$(getent passwd joe 2>/dev/null)" in
+        *"Renamed Here"*) ;;
+        *) acct_note "7b: the name change is not visible through getent" ;;
+    esac
+    # The names are not synonyms.
+    /usr/bin/chfn -s /bin/zsh joe >/dev/null 2>&1 && acct_note "7b: chfn accepted -s"
+    /usr/bin/chsh -f "No" joe >/dev/null 2>&1 && acct_note "7b: chsh accepted -f"
+    # NIS stubs answer rather than being missing.
+    /usr/bin/ypchsh joe 2>&1 | grep -q "NIS is not supported" ||
+        acct_note "7b: ypchsh did not report NIS as unsupported"
+    # A user editing their own record is asked for their password. Root is
+    # not, so this is the only path that proves the prompt exists at all.
+    if ! su -m joe -c "$pty -i 'second-secret' -- /usr/bin/chsh -s /bin/zsh" >/dev/null 2>&1; then
+        acct_note "7b: a user could not change their own shell with their password"
+    else
+        case "$(getent passwd joe 2>/dev/null)" in
+            *:/bin/zsh) ;;
+            *) acct_note "7b: the user's own shell change did not take" ;;
+        esac
+    fi
+    # And the wrong password does not get them in.
+    su -m joe -c "$pty -i 'wrong-secret' -- /usr/bin/chsh -s /bin/csh" >/dev/null 2>&1
+    case "$(getent passwd joe 2>/dev/null)" in
+        *:/bin/csh) acct_note "7b: a wrong password still changed the shell" ;;
+    esac
+    # A user may not edit somebody else. Use admin, which the image seeds:
+    # joeadm is not created until step 9, and naming it here made this assert
+    # on "no such user" instead of on the refusal, which is not the same thing
+    # at all.
+    acct_out=$(su -m joe -c '/usr/bin/chfn -f "Hacked" admin' 2>&1)
+    case "$acct_out" in
+        *"only change your own"*) ;;
+        *) acct_note "7b: a user editing another was not refused: [$(echo "$acct_out" | head -1)]" ;;
+    esac
+fi
+
+if [ -z "$acct_fail" ]; then
+    # 8. Clear it, and the record says so rather than carrying an empty hash.
+    /usr/bin/passwd -d joe >/dev/null 2>&1 || acct_note "8: passwd -d failed"
+    [ -z "$(joe_hash)" ] || acct_note "8: a hash survived passwd -d"
+    grep -q '<key>noPassword</key>' "$plist" || acct_note "8: noPassword was not set"
+fi
+
+if [ -z "$acct_fail" ]; then
+    # 9. An administrator lands in a group the module maps to gid 0.
+    if ! /usr/sbin/adduser -q --admin -w none -c "Lifecycle Admin" joeadm >/dev/null 2>&1; then
+        acct_note "9: adduser --admin failed"
+    else
+        acct_homes="$acct_homes /Local/Users/joeadm"
+        case " $(id -Gn joeadm 2>/dev/null) " in
+            *" wheel "*) ;;
+            *) acct_note "9: joeadm is not in wheel, so sudo would not work" ;;
+        esac
+    fi
+    # 10. Refusals refuse, and write nothing.
+    n0=$(grep -c '<key>username</key>' "$plist" 2>/dev/null)
+    /usr/sbin/adduser -q -w none joe >/dev/null 2>&1
+    [ $? -eq 2 ] || acct_note "10: a duplicate name did not exit 2"
+    /usr/bin/passwd -d nosuchuser >/dev/null 2>&1
+    [ $? -eq 1 ] || acct_note "10: passwd on a missing user did not exit 1"
+    n1=$(grep -c '<key>username</key>' "$plist" 2>/dev/null)
+    [ "$n0" = "$n1" ] || acct_note "10: a refusal wrote a record ($n0 -> $n1)"
+fi
+
+if [ -z "$acct_fail" ]; then
+    # 11. Authorisation, with a real uid rather than a test hook. This is the
+    #     one place the setuid path is exercised as a person would hit it: su
+    #     to an ordinary user and try to change somebody else's password. A
+    #     host test can only pretend to be another uid; here it really is one.
+    acct_out=$(su -m joe -c '/usr/bin/passwd joeadm' 2>&1)
+    case "$acct_out" in
+        *"permission denied"*) ;;
+        *) acct_note "11: a user changing another's password was not refused: [$(echo "$acct_out" | head -1)]" ;;
+    esac
+    # A user may not use the root-only actions on their own account either.
+    acct_out=$(su -m joe -c '/usr/bin/passwd -l joe' 2>&1)
+    case "$acct_out" in
+        *"only root"*) ;;
+        *) acct_note "11: a user was not stopped from locking: [$(echo "$acct_out" | head -1)]" ;;
+    esac
+fi
+
+if [ -z "$acct_fail" ] && [ -x /usr/sbin/pw ]; then
+    # 11b. pw, whose caller is not a person: the forms a ports install script
+    #      emits have to keep working.
+    #
+    #      Every account a port creates is a system account, and the pw that
+    #      handles those is vendored into this binary, so there is one path
+    #      and one behaviour to check rather than two.
+    # A port creates the group before the user, because -g <gid> requires the
+    # group to exist. do-users-groups.sh emits them in that order, so the test
+    # does too -- calling useradd alone tests a sequence no port performs.
+    #
+    # Each step reports what the command actually said. An exit status alone
+    # cannot tell a refusal from a failure, which is how the first version of
+    # this block spent two CI runs saying only "it failed".
+    acct_out=$(/usr/sbin/pw groupadd _imgtest -g 299 2>&1) ||
+        acct_note "11b: pw groupadd of a system group failed: [$(echo "$acct_out" | head -1)]"
+    acct_out=$(/usr/sbin/pw useradd _imgtest -u 299 -g 299 -d /nonexistent \
+        -s /usr/sbin/nologin -c "Image Test" 2>&1) ||
+        acct_note "11b: pw useradd of a system account failed: [$(echo "$acct_out" | head -1)]"
+    grep -q '_imgtest' "$plist" &&
+        acct_note "11b: a system account was filed in the directory"
+    getent passwd _imgtest >/dev/null 2>&1 ||
+        acct_note "11b: the system account is not resolvable"
+    # A high uid with a real shell and home is still a system account:
+    # the postgres case a 499 threshold would have got wrong.
+    acct_out=$(/usr/sbin/pw groupadd _imgpg -g 770 2>&1) ||
+        acct_note "11b: pw groupadd at gid 770 failed: [$(echo "$acct_out" | head -1)]"
+    acct_out=$(/usr/sbin/pw useradd _imgpg -u 770 -g 770 -d /var/db/imgpg \
+        -s /bin/sh 2>&1) ||
+        acct_note "11b: pw useradd at uid 770 failed: [$(echo "$acct_out" | head -1)]"
+    grep -q '_imgpg' "$plist" &&
+        acct_note "11b: uid 770 was filed in the directory"
+    # master.passwd is where they belong, so say so rather than inferring it
+    # from the directory not holding them.
+    grep -q '^_imgtest:' /etc/master.passwd ||
+        acct_note "11b: the system account is not in master.passwd"
+    /usr/sbin/pw userdel _imgtest >/dev/null 2>&1
+    /usr/sbin/pw userdel _imgpg >/dev/null 2>&1
+    /usr/sbin/pw groupdel _imgtest >/dev/null 2>&1
+    /usr/sbin/pw groupdel _imgpg >/dev/null 2>&1
+
+    # A directory account never reaches the vendored half.
+    /usr/sbin/pw usershow joe >/dev/null 2>&1 ||
+        acct_note "11b: pw usershow of a directory user failed"
+    case "$(/usr/sbin/pw usershow joe 2>/dev/null)" in
+        joe:*) ;;
+        *) acct_note "11b: pw usershow gave the wrong shape for a directory user" ;;
+    esac
+    /usr/sbin/pw usermod joe -L staff >/dev/null 2>&1 &&
+        acct_note "11b: pw accepted -L on a directory account"
+fi
+
+if [ -z "$acct_fail" ] && [ -x /usr/sbin/rmuser ]; then
+    # 12. Removal, for real: the record, the home, the group memberships and
+    #     the crontab all go, and the module stops resolving the name.
+    # Give joe a crontab to remove. /var/cron/tabs does not exist on an
+    # image, and "> file 2>/dev/null" does not hide the failure: the shell
+    # reports a redirection it could not open before the stderr redirection
+    # applies, so the message lands on the console.
+    if mkdir -p /var/cron/tabs 2>/dev/null; then
+        : > /var/cron/tabs/joe 2>/dev/null || :
+    fi
+    if ! /usr/sbin/rmuser -y joe >/dev/null 2>&1; then
+        acct_note "12: rmuser -y joe failed"
+    else
+        grep -q '<string>joe</string>' "$plist" &&
+            acct_note "12: joe's record survived removal"
+        [ -d /Local/Users/joe ] &&
+            acct_note "12: joe's home survived removal"
+        [ -f /var/cron/tabs/joe ] &&
+            acct_note "12: joe's crontab survived removal"
+        getent passwd joe >/dev/null 2>&1 &&
+            acct_note "12: the directory still resolves joe after removal"
+        # A plain grep for joe in Groups.plist cannot tell a membership
+        # from the group's own name, and adduser gives every user a
+        # private group named after them -- so the grep this replaces
+        # matched that group and failed no matter what rmuser did.
+        # Look inside the members arrays only.
+        if awk '
+            /<key>members<\/key>/ { inm = 1 }
+            inm && /<string>joe<\/string>/ { found = 1 }
+            # An empty members list is written <array/>, which closes on
+            # its own line and never matches </array>. Without this the
+            # flag stays set and the next group name counts as a member.
+            inm && /<\/array>|<array\/>/ { inm = 0 }
+            END { exit(found ? 0 : 1) }
+        ' "$ds_dir/Groups.plist" 2>/dev/null; then
+            acct_note "12: joe is still listed in a group's members"
+        fi
+        # And his private group goes with him, or every removed account
+        # leaves an orphan group behind for good.
+        getent group joe >/dev/null 2>&1 &&
+            acct_note "12: joe's private group survived removal"
+    fi
+fi
+
+if [ -z "$acct_fail" ] && [ -x /usr/sbin/rmuser ]; then
+    # 13. --keep-home leaves the files behind, which is the whole point of it.
+    if ! /usr/sbin/rmuser -y --keep-home joeadm >/dev/null 2>&1; then
+        acct_note "13: rmuser --keep-home failed"
+    else
+        grep -q '<string>joeadm</string>' "$plist" &&
+            acct_note "13: joeadm's record survived"
+        [ -d /Local/Users/joeadm ] ||
+            acct_note "13: --keep-home removed the home anyway"
+    fi
+fi
+
+# The last-administrator guard is covered by the host suite, not here. On the
+# image the seeded admin is the account this session is logged in as, so
+# removing it to watch the guard fire would take the console out from under the
+# test. The guard is pure record logic and does not need a live system.
+
+if [ -n "$acct_fail" ]; then
+    echo "ACCT-LIFECYCLE-FAIL: $acct_fail"
+else
+    echo "ACCT-LIFECYCLE-OK: created a user with a password, changed it, rejected a mismatch, locked and unlocked without losing it, cleared it, made an administrator, changed the shell and name as root and as the user themselves, routed system accounts to master.passwd through pw, and removed both with and without their home"
+fi
+
+acct_cleanup
+
 # 10. ASL runtime smoke (Phase J). Task #41 move_member wire-up
 # landed but a follow-on halt-after-bootstrap-remote regression is
 # under investigation. Keep test at SKIP for now.
@@ -2634,5 +3013,6 @@ else
     echo "(launchctl-snapshot.sh not installed — skipping the END freebsd-launchd-mach job-table dump)"
 fi
 
+nbsd_done=1
 echo "LAUNCHD-MACH-RUN-DONE"
 exit 0
