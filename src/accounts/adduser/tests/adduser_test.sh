@@ -26,7 +26,7 @@ Darwin)	cflib="-framework CoreFoundation" ;;
 esac
 
 ${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes \
-    -Wmissing-prototypes -fblocks -DLIBDS_TEST \
+    -Wmissing-prototypes -fblocks -DLIBDS_TEST -DADDUSER_TEST \
     -DACCT_SHELLS="\"$fix/shells\"" \
     -DACCT_BINDING_PLIST="\"$fix/Binding.plist\"" \
     -DACCT_CREATEHOMEDIR="\"$fix/createhomedir\"" \

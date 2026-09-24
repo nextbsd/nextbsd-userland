@@ -530,7 +530,18 @@ add_one(const struct opts *o, bool interactive, const char *bname,
 			}
 	}
 	if ((err = ds_commit(h)) != DS_OK) {
+		/*
+		 * libds writes Groups.plist before Users.plist, so a failure
+		 * here can leave the new private group behind without its
+		 * user. That is the safe direction, since a group with no
+		 * members grants nothing, but the operator should be told
+		 * rather than left to find it.
+		 */
 		warnx("could not write the directory: %s", ds_strerror(err));
+		if (make_group)
+			warnx("the group %s may have been created; "
+			    "check %s/%s before retrying", gname,
+			    ds_dir(h), DS_GROUPS_PLIST);
 		ds_close(h);
 		return (EX_DATABASE);
 	}
@@ -720,12 +731,19 @@ main(int argc, char *argv[])
 	if (argc == 1)
 		o.name = argv[0];
 
-#ifdef LIBDS_TEST
 	/*
-	 * Test hook, the same shape as libds's ds_set_dirs: point the tool at
-	 * a fixture directory and skip the root check, so the whole flow can
-	 * be exercised on a build host. Compiled out of the shipped binary.
+	 * The test hook points the tool at a fixture directory and skips the
+	 * root check, so the whole flow can be exercised on a build host.
+	 *
+	 * It has its own macro rather than reusing libds's LIBDS_TEST, which
+	 * is deliberate: LIBDS_TEST belongs to another component and is
+	 * already defined elsewhere in build-userland.sh, for the on-image
+	 * libds test. Keying a root-check bypass on a flag some other
+	 * component might switch on is not a risk worth carrying in a tool
+	 * that only root should be able to run. Nothing in the shipped build
+	 * defines ADDUSER_TEST, and the suite passes both.
 	 */
+#ifdef ADDUSER_TEST
 	{
 		const char *fixture = getenv("NEXTBSD_DS_DIR");
 
