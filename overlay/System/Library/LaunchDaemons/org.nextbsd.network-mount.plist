@@ -7,7 +7,7 @@
   #252). Nothing else would remount NFS after a reboot: NextBSD ships no
   /etc/fstab, and launchctl bootstrap's `mount -vat nonfs` skips NFS by
   design. So this job runs /usr/libexec/nextbsd/network-mount once at
-  load, which reads the server from the binding plist that `dscli join`
+  load, which reads the server from the binding plist that `dsjoin`
   wrote and mounts
 
       server:/Network/Library/DirectoryServices  on  /Network/Library/DirectoryServices
@@ -17,8 +17,8 @@
   fails is retried in the background by mount_nfs itself and the script
   returns at once. That is also why the job is not KeepAlive.
 
-  Disabled by default; `dscli join` runs load -w and mounts immediately,
-  `dscli leave` runs unload -w and unmounts.
+  Disabled by default; `dsjoin` runs load -w and mounts immediately,
+  `dsleave` runs unload -w and unmounts.
 -->
 <plist version="1.0">
 <dict>

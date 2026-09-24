@@ -7,7 +7,7 @@
   foreground (-n: do not fork) with -g, which lets the first correction be
   a large step, as FreeBSD's rc.d/ntpd does; a VM with a bad clock would
   otherwise refuse to sync. Configuration is /etc/ntp.conf from
-  nextbsd-overlays, whose managed block dscli join fills with the
+  nextbsd-overlays, whose managed block dsjoin fills with the
   directory server as the preferred source.
 
   Disabled by default. Turn it on with

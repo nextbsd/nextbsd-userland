@@ -9,8 +9,8 @@
   hence StandardErrorPath. mountd and nfsd wait for it through
   /usr/libexec/nextbsd/nfs-wait-rpcbind.
 
-  Disabled by default; `dscli promote` runs load -w on this, mountd and
-  nfsd, and `dscli demote` runs unload -w.
+  Disabled by default; `dspromote` runs load -w on this, mountd and
+  nfsd, and `dsdemote` runs unload -w.
 -->
 <plist version="1.0">
 <dict>

@@ -1125,7 +1125,7 @@ fi
 # NTP / NFS — the E18 service LaunchDaemons (nextbsd/nextbsd-userland#251,
 # #252): org.nextbsd.ntpd, .rpcbind, .mountd, .nfsd and .network-mount all
 # ship Disabled, so none may be in the job table after boot. Each is then
-# turned on the way dscli does (load -w), exercised, and turned off
+# turned on the way dspromote and dsjoin do (load -w), exercised, and turned off
 # (unload -w), which leaves the overrides database saying Disabled, the same
 # as a fresh image. /etc/ntp.conf (when the overlay has not shipped it yet),
 # /etc/exports and the binding plist are written for the duration and removed.
@@ -1156,7 +1156,7 @@ else
     if [ ! -f /etc/ntp.conf ]; then
         # nextbsd-overlays ships the real file; a stand-in proves the job.
         ntp_tmpconf=1
-        printf 'pool 0.freebsd.pool.ntp.org iburst\nrestrict default limited kod nomodify notrap noquery nopeer\nrestrict 127.0.0.1\nrestrict ::1\ndriftfile /var/db/ntpd.drift\n# BEGIN dscli directory server (managed by dscli join and leave; do not edit)\n# END dscli directory server\n' > /etc/ntp.conf
+        printf 'pool 0.freebsd.pool.ntp.org iburst\nrestrict default limited kod nomodify notrap noquery nopeer\nrestrict 127.0.0.1\nrestrict ::1\ndriftfile /var/db/ntpd.drift\n# BEGIN directory server (managed by dsjoin and dsleave; do not edit)\n# END directory server\n' > /etc/ntp.conf
     fi
     launchctl load -w "$svc_ld/org.nextbsd.ntpd.plist"
     i=0
@@ -1175,8 +1175,8 @@ else
         # Peers may be unreachable in CI; the query itself must succeed.
         ntpq_out=$(timeout 15 ntpq -p 2>&1) || ntp_fail="ntpq -p failed: $(echo "$ntpq_out" | head -2 | tr '\n' ' ')"
     fi
-    if [ -z "$ntp_fail" ] && ! grep -q '^# BEGIN dscli directory server' /etc/ntp.conf; then
-        ntp_fail="/etc/ntp.conf lacks the block dscli join manages"
+    if [ -z "$ntp_fail" ] && ! grep -q '^# BEGIN directory server' /etc/ntp.conf; then
+        ntp_fail="/etc/ntp.conf lacks the block dsjoin manages"
     fi
     launchctl unload -w "$svc_ld/org.nextbsd.ntpd.plist"
     sleep 1
@@ -1185,7 +1185,7 @@ else
     if [ -n "$ntp_fail" ]; then
         echo "NTP-FAIL: $ntp_fail"
     else
-        echo "NTP-OK: org.nextbsd.ntpd ran ntpd foreground under launchd (pid $ntp_pid), ntpq -p answered, dscli block present${ntp_tmpconf:+ (stand-in ntp.conf)}"
+        echo "NTP-OK: org.nextbsd.ntpd ran ntpd foreground under launchd (pid $ntp_pid), ntpq -p answered, managed block present${ntp_tmpconf:+ (stand-in ntp.conf)}"
     fi
 
     # ---- NFS server: the three jobs, the contract exports, a loopback mount.
@@ -1215,7 +1215,7 @@ else
     else
         # One line: both directories are on /, and the kernel allows one
         # default export per filesystem (see org.nextbsd.mountd.plist).
-        printf '# Written by dscli promote; dscli demote removes this file.\n/Local/Users /Network/Library/DirectoryServices\n' > /etc/exports
+        printf '# Written by dspromote; dsdemote removes this file.\n/Local/Users /Network/Library/DirectoryServices\n' > /etc/exports
         for svc_l in org.nextbsd.rpcbind org.nextbsd.mountd org.nextbsd.nfsd; do
             launchctl load -w "$svc_ld/$svc_l.plist"
         done

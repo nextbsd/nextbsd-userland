@@ -1,7 +1,7 @@
 #!/bin/sh
 # network-mount -- mount the directory server's exports (org.nextbsd.network-mount).
 #
-# Reads the server name from the binding plist that `dscli join` writes,
+# Reads the server name from the binding plist that `dsjoin` writes,
 #
 #     /Local/Library/DirectoryServices/Binding.plist
 #     <dict><key>server</key><string>HOST</string><key>version</key><integer>1</integer></dict>
@@ -11,7 +11,7 @@
 # boot never waits on the network. Mounts already present are left alone.
 # With no binding plist there is nothing to do and that is not an error.
 # E18 U6, nextbsd/nextbsd-userland#252; the plist format is a contract with
-# dscli (U7, #253).
+# the directory commands (U7, #253).
 set -u
 
 BINDING=/Local/Library/DirectoryServices/Binding.plist
