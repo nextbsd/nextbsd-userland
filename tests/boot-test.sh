@@ -727,17 +727,30 @@ expect {
     "LIBDS-OK" { puts "\nOK: libds reads, writes and locks the DirectoryServices plists" }
 }
 
-# ACCT — the account tools on the image (E18). One marker per tool, so a
-# failure names the tool. These are the only tests that prove a tool links and
-# runs on a real image, and that an account it creates is then resolvable
-# through nss_directory_services; the host-side suites cannot reach either.
+# ACCT — the account tools on the image (E18).
 #
-# As passwd, chpass, rmuser and pw land, each gets a block here in the same
-# shape. Keep these in the order run.sh emits them.
+# These are the only tests that reach the things a build host cannot: that a
+# tool links and runs on a real image, that password hashing produces the
+# format we require against the crypt(3) we ship, and that an account created
+# by one tool is then resolvable and editable by the others.
+#
+# The host suites are a development convenience and have twice caught bugs the
+# target would have hidden, but CI on the image is the authoritative coverage.
+#
+# Two markers. ACCT-HELPERS is the unit level, including hashing, which
+# nothing end-to-end can reach because the tools read secrets from /dev/tty.
+# ACCT-LIFECYCLE is a person's sequence: make a user, set a password, change
+# it, lock it, unlock it, clear it. As rmuser and pw land they extend that
+# block rather than adding new ones. Keep these in the order run.sh emits them.
 expect {
-    timeout { puts "\nWARN: ACCT-ADDUSER marker not seen (image predates adduser — informational)" }
-    -re {ACCT-ADDUSER-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
-    "ACCT-ADDUSER-OK" { puts "\nOK: adduser creates an account the directory resolves" }
+    timeout { puts "\nWARN: ACCT-HELPERS marker not seen (image predates the account helpers — informational)" }
+    -re {ACCT-HELPERS-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    "ACCT-HELPERS-OK" { puts "\nOK: account helpers, hashing included" }
+}
+expect {
+    timeout { puts "\nWARN: ACCT-LIFECYCLE marker not seen (image predates adduser — informational)" }
+    -re {ACCT-LIFECYCLE-FAIL[^\r\n]*[\r\n]} { puts "\nFAIL: $expect_out(0,string)"; exit 1 }
+    "ACCT-LIFECYCLE-OK" { puts "\nOK: the account lifecycle, from creation to a cleared password" }
 }
 
 # Stage 3+ Phase J runtime: syslogd + notifyd RunAtLoad via plists,

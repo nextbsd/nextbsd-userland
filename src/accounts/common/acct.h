@@ -133,6 +133,27 @@ bool		 acct_bound_server(char *server, size_t len);
 int		 acct_make_home(const char *user, bool quiet);
 
 /*
+ * The sentinel that marks a locked account. passwd -l prefixes the stored
+ * hash with it and passwd -u strips it back off. A prefix rather than a new
+ * key, so the hash survives the round trip and so every consumer that
+ * compares through crypt(3) refuses a locked account without being taught
+ * anything: no salt can produce this string, and Gershwin's dshelper is one
+ * of those consumers.
+ */
+#define ACCT_LOCK_PREFIX	"*LOCKED*"
+
+/* True when the stored hash carries the lock sentinel. */
+bool		 acct_hash_locked(const char *hash);
+
+/*
+ * Verify a plaintext password against a stored crypt(3) hash. False for a
+ * locked account, for an empty stored hash, and for anything crypt cannot
+ * process. The comparison is constant-time in the length of the hash, so a
+ * caller cannot learn where it stopped matching.
+ */
+bool		 acct_verify_password(const char *plain, const char *stored);
+
+/*
  * Wipe a buffer that held a password. explicit_bzero(3) where the platform
  * has it; a volatile-pointer memset otherwise, so the host build for the
  * tests still compiles and still actually clears.

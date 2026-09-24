@@ -913,6 +913,19 @@ run_buildenv "make -C $SRC/accounts/adduser DESTDIR=$DESTDIR SYSROOT=$SYSROOT al
 test -x "$DESTDIR/usr/sbin/adduser" || { echo "FAIL: /usr/sbin/adduser not installed"; exit 1; }
 echo "==> adduser built"
 
+# ---- passwd (nextbsd/nextbsd-userland#255, E18 U9) -------------------------
+# Replaces the one from base, which cannot be wrapped: it switches on the
+# source an account was resolved from and refuses anything that is not files
+# or NIS, so every directory account is rejected before our code would run.
+# Setuid root, because the plists are 0644 root-owned and there is no
+# opendirectoryd here to hand the write to. ci/assemble-image.sh re-applies
+# the bit after its chown, which strips it.
+comp "passwd"
+mkdir -p "$DESTDIR/usr/bin"
+run_buildenv "make -C $SRC/accounts/passwd DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/bin/passwd" || { echo "FAIL: /usr/bin/passwd not installed"; exit 1; }
+echo "==> passwd built"
+
 # ---- autologin-user (nextbsd/nextbsd-userland#278, E18 U11) ----------------
 # Names the account the console logs in automatically, or prints nothing. The
 # getty job runs it; the rule is in one place rather than in a shell one-liner.
@@ -990,6 +1003,27 @@ $TCC -o "$TESTDIR/test_libdispatch" "$SRC/libdispatch-tests/test_libdispatch.c" 
 $TCC -o "$TESTDIR/test_libdispatch_mach" "$SRC/libdispatch-tests/test_libdispatch_mach.c" -lsystem_dispatch -lsystem_kernel -lpthread
 $TCC -o "$TESTDIR/test_libxpc" "$SRC/libxpc-tests/test_libxpc.c" -lxpc -llaunch -lsystem_dispatch -lsystem_kernel -lpthread
 $TCC -fblocks -o "$TESTDIR/test_corefoundation" "$SRC/libCoreFoundation-tests/test_corefoundation.c" -lCoreFoundation -lsystem_dispatch -lsystem_blocks -lsystem_kernel -lpthread
+# acct_test (ACCT-HELPERS marker): the shared account helpers, and the only
+# place password hashing is covered at all. Neither adduser nor passwd can set
+# a password without a terminal, so nothing end-to-end reaches
+# acct_hash_password; this calls it directly, against the crypt(3) we ship.
+# That matters because a build host's crypt may not implement the format
+# login.conf asks for: Darwin's has no SHA-512 and falls back to DES, so a
+# host-only test of hashing would have been testing the wrong algorithm.
+$TCC -o "$TESTDIR/acct_test" \
+    -I"$SRC/accounts/common" \
+    "$SRC/accounts/common/tests/acct_test.c" "$SRC/accounts/common/acct.c" \
+    -lcrypt -lutil
+test -x "$TESTDIR/acct_test" || { echo "FAIL: acct_test not built"; exit 1; }
+
+# pty_run: a test-only helper that runs a command on a pty and answers its
+# prompts, so the on-image suite can drive passwd(1) and later chpass(1).
+# Those read secrets with RPP_REQUIRE_TTY, which is correct and also means no
+# shell script can feed them; without this, a password change could not be
+# tested end to end at all.
+$TCC -o "$TESTDIR/pty_run" "$SRC/accounts/tests/pty_run.c" -lutil
+test -x "$TESTDIR/pty_run" || { echo "FAIL: pty_run not built"; exit 1; }
+
 # libds_test (LIBDS marker): the DirectoryServices plist writer, exercised
 # against NextBSD's own CoreFoundation. Its unit tests cannot run on the
 # Ubuntu runners, which have no CF at all, so this is the only place they

@@ -1,0 +1,157 @@
+.\"-
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" Copyright (c) 2026 Joseph Maloney
+.\"
+.Dd September 24, 2026
+.Dt PASSWD 1
+.Os NextBSD
+.Sh NAME
+.Nm passwd
+.Nd change a password
+.Sh SYNOPSIS
+.Nm
+.Op Fl dlu
+.Op Fl i Cm files | directory
+.Op Ar user
+.Sh DESCRIPTION
+.Nm
+changes a password.
+With no arguments it changes your own.
+Given a
+.Ar user ,
+it changes theirs, which only root may do.
+.Pp
+NextBSD keeps regular accounts in the DirectoryServices property lists and
+system accounts in
+.Pa /etc/master.passwd .
+.Nm
+edits an account
+.Em wherever it already lives
+and does not choose by uid: an account that exists has already settled which
+store it is in.
+.Xr adduser 8
+and
+.Xr pw 8
+are the tools that decide where a
+.Em new
+account goes.
+.Pp
+A session looks like this:
+.Bd -literal -offset indent
+Changing local password for joe.
+Old password:
+New password:
+Retype new password:
+passwd: password updated
+.Ed
+.Pp
+The old password is not asked for when root is making the change, or when the
+account has no password to prove.
+An empty new password leaves the account alone and prints
+.Dq Li Password unchanged.
+A new password that does not match its confirmation prints
+.Dq Li Mismatch; try again, EOF to quit.
+and asks again.
+.Ss Privilege
+.Nm
+is installed setuid root, because the property lists are readable by everyone
+and writable only by root.
+Every decision about what you are allowed to change is made from your
+.Em real
+user id; the effective one is used for nothing but the write.
+.Ss A joined machine
+When this machine is bound to a directory server, its accounts come from the
+server's copy of the property lists and
+.Nm
+refuses to change them.
+The password belongs to the server and must be changed there.
+.Sh OPTIONS
+.Bl -tag -width "-i files|directory"
+.It Fl d
+Give the account no password at all, so it logs in without one.
+Root only, and only for an account in the property lists.
+.It Fl l
+Lock the account.
+The stored hash is prefixed with
+.Ql *LOCKED* ,
+which no password can produce, so nothing authenticates until it is unlocked.
+Root only, and only for an account in the property lists.
+.It Fl u
+Unlock an account locked with
+.Fl l ,
+restoring the password it had before.
+Root only.
+.It Fl i Cm files | directory
+Act on that store instead of looking for the account.
+.Cm files
+means
+.Pa /etc/master.passwd ,
+.Cm directory
+means the property lists.
+For repairing a machine where an account exists in both.
+.El
+.Pp
+.Fl d ,
+.Fl l
+and
+.Fl u
+are refused for an account in
+.Pa /etc/master.passwd .
+That file has its own conventions for a disabled account and
+.Xr vipw 8
+is the tool for them; doing something almost-equivalent here would be worse
+than refusing.
+.Sh FILES
+.Bl -tag -width "/Local/Library/DirectoryServices/Users.plist" -compact
+.It Pa /Local/Library/DirectoryServices/Users.plist
+regular accounts on this machine
+.It Pa /Local/Library/DirectoryServices/Binding.plist
+present when this machine is a directory client
+.It Pa /etc/master.passwd
+root and system accounts
+.It Pa /etc/login.conf
+.Va passwd_format
+here chooses the hash format; the default is
+.Li sha512
+.El
+.Sh EXIT STATUS
+.Ex -std
+An empty new password is not a failure: the account is left alone and the exit
+status is 0.
+.Sh EXAMPLES
+Change your own password:
+.Pp
+.Dl $ passwd
+.Pp
+Give the seeded administrator a password, which also stops the console logging
+in automatically:
+.Pp
+.Dl # passwd admin
+.Pp
+Give root a password, so it can log in directly rather than only through
+.Xr sudo 8 :
+.Pp
+.Dl # passwd root
+.Pp
+Lock an account without destroying the password it had:
+.Pp
+.Dl # passwd -l joe
+.Dl # passwd -u joe
+.Sh SEE ALSO
+.Xr chpass 1 ,
+.Xr login.conf 5 ,
+.Xr adduser 8 ,
+.Xr pw 8 ,
+.Xr vipw 8
+.Sh HISTORY
+This
+.Nm
+was written for NextBSD, to change a password in the DirectoryServices
+property lists as well as in
+.Pa /etc/master.passwd .
+The one it replaces could not: it decided what it was willing to edit from the
+source an account was resolved from, and refused anything that was not a flat
+file or NIS.
+.Sh AUTHORS
+.An Joseph Maloney

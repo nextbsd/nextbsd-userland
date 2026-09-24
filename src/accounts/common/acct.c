@@ -95,7 +95,7 @@ acct_hash_password(const char *password)
 {
 	static char stored[512];
 	char salt[17], setting[64];
-	const char *format = NULL;
+	const char *format = NULL, *prefix;
 	char *hash;
 
 	if (password == NULL)
@@ -113,16 +113,12 @@ acct_hash_password(const char *password)
 		if ((lc = login_getclass(NULL)) != NULL) {
 			format = login_getcapstr(lc, "passwd_format", NULL,
 			    NULL);
-			(void)snprintf(setting, sizeof(setting), "%s",
-			    setting_prefix(format));
 			login_close(lc);
-		} else
-			(void)snprintf(setting, sizeof(setting), "$6$");
+		}
 	}
-#else
-	(void)format;
-	(void)snprintf(setting, sizeof(setting), "%s", setting_prefix(NULL));
 #endif
+	prefix = setting_prefix(format);
+	(void)snprintf(setting, sizeof(setting), "%s", prefix);
 
 	make_salt(salt, sizeof(salt));
 	(void)strlcat(setting, salt, sizeof(setting));
@@ -133,12 +129,28 @@ acct_hash_password(const char *password)
 	if (strlcpy(stored, hash, sizeof(stored)) >= sizeof(stored))
 		return (NULL);
 	/*
-	 * A crypt(3) that does not know the setting can return the setting
-	 * back, or a DES hash, either of which would be a silent downgrade.
-	 * Refuse instead.
+	 * Refuse anything that is not the format we asked for.
+	 *
+	 * A crypt(3) that does not implement the requested algorithm does not
+	 * fail: it falls back, and takes the leading bytes of the setting as a
+	 * DES salt. Asking for "$6$..." on such a system yields "$6XXXXXXXXXXX",
+	 * thirteen characters of DES that still begin with a dollar sign. So
+	 * checking for a dollar sign is not enough; the prefix has to match.
+	 *
+	 * Getting this wrong would store a DES hash while every other part of
+	 * the system believed it was SHA-512, which is the kind of downgrade
+	 * nothing downstream would notice.
 	 */
-	if (stored[0] != '$')
-		return (NULL);
+	{
+		size_t plen = strlen(prefix);
+
+		if (strncmp(stored, prefix, plen) != 0 ||
+		    strlen(stored) <= plen) {
+			warnx("crypt(3) does not implement %s on this system; "
+			    "refusing to store a weaker hash", prefix);
+			return (NULL);
+		}
+	}
 	return (stored);
 }
 
@@ -166,6 +178,39 @@ acct_name_problem(const char *n)
 		return ("has a character outside A-Z a-z 0-9 . _ -");
 	}
 	return (NULL);
+}
+
+bool
+acct_hash_locked(const char *hash)
+{
+	return (hash != NULL &&
+	    strncmp(hash, ACCT_LOCK_PREFIX, sizeof(ACCT_LOCK_PREFIX) - 1) == 0);
+}
+
+bool
+acct_verify_password(const char *plain, const char *stored)
+{
+	char *computed;
+	size_t i, n;
+	unsigned char diff = 0;
+
+	if (plain == NULL || stored == NULL || stored[0] == '\0')
+		return (false);
+	if (acct_hash_locked(stored))
+		return (false);
+	if ((computed = crypt(plain, stored)) == NULL)
+		return (false);
+	/*
+	 * Constant-time in the length of the stored hash. Comparing lengths
+	 * first would leak whether the formats match, so mismatched lengths
+	 * still walk the whole buffer and simply cannot come out equal.
+	 */
+	n = strlen(stored);
+	if (strlen(computed) != n)
+		diff = 1;
+	for (i = 0; i < n; i++)
+		diff |= (unsigned char)computed[i] ^ (unsigned char)stored[i];
+	return (diff == 0);
 }
 
 bool

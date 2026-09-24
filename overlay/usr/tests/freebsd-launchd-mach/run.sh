@@ -1423,95 +1423,172 @@ acct_cleanup() {
     done
 }
 
-# ---- adduser ----------------------------------------------------------------
-echo "==> adduser: create an account on the image and resolve it"
-au_fail=""
-au_note() { au_fail="${au_fail:+$au_fail; }$*"; }
-
-if [ ! -x /usr/sbin/adduser ]; then
-    au_note "1: /usr/sbin/adduser not installed"
+# ---- the shared helpers, including hashing -----------------------------------
+# The only coverage password hashing gets. Nothing end-to-end can reach it:
+# adduser and passwd both read secrets from /dev/tty by design, so this calls
+# the helper directly against the crypt(3) we ship.
+echo "==> account helpers: names, ranges, the lock sentinel, hashing"
+if [ ! -x /usr/tests/freebsd-launchd-mach/acct_test ]; then
+    echo "ACCT-HELPERS-FAIL: acct_test not installed"
 else
-    # 2. It runs at all. A missing shared library fails here and nowhere else.
-    if ! /usr/sbin/adduser -h >/dev/null 2>&1; then
-        au_note "2: adduser -h failed: $(/usr/sbin/adduser -h 2>&1 | head -1)"
+    ah_out=$(/usr/tests/freebsd-launchd-mach/acct_test 2>&1)
+    ah_tally=$(echo "$ah_out" | grep -E '^[0-9]+ checks' | tr '\n' ' ')
+    if echo "$ah_out" | grep -q '^ACCT-HELPERS-OK'; then
+        if echo "$ah_out" | grep -q '^SKIP'; then
+            echo "ACCT-HELPERS-FAIL: hashing was skipped on the image, which means crypt(3) here cannot produce the required format: $(echo "$ah_out" | grep '^SKIP' | head -1)"
+        else
+            echo "ACCT-HELPERS-OK: ${ah_tally:-passed}, hashing included"
+        fi
+    else
+        echo "ACCT-HELPERS-FAIL: ${ah_tally:-no tally} $(echo "$ah_out" | grep -E '^FAIL' | head -3 | tr '\n' ' ')"
     fi
 fi
 
-if [ -z "$au_fail" ]; then
-    # 3. Create a plain account with no password.
-    if ! au_out=$(/usr/sbin/adduser -q -w none -c "On Image" acctest 2>&1); then
-        au_note "3: adduser failed: $(echo "$au_out" | head -1)"
+# ---- the account lifecycle ---------------------------------------------------
+# Create a user with a password, change it, lock it, unlock it, clear it. This
+# is the chain nothing else covers: the tool, libds, crypt(3) and the NSS
+# module, in the order a person would actually use them.
+#
+# pty_run answers the prompts. passwd and adduser read secrets from /dev/tty,
+# which is right and also means a shell script cannot feed them.
+echo "==> account lifecycle: adduser, passwd, lock, unlock, clear"
+acct_fail=""
+acct_note() { acct_fail="${acct_fail:+$acct_fail; }$*"; }
+pty=/usr/tests/freebsd-launchd-mach/pty_run
+plist=$ds_dir/Users.plist
+
+# joe's hash, as stored. Empty when he has none.
+joe_hash() {
+    awk '/<key>joe<\/key>/{f=1} f&&/<key>passwordHash<\/key>/{getline; gsub(/.*<string>|<\/string>.*/,""); print; exit}' "$plist" 2>/dev/null
+}
+
+if [ ! -x "$pty" ]; then
+    acct_note "0: pty_run not installed, so the interactive paths cannot be driven"
+elif [ ! -x /usr/sbin/adduser ] || [ ! -x /usr/bin/passwd ]; then
+    acct_note "0: adduser or passwd not installed"
+else
+    # 1. passwd must be setuid, or a user cannot change their own password.
+    acct_mode=$(stat -f '%Lp' /usr/bin/passwd 2>/dev/null)
+    case "$acct_mode" in
+        4???) ;;
+        *) acct_note "1: /usr/bin/passwd is mode $acct_mode, not setuid" ;;
+    esac
+
+    # 2. Create joe with a password, answering the two prompts.
+    if ! "$pty" -i 'first-secret' -i 'first-secret' -- \
+            /usr/sbin/adduser -q -c "Lifecycle" joe >/dev/null 2>&1; then
+        acct_note "2: adduser did not create joe"
     else
-        acct_homes="$acct_homes /Local/Users/acctest"
+        acct_homes="$acct_homes /Local/Users/joe"
     fi
 fi
 
-if [ -z "$au_fail" ]; then
-    # 4. The NSS module resolves what adduser wrote. This is the chain.
-    au_ent=$(getent passwd acctest 2>/dev/null)
-    case "$au_ent" in
-        acctest:*) ;;
-        *) au_note "4: getent passwd acctest returned [$au_ent]" ;;
+if [ -z "$acct_fail" ]; then
+    # 3. The stored hash is the format we require, not a DES fallback.
+    h1=$(joe_hash)
+    case "$h1" in
+        '$6$'*) ;;
+        '') acct_note "3: joe has no stored hash" ;;
+        *) acct_note "3: joe's hash is not SHA-512 crypt: [$h1]" ;;
     esac
-    # 5. uid in the regular range, and the computed home.
-    au_uid=$(id -u acctest 2>/dev/null)
-    case "$au_uid" in
-        ''|*[!0-9]*) au_note "5: id -u acctest gave [$au_uid]" ;;
-        *) [ "$au_uid" -ge 5001 ] || au_note "5: uid $au_uid is below 5001" ;;
+    [ "${#h1}" -gt 13 ] || acct_note "3: joe's hash is only ${#h1} characters, which is DES-sized"
+    # 4. And the module resolves him.
+    case "$(getent passwd joe 2>/dev/null)" in
+        joe:*) ;;
+        *) acct_note "4: getent passwd joe found nothing" ;;
     esac
-    case "$au_ent" in
-        *:/Local/Users/acctest:*) ;;
-        *) au_note "6: home is not /Local/Users/acctest in [$au_ent]" ;;
-    esac
-    # 7. The home was built from the user template, not left empty.
-    for d in Desktop Documents Library; do
-        [ -d "/Local/Users/acctest/$d" ] || au_note "7: /Local/Users/acctest/$d missing"
-    done
-    [ -f /Local/Users/acctest/.zshrc ] || au_note "7: .zshrc missing from the home"
-    # 8. Owned by the new user, not by root.
-    au_owner=$(stat -f '%Su' /Local/Users/acctest 2>/dev/null)
-    [ "$au_owner" = acctest ] || au_note "8: home owned by [$au_owner], not acctest"
 fi
 
-if [ -z "$au_fail" ]; then
-    # 9. An administrator lands in the admin group, and the module maps that
-    #    to gid 0, which is what sudoers keys on.
-    if ! au_out=$(/usr/sbin/adduser -q --admin -w none -c "On Image Admin" acctadm 2>&1); then
-        au_note "9: adduser --admin failed: $(echo "$au_out" | head -1)"
+if [ -z "$acct_fail" ]; then
+    # 5. Change the password. Root is not asked for the old one.
+    if ! "$pty" -i 'second-secret' -i 'second-secret' -- \
+            /usr/bin/passwd joe >/dev/null 2>&1; then
+        acct_note "5: passwd joe failed"
     else
-        acct_homes="$acct_homes /Local/Users/acctadm"
-        au_groups=$(id -Gn acctadm 2>/dev/null)
-        case " $au_groups " in
-            *" admin "*) ;;
-            *) au_note "9: acctadm groups are [$au_groups], no admin" ;;
-        esac
-        case " $au_groups " in
+        h2=$(joe_hash)
+        [ -n "$h2" ] || acct_note "5: joe lost his hash"
+        [ "$h2" != "$h1" ] || acct_note "5: the hash did not change"
+        case "$h2" in '$6$'*) ;; *) acct_note "5: the new hash is not SHA-512: [$h2]" ;; esac
+    fi
+fi
+
+if [ -z "$acct_fail" ]; then
+    # 6. A mismatched confirmation must change nothing.
+    before=$(joe_hash)
+    "$pty" -i 'one-thing' -i 'another-thing' -i '' -- \
+        /usr/bin/passwd joe >/dev/null 2>&1
+    [ "$(joe_hash)" = "$before" ] ||
+        acct_note "6: a mismatched confirmation changed the hash"
+fi
+
+if [ -z "$acct_fail" ]; then
+    # 7. Lock, then unlock, and the original hash must come back exactly.
+    before=$(joe_hash)
+    /usr/bin/passwd -l joe >/dev/null 2>&1 || acct_note "7: passwd -l failed"
+    case "$(joe_hash)" in
+        '*LOCKED*'*) ;;
+        *) acct_note "7: the lock sentinel is not in the stored hash" ;;
+    esac
+    /usr/bin/passwd -l joe >/dev/null 2>&1 && acct_note "7: locking twice was allowed"
+    /usr/bin/passwd -u joe >/dev/null 2>&1 || acct_note "7: passwd -u failed"
+    [ "$(joe_hash)" = "$before" ] || acct_note "7: unlock did not restore the hash"
+    /usr/bin/passwd -u joe >/dev/null 2>&1 && acct_note "7: unlocking twice was allowed"
+fi
+
+if [ -z "$acct_fail" ]; then
+    # 8. Clear it, and the record says so rather than carrying an empty hash.
+    /usr/bin/passwd -d joe >/dev/null 2>&1 || acct_note "8: passwd -d failed"
+    [ -z "$(joe_hash)" ] || acct_note "8: a hash survived passwd -d"
+    grep -q '<key>noPassword</key>' "$plist" || acct_note "8: noPassword was not set"
+fi
+
+if [ -z "$acct_fail" ]; then
+    # 9. An administrator lands in a group the module maps to gid 0.
+    if ! /usr/sbin/adduser -q --admin -w none -c "Lifecycle Admin" joeadm >/dev/null 2>&1; then
+        acct_note "9: adduser --admin failed"
+    else
+        acct_homes="$acct_homes /Local/Users/joeadm"
+        case " $(id -Gn joeadm 2>/dev/null) " in
             *" wheel "*) ;;
-            *) au_note "10: acctadm is not in wheel, so sudo would not work: [$au_groups]" ;;
+            *) acct_note "9: joeadm is not in wheel, so sudo would not work" ;;
         esac
     fi
+    # 10. Refusals refuse, and write nothing.
+    n0=$(grep -c '<key>username</key>' "$plist" 2>/dev/null)
+    /usr/sbin/adduser -q -w none joe >/dev/null 2>&1
+    [ $? -eq 2 ] || acct_note "10: a duplicate name did not exit 2"
+    /usr/bin/passwd -d nosuchuser >/dev/null 2>&1
+    [ $? -eq 1 ] || acct_note "10: passwd on a missing user did not exit 1"
+    n1=$(grep -c '<key>username</key>' "$plist" 2>/dev/null)
+    [ "$n0" = "$n1" ] || acct_note "10: a refusal wrote a record ($n0 -> $n1)"
 fi
 
-if [ -z "$au_fail" ]; then
-    # 11. Refusals still refuse on a real image, and write nothing.
-    au_before=$(grep -c '<key>username</key>' "$ds_dir/Users.plist" 2>/dev/null || echo 0)
-    /usr/sbin/adduser -q -w none acctest >/dev/null 2>&1
-    [ $? -eq 2 ] || au_note "11: a duplicate name did not exit 2"
-    /usr/sbin/adduser -q -w none 9bad >/dev/null 2>&1
-    [ $? -eq 2 ] || au_note "11: a leading-digit name did not exit 2"
-    /usr/sbin/adduser -q -w none _svc >/dev/null 2>&1
-    [ $? -eq 2 ] || au_note "11: a system account name did not exit 2"
-    /usr/sbin/adduser -q -w none -u 500 lowuid >/dev/null 2>&1
-    [ $? -eq 2 ] || au_note "11: a system-range uid did not exit 2"
-    au_after=$(grep -c '<key>username</key>' "$ds_dir/Users.plist" 2>/dev/null || echo 0)
-    [ "$au_after" = "$au_before" ] ||
-        au_note "11: a refusal wrote a record ($au_before -> $au_after)"
+if [ -z "$acct_fail" ]; then
+    # 11. Authorisation, with a real uid rather than a test hook. This is the
+    #     one place the setuid path is exercised as a person would hit it: su
+    #     to an ordinary user and try to change somebody else's password. A
+    #     host test can only pretend to be another uid; here it really is one.
+    acct_out=$(su -m joe -c '/usr/bin/passwd joeadm' 2>&1)
+    case "$acct_out" in
+        *"permission denied"*) ;;
+        *) acct_note "11: a user changing another's password was not refused: [$(echo "$acct_out" | head -1)]" ;;
+    esac
+    # A user may not use the root-only actions on their own account either.
+    acct_out=$(su -m joe -c '/usr/bin/passwd -l joe' 2>&1)
+    case "$acct_out" in
+        *"only root"*) ;;
+        *) acct_note "11: a user was not stopped from locking: [$(echo "$acct_out" | head -1)]" ;;
+    esac
 fi
 
-if [ -n "$au_fail" ]; then
-    echo "ACCT-ADDUSER-FAIL: $au_fail"
+# rmuser is not built yet (nextbsd/nextbsd-userland#255). When it lands, the
+# removal half of this lifecycle goes here and the cleanup below stops being
+# the only thing that takes these accounts away.
+
+if [ -n "$acct_fail" ]; then
+    echo "ACCT-LIFECYCLE-FAIL: $acct_fail"
 else
-    echo "ACCT-ADDUSER-OK: created and resolved a user and an administrator through the plists, home built from the template, refusals refused"
+    echo "ACCT-LIFECYCLE-OK: created a user with a password, changed it, rejected a mismatch, locked and unlocked without losing it, cleared it, and made an administrator"
 fi
 
 acct_cleanup
