@@ -1538,6 +1538,49 @@ if [ -z "$acct_fail" ]; then
     /usr/bin/passwd -u joe >/dev/null 2>&1 && acct_note "7: unlocking twice was allowed"
 fi
 
+if [ -z "$acct_fail" ] && [ -x /usr/bin/chsh ]; then
+    # 7b. chsh and chfn, while joe still has a password, so the prompt a
+    #     non-root self-edit gets is exercised rather than skipped. Root is
+    #     not asked, so the su case is the only one that reaches it.
+    /usr/bin/chsh -s /bin/sh joe >/dev/null 2>&1 || acct_note "7b: chsh failed"
+    case "$(getent passwd joe 2>/dev/null)" in
+        *:/bin/sh) ;;
+        *) acct_note "7b: the shell change is not visible through getent" ;;
+    esac
+    /usr/bin/chfn -f "Renamed Here" joe >/dev/null 2>&1 || acct_note "7b: chfn failed"
+    case "$(getent passwd joe 2>/dev/null)" in
+        *"Renamed Here"*) ;;
+        *) acct_note "7b: the name change is not visible through getent" ;;
+    esac
+    # The names are not synonyms.
+    /usr/bin/chfn -s /bin/zsh joe >/dev/null 2>&1 && acct_note "7b: chfn accepted -s"
+    /usr/bin/chsh -f "No" joe >/dev/null 2>&1 && acct_note "7b: chsh accepted -f"
+    # NIS stubs answer rather than being missing.
+    /usr/bin/ypchsh joe 2>&1 | grep -q "NIS is not supported" ||
+        acct_note "7b: ypchsh did not report NIS as unsupported"
+    # A user editing their own record is asked for their password. Root is
+    # not, so this is the only path that proves the prompt exists at all.
+    if ! su -m joe -c "$pty -i 'second-secret' -- /usr/bin/chsh -s /bin/zsh" >/dev/null 2>&1; then
+        acct_note "7b: a user could not change their own shell with their password"
+    else
+        case "$(getent passwd joe 2>/dev/null)" in
+            *:/bin/zsh) ;;
+            *) acct_note "7b: the user's own shell change did not take" ;;
+        esac
+    fi
+    # And the wrong password does not get them in.
+    su -m joe -c "$pty -i 'wrong-secret' -- /usr/bin/chsh -s /bin/csh" >/dev/null 2>&1
+    case "$(getent passwd joe 2>/dev/null)" in
+        *:/bin/csh) acct_note "7b: a wrong password still changed the shell" ;;
+    esac
+    # A user may not edit somebody else.
+    acct_out=$(su -m joe -c '/usr/bin/chfn -f "Hacked" joeadm' 2>&1)
+    case "$acct_out" in
+        *"only change your own"*) ;;
+        *) acct_note "7b: a user editing another was not refused: [$(echo "$acct_out" | head -1)]" ;;
+    esac
+fi
+
 if [ -z "$acct_fail" ]; then
     # 8. Clear it, and the record says so rather than carrying an empty hash.
     /usr/bin/passwd -d joe >/dev/null 2>&1 || acct_note "8: passwd -d failed"
@@ -1624,7 +1667,7 @@ fi
 if [ -n "$acct_fail" ]; then
     echo "ACCT-LIFECYCLE-FAIL: $acct_fail"
 else
-    echo "ACCT-LIFECYCLE-OK: created a user with a password, changed it, rejected a mismatch, locked and unlocked without losing it, cleared it, made an administrator, and removed both with and without their home"
+    echo "ACCT-LIFECYCLE-OK: created a user with a password, changed it, rejected a mismatch, locked and unlocked without losing it, cleared it, made an administrator, changed the shell and name as root and as the user themselves, and removed both with and without their home"
 fi
 
 acct_cleanup

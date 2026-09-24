@@ -936,6 +936,20 @@ run_buildenv "make -C $SRC/accounts/rmuser DESTDIR=$DESTDIR SYSROOT=$SYSROOT all
 test -x "$DESTDIR/usr/sbin/rmuser" || { echo "FAIL: /usr/sbin/rmuser not installed"; exit 1; }
 echo "==> rmuser built"
 
+# ---- chpass, chfn, chsh (nextbsd/nextbsd-userland#255, E18 U9) -------------
+# One binary behind six names. Unlike other BSDs the names are not synonyms:
+# chfn edits the real name, chsh the shell, and neither touches the other. The
+# yp* links exist only to say NIS is unsupported. Setuid root for the same
+# reason passwd is; ci/assemble-image.sh re-applies the bit.
+comp "chpass"
+mkdir -p "$DESTDIR/usr/bin"
+run_buildenv "make -C $SRC/accounts/chpass DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/bin/chpass" || { echo "FAIL: /usr/bin/chpass not installed"; exit 1; }
+for l in chfn chsh ypchpass ypchfn ypchsh; do
+    test -e "$DESTDIR/usr/bin/$l" || { echo "FAIL: /usr/bin/$l link not installed"; exit 1; }
+done
+echo "==> chpass built"
+
 # ---- autologin-user (nextbsd/nextbsd-userland#278, E18 U11) ----------------
 # Names the account the console logs in automatically, or prints nothing. The
 # getty job runs it; the rule is in one place rather than in a shell one-liner.

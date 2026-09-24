@@ -218,6 +218,9 @@ fixup_rootfs() {
     # hand the write to. Anything else added here must be listed, or the chown
     # above silently leaves it unprivileged and it fails at the write.
     [ -f "$ROOTFS/usr/bin/passwd" ] && chmod 4555 "$ROOTFS/usr/bin/passwd"
+    # chpass and its links, for the same reason. The links are symlinks, so
+    # only the target needs the bit.
+    [ -f "$ROOTFS/usr/bin/chpass" ] && chmod 4555 "$ROOTFS/usr/bin/chpass"
 }
 
 # ---------------------------------------------------------------------------
