@@ -1573,8 +1573,11 @@ if [ -z "$acct_fail" ] && [ -x /usr/bin/chsh ]; then
     case "$(getent passwd joe 2>/dev/null)" in
         *:/bin/csh) acct_note "7b: a wrong password still changed the shell" ;;
     esac
-    # A user may not edit somebody else.
-    acct_out=$(su -m joe -c '/usr/bin/chfn -f "Hacked" joeadm' 2>&1)
+    # A user may not edit somebody else. Use admin, which the image seeds:
+    # joeadm is not created until step 9, and naming it here made this assert
+    # on "no such user" instead of on the refusal, which is not the same thing
+    # at all.
+    acct_out=$(su -m joe -c '/usr/bin/chfn -f "Hacked" admin' 2>&1)
     case "$acct_out" in
         *"only change your own"*) ;;
         *) acct_note "7b: a user editing another was not refused: [$(echo "$acct_out" | head -1)]" ;;
