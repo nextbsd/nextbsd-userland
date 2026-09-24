@@ -30,6 +30,15 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
+/*
+ * struct kinfo_proc: <sys/user.h> on FreeBSD, where <sys/sysctl.h> only
+ * forward-declares it. Darwin defines it in <sys/sysctl.h> itself. Leaving
+ * this out compiled on the host and broke every tool on the target, because
+ * this file is shared by all four of them.
+ */
+#ifdef __FreeBSD__
+#include <sys/user.h>
+#endif
 #include <sys/wait.h>
 
 #include <dirent.h>
