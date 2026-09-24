@@ -337,35 +337,26 @@ expect {
 # /sbin/launchd as PID 1 -> getty plist -> login.
 # An image that logs in automatically (nextbsd-userland#278: one user,
 # admin, no password) never prints "login:", because getty's al capability
-# makes it exec login -f. So accept either: the prompt, or a shell prompt
-# of the form user@host ... % that only appears once a shell is running.
+# makes it exec login -f. Discriminate on what login(1) itself reports to
+# the console rather than on a prompt: in the manual case "login:" arrives
+# first, and in the automatic case the session message arrives with no
+# prompt before it.
 set at_login 1
 expect {
     timeout {
-        puts "\nFAIL: neither a 'login:' prompt nor a shell within 8 minutes"
+        puts "\nFAIL: neither a 'login:' prompt nor an automatic session within 8 minutes"
         exit 2
     }
     "login:" { puts "\nOK: boot reached the login prompt" }
-    -re {\r\n\[?\w+@\w[^\r\n]*[%#$] $} {
+    -re {login on console as ([a-z_][a-z0-9_.-]*)} {
         set at_login 0
-        puts "\nOK: boot reached a shell (logged in automatically)"
+        puts "\nOK: boot logged in automatically as $expect_out(1,string)"
     }
 }
 
-# BOOT_GATE=login: stop here — boot proven through kernel + mach + launchd +
-# all daemons + getty to the login prompt. Opt-in smoke gate for new-arch
-# bring-up; both current arches run BOOT_GATE=full.
-if {$env(BOOT_GATE) eq "login"} {
-    puts "\nOK: BOOT-LOGIN-OK — $env(ARCH) reached the login prompt (login gate PASSED)"
-    close
-    wait
-    exit 0
-}
-
-# Stage 2: log in as root. The live ISO has no root password, so login
-# either drops straight to the shell or asks "Password:" and accepts an
-# empty password. Both paths land at a shell prompt; failure is
-# "Login incorrect" or silence.
+# Stage 2: get to a usable shell. Manually, log in as root: the live ISO has
+# no root password, so login either drops straight to a shell or asks and
+# accepts an empty one. Automatically, we are already in a shell.
 if {$at_login} {
     send "root\r"
     expect {
@@ -382,6 +373,22 @@ if {$at_login} {
             exit 1
         }
         -re {[#%$] $} { puts "\nOK: at root shell prompt" }
+    }
+} else {
+    # Do NOT match a prompt here. Automatic login lands far earlier in the
+    # boot than a human could, so driver attach messages are still arriving
+    # and the prompt is usually not the last thing in the buffer -- a real
+    # run showed "pc-q35-8-2% " followed immediately by drmn0 and em0
+    # probing. Ask the shell for a marker instead; characters typed before
+    # it is ready are buffered by the tty and run when it starts.
+    send "\r"
+    send "echo NB-SHELL-READY\r"
+    expect {
+        timeout {
+            puts "\nFAIL: no shell response after automatic login"
+            exit 1
+        }
+        "NB-SHELL-READY" { puts "\nOK: shell is responding" }
     }
 }
 
