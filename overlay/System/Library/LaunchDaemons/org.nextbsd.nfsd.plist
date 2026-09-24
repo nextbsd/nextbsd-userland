@@ -1,21 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!--
-  org.nextbsd.nfsd.plist
-
-  The NFS server (E18 U6, nextbsd/nextbsd-userland#252): NFSv3 over UDP
-  and TCP with four threads, as the ticket specifies. -N keeps the master
-  process in the foreground (nfsd's -d means "unregister", not debug).
-  NFSv3 only: no nfsuserd and no v4 string-to-id sysctls, so a client's
-  numeric uids and gids map straight through, which is what the shared
-  DirectoryServices plists give both sides.
-
-  Like mountd it registers with rpcbind, so it starts through
-  nfs-wait-rpcbind. The kernel side (NFSD, KRPC) is built into the
-  NEXTBSD kernel via GENERIC; no module is loaded.
-
-  Disabled by default; see org.nextbsd.rpcbind.plist.
--->
 <plist version="1.0">
 <dict>
     <key>Label</key>
