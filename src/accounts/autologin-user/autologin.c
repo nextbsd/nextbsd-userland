@@ -54,6 +54,12 @@
  * database says: its accounts come from the server, and the local plist is
  * not what the system resolves.
  *
+ * Nor does a machine with Gershwin's login window installed. Installing it
+ * means something else now asks who you are, and a console that has already
+ * logged somebody in has answered the question first. It counts for the same
+ * reason a second account or a password does, and is checked the same way:
+ * a fact on disk, read once, failing toward the prompt.
+ *
  * Darwin instead stores an explicit autoLoginUser in a loginwindow
  * preference and keeps an obfuscated password in /etc/kcpassword, and ships
  * it off by default because Setup Assistant always sets a password. This
@@ -80,6 +86,16 @@
 
 /* The one account this will ever authorise; see the comment above. */
 #define AUTOLOGIN_USER	"admin"
+
+/*
+ * Gershwin's login window, which asks for a user and a password on the
+ * display. Where it is installed it owns logging in, so the console must not
+ * have already done it. Overridable only so the tests can point elsewhere.
+ */
+#ifndef LOGINWINDOW_PLIST
+#define LOGINWINDOW_PLIST \
+	"/System/Library/LaunchDaemons/io.github.gershwin-desktop.loginwindow.plist"
+#endif
 
 /* A plist bigger than this is not a fresh single-user database. */
 #define MAX_FILE	(4 * 1024 * 1024)
@@ -134,6 +150,15 @@ main(void)
 
 	/* A joined client takes its accounts from the server. */
 	if (access(NETWORK_USERS, F_OK) == 0)
+		return (0);
+
+	/*
+	 * A login window is installed, so it does the asking. Its presence is
+	 * the whole test, exactly as a second account or a password is: this
+	 * decides once, at boot, and there is nothing to ask launchd that
+	 * would be true yet this early anyway.
+	 */
+	if (access(LOGINWINDOW_PLIST, F_OK) == 0)
 		return (0);
 
 	buf = slurp(LOCAL_USERS, &len);

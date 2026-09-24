@@ -28,6 +28,21 @@ on:
         default: ''
 
 jobs:
+  # Host-native suites: the ones that need no CoreFoundation, so they can run
+  # on the runner rather than only inside the booted image. autologin-user
+  # decides whether the console logs somebody in with no password, and each of
+  # its clauses is checked by mutation, so this is worth gating on.
+  #
+  # The account tool suites (adduser, passwd, rmuser, chpass, pw) are NOT here:
+  # they link libds, which needs CoreFoundation, which the Ubuntu runners do
+  # not have. Those run inside the image, from the ACCT markers.
+  host-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: autologin-user
+        run: sh src/accounts/autologin-user/tests/autologin_test.sh
+
   # --- Per-arch lanes (parallel, independent) ---
   amd64:
     uses: ./.github/workflows/build-arch.yml
@@ -62,7 +77,7 @@ jobs:
     secrets: inherit
 
   publish:
-    needs: [amd64, arm64]
+    needs: [host-tests, amd64, arm64]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
