@@ -10,6 +10,13 @@
 # retried by mount_nfs in the background, so this returns at once and a
 # boot never waits on the network. Mounts already present are left alone.
 # With no binding plist there is nothing to do and that is not an error.
+#
+# Both exports are the server's /Local paths, mounted onto this machine's
+# /Network. A server shares /Local and moves nothing (#253), and an NFS export
+# path and its mount point are independent -- which the /Local/Users line has
+# always relied on. nss_directory_services then prefers the /Network copy and
+# computes homes from it, so a client's homes land under /Network/Users while
+# the server's own stay in /Local/Users.
 # E18 U6, nextbsd/nextbsd-userland#252; the plist format is a contract with
 # the directory commands (U7, #253).
 set -u
@@ -50,6 +57,6 @@ mount_one() {
 }
 
 rc=0
-mount_one /Network/Library/DirectoryServices /Network/Library/DirectoryServices || rc=1
+mount_one /Local/Library/DirectoryServices /Network/Library/DirectoryServices || rc=1
 mount_one /Local/Users /Network/Users || rc=1
 exit $rc
