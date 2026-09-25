@@ -48,7 +48,17 @@ STUB
 chmod +x "$fix/bin/launchctl"
 DS_LAUNCHCTL_LOG=$fix/launchctl.log; export DS_LAUNCHCTL_LOG
 
-${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes \
+# The same warnings src/directory/Makefile gets from WARNS=6, -Werror included.
+# Built with less than that, this suite once passed on both arches while the
+# real build had not compiled ds.c at all: a const cast in unmount_network()
+# was an error under -Wcast-qual, which was missing here.
+WARNS6="-Wall -Wextra -Wstrict-prototypes -Wmissing-prototypes -Wpointer-arith
+-Wreturn-type -Wcast-qual -Wwrite-strings -Wswitch -Wshadow -Wcast-align
+-Wchar-subscripts -Wnested-externs -Wold-style-definition -Wno-pointer-sign
+-Wno-format-y2k -Wno-unused-parameter -Werror"
+
+# shellcheck disable=SC2086
+${CC:-cc} -O1 -g $WARNS6 \
     -DDS_TEST \
     -DDS_LOCAL_DIR="\"$LOCAL_DIR\"" \
     -DDS_NETWORK_DIR="\"$NET_DIR\"" \

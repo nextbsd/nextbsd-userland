@@ -17,7 +17,7 @@ fix=${TMPDIR:-/tmp}/autologin_test.$$
 trap 'rm -rf "$fix"' EXIT
 mkdir -p "$fix"
 
-${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes \
+${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes -Wpointer-arith \
     -Wmissing-prototypes \
     -DLOCAL_USERS="\"$fix/Users.plist\"" \
     -DNETWORK_USERS="\"$fix/Network-Users.plist\"" \

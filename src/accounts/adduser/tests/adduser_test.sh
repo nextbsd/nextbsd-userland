@@ -25,7 +25,7 @@ Darwin)	cflib="-framework CoreFoundation" ;;
 *)	cflib="-lCoreFoundation -lcrypt" ;;
 esac
 
-${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes \
+${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes -Wpointer-arith \
     -Wmissing-prototypes -fblocks -DLIBDS_TEST -DADDUSER_TEST \
     -DACCT_SHELLS="\"$fix/shells\"" \
     -DACCT_BINDING_PLIST="\"$fix/Binding.plist\"" \
