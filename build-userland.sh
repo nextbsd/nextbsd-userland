@@ -874,6 +874,23 @@ DESTDIR="$DESTDIR" ninja -C "$NBI_BUILD" install
 test -x "$DESTDIR/usr/sbin/nextbsd-installer" || { echo "FAIL: /usr/sbin/nextbsd-installer not installed"; exit 1; }
 test -f "$DESTDIR/usr/libexec/nextbsd-installer/do-install.sh" || { echo "FAIL: installer engine (do-install.sh) not installed"; exit 1; }
 
+# ---- tzsetup (nextbsd/nextbsd-userland#302, E18 U18) -----------------------
+# Replaces FreeBSD's bsddialog tzsetup at the same path, in the installer's
+# look: same vendored FTXUI, same amber theme through src/libnbui (#304). The
+# base copy is stripped by nextbsd-freebsd-compat's scripts/collisions, so
+# only one /usr/sbin/tzsetup ever reaches the image.
+comp "tzsetup [cmake cross, C++ + vendored ftxui]"
+TZS_BUILD="$ROOT/.build/tzsetup-$T"
+rm -rf "$TZS_BUILD"; mkdir -p "$TZS_BUILD"
+cmake -G Ninja -S "$SRC/tzsetup" -B "$TZS_BUILD" \
+    -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN" \
+    -DTHREADS_PREFER_PTHREAD_FLAG=ON \
+    -DCMAKE_INSTALL_PREFIX=/ \
+    -DCMAKE_BUILD_TYPE=Release
+DESTDIR="$DESTDIR" ninja -C "$TZS_BUILD" install
+test -x "$DESTDIR/usr/sbin/tzsetup" || { echo "FAIL: /usr/sbin/tzsetup not installed"; exit 1; }
+echo "==> tzsetup built"
+
 # ---- libds (nextbsd/nextbsd-userland#287, E18 U15) -------------------------
 # Reads and writes the DirectoryServices plists through CoreFoundation's own
 # property list implementation, so nothing here serialises XML by hand. A

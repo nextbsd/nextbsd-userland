@@ -1,0 +1,106 @@
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" Copyright (c) 2026 Joseph Maloney
+.\"
+.Dd September 25, 2026
+.Dt TZSETUP 8
+.Os NextBSD
+.Sh NAME
+.Nm tzsetup
+.Nd set the time zone, and the network clock with it
+.Sh SYNOPSIS
+.Nm
+.Op Fl n
+.Op Ar zone
+.Nm
+.Fl l
+.Sh DESCRIPTION
+.Nm
+sets the machine's time zone.
+Run with no arguments it asks, in three screens \(em region, zone, then a
+confirmation that also offers to keep the clock synchronised over the network.
+Given a
+.Ar zone
+it sets it and says nothing, which is what a script or an installer wants.
+.Pp
+Setting the zone writes two files.
+.Pa /etc/localtime
+gets a
+.Em copy
+of the zone's file from
+.Pa /usr/share/zoneinfo ,
+not a symbolic link: a link into
+.Pa /usr/share
+would break a single-user boot, where only the root filesystem is mounted.
+.Pa /var/db/zoneinfo
+records the zone's name, so anything asking which zone this is gets an answer
+without comparing file contents.
+.Ss The network clock
+The confirmation screen carries a checkbox:
+.Pp
+.Dl [x] Keep the clock synchronised over the network
+.Pp
+Ticked, it runs
+.Li launchctl load -w
+on
+.Li org.nextbsd.ntpd ,
+which persists across reboots through launchd's overrides database.
+Unticked on a machine where the job is already running, it unloads it.
+The box shows the job's current state when the screen opens, so leaving it
+alone changes nothing.
+.Pp
+That job ships
+.Li Disabled ,
+so without this it is off on every fresh install and nothing says so.
+Setting a time zone and keeping the clock right are one thought, which is why
+they are one screen.
+.Sh OPTIONS
+.Bl -tag -width indent
+.It Fl l
+List every zone in the table, one per line, and exit.
+.It Fl n
+Say what would be set without setting it.
+.El
+.Sh FILES
+.Bl -tag -width "/usr/share/zoneinfo/zone1970.tab" -compact
+.It Pa /usr/share/zoneinfo
+the zone files
+.It Pa /usr/share/zoneinfo/zone1970.tab
+the zone table;
+.Pa zone.tab
+is read where that is absent
+.It Pa /usr/share/zoneinfo/iso3166.tab
+country names, for the menu
+.It Pa /etc/localtime
+the chosen zone, copied
+.It Pa /var/db/zoneinfo
+its name
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Sh EXAMPLES
+Ask, in the terminal:
+.Pp
+.Dl # tzsetup
+.Pp
+Set one without asking, for a script:
+.Pp
+.Dl # tzsetup Europe/London
+.Sh SEE ALSO
+.Xr date 1 ,
+.Xr launchctl 1 ,
+.Xr ntpd 8
+.Sh AUTHORS
+.An Joseph Maloney
+.Sh CAVEATS
+A zone name indexes the filesystem, so one containing
+.Ql ..
+or a leading
+.Ql /
+is refused before it is used as a path.
+.Pp
+Without a terminal and without a
+.Ar zone
+argument there is nothing sensible to do, and
+.Nm
+says so rather than presenting a dialog nothing can drive.
