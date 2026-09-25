@@ -1392,6 +1392,24 @@ else
             for m in /Network/Users /Network/Library/DirectoryServices; do
                 mount | grep -q " on $m " && umount -f "$m" 2>/dev/null
             done
+            # A server mounts nothing, even with a binding left behind. /Local is
+            # what it exports, so mounting its own export back onto /Network
+            # would make every account tool treat it as somebody's client. The
+            # binding is still in place here, so this asserts the ordering and
+            # not merely that a missing binding does nothing.
+            nfs_dom=/Local/Library/DirectoryServices/Domain.plist
+            if [ -e "$nfs_dom" ]; then
+                nfs_fail="$nfs_fail $nfs_dom already exists; not touching it;"
+            else
+                printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict/>\n</plist>\n' > "$nfs_dom"
+                nfs_out=$(timeout 25 /usr/libexec/nextbsd/network-mount 2>&1); nfs_rc=$?
+                [ "$nfs_rc" -eq 0 ] || nfs_fail="$nfs_fail network-mount on a server: rc=$nfs_rc [$nfs_out];"
+                echo "$nfs_out" | grep -q 'directory server; nothing to mount' \
+                    || nfs_fail="$nfs_fail network-mount did not stand down on a server: [$nfs_out];"
+                echo "$nfs_out" | grep -q 'mounting' \
+                    && nfs_fail="$nfs_fail network-mount tried to mount on a server: [$nfs_out];"
+                rm -f "$nfs_dom"
+            fi
             rm -f "$nfs_bind"
             [ -n "$nfs_made_bind" ] && rmdir /Local/Library/DirectoryServices 2>/dev/null
             rmdir /Network/Users 2>/dev/null
