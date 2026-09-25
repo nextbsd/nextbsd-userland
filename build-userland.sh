@@ -974,6 +974,15 @@ run_buildenv "make -C $SRC/accounts/autologin-user DESTDIR=$DESTDIR SYSROOT=$SYS
 test -x "$DESTDIR/usr/libexec/nextbsd/autologin-user" || { echo "FAIL: /usr/libexec/nextbsd/autologin-user not installed"; exit 1; }
 echo "==> autologin-user built"
 
+# ---- nextbsd-fetch (nextbsd/nextbsd-userland#298, E18 U16) -----------------
+# The login banner /etc/zprofile runs. Plain libc: it reads /etc/os-release
+# and sysctl directly, so it needs no pkg dependency the way fastfetch would,
+# and neofetch is an archived shell script that could not do it at all.
+comp "nextbsd-fetch"
+run_buildenv "make -C $SRC/banner DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/bin/nextbsd-fetch" || { echo "FAIL: /usr/bin/nextbsd-fetch not installed"; exit 1; }
+echo "==> nextbsd-fetch built"
+
 # ---- nss_directory_services (nextbsd/nextbsd-userland#249, E18 U3) ---------
 # The `directory_services` source for passwd and group: users and groups
 # straight from /Local (or /Network) Library/DirectoryServices/{Users,Groups}
