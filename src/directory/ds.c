@@ -32,8 +32,10 @@
  * exists, and computes a home from whichever file it read. That is precisely
  * what lets one layout serve all three roles with no rearranging:
  *
- *   server   has no /Network, so it reads /Local and its homes are under
- *            /Local/Users -- correct, because those homes really are local
+ *   server   nothing mounts /Network on it, so it reads /Local and its homes
+ *            are under /Local/Users -- correct, because those homes really are
+ *            local. Every command asks about /Local first and stops there, so
+ *            a /Network that somehow appeared could not change the answer
  *   client   mounts the server's /Local paths onto its own /Network, reads
  *            /Network, and its homes are under /Network/Users, which is the
  *            mount of the server's /Local/Users
@@ -51,12 +53,39 @@
  *
  * WHAT MAKES A MACHINE A SERVER
  *
- * Role.plist, written by promotion and removed by demotion. The previous
- * design read the role off the /Local symlink it had just created, which
- * worked but used a side effect as state. A file that says `server` survives
- * a reboot, an unmounted /Network and a stopped nfsd just as well, and
- * anything else that needs to know can read it without an lstat(2) and a
- * paragraph of explanation.
+ * Domain.plist in /Local/Library/DirectoryServices, written by promotion and
+ * removed by demotion. It is Gershwin's marker at Gershwin's path: `dscli
+ * promote` writes an empty dict there and `dscli demote` removes it, so a
+ * machine promoted by either tool is a server to both and neither invents a
+ * file of its own. Its presence is the whole of the value -- reading a value
+ * out of it would not recognise a machine dscli promoted.
+ *
+ * The previous design read the role off the /Local symlink it had just
+ * created, which worked but used a side effect as state. A file survives a
+ * reboot, an unmounted /Network and a stopped nfsd just as well.
+ *
+ * HOW EVERY COMMAND ASKS
+ *
+ * One question, one order, first answer wins -- here, in the account tools,
+ * and in dscli before both:
+ *
+ *   /Local/Library/DirectoryServices/Domain.plist     this machine IS the
+ *       server. /Network is not consulted at all.
+ *   /Network/Library/DirectoryServices/Domain.plist   bound to one.
+ *   neither                                          standalone.
+ *
+ * The server is asked about first because the whole of /Local is exported, so
+ * its own marker arrives under /Network with everything else. Asked in the
+ * wrong order, the one machine that owns the accounts would report itself
+ * somebody else's client and every tool would refuse to manage them.
+ *
+ * Testing the marker under /Network rather than Users.plist also means a
+ * client whose server has been demoted reads as standalone at once: the
+ * marker leaves the export, and nothing has to notify the client. An
+ * unmounted /Network is standalone too, deliberately -- the tools then do
+ * what they would do on a machine that never joined. dsleave is the one
+ * exception, because an unbindable client would otherwise be unbindable
+ * forever.
  */
 
 #include <sys/param.h>
@@ -98,8 +127,11 @@
 #ifndef DS_BINDING
 #define DS_BINDING	"/Local/Library/DirectoryServices/Binding.plist"
 #endif
-#ifndef DS_ROLE
-#define DS_ROLE		"/Local/Library/DirectoryServices/Role.plist"
+#ifndef DS_DOMAIN
+#define DS_DOMAIN	"/Local/Library/DirectoryServices/Domain.plist"
+#endif
+#ifndef DS_NETWORK_DOMAIN
+#define DS_NETWORK_DOMAIN "/Network/Library/DirectoryServices/Domain.plist"
 #endif
 #ifndef DS_EXPORTS
 #define DS_EXPORTS	"/etc/exports"
@@ -364,11 +396,10 @@ unmount_network(void)
 /* --------------------------------------------------------- atomic file swap */
 
 /*
- * Replace `path` in one step. Used for the files whose contents decide what
- * this machine IS -- a half-written Role.plist reads as "not a server", and
- * dsdemote then refuses to demote a machine that is still exporting and still
- * running nfsd, which is exactly the state the value-matching in
- * role_is_server() was meant to avoid.
+ * Replace `path` in one step. Used for the files that decide what this machine
+ * IS: a Domain.plist that exists but is still being written would leave a
+ * reader with a torn file, and an interrupted write would leave a machine
+ * exporting and running nfsd with no marker to demote it by.
  *
  * The mode is carried from the file being replaced when there is one, so this
  * never quietly changes an administrator's permissions -- the bug that made
@@ -527,65 +558,58 @@ binding_write(const char *server)
 }
 
 /*
- * The role marker. Only two states are written, and only `server` is ever
- * recorded: standalone is the absence of the file, and a client is identified
- * by its Binding.plist instead.
+ * Domain.plist marks a machine as a server. It is Gershwin's marker, at
+ * Gershwin's path, with Gershwin's contents: an empty dict, whose presence is
+ * the whole of the value. `dscli promote` writes @{} and `dscli demote`
+ * removes it, so a machine promoted by either tool is a server to both.
+ *
+ * Nothing is recorded for a client: that is the /Network mount, which is what
+ * dscli reads too.
  */
 static int
-role_write(void)
+domain_write(void)
 {
 	struct atomic a;
 	FILE *f;
 
-	if ((f = atomic_open(&a, DS_ROLE, 0644)) == NULL)
+	if ((f = atomic_open(&a, DS_DOMAIN, 0644)) == NULL)
 		return (-1);
 	(void)fprintf(f,
 	    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
 	    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
 	    "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
 	    "<plist version=\"1.0\">\n"
-	    "<dict>\n"
-	    "\t<key>role</key>\n\t<string>server</string>\n"
-	    "\t<key>version</key>\n\t<integer>1</integer>\n"
-	    "</dict>\n"
+	    "<dict/>\n"
 	    "</plist>\n");
 	if (atomic_commit(&a) == -1)
 		return (-1);
-	say("  wrote %s", DS_ROLE);
+	say("  wrote %s", DS_DOMAIN);
 	return (0);
 }
 
 /*
- * True when this machine has been promoted. Matched on the value rather than
- * on the file merely existing, so a stray empty file is not a server.
+ * True when this machine has been promoted -- the file existing is the test,
+ * matching dscli's `[fm fileExistsAtPath:DS_DOMAIN_PLIST]`. Reading a value
+ * instead would not recognise a machine dscli promoted, because the dict it
+ * writes is empty.
  *
- * That is only safe because role_write() replaces the file atomically: a
- * half-written Role.plist cannot be observed, so "reads as not-a-server" can
- * no longer mean "a live server that dsdemote refuses to demote". Before the
- * write was atomic, this comment claimed a property the code did not have.
+ * atomic_open() and atomic_commit() still do the writing, so a half-written
+ * file is never observed under this path at all.
  */
 static bool
-role_is_server(void)
+is_server(void)
 {
-	char line[1024];
-	bool found = false;
-	FILE *f;
-
-	if ((f = fopen(DS_ROLE, "r")) == NULL)
-		return (false);
-	while (fgets(line, sizeof(line), f) != NULL) {
-		if (strstr(line, "<string>server</string>") != NULL) {
-			found = true;
-			break;
-		}
-	}
-	(void)fclose(f);
-	return (found);
+	return (exists(DS_DOMAIN));
 }
 
-/* The bound server's name, or false when this machine is not a client. */
+/*
+ * The bound server's name. Binding.plist records where to mount from -- it is
+ * what network-mount reads before /Network exists -- but it does not decide
+ * the role: is_client() does. False here means only that the name could not be
+ * read, never that this machine is unbound.
+ */
 static bool
-binding_read(char *out, size_t len)
+binding_server(char *out, size_t len)
 {
 	char line[1024], *p, *q;
 	FILE *f;
@@ -622,17 +646,43 @@ binding_read(char *out, size_t len)
 enum role { R_STANDALONE, R_SERVER, R_CLIENT };
 
 /*
- * Role.plist is what promotion writes and demotion removes, and it survives a
- * reboot, an unmounted /Network and a stopped nfsd -- none of which change
- * what this machine IS.
+ * True when a directory is mounted and the thing behind it really is a
+ * promoted server. The whole of /Local is exported, so the server's own
+ * Domain.plist arrives under /Network with it; testing for that rather than
+ * for Users.plist means a client whose server has been demoted reads as
+ * standalone at once, with nothing to notify it.
+ */
+static bool
+is_client(void)
+{
+	return (exists(DS_NETWORK_DOMAIN));
+}
+
+/*
+ * One question, asked in one order, and the first answer wins.
+ *
+ *	/Local/...../Domain.plist	this machine IS the server. /Network is
+ *					not consulted at all.
+ *	/Network/.../Domain.plist	bound to one.
+ *	neither				standalone.
+ *
+ * The server is asked about first and answers from /Local alone, so its own
+ * exported Domain.plist -- which its clients see through /Network, and which
+ * it would see itself if anything ever mounted /Network on it -- can never be
+ * mistaken for a binding of its own. An unmounted /Network is standalone,
+ * deliberately: the tools then do what they would do on any unjoined machine.
  */
 static enum role
 current_role(char *server, size_t len)
 {
-	if (role_is_server())
+	if (server != NULL && len > 0)
+		server[0] = '\0';
+	if (is_server())
 		return (R_SERVER);
-	if (binding_read(server, len))
+	if (is_client()) {
+		(void)binding_server(server, len);
 		return (R_CLIENT);
+	}
 	return (R_STANDALONE);
 }
 
@@ -680,7 +730,7 @@ do_promote(void)
 	 */
 	if (write_exports() == -1 || write_service() == -1)
 		return (1);
-	if (role_write() == -1)
+	if (domain_write() == -1)
 		return (1);
 	launchctl("load", server_jobs, nitems(server_jobs));
 
@@ -708,11 +758,11 @@ do_demote(void)
 	 */
 	launchctl("unload", server_jobs, nitems(server_jobs));
 
-	if (unlink(DS_ROLE) == -1 && errno != ENOENT) {
-		warn("%s", DS_ROLE);
+	if (unlink(DS_DOMAIN) == -1 && errno != ENOENT) {
+		warn("%s", DS_DOMAIN);
 		return (1);
 	}
-	say("  removed %s", DS_ROLE);
+	say("  removed %s", DS_DOMAIN);
 	if (unlink(DS_EXPORTS) == -1 && errno != ENOENT)
 		warn("%s", DS_EXPORTS);
 	else
@@ -736,11 +786,14 @@ do_join(const char *server)
 		warnx("this machine is a directory server; run dsdemote first");
 		return (1);
 	}
-	if (r == R_CLIENT) {
-		/*
-		 * Refused rather than rebound. Leaving implicitly would
-		 * unmount homes from under anyone logged in.
-		 */
+	/*
+	 * Refused rather than rebound. Leaving implicitly would unmount homes
+	 * from under anyone logged in. Binding.plist is checked alongside the
+	 * role because a client whose /Network is down reads as standalone, and
+	 * rebinding it would strand the old mount and the old ntp source.
+	 */
+	if (r == R_CLIENT || exists(DS_BINDING)) {
+		(void)binding_server(cur, sizeof(cur));
 		warnx("already bound to %s; run dsleave first",
 		    cur[0] != '\0' ? cur : "a directory server");
 		return (1);
@@ -770,9 +823,28 @@ do_leave(void)
 {
 	char server[MAXHOSTNAMELEN];
 
-	if (current_role(server, sizeof(server)) != R_CLIENT) {
-		warnx("this machine is not bound to a directory server");
+	/*
+	 * A client whose /Network is down reads as standalone, which is what
+	 * every other tool wants -- but dsleave must still be able to undo the
+	 * join, or a machine that cannot reach its server could never be
+	 * unbound and Binding.plist, the client job and the managed ntp.conf
+	 * block would have nothing left to clear them.
+	 */
+	switch (current_role(server, sizeof(server))) {
+	case R_SERVER:
+		warnx("this machine is a directory server; run dsdemote");
 		return (1);
+	case R_CLIENT:
+		break;
+	case R_STANDALONE:
+		if (!exists(DS_BINDING)) {
+			warnx("this machine is not bound to a directory server");
+			return (1);
+		}
+		(void)binding_server(server, sizeof(server));
+		say("  %s is not mounted; clearing the binding anyway",
+		    DS_NETWORK_DIR);
+		break;
 	}
 	launchctl("unload", client_jobs, nitems(client_jobs));
 	if (unlink(DS_BINDING) == -1) {

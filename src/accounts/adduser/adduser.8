@@ -220,10 +220,18 @@ The exit status is non-zero if any line failed.
 .Bl -tag -width "/Local/Library/DirectoryServices/Groups.plist" -compact
 .It Pa /Local/Library/DirectoryServices/Users.plist
 .It Pa /Local/Library/DirectoryServices/Groups.plist
-.It Pa /Local/Library/DirectoryServices/Binding.plist
-Present when this machine is a directory client, in which case
+.It Pa /Local/Library/DirectoryServices/Domain.plist
+Present when this machine is the directory server, in which case
+.Nm
+manages the accounts here and never consults
+.Pa /Network .
+.It Pa /Network/Library/DirectoryServices/Domain.plist
+Present when this machine is bound to a server, in which case
 .Nm
 refuses: the account belongs on the server.
+.It Pa /Local/Library/DirectoryServices/Binding.plist
+Names that server for the message.
+It does not decide the role.
 .It Pa /System/Library/User Template
 What a new home is built from.
 .It Pa /etc/shells

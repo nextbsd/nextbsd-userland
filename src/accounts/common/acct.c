@@ -292,24 +292,31 @@ acct_shell_listed(const char *shell)
 /*
  * Are we a domain-joined system right now?
  *
- * The answer is whether /Network/Library/DirectoryServices/Users.plist is
- * there, and nothing else. Not the bare /Network directory -- that exists as an
- * empty mount point whether or not anything is mounted on it. The full path is
- * the same one nss_directory_services stats (it prefers the /Network plists
- * when they are there and falls back to /Local otherwise) and the same one
- * autologin-user checks, so all three agree on one question.
+ * One question, asked in one order, the first answer winning -- the same order
+ * the ds* commands use, and Gershwin's dscli before them:
  *
- * If it is absent -- never joined, or the mount is not up yet at boot -- the
- * machine simply behaves as a non-joined system. That is the designed
- * fallback, not a failure.
+ *	/Local/Library/DirectoryServices/Domain.plist	this machine IS the
+ *		server. Say no, and do not look at /Network at all. It owns the
+ *		accounts; there is nothing to defer to.
+ *	/Network/Library/DirectoryServices/Domain.plist	joined. Say yes.
+ *	neither						standalone. Say no.
  *
- * This used to test whether Binding.plist opened, i.e. "am I configured as
- * joined" rather than "am I joined". That was both the wrong question and
- * unreachable in practice: passwd, chpass and pw route to master.passwd as
- * soon as a name misses the local plists, which is exactly what happens on a
- * real client, so the check sat behind the routing and never ran. Keying off
- * the mount makes it true on a client regardless of where the account lives,
- * so it can be asked first.
+ * Domain.plist is what dspromote writes and dsdemote removes, so its presence
+ * is the whole of the value -- the file dscli writes holds an empty dict and
+ * reading a value out of it would not recognise a machine Gershwin promoted.
+ *
+ * The server is asked about first for a reason. The whole of /Local is
+ * exported, so a server that ever had /Network mounted on it would see its own
+ * Domain.plist arrive under /Network, and an unordered test would then make
+ * every account tool refuse to work on the one machine that owns the accounts.
+ *
+ * Testing Domain.plist under /Network rather than Users.plist also means a
+ * client whose server has been demoted reads as standalone immediately: the
+ * marker vanishes from the export, and nothing has to notify the client.
+ *
+ * An absent /Network -- never joined, or the mount is not up yet at boot -- is
+ * standalone, and the tools then behave exactly as they would on a machine
+ * that never joined. That is the designed fallback, not a failure.
  *
  * Binding.plist is still read, but only to name the server in the message --
  * never to decide. The value we need is the string after <key>server</key>,
@@ -325,8 +332,10 @@ acct_bound_server(char *server, size_t len)
 
 	if (server != NULL && len > 0)
 		server[0] = '\0';
-	if (access(ACCT_NETWORK_USERS, F_OK) != 0)
-		return (false);		/* no network plists: not joined */
+	if (access(ACCT_LOCAL_DOMAIN, F_OK) == 0)
+		return (false);		/* this machine is the server */
+	if (access(ACCT_NETWORK_DOMAIN, F_OK) != 0)
+		return (false);		/* no domain there: not joined */
 	bound = true;
 	if ((f = fopen(ACCT_BINDING_PLIST, "r")) == NULL)
 		return (true);		/* joined, but we cannot name it */
@@ -540,16 +549,26 @@ acct_kill_uid(uid_t uid)
 	return (n);
 }
 
+/*
+ * On a server the /Network root is left out entirely. /Local is what is
+ * exported, so a server that had /Network mounted on it would otherwise be
+ * offered a second path to the same home through its own export -- and would
+ * take it whenever /Local/Users/<name> was missing.
+ */
 int
 acct_remove_home(const char *name)
 {
 	char path[PATH_MAX];
 	struct stat st;
-	const char *roots[] = { ACCT_LOCAL_USERS, "/Network/Users", NULL };
+	const char *roots[] = {
+		ACCT_LOCAL_USERS, ACCT_NETWORK_USERS_DIR, NULL
+	};
 	size_t i;
 
 	if (!name_ok_for_path(name))
 		return (-1);
+	if (access(ACCT_LOCAL_DOMAIN, F_OK) == 0)
+		roots[1] = NULL;
 	for (i = 0; roots[i] != NULL; i++) {
 		if (snprintf(path, sizeof(path), "%s/%s", roots[i], name) >=
 		    (int)sizeof(path))

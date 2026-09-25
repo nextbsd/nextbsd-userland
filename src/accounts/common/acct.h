@@ -32,8 +32,8 @@
  * nextbsd-userland#287. The pieces below are the ones more than one tool
  * needs and that are not about plists: hashing a password, deciding
  * whether a new account belongs in the directory or in master.passwd, and
- * noticing that this machine is a directory client and should not be
- * growing local accounts at all.
+ * resolving what this machine is -- server, bound client or standalone --
+ * so a client does not grow local accounts the server will shadow.
  *
  * They live here rather than in each tool so the rules cannot drift
  * between adduser(8), passwd(1) and pw(8).
@@ -76,8 +76,11 @@
 #ifndef ACCT_EX_REFUSED
 #define ACCT_EX_REFUSED		2
 #endif
-#ifndef ACCT_NETWORK_USERS
-#define ACCT_NETWORK_USERS	"/Network/Library/DirectoryServices/Users.plist"
+#ifndef ACCT_LOCAL_DOMAIN
+#define ACCT_LOCAL_DOMAIN	"/Local/Library/DirectoryServices/Domain.plist"
+#endif
+#ifndef ACCT_NETWORK_DOMAIN
+#define ACCT_NETWORK_DOMAIN	"/Network/Library/DirectoryServices/Domain.plist"
 #endif
 #ifndef ACCT_BINDING_PLIST
 #define ACCT_BINDING_PLIST	"/Local/Library/DirectoryServices/Binding.plist"
@@ -87,6 +90,9 @@
 #endif
 #ifndef ACCT_LOCAL_USERS
 #define ACCT_LOCAL_USERS	"/Local/Users"
+#endif
+#ifndef ACCT_NETWORK_USERS_DIR
+#define ACCT_NETWORK_USERS_DIR	"/Network/Users"
 #endif
 
 /*
@@ -141,6 +147,18 @@ bool		 acct_shell_listed(const char *shell);
  * `server` and return true. Local account tools refuse in that case: the
  * account belongs on the server, and a local one would be shadowed by
  * the /Network copy of the plists anyway.
+ *
+ * Asked in one order, the first answer winning -- the same order the ds*
+ * commands and Gershwin's dscli use:
+ *
+ *	ACCT_LOCAL_DOMAIN exists	this machine IS the server. False, and
+ *					/Network is not consulted at all.
+ *	ACCT_NETWORK_DOMAIN exists	bound. True.
+ *	neither				standalone. False.
+ *
+ * So false means "manage the account here" for both a server and a standalone
+ * machine, which is what the caller needs; only a bound client refuses.
+ * ACCT_BINDING_PLIST names the server for the message and decides nothing.
  */
 bool		 acct_bound_server(char *server, size_t len);
 
@@ -198,7 +216,9 @@ int		 acct_kill_uid(uid_t uid);
 /*
  * Remove a user's home. Refuses anything that is not directly under
  * /Local/Users or /Network/Users, so a bad name cannot turn into a wider
- * delete. Returns 0, -1 with errno set, or 1 when there was nothing there.
+ * delete. On a server the /Network root is not tried at all, since anything
+ * there could only be the machine's own export seen back through a mount.
+ * Returns 0, -1 with errno set, or 1 when there was nothing there.
  */
 int		 acct_remove_home(const char *name);
 

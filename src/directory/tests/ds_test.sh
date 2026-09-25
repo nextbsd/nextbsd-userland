@@ -31,7 +31,8 @@ NET_DIR=$R/Network/Library/DirectoryServices
 LOCAL_USERS=$R/Local/Users
 NET_USERS=$R/Network/Users
 BINDING=$LOCAL_DIR/Binding.plist
-ROLE=$LOCAL_DIR/Role.plist
+DOMAIN=$LOCAL_DIR/Domain.plist
+NET_DOMAIN=$NET_DIR/Domain.plist
 EXPORTS=$R/etc/exports
 NTP=$R/etc/ntp.conf
 SVCDIR=$R/Local/Library/Preferences/mDNSResponder/Services
@@ -54,7 +55,8 @@ ${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes
     -DDS_LOCAL_USERS="\"$LOCAL_USERS\"" \
     -DDS_NETWORK_USERS="\"$NET_USERS\"" \
     -DDS_BINDING="\"$BINDING\"" \
-    -DDS_ROLE="\"$ROLE\"" \
+    -DDS_DOMAIN="\"$DOMAIN\"" \
+    -DDS_NETWORK_DOMAIN="\"$NET_DOMAIN\"" \
     -DDS_LAUNCHD_DIR="\"$R/System/Library/LaunchDaemons\"" \
     -DDS_EXPORTS="\"$EXPORTS\"" \
     -DDS_NTP_CONF="\"$NTP\"" \
@@ -129,8 +131,8 @@ ckfile   "the plists stayed in /Local"     "$LOCAL_DIR/Users.plist"
 ckfile   "and so did Groups.plist"         "$LOCAL_DIR/Groups.plist"
 cknofile "nothing was put in /Network"     "$NET_DIR"
 cknofile "and no /Network/Users was made"  "$NET_USERS"
-ckfile   "the role marker is written"      "$ROLE"
-ckgrep   "and it says server"              "$ROLE" "<string>server</string>"
+ckfile   "the domain marker is written"    "$DOMAIN"
+ckgrep   "and it is an empty dict"         "$DOMAIN" "<dict/>"
 ckfile   "exports written"                 "$EXPORTS"
 ckfile   "the Bonjour record written"      "$SVC"
 ckgrep   "exports names the homes"         "$EXPORTS" "$LOCAL_USERS"
@@ -160,26 +162,40 @@ cksay "join refuses on a server"           "run dsdemote first"         "$fix/ds
 ck       "demote leaves a real directory"  "$( [ -d "$LOCAL_DIR" ] && [ ! -L "$LOCAL_DIR" ] && echo yes )" "yes"
 ckfile   "the plists were never disturbed" "$LOCAL_DIR/Users.plist"
 ckfile   "nor were the groups"             "$LOCAL_DIR/Groups.plist"
-cknofile "the role marker is removed"      "$ROLE"
+cknofile "the domain marker is removed"    "$DOMAIN"
 cknofile "exports removed"                 "$EXPORTS"
 cknofile "the Bonjour record withdrawn"    "$SVC"
 cksay    "status is standalone again"      "standalone" "$fix/dsstatus"
 
-# ---- a malformed role marker must not strand the machine
-# The program matches on the value rather than on the file merely existing, so a
-# truncated or hand-mangled marker leaves the machine demotable instead of stuck
-# in a role it cannot leave. The well-formed case is asserted straight after, so
-# the negative check above cannot pass vacuously.
+# ---- the marker is presence, not contents
+# dscli writes an empty dict, so matching on a value would fail to recognise a
+# machine Gershwin promoted. Any contents at that path make this a server.
 seed
-printf '<plist><dict><key>role</key><string>banana</string></dict></plist>\n' > "$ROLE"
-cksay "a malformed role is not a server"   "standalone" "$fix/dsstatus"
-cksay "and demote still refuses it"        "not a directory server" "$fix/dsdemote"
-printf '<plist><dict><key>role</key><string>server</string></dict></plist>\n' > "$ROLE"
-cksay "a well-formed role IS a server"     "directory server" "$fix/dsstatus"
+mkdir -p "$LOCAL_DIR"
+printf 'not a plist at all\n' > "$DOMAIN"
+cksay "any Domain.plist IS a server"       "directory server" "$fix/dsstatus"
+cksay "and demote accepts it"              "standalone again" "$fix/dsdemote"
+
+# ---- the order: /Local wins, and /Network is not consulted
+# The whole of /Local is exported, so a server that ever had /Network mounted
+# would see its own marker arrive back under it. Asked in order, it stays a
+# server; asked unordered, it would report itself somebody else's client.
+seed
+mkdir -p "$LOCAL_DIR" "$NET_DIR"
+printf '<plist><dict/></plist>\n' > "$DOMAIN"
+printf '<plist><dict/></plist>\n' > "$NET_DOMAIN"
+cksay "both markers: still a server"       "directory server" "$fix/dsstatus"
+cksay "join still refuses it"              "run dsdemote first" "$fix/dsjoin" other.local
+cksay "leave sends it to dsdemote"         "run dsdemote"       "$fix/dsleave"
 
 # ---- join
+# A join writes the binding and loads the job; the MOUNT is what makes this
+# machine a client, so the marker arriving under /Network is staged here the way
+# a successful mount would deliver it.
 seed
 "$fix/dsjoin" server.local >/dev/null 2>&1
+mkdir -p "$NET_DIR"
+printf '<plist><dict/></plist>\n' > "$NET_DOMAIN"
 ckfile   "join writes the binding"         "$BINDING"
 ckgrep   "the binding names the server"    "$BINDING" "<string>server.local</string>"
 ckgrep   "and carries a version"           "$BINDING" "<integer>1</integer>"
@@ -193,19 +209,40 @@ cklc     "join loads network-mount"        "load -w .*org.nextbsd.network-mount"
 cksay "join refuses when already bound"    "already bound to server.local" "$fix/dsjoin" other.local
 "$fix/dsjoin" other.local >/dev/null 2>&1; ckrc "and exits nonzero" "$?" 1
 cksay "promote refuses on a client"        "run dsleave first"             "$fix/dspromote"
-"$fix/dsleave" >/dev/null 2>&1
+# Leaving unmounts, so the staged mount goes with the binding.
+"$fix/dsleave" >/dev/null 2>&1; rm -f "$NET_DOMAIN"
 cksay "join refuses a bad host name"       "not a usable host name" "$fix/dsjoin" 'evil;rm -rf /'
 cknofile "and wrote no binding for it"     "$BINDING"
 
-# ---- leave
+# ---- leave, with the mount up
 seed
 "$fix/dsjoin" server.local >/dev/null 2>&1
+mkdir -p "$NET_DIR"; printf '<plist><dict/></plist>\n' > "$NET_DOMAIN"
 "$fix/dsleave" >/dev/null 2>&1
 cknofile "leave removes the binding"       "$BINDING"
 cklc     "leave unloads network-mount"     "unload -w .*org.nextbsd.network-mount"
 cknogrep "and empties the NTP block"       "$NTP" "^server server.local"
 ckgrep   "leaving the markers behind"      "$NTP" "^# BEGIN directory server"
+rm -f "$NET_DOMAIN"
 cksay    "status is standalone again"      "standalone" "$fix/dsstatus"
+
+# ---- leave, with the mount down
+# An unmounted /Network reads as standalone everywhere else, on purpose. dsleave
+# is the exception: it must still be able to undo a join, or a machine that
+# cannot reach its server could never be unbound and nothing would be left to
+# clear the binding, the job or the managed ntp.conf block.
+seed
+"$fix/dsjoin" server.local >/dev/null 2>&1
+cksay    "status is standalone unmounted"  "standalone" "$fix/dsstatus"
+cksay    "but leave clears it anyway"      "Left server.local" "$fix/dsleave"
+cknofile "and the binding is gone"         "$BINDING"
+cknogrep "with the NTP block emptied"      "$NTP" "^server server.local"
+cksay    "a second leave then refuses"     "not bound to a directory server" "$fix/dsleave"
+
+# ---- and a stale binding does not let a rebind through
+seed
+"$fix/dsjoin" server.local >/dev/null 2>&1
+cksay "join refuses an unmounted client"   "already bound to server.local" "$fix/dsjoin" other.local
 
 # ---- argv[0] dispatch
 cp "$fix/dspromote" "$fix/dswhat"

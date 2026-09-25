@@ -1,6 +1,10 @@
 #!/bin/sh
 # network-mount -- mount the directory server's exports (org.nextbsd.network-mount).
 #
+# A server is asked about first and never mounts: Domain.plist in /Local means
+# this machine owns the accounts, and mounting its own export back onto
+# /Network would make every account tool treat it as somebody's client.
+#
 # Reads the server name from the binding plist that `dsjoin` writes,
 #
 #     /Local/Library/DirectoryServices/Binding.plist
@@ -22,7 +26,13 @@
 set -u
 
 BINDING=/Local/Library/DirectoryServices/Binding.plist
+DOMAIN=/Local/Library/DirectoryServices/Domain.plist
 OPTS=nfsv3,bg,intr,soft
+
+if [ -e "$DOMAIN" ]; then
+    echo "network-mount: this machine is a directory server; nothing to mount" >&2
+    exit 0
+fi
 
 if [ ! -f "$BINDING" ]; then
     echo "network-mount: no $BINDING; not joined to a directory server" >&2

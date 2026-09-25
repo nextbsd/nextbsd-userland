@@ -27,7 +27,8 @@ esac
 ${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes \
     -Wmissing-prototypes -fblocks -DLIBDS_TEST -DCHPASS_TEST \
     -DACCT_BINDING_PLIST="\"$fix/Binding.plist\"" \
-    -DACCT_NETWORK_USERS="\"$fix/NetworkUsers.plist\"" \
+    -DACCT_LOCAL_DOMAIN="\"$fix/LocalDomain.plist\"" \
+    -DACCT_NETWORK_DOMAIN="\"$fix/NetworkDomain.plist\"" \
     -DACCT_SHELLS="\"$fix/shells\"" \
     -I"$top/src/accounts/common" -I"$top/src/libds" \
     -o "$fix/chpass" \
@@ -56,7 +57,7 @@ seed() {
 </dict></plist>
 P
 	printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict/></plist>\n' > "$fix/Groups.plist"
-	rm -f "$fix/Binding.plist" "$fix/NetworkUsers.plist"
+	rm -f "$fix/Binding.plist" "$fix/NetworkDomain.plist" "$fix/LocalDomain.plist"
 }
 
 cd "$fix" || exit 2
@@ -173,12 +174,17 @@ done
 seed
 printf '<plist version="1.0"><dict><key>server</key><string>ds.example.lan</string></dict></plist>\n' \
     > "$fix/Binding.plist"
-# Joined is decided by the NETWORK plist being present, not by the binding --
-# the binding only supplies the server name for the message.
-printf '<plist version="1.0"><dict/></plist>\n' > "$fix/NetworkUsers.plist"
+# Joined is the DOMAIN marker arriving under /Network -- what dspromote wrote
+# into the server's /Local and the export carries across. The binding only
+# names the server for the message.
+printf '<plist version="1.0"><dict/></plist>\n' > "$fix/NetworkDomain.plist"
 cksay "a joined machine refuses" "joined to ds.example.lan" ./chfn -f "X" joe
 ckfield "and changed nothing" joe realName "Joe Original"
-rm -f "$fix/Binding.plist"
+# ...and the server is not a client of itself, whatever its export shows.
+printf '<plist version="1.0"><dict/></plist>\n' > "$fix/LocalDomain.plist"
+./chfn -f "Joe Server" joe >/dev/null 2>&1 </dev/null
+ckfield "but a server does not" joe realName "Joe Server"
+rm -f "$fix/Binding.plist" "$fix/NetworkDomain.plist" "$fix/LocalDomain.plist"
 
 # ---- a user who is not there
 seed

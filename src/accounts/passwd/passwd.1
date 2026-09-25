@@ -66,6 +66,17 @@ server's copy of the property lists and
 .Nm
 refuses to change them.
 The password belongs to the server and must be changed there.
+.Pp
+Bound means
+.Pa /Network/Library/DirectoryServices/Domain.plist
+is present, and it is asked only after
+.Pa /Local/Library/DirectoryServices/Domain.plist :
+on the server itself
+.Nm
+changes the password here, because that is where it lives.
+See
+.Xr dspromote 8
+for the whole rule.
 .Sh OPTIONS
 .Bl -tag -width "-i files|directory"
 .It Fl d
@@ -106,8 +117,12 @@ than refusing.
 .Bl -tag -width "/Local/Library/DirectoryServices/Users.plist" -compact
 .It Pa /Local/Library/DirectoryServices/Users.plist
 regular accounts on this machine
+.It Pa /Local/Library/DirectoryServices/Domain.plist
+present when this machine is the directory server
+.It Pa /Network/Library/DirectoryServices/Domain.plist
+present when this machine is bound to a server
 .It Pa /Local/Library/DirectoryServices/Binding.plist
-present when this machine is a directory client
+names that server; it does not decide the role
 .It Pa /etc/master.passwd
 root and system accounts
 .It Pa /etc/login.conf

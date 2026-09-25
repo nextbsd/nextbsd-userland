@@ -83,6 +83,12 @@
 #ifndef NETWORK_USERS
 #define NETWORK_USERS	"/Network/Library/DirectoryServices/Users.plist"
 #endif
+#ifndef LOCAL_DOMAIN
+#define LOCAL_DOMAIN	"/Local/Library/DirectoryServices/Domain.plist"
+#endif
+#ifndef NETWORK_DOMAIN
+#define NETWORK_DOMAIN	"/Network/Library/DirectoryServices/Domain.plist"
+#endif
 
 /* The one account this will ever authorise; see the comment above. */
 #define AUTOLOGIN_USER	"admin"
@@ -148,8 +154,14 @@ main(void)
 	size_t len;
 	int nopass = 0;
 
-	/* A joined client takes its accounts from the server. */
-	if (access(NETWORK_USERS, F_OK) == 0)
+	/*
+	 * A joined client takes its accounts from the server, so it does not
+	 * autologin. Asked in the same order as everywhere else: a server owns
+	 * the accounts and is not a client of itself, so it is answered from
+	 * /Local alone and never consults /Network.
+	 */
+	if (access(LOCAL_DOMAIN, F_OK) != 0 &&
+	    access(NETWORK_DOMAIN, F_OK) == 0)
 		return (0);
 
 	/*

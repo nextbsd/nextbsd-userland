@@ -62,9 +62,9 @@ prefers
 .Pa /Network/Library/DirectoryServices
 when that exists and computes a home directory from whichever file it read,
 which is what lets one layout serve every role without rearranging anything.
-A server has no
-.Pa /Network ,
-so it reads
+Nothing mounts
+.Pa /Network
+on a server, so it reads
 .Pa /Local
 and its own home directories are under
 .Pa /Local/Users ,
@@ -92,7 +92,9 @@ path at its own
 .Pa /Network
 path and nothing needs to move.
 .Ss What makes a machine a server
-.Pa Role.plist ,
+.Pa Domain.plist
+in
+.Pa /Local/Library/DirectoryServices ,
 written by
 .Nm dspromote
 and removed by
@@ -102,14 +104,56 @@ It survives a reboot, an unmounted
 and a stopped
 .Xr nfsd 8 ,
 none of which change what a machine is.
-A malformed or truncated marker reads as
-.Li standalone ,
-so a machine can always be demoted.
+.Pp
+It is the same marker at the same path that Gershwin's
+.Nm dscli
+uses, and its presence is the whole of the value: that tool writes an empty
+dictionary there, so a machine promoted by either one is a server to both.
+Contents are never read, and any file at that path makes this a server.
+.Ss How every command decides
+One question, asked in one order, the first answer winning.
+.Bl -tag -width "/Network/Library/DirectoryServices/Domain.plist" -offset indent
+.It Pa /Local/Library/DirectoryServices/Domain.plist
+This machine is the server.
+.Pa /Network
+is not consulted at all.
+.It Pa /Network/Library/DirectoryServices/Domain.plist
+This machine is bound to one.
+.It neither
+Standalone.
+.El
+.Pp
+The server is asked about first because the whole of
+.Pa /Local
+is exported, so its own marker arrives under
+.Pa /Network
+along with everything else.
+Asked in the wrong order, the one machine that owns the accounts would report
+itself somebody else's client and
+.Xr adduser 8 ,
+.Xr rmuser 8 ,
+.Xr pw 8 ,
+.Xr passwd 1
+and
+.Xr chpass 1
+would all refuse to manage them.
+.Pp
+Testing the marker rather than
+.Pa Users.plist
+also means a client whose server has been demoted reads as standalone at once:
+the marker leaves the export and nothing has to notify the client.
+An unmounted
+.Pa /Network
+is standalone too, deliberately \[em] the tools then behave exactly as they
+would on a machine that never joined.
+.Nm dsleave
+is the one exception, so that a client which cannot reach its server can still
+be unbound.
 .Ss What each command writes
 .Bl -column "/etc/exports" "dspromote" "dsdemote" -offset indent
 .It Sy Artefact Ta Sy Written by Ta Sy Removed by
 .It Pa /etc/exports Ta dspromote Ta dsdemote
-.It Pa Role.plist Ta dspromote Ta dsdemote
+.It Pa Domain.plist Ta dspromote Ta dsdemote
 .It the Bonjour record Ta dspromote Ta dsdemote
 .It Pa Binding.plist Ta dsjoin Ta dsleave
 .It the block in Pa /etc/ntp.conf Ta dsjoin Ta emptied by dsleave
@@ -141,16 +185,18 @@ refuse where there is nothing to undo.
 .Sh FILES
 .Bl -tag -width "/Local/Library/Preferences/mDNSResponder/Services" -compact
 .It Pa /Local/Library/DirectoryServices
-the accounts, or a link to them on a server
-.It Pa /Local/Library/DirectoryServices/Role.plist
-The role marker.
-Present only on a server.
+the accounts, on every machine in every role
+.It Pa /Local/Library/DirectoryServices/Domain.plist
+the marker.
+Present only on a server
 .It Pa /Network/Library/DirectoryServices
-the accounts on a server, or the mount on a client
+the mount on a client, absent otherwise
+.It Pa /Network/Library/DirectoryServices/Domain.plist
+the server's marker, seen through that mount
 .It Pa /Local/Users
 the home directories
 .It Pa /Network/Users
-a link to them on a server, the mount on a client
+the mount on a client, absent otherwise
 .It Pa /etc/exports
 written by
 .Nm dspromote

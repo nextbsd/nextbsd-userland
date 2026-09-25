@@ -33,7 +33,8 @@ esac
 ${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes \
     -Wmissing-prototypes -fblocks -DLIBDS_TEST -DPASSWD_TEST \
     -DACCT_BINDING_PLIST="\"$fix/Binding.plist\"" \
-    -DACCT_NETWORK_USERS="\"$fix/NetworkUsers.plist\"" \
+    -DACCT_LOCAL_DOMAIN="\"$fix/LocalDomain.plist\"" \
+    -DACCT_NETWORK_DOMAIN="\"$fix/NetworkDomain.plist\"" \
     -I"$top/src/accounts/common" -I"$top/src/libds" \
     -o "$fix/passwd" \
     "$top/src/accounts/passwd/passwd.c" \
@@ -68,7 +69,7 @@ P
 <key>gid</key><integer>5000</integer><key>groupname</key><string>admin</string>
 <key>members</key><array><string>admin</string></array></dict></dict></plist>
 P
-	rm -f "$fix/Binding.plist" "$fix/NetworkUsers.plist"
+	rm -f "$fix/Binding.plist" "$fix/NetworkDomain.plist" "$fix/LocalDomain.plist"
 }
 
 # The stored hash for a user, whatever the layout. The seeded file puts a key
@@ -157,9 +158,10 @@ seed
 # A joined machine refuses, because the records belong to the server.
 printf '<plist version="1.0"><dict><key>server</key><string>ds.example.lan</string></dict></plist>\n' \
     > "$fix/Binding.plist"
-# Joined is decided by the NETWORK plist being present, not by the binding --
-# the binding only supplies the server name for the message.
-printf '<plist version="1.0"><dict/></plist>\n' > "$fix/NetworkUsers.plist"
+# Joined is the DOMAIN marker arriving under /Network -- what dspromote wrote
+# into the server's /Local and the export carries across. The binding only
+# names the server for the message.
+printf '<plist version="1.0"><dict/></plist>\n' > "$fix/NetworkDomain.plist"
 ./passwd -d joe >/dev/null 2>&1; ck "a joined machine refuses" "$?" 2
 # The shape that was broken: on a real client the account is in the /Network
 # plists, so it is NOT in the local ones. find_store() then chose STORE_FILES
@@ -169,7 +171,11 @@ printf '<plist version="1.0"><dict/></plist>\n' > "$fix/NetworkUsers.plist"
 ./passwd -d notlocal >/dev/null 2>&1
 ck "joined + account not in the local plist still refuses" "$?" 2
 inplist 'notarealhash' 1
-rm -f "$fix/Binding.plist" "$fix/NetworkUsers.plist"
+# ...and the server is not a client of itself, whatever its export shows.
+printf '<plist version="1.0"><dict/></plist>\n' > "$fix/LocalDomain.plist"
+./passwd -d joe >/dev/null 2>&1; ck "but a server does not" "$?" 0
+# That cleared joe's hash, which the next case needs back.
+seed
 
 # -i files on a directory account reaches the master.passwd path. On a host
 # build that path has no libutil and says so; what matters is that -i routed

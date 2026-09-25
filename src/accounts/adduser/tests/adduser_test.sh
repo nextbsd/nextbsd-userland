@@ -29,7 +29,8 @@ ${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes \
     -Wmissing-prototypes -fblocks -DLIBDS_TEST -DADDUSER_TEST \
     -DACCT_SHELLS="\"$fix/shells\"" \
     -DACCT_BINDING_PLIST="\"$fix/Binding.plist\"" \
-    -DACCT_NETWORK_USERS="\"$fix/NetworkUsers.plist\"" \
+    -DACCT_LOCAL_DOMAIN="\"$fix/LocalDomain.plist\"" \
+    -DACCT_NETWORK_DOMAIN="\"$fix/NetworkDomain.plist\"" \
     -DACCT_CREATEHOMEDIR="\"$fix/createhomedir\"" \
     -I"$top/src/accounts/common" -I"$top/src/libds" \
     -o "$fix/adduser" \
@@ -56,7 +57,7 @@ P
 <key>gid</key><integer>5000</integer><key>groupname</key><string>admin</string>
 <key>members</key><array><string>admin</string></array></dict></dict></plist>
 P
-	rm -f "$fix/Binding.plist" "$fix/NetworkUsers.plist"
+	rm -f "$fix/Binding.plist" "$fix/NetworkDomain.plist" "$fix/LocalDomain.plist"
 }
 
 cd "$fix" || exit 2
@@ -109,10 +110,18 @@ ck "no refusal wrote a record" "$after" "$before"
 
 printf '<plist version="1.0"><dict><key>server</key><string>x.lan</string></dict></plist>\n' \
     > "$fix/Binding.plist"
-# Joined is the presence of the NETWORK plist; the binding only names the server.
-printf '<plist version="1.0"><dict/></plist>\n' > "$fix/NetworkUsers.plist"
+# Joined is the DOMAIN marker arriving under /Network -- what dspromote wrote
+# into the server's /Local and the export carries across. The binding only
+# names the server for the message.
+printf '<plist version="1.0"><dict/></plist>\n' > "$fix/NetworkDomain.plist"
 ./adduser -q -w none dave >/dev/null 2>&1; ck "a joined machine refuses" "$?" 2
-rm -f "$fix/Binding.plist" "$fix/NetworkUsers.plist"
+# The server owns the accounts. Its own export can make the marker appear under
+# /Network too, and asked in the wrong order that would brick the one machine
+# that can manage them.
+printf '<plist version="1.0"><dict/></plist>\n' > "$fix/LocalDomain.plist"
+./adduser -q -w none dave2 >/dev/null 2>&1; ck "but a server does not" "$?" 0
+has Users.plist '<string>dave2</string>' 1
+rm -f "$fix/Binding.plist" "$fix/NetworkDomain.plist" "$fix/LocalDomain.plist"
 
 printf '#format: nextbsd-1\neve::::/bin/sh:\n' > g.txt
 ./adduser -q -f g.txt >/dev/null 2>&1; ck "a batch file" "$?" 0
