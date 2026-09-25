@@ -1,0 +1,106 @@
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" Copyright (c) 2026 Joseph Maloney
+.\"
+.Dd September 24, 2026
+.Dt NEXTBSD-FETCH 1
+.Os NextBSD
+.Sh NAME
+.Nm nextbsd-fetch
+.Nd print the login banner
+.Sh SYNOPSIS
+.Nm
+.Op Fl f
+.Sh DESCRIPTION
+.Nm
+prints a cube and a few lines about the machine, the way a fetch tool does.
+.Xr zsh 1
+runs it from
+.Pa /etc/zprofile
+at login, and anyone can run it by hand.
+.Pp
+It reports the version from
+.Pa /etc/os-release ,
+the login shell, memory in use against the total, how long the machine has
+been up, and the root filesystem.
+.Pp
+The last of those reads
+.Li live media
+when the root filesystem is a
+.Xr unionfs 5 ,
+which is how the live image is put together, and names the device otherwise.
+.Ss When it stays quiet
+.Nm
+prints nothing, and exits 0, in three cases.
+.Bl -bullet
+.It
+Gershwin's login window is installed.
+Something else asks who you are there, and a console that has already greeted
+you answered first.
+.It
+.Pa ~/.hushlogin
+exists.
+That file is how a person asks for a quiet login, and
+.Xr login 1
+already honours it for the message of the day.
+.It
+Standard output is not a terminal.
+.El
+.Pp
+.Fl f
+overrides the first two, which is how to see the banner on a machine that has
+a desktop.
+.Ss Colour
+Full colour needs a terminal that sets
+.Ev COLORTERM
+to
+.Li truecolor
+or
+.Li 24bit .
+Everything else with a usable
+.Ev TERM
+gets sixteen colours, where the cube's three faces collapse to three greys \(em
+which is all the
+.Xr vt 4
+console can show in any case.
+A terminal reporting
+.Li dumb ,
+and any non-terminal, gets no escape sequences at all.
+.Sh OPTIONS
+.Bl -tag -width indent
+.It Fl f
+Print even where a login window is installed or
+.Pa ~/.hushlogin
+exists.
+.El
+.Sh FILES
+.Bl -tag -width "/System/Library/LaunchDaemons" -compact
+.It Pa /etc/os-release
+the version, from
+.Li PRETTY_NAME
+.It Pa ~/.hushlogin
+silences this and the message of the day alike
+.It Pa /etc/zprofile
+runs this at login
+.El
+.Sh EXAMPLES
+See it on a machine with a desktop installed:
+.Pp
+.Dl $ nextbsd-fetch -f
+.Sh SEE ALSO
+.Xr login 1 ,
+.Xr zsh 1 ,
+.Xr motd 5
+.Sh AUTHORS
+.An Joseph Maloney
+.Sh CAVEATS
+The memory line reports a total alone where the free-page count cannot be
+read, rather than a figure that would look like a full machine.
+.Pp
+The shell's version is shown only when
+.Ev ZSH_VERSION
+is in the environment, which
+.Pa /etc/zprofile
+arranges.
+Run by hand elsewhere, the shell's name is printed without one rather than a
+guess.
