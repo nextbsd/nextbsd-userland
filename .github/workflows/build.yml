@@ -105,7 +105,7 @@ jobs:
       # (nextbsd) and the package builder (nextbsd-pkg) — nextbsd-pkg is
       # triggered by userland-updated alone (maintainer decision; kernel/kext-only
       # changes use nextbsd-pkg's workflow_dispatch escape hatch).
-      - name: Trigger downstream builds (nextbsd ISO + nextbsd-pkg packages)
+      - name: Trigger the downstream ISO build
         if: github.event_name == 'repository_dispatch'
         env:
           GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
@@ -114,7 +114,12 @@ jobs:
           # The userland artifact is already published by now, so a downstream
           # repo the token cannot reach must not mark this build failed. Each
           # dispatch reports on its own and a miss becomes a warning.
-          for repo in nextbsd/nextbsd nextbsd/nextbsd-pkg; do
+          # nextbsd-pkg is deliberately NOT here. It assembles the
+          # repository consumers install from, so publishing it is a manual
+          # decision a person makes once the components are known good --
+          # an automatic rebuild would republish whatever just merged before
+          # anyone had looked at it. See nextbsd/nextbsd-pkg#16.
+          for repo in nextbsd/nextbsd; do
             if gh api "repos/$repo/dispatches" \
                  -f event_type=userland-updated \
                  -f "client_payload[fbsd_sha]=$SHA"; then
