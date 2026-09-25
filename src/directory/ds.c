@@ -365,7 +365,14 @@ static void
 unmount_network(void)
 {
 	static const char *const points[] = { DS_NETWORK_USERS, DS_NETWORK_DIR };
-	const char *argv[3];
+	/*
+	 * execv(3) wants char *const argv[], so these are writable copies
+	 * rather than a cast that throws const away -- which the tree builds
+	 * with -Werror -Wcast-qual and rightly refuses.
+	 */
+	char prog[] = DS_UMOUNT;
+	char mp[PATH_MAX];
+	char *argv[3];
 	size_t i;
 	pid_t pid;
 	int st;
@@ -373,15 +380,19 @@ unmount_network(void)
 	for (i = 0; i < nitems(points); i++) {
 		if (!exists(points[i]))
 			continue;
-		argv[0] = DS_UMOUNT;
-		argv[1] = points[i];
+		if (strlcpy(mp, points[i], sizeof(mp)) >= sizeof(mp)) {
+			warnx("%s: path too long to unmount", points[i]);
+			continue;
+		}
+		argv[0] = prog;
+		argv[1] = mp;
 		argv[2] = NULL;
 		if ((pid = fork()) == -1) {
 			warn("fork");
 			return;
 		}
 		if (pid == 0) {
-			(void)execv(DS_UMOUNT, (char *const *)argv);
+			(void)execv(prog, argv);
 			_exit(127);
 		}
 		if (waitpid(pid, &st, 0) == -1 || !WIFEXITED(st) ||
