@@ -1710,7 +1710,7 @@ send "r /usr/tests/nextbsd-iokit/run.sh\r"
         timeout             { puts "\nWARN: IOKit tests did not finish in 180s (informational)" }
     }
 
-set timeout 150
+set timeout 180
 
 # Stage 4: power off THROUGH launchd — `shutdown -p now` signals PID 1 with
 # SIGUSR2 per the BSD init(8) protocol, so this stage gates nextbsd#398 (the
@@ -1721,10 +1721,28 @@ set timeout 150
 #   "Rebooting"           = wrong reboot_flags (RB_AUTOBOOT) -> FAIL
 #   timeout               = the #398 stall -> FAIL (fall back to halt -p, which
 #                           bypasses init, so the runner is never left hanging)
+#
+# The timeout is measured from the LAST sign of life, not from the start of the
+# shutdown: a poweroff that is still working is not a stall. Measured on an amd64
+# CI runner, `shutdown -p now` to "Uptime:" took 160s against a flat 150s budget,
+# so this stage failed intermittently on a machine that powered off correctly ten
+# seconds later. The kernel alone can account for most of that -- vnlru and
+# syncer are each given "max 60 seconds" to stop -- so raising the number and
+# hoping is not a fix. Progress markers reset the clock instead, which leaves a
+# genuine #398 stall (no output at all) still caught.
 send "r shutdown -p now\r"
+set shutdown_progress 0
 expect {
+    -re {Waiting \(max [0-9]+ seconds\) for system process|Syncing disks|All buffers synced|Uptime:} {
+        set shutdown_progress 1
+        exp_continue
+    }
     timeout {
-        puts "\nFAIL: SHUTDOWN-P — no poweroff within 150s of shutdown -p (launchd init-protocol stall, nextbsd#398)"
+        if {$shutdown_progress} {
+            puts "\nFAIL: SHUTDOWN-P — shutdown was progressing but produced nothing for 180s and never powered off"
+        } else {
+            puts "\nFAIL: SHUTDOWN-P — no response at all within 180s of shutdown -p (init-protocol stall; this is what nextbsd#398 was)"
+        }
         send "\r"
         sleep 1
         send "r halt -p\r"
