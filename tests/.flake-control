@@ -1,0 +1,10 @@
+Control marker. Carries no code and is consumed by nothing.
+
+It exists so a pull request can run the boot lanes against an unmodified
+main: the boot job is gated on `github.event_name == 'pull_request'`
+(build-arch.yml), so workflow_dispatch cannot run it, and the pull_request
+trigger is path-filtered, so a diff touching none of those paths starts no
+build at all. A file under tests/ satisfies the filter while changing
+nothing that runs.
+
+Not for merging.
