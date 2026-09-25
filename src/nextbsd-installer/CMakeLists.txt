@@ -32,7 +32,9 @@ add_executable(nextbsd-installer
   src/screen_install.cpp
   src/screen_finish.cpp
 )
-target_include_directories(nextbsd-installer PRIVATE src)
+# ../libnbui carries the shared amber look (#304); src/theme.hpp is the
+# installer's masthead bound to it.
+target_include_directories(nextbsd-installer PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR}/../libnbui)
 # component transitively pulls dom + screen — link just it (avoids ld's
 # "ignoring duplicate libraries" warning).
 target_link_libraries(nextbsd-installer PRIVATE ftxui::component)
