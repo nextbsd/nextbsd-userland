@@ -47,39 +47,69 @@ They do not manage accounts.
 and
 .Xr chpass 1
 write the property lists directly, on a server and a standalone machine alike.
-.Ss What promotion moves
+.Ss What promotion shares
+Promotion moves nothing.
+The property lists stay in
+.Pa /Local/Library/DirectoryServices
+on every machine in every role, and
+.Nm dspromote
+shares that directory and
+.Pa /Local/Users
+over NFS.
+.Pp
 .Xr nss_directory_services 8
 prefers
 .Pa /Network/Library/DirectoryServices
-whenever it exists, and computes a home directory from whichever file it read.
-A server therefore has to read the very file it serves, so
+when that exists and computes a home directory from whichever file it read,
+which is what lets one layout serve every role without rearranging anything.
+A server has no
+.Pa /Network ,
+so it reads
+.Pa /Local
+and its own home directories are under
+.Pa /Local/Users ,
+where they belong.
+A client mounts the server's
+.Pa /Local
+paths onto its own
+.Pa /Network ,
+reads
+.Pa /Network ,
+and finds its home directories under
+.Pa /Network/Users .
+.Pp
+No symbolic link is created, and nothing under
+.Pa /Network
+is touched on a server.
+An earlier version moved the property lists to
+.Pa /Network
+and left a link behind, on the reasoning that a server had to read the very
+file it served.
+That does not follow: an NFS export path and the client's mount point are
+independent, so a client can mount the server's
+.Pa /Local
+path at its own
+.Pa /Network
+path and nothing needs to move.
+.Ss What makes a machine a server
+.Pa Role.plist ,
+written by
 .Nm dspromote
-moves the property lists to
-.Pa /Network/Library/DirectoryServices
-and leaves
-.Pa /Local/Library/DirectoryServices
-behind as a symbolic link to them.
-The account tools keep writing the path they always wrote and never learn
-whether this machine is a server.
-.Pp
-The direction of that link is not arbitrary.
-.Xr mountd 8
-resolves an export to a real path, so exporting through a link would export
-the target's path instead, and a client mounting the advertised path would
-fail.
-.Pp
-Promotion also creates
-.Pa /Network/Users
-as a link to
-.Pa /Local/Users .
-The server's own users now resolve with a home under
-.Pa /Network/Users ,
-which is where clients see those directories but which does not otherwise
-exist locally.
+and removed by
+.Nm dsdemote .
+It survives a reboot, an unmounted
+.Pa /Network
+and a stopped
+.Xr nfsd 8 ,
+none of which change what a machine is.
+A malformed or truncated marker reads as
+.Li standalone ,
+so a machine can always be demoted.
 .Ss What each command writes
 .Bl -column "/etc/exports" "dspromote" "dsdemote" -offset indent
 .It Sy Artefact Ta Sy Written by Ta Sy Removed by
 .It Pa /etc/exports Ta dspromote Ta dsdemote
+.It Pa Role.plist Ta dspromote Ta dsdemote
 .It the Bonjour record Ta dspromote Ta dsdemote
 .It Pa Binding.plist Ta dsjoin Ta dsleave
 .It the block in Pa /etc/ntp.conf Ta dsjoin Ta emptied by dsleave
@@ -112,6 +142,9 @@ refuse where there is nothing to undo.
 .Bl -tag -width "/Local/Library/Preferences/mDNSResponder/Services" -compact
 .It Pa /Local/Library/DirectoryServices
 the accounts, or a link to them on a server
+.It Pa /Local/Library/DirectoryServices/Role.plist
+The role marker.
+Present only on a server.
 .It Pa /Network/Library/DirectoryServices
 the accounts on a server, or the mount on a client
 .It Pa /Local/Users

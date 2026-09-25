@@ -7,9 +7,10 @@
 # arguments it was called with, so the tests can assert WHICH jobs each verb
 # loads rather than only that it tried.
 #
-# What is covered: the role transitions in both directions, every refusal, the
-# symlink directions promotion depends on, the exports grouping, the managed
-# NTP block, and argv[0] dispatch.
+# What is covered: the role transitions in both directions, every refusal, that
+# promotion SHARES /Local rather than moving anything to /Network, the role
+# marker and its rejection of a malformed one, the exports grouping, the
+# managed NTP block, and argv[0] dispatch.
 #
 #   sh ds_test.sh
 #
@@ -28,6 +29,7 @@ NET_DIR=$R/Network/Library/DirectoryServices
 LOCAL_USERS=$R/Local/Users
 NET_USERS=$R/Network/Users
 BINDING=$LOCAL_DIR/Binding.plist
+ROLE=$LOCAL_DIR/Role.plist
 EXPORTS=$R/etc/exports
 NTP=$R/etc/ntp.conf
 SVCDIR=$R/Local/Library/Preferences/mDNSResponder/Services
@@ -50,6 +52,7 @@ ${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes
     -DDS_LOCAL_USERS="\"$LOCAL_USERS\"" \
     -DDS_NETWORK_USERS="\"$NET_USERS\"" \
     -DDS_BINDING="\"$BINDING\"" \
+    -DDS_ROLE="\"$ROLE\"" \
     -DDS_EXPORTS="\"$EXPORTS\"" \
     -DDS_NTP_CONF="\"$NTP\"" \
     -DDS_SERVICE_DIR="\"$SVCDIR\"" \
@@ -105,14 +108,23 @@ cksay "dsleave refuses when not bound"     "not bound"              "$fix/dsleav
 # ---- promote
 seed
 "$fix/dspromote" >/dev/null 2>&1
-cklink   "promote links Local -> Network"  "$LOCAL_DIR"  "$NET_DIR"
-cklink   "promote links /Network/Users"    "$NET_USERS"  "$LOCAL_USERS"
-ckfile   "the plists moved to /Network"    "$NET_DIR/Users.plist"
-ckfile   "and Groups.plist with them"      "$NET_DIR/Groups.plist"
+# Nothing moves and nothing under /Network is created. These are the checks
+# that would have caught the old move-and-symlink layout: the plists stay put,
+# /Local stays a real directory, and /Network is left entirely alone for the
+# client's mount to land on.
+ck       "Local stays a real directory" \
+         "$( [ -d "$LOCAL_DIR" ] && [ ! -L "$LOCAL_DIR" ] && echo yes )" "yes"
+ckfile   "the plists stayed in /Local"     "$LOCAL_DIR/Users.plist"
+ckfile   "and so did Groups.plist"         "$LOCAL_DIR/Groups.plist"
+cknofile "nothing was put in /Network"     "$NET_DIR"
+cknofile "and no /Network/Users was made"  "$NET_USERS"
+ckfile   "the role marker is written"      "$ROLE"
+ckgrep   "and it says server"              "$ROLE" "<string>server</string>"
 ckfile   "exports written"                 "$EXPORTS"
 ckfile   "the Bonjour record written"      "$SVC"
 ckgrep   "exports names the homes"         "$EXPORTS" "$LOCAL_USERS"
-ckgrep   "exports names the accounts"      "$EXPORTS" "$NET_DIR"
+ckgrep   "exports shares /Local accounts"  "$EXPORTS" "$LOCAL_DIR"
+cknogrep "and exports no /Network path"    "$EXPORTS" "/Network"
 ckgrep   "the record advertises the type"  "$SVC" "_nextbsd-ds._tcp"
 ckgrep   "and nfs's port as an integer"    "$SVC" "<integer>2049</integer>"
 cksay    "status now reports server"       "directory server" "$fix/dsstatus"
@@ -128,12 +140,24 @@ cksay "join refuses on a server"           "run dsdemote first"         "$fix/ds
 # ---- demote reverses it
 "$fix/dsdemote" >/dev/null 2>&1
 ck       "demote leaves a real directory"  "$( [ -d "$LOCAL_DIR" ] && [ ! -L "$LOCAL_DIR" ] && echo yes )" "yes"
-ckfile   "the plists came back"            "$LOCAL_DIR/Users.plist"
-cknofile "the /Network copy is gone"       "$NET_DIR/Users.plist"
-cknofile "the /Network/Users link is gone" "$NET_USERS"
+ckfile   "the plists were never disturbed" "$LOCAL_DIR/Users.plist"
+ckfile   "nor were the groups"             "$LOCAL_DIR/Groups.plist"
+cknofile "the role marker is removed"      "$ROLE"
 cknofile "exports removed"                 "$EXPORTS"
 cknofile "the Bonjour record withdrawn"    "$SVC"
 cksay    "status is standalone again"      "standalone" "$fix/dsstatus"
+
+# ---- a malformed role marker must not strand the machine
+# The program matches on the value rather than on the file merely existing, so a
+# truncated or hand-mangled marker leaves the machine demotable instead of stuck
+# in a role it cannot leave. The well-formed case is asserted straight after, so
+# the negative check above cannot pass vacuously.
+seed
+printf '<plist><dict><key>role</key><string>banana</string></dict></plist>\n' > "$ROLE"
+cksay "a malformed role is not a server"   "standalone" "$fix/dsstatus"
+cksay "and demote still refuses it"        "not a directory server" "$fix/dsdemote"
+printf '<plist><dict><key>role</key><string>server</string></dict></plist>\n' > "$ROLE"
+cksay "a well-formed role IS a server"     "directory server" "$fix/dsstatus"
 
 # ---- join
 seed

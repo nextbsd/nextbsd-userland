@@ -25,22 +25,38 @@
  *
  * WHERE THE AUTHORITATIVE PLISTS LIVE
  *
- * nss_directory_services prefers /Network/Library/DirectoryServices whenever
- * it exists, and computes a home from whichever file it used. network-mount
- * (E18 U6) mounts the server's /Network/Library/DirectoryServices for the
- * plists and the server's /Local/Users for the homes. A server therefore has
- * to read the very file it serves, so promotion moves the authoritative copy
- * to /Network/Library/DirectoryServices and leaves /Local/Library/Directory-
- * Services behind as a symlink to it. The account tools keep writing the
- * DS_LOCAL path and never learn whether this machine is a server.
+ * In /Local/Library/DirectoryServices, on every machine, in every role. A
+ * server shares that directory. It does not move it.
  *
- * The direction of that symlink is not arbitrary: mountd resolves an export
- * to a real path, so exporting through a symlink would export the target's
- * path instead, and a client mounting the advertised path would fail.
+ * nss_directory_services prefers /Network/Library/DirectoryServices when that
+ * exists, and computes a home from whichever file it read. That is precisely
+ * what lets one layout serve all three roles with no rearranging:
  *
- * Promotion also creates /Network/Users as a symlink to /Local/Users. The
- * server's own users now resolve with pw_dir under /Network/Users, which is
- * where clients see those homes but which does not otherwise exist locally.
+ *   server   has no /Network, so it reads /Local and its homes are under
+ *            /Local/Users -- correct, because those homes really are local
+ *   client   mounts the server's /Local paths onto its own /Network, reads
+ *            /Network, and its homes are under /Network/Users, which is the
+ *            mount of the server's /Local/Users
+ *
+ * An earlier version moved the plists to /Network on promotion and left
+ * /Local behind as a symlink to them, reasoning that a server "has to read
+ * the very file it serves". That does not follow: an NFS export path and the
+ * client's mount point are independent, so a client can mount
+ * server:/Local/Library/DirectoryServices at its own /Network path and
+ * nothing needs to move. Dropping the move also drops the /Network/Users
+ * symlink, the EXDEV-safe copy loop, and a layout that had to be documented
+ * in the wiki because it surprised everyone who looked at it. It is also
+ * truer to Darwin, where /Network means resources mounted from somewhere
+ * else -- which a server's own accounts are not.
+ *
+ * WHAT MAKES A MACHINE A SERVER
+ *
+ * Role.plist, written by promotion and removed by demotion. The previous
+ * design read the role off the /Local symlink it had just created, which
+ * worked but used a side effect as state. A file that says `server` survives
+ * a reboot, an unmounted /Network and a stopped nfsd just as well, and
+ * anything else that needs to know can read it without an lstat(2) and a
+ * paragraph of explanation.
  */
 
 #include <sys/param.h>
@@ -81,6 +97,9 @@
 #endif
 #ifndef DS_BINDING
 #define DS_BINDING	"/Local/Library/DirectoryServices/Binding.plist"
+#endif
+#ifndef DS_ROLE
+#define DS_ROLE		"/Local/Library/DirectoryServices/Role.plist"
 #endif
 #ifndef DS_EXPORTS
 #define DS_EXPORTS	"/etc/exports"
@@ -141,14 +160,6 @@ is_dir(const char *p)
 }
 
 static bool
-is_link(const char *p)
-{
-	struct stat st;
-
-	return (lstat(p, &st) == 0 && S_ISLNK(st.st_mode));
-}
-
-static bool
 exists(const char *p)
 {
 	struct stat st;
@@ -175,22 +186,6 @@ make_dirs(const char *path)
 		*p = '/';
 	}
 	return (mkdir(buf, 0755) == -1 && errno != EEXIST ? -1 : 0);
-}
-
-/* mkdir -p on everything above `path`, so a symlink can be made at it. */
-static int
-make_parent(const char *path)
-{
-	char buf[PATH_MAX], *slash;
-
-	if (strlcpy(buf, path, sizeof(buf)) >= sizeof(buf)) {
-		errno = ENAMETOOLONG;
-		return (-1);
-	}
-	if ((slash = strrchr(buf, '/')) == NULL || slash == buf)
-		return (0);			/* parent is / */
-	*slash = '\0';
-	return (make_dirs(buf));
 }
 
 /*
@@ -249,8 +244,8 @@ write_exports(void)
 		warn("%s", DS_LOCAL_USERS);
 		return (-1);
 	}
-	if (stat(DS_NETWORK_DIR, &b) == -1) {
-		warn("%s", DS_NETWORK_DIR);
+	if (stat(DS_LOCAL_DIR, &b) == -1) {
+		warn("%s", DS_LOCAL_DIR);
 		return (-1);
 	}
 	if ((f = fopen(DS_EXPORTS, "w")) == NULL) {
@@ -260,10 +255,10 @@ write_exports(void)
 	(void)fprintf(f, "# Written by dspromote(8). Removed by dsdemote(8).\n");
 	if (a.st_dev == b.st_dev)
 		(void)fprintf(f, "%s %s -alldirs\n", DS_LOCAL_USERS,
-		    DS_NETWORK_DIR);
+		    DS_LOCAL_DIR);
 	else {
 		(void)fprintf(f, "%s -alldirs\n", DS_LOCAL_USERS);
-		(void)fprintf(f, "%s -alldirs\n", DS_NETWORK_DIR);
+		(void)fprintf(f, "%s -alldirs\n", DS_LOCAL_DIR);
 	}
 	if (fclose(f) != 0) {
 		warn("%s", DS_EXPORTS);
@@ -408,6 +403,62 @@ binding_write(const char *server)
 	return (0);
 }
 
+/*
+ * The role marker. Only two states are written, and only `server` is ever
+ * recorded: standalone is the absence of the file, and a client is identified
+ * by its Binding.plist instead.
+ */
+static int
+role_write(void)
+{
+	FILE *f;
+
+	if ((f = fopen(DS_ROLE, "w")) == NULL) {
+		warn("%s", DS_ROLE);
+		return (-1);
+	}
+	(void)fprintf(f,
+	    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+	    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+	    "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+	    "<plist version=\"1.0\">\n"
+	    "<dict>\n"
+	    "\t<key>role</key>\n\t<string>server</string>\n"
+	    "\t<key>version</key>\n\t<integer>1</integer>\n"
+	    "</dict>\n"
+	    "</plist>\n");
+	if (fclose(f) != 0) {
+		warn("%s", DS_ROLE);
+		return (-1);
+	}
+	say("  wrote %s", DS_ROLE);
+	return (0);
+}
+
+/*
+ * True when this machine has been promoted. Matched on the value rather than
+ * merely on the file existing, so a truncated or half-written file reads as
+ * "not a server" instead of stranding the machine in a role it cannot leave.
+ */
+static bool
+role_is_server(void)
+{
+	char line[1024];
+	bool found = false;
+	FILE *f;
+
+	if ((f = fopen(DS_ROLE, "r")) == NULL)
+		return (false);
+	while (fgets(line, sizeof(line), f) != NULL) {
+		if (strstr(line, "<string>server</string>") != NULL) {
+			found = true;
+			break;
+		}
+	}
+	(void)fclose(f);
+	return (found);
+}
+
 /* The bound server's name, or false when this machine is not a client. */
 static bool
 binding_read(char *out, size_t len)
@@ -447,84 +498,19 @@ binding_read(char *out, size_t len)
 enum role { R_STANDALONE, R_SERVER, R_CLIENT };
 
 /*
- * A server is the machine whose /Local directory-services path is a symlink:
- * that is the one thing only promotion creates, and it survives a reboot, an
- * unmounted /Network and a stopped nfsd, none of which change what this
- * machine IS.
+ * Role.plist is what promotion writes and demotion removes, and it survives a
+ * reboot, an unmounted /Network and a stopped nfsd -- none of which change
+ * what this machine IS.
  */
 static enum role
 current_role(char *server, size_t len)
 {
-	if (is_link(DS_LOCAL_DIR))
+	if (role_is_server())
 		return (R_SERVER);
 	if (binding_read(server, len))
 		return (R_CLIENT);
 	return (R_STANDALONE);
 }
-
-static int
-copy_file(const char *from, const char *to)
-{
-	char buf[65536];
-	ssize_t n;
-	int in, out, e;
-
-	if ((in = open(from, O_RDONLY | O_CLOEXEC)) == -1)
-		return (-1);
-	if ((out = open(to, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644)) == -1) {
-		e = errno; (void)close(in); errno = e;
-		return (-1);
-	}
-	while ((n = read(in, buf, sizeof(buf))) > 0) {
-		if (write(out, buf, (size_t)n) != n) {
-			e = errno; (void)close(in); (void)close(out);
-			errno = e;
-			return (-1);
-		}
-	}
-	e = errno;
-	(void)close(in);
-	if (close(out) == -1 || n == -1) { errno = e; return (-1); }
-	return (0);
-}
-
-/*
- * Move the plists between the two domain directories, file by file rather
- * than by renaming the directory: /Local and /Network are not guaranteed to
- * share a filesystem, and rename(2) across one fails with EXDEV.
- */
-static int
-move_plists(const char *from, const char *to)
-{
-	static const char *const names[] = { "Users.plist", "Groups.plist" };
-	char a[PATH_MAX], b[PATH_MAX];
-	size_t i;
-
-	if (make_dirs(to) == -1) {
-		warn("%s", to);
-		return (-1);
-	}
-	for (i = 0; i < nitems(names); i++) {
-		(void)snprintf(a, sizeof(a), "%s/%s", from, names[i]);
-		(void)snprintf(b, sizeof(b), "%s/%s", to, names[i]);
-		if (!exists(a)) {
-			warnx("%s does not exist; nothing to move", a);
-			continue;
-		}
-		if (copy_file(a, b) == -1) {
-			warn("copying %s", a);
-			return (-1);
-		}
-		if (unlink(a) == -1) {
-			warn("%s", a);
-			return (-1);
-		}
-		say("  moved %s -> %s", a, b);
-	}
-	return (0);
-}
-
-/* ---------------------------------------------------------------- the verbs */
 
 static int
 do_promote(void)
@@ -546,43 +532,18 @@ do_promote(void)
 		return (1);
 	}
 
-	/* The plists move first: everything else points at where they end up. */
-	if (move_plists(DS_LOCAL_DIR, DS_NETWORK_DIR) == -1)
-		return (1);
-	if (rmdir(DS_LOCAL_DIR) == -1) {
-		warn("%s", DS_LOCAL_DIR);
-		warnx("leaving the machine unpromoted; the plists are in %s",
-		    DS_NETWORK_DIR);
-		return (1);
-	}
-	if (symlink(DS_NETWORK_DIR, DS_LOCAL_DIR) == -1) {
-		warn("%s", DS_LOCAL_DIR);
-		return (1);
-	}
-	say("  %s -> %s", DS_LOCAL_DIR, DS_NETWORK_DIR);
-
 	/*
-	 * The server's own users now resolve with pw_dir under /Network/Users,
-	 * because the module computes a home from the file it read. That path
-	 * is where clients see these homes; locally it has to reach the real
-	 * ones.
+	 * Nothing moves. The plists stay where every other tool already writes
+	 * them, the homes stay in /Local/Users, and promotion is the act of
+	 * sharing both -- so the server keeps reading exactly the files it
+	 * serves, and its own homes stay local because they are.
 	 */
 	if (make_dirs(DS_LOCAL_USERS) == -1) {
 		warn("%s", DS_LOCAL_USERS);
 		return (1);
 	}
-	if (!exists(DS_NETWORK_USERS)) {
-		if (make_parent(DS_NETWORK_USERS) == -1) {
-			warn("%s", DS_NETWORK_USERS);
-			return (1);
-		}
-		if (symlink(DS_LOCAL_USERS, DS_NETWORK_USERS) == -1) {
-			warn("%s", DS_NETWORK_USERS);
-			return (1);
-		}
-		say("  %s -> %s", DS_NETWORK_USERS, DS_LOCAL_USERS);
-	}
-
+	if (role_write() == -1)
+		return (1);
 	if (write_exports() == -1 || write_service() == -1)
 		return (1);
 	launchctl("load", server_jobs, nitems(server_jobs));
@@ -602,22 +563,20 @@ do_demote(void)
 	}
 
 	/*
-	 * Stop serving before taking the data back, so a client cannot read a
-	 * half-moved directory. Clients stay bound and will fail to mount --
-	 * there is no notification protocol, which is recorded as a known gap.
+	 * Stop serving first, so a client cannot be reading the export as it is
+	 * withdrawn. Clients stay bound and will fail to mount -- there is no
+	 * notification protocol, which is recorded as a known gap.
+	 *
+	 * There is nothing to move back: the plists never left /Local. Demotion
+	 * only stops sharing them.
 	 */
 	launchctl("unload", server_jobs, nitems(server_jobs));
 
-	if (unlink(DS_LOCAL_DIR) == -1) {		/* the symlink */
-		warn("%s", DS_LOCAL_DIR);
+	if (unlink(DS_ROLE) == -1 && errno != ENOENT) {
+		warn("%s", DS_ROLE);
 		return (1);
 	}
-	if (move_plists(DS_NETWORK_DIR, DS_LOCAL_DIR) == -1)
-		return (1);
-	if (rmdir(DS_NETWORK_DIR) == -1)
-		warn("%s (left in place)", DS_NETWORK_DIR);
-	if (is_link(DS_NETWORK_USERS) && unlink(DS_NETWORK_USERS) == -1)
-		warn("%s (left in place)", DS_NETWORK_USERS);
+	say("  removed %s", DS_ROLE);
 	if (unlink(DS_EXPORTS) == -1 && errno != ENOENT)
 		warn("%s", DS_EXPORTS);
 	else
@@ -700,8 +659,8 @@ do_status(void)
 	switch (current_role(server, sizeof(server))) {
 	case R_SERVER:
 		(void)printf("directory server\n");
-		(void)printf("  accounts   %s\n", DS_NETWORK_DIR);
-		(void)printf("  homes      %s\n", DS_LOCAL_USERS);
+		(void)printf("  accounts   %s (shared)\n", DS_LOCAL_DIR);
+		(void)printf("  homes      %s (shared)\n", DS_LOCAL_USERS);
 		(void)printf("  exports    %s\n",
 		    exists(DS_EXPORTS) ? DS_EXPORTS : "(none)");
 		(void)printf("  advertised %s\n",
