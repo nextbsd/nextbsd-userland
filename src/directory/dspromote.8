@@ -1,0 +1,163 @@
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" Copyright (c) 2026 Joseph Maloney
+.\"
+.Dd September 24, 2026
+.Dt DSPROMOTE 8
+.Os NextBSD
+.Sh NAME
+.Nm dspromote ,
+.Nm dsdemote ,
+.Nm dsjoin ,
+.Nm dsleave ,
+.Nm dsstatus
+.Nd make this machine a directory server, or bind it to one
+.Sh SYNOPSIS
+.Nm dspromote
+.Op Fl v
+.Nm dsdemote
+.Op Fl v
+.Nm dsjoin
+.Op Fl v
+.Ar server
+.Nm dsleave
+.Op Fl v
+.Nm dsstatus
+.Sh DESCRIPTION
+These five commands move a machine between three roles.
+.Bl -tag -width "standalone"
+.It Li standalone
+Accounts live in
+.Pa /Local/Library/DirectoryServices .
+Nothing is exported and nothing is mounted.
+This is how a machine ships.
+.It Li server
+The accounts and the home directories are served over NFS and advertised over
+Bonjour as
+.Li _nextbsd-ds._tcp .
+.It Li client
+Accounts come from a server, and its home directories are mounted at
+.Pa /Network/Users .
+.El
+.Pp
+They do not manage accounts.
+.Xr adduser 8 ,
+.Xr pw 8 ,
+.Xr passwd 1
+and
+.Xr chpass 1
+write the property lists directly, on a server and a standalone machine alike.
+.Ss What promotion moves
+.Xr nss_directory_services 8
+prefers
+.Pa /Network/Library/DirectoryServices
+whenever it exists, and computes a home directory from whichever file it read.
+A server therefore has to read the very file it serves, so
+.Nm dspromote
+moves the property lists to
+.Pa /Network/Library/DirectoryServices
+and leaves
+.Pa /Local/Library/DirectoryServices
+behind as a symbolic link to them.
+The account tools keep writing the path they always wrote and never learn
+whether this machine is a server.
+.Pp
+The direction of that link is not arbitrary.
+.Xr mountd 8
+resolves an export to a real path, so exporting through a link would export
+the target's path instead, and a client mounting the advertised path would
+fail.
+.Pp
+Promotion also creates
+.Pa /Network/Users
+as a link to
+.Pa /Local/Users .
+The server's own users now resolve with a home under
+.Pa /Network/Users ,
+which is where clients see those directories but which does not otherwise
+exist locally.
+.Ss What each command writes
+.Bl -column "/etc/exports" "dspromote" "dsdemote" -offset indent
+.It Sy Artefact Ta Sy Written by Ta Sy Removed by
+.It Pa /etc/exports Ta dspromote Ta dsdemote
+.It the Bonjour record Ta dspromote Ta dsdemote
+.It Pa Binding.plist Ta dsjoin Ta dsleave
+.It the block in Pa /etc/ntp.conf Ta dsjoin Ta emptied by dsleave
+.It rpcbind, mountd, nfsd Ta dspromote Ta dsdemote
+.It network-mount Ta dsjoin Ta dsleave
+.El
+.Pp
+The kernel permits one default export per filesystem, so
+.Pa /etc/exports
+groups the exported directories by device.
+On the usual layout that is a single line.
+.Sh OPTIONS
+.Bl -tag -width indent
+.It Fl v
+Report each artefact as it is written or removed.
+.El
+.Sh REFUSALS
+.Nm dsjoin
+refuses on a machine that is already bound, naming the server, rather than
+rebinding.
+Leaving implicitly would unmount home directories from under anyone logged in.
+.Pp
+.Nm dspromote
+refuses on a machine that is already a server or is bound to one, and
+.Nm dsdemote
+and
+.Nm dsleave
+refuse where there is nothing to undo.
+.Sh FILES
+.Bl -tag -width "/Local/Library/Preferences/mDNSResponder/Services" -compact
+.It Pa /Local/Library/DirectoryServices
+the accounts, or a link to them on a server
+.It Pa /Network/Library/DirectoryServices
+the accounts on a server, or the mount on a client
+.It Pa /Local/Users
+the home directories
+.It Pa /Network/Users
+a link to them on a server, the mount on a client
+.It Pa /etc/exports
+written by
+.Nm dspromote
+.It Pa /etc/ntp.conf
+the managed block only
+.It Pa /Local/Library/Preferences/mDNSResponder/Services
+the Bonjour record
+.El
+.Sh EXIT STATUS
+0 on success, 1 when the machine is in the wrong role or an artefact could not
+be written, and 2 for a usage error.
+.Sh EXAMPLES
+Make this machine a server, and see what it did:
+.Pp
+.Dl # dspromote -v
+.Dl # dsstatus
+.Pp
+Bind another machine to it, then undo both:
+.Pp
+.Dl # dsjoin server.local
+.Dl # dsleave
+.Dl # dsdemote
+.Sh SEE ALSO
+.Xr chpass 1 ,
+.Xr passwd 1 ,
+.Xr exports 5 ,
+.Xr adduser 8 ,
+.Xr mountd 8 ,
+.Xr pw 8
+.Sh AUTHORS
+.An Joseph Maloney
+.Sh CAVEATS
+A bound client cannot change any password: the property lists are exported
+read-only and root is squashed.
+.Pp
+A client whose server is unreachable may have no local account to log in with.
+.Pp
+Any machine on the network can advertise
+.Li _nextbsd-ds._tcp .
+There is no authentication of the server.
+.Pp
+.Nm dsdemote
+does not notify bound clients; they stay bound and fail to mount.
