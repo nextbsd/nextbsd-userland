@@ -165,6 +165,7 @@ static void loopback_setup_ipv4(void);
 static void loopback_setup_ipv6(void);
 static pid_t fwexec(const char *const *argv, int *wstatus);
 #ifdef __FreeBSD__
+static void domain_mkdirs(void);
 static void linux_abi_mounts(void);
 #endif
 static void do_potential_fsck(void);
@@ -2453,6 +2454,9 @@ system_specific_bootstrap(bool sflag)
 	(void)remove(_PATH_NOLOGIN);
 
 #ifdef __FreeBSD__
+	/* /Network and /Volumes, before anything can want to mount on them. */
+	domain_mkdirs();
+
 	/* Linux ABI filesystems (nextbsd-userland#190): rc.d/linux's job on
 	 * stock FreeBSD. Here with the other boot-time mounts: after
 	 * /etc/sysctl.conf (a moved compat.linux.emul_path is in effect), the
@@ -4063,8 +4067,9 @@ fwexec(const char *const *argv, int *wstatus)
  * fstab line, or a second bootstrap), and -o nocover means nothing is ever
  * stacked. Failures are logged and boot continues.
  */
+/* mkdir -p, ignoring anything that already exists. */
 static void
-linux_mkdirs(const char *path)
+bootstrap_mkdirs(const char *path)
 {
 	char buf[MAXPATHLEN];
 	char *p;
@@ -4105,6 +4110,40 @@ linux_mount(const char *fstype, const char *source, const char *path, const char
 	}
 }
 
+/*
+ * The domain mount points (nextbsd/nextbsd-userland#190 is the precedent).
+ *
+ * /Network is where a directory client mounts the server's exports; /Volumes is
+ * where removable media appear. Both are empty mount points that have to exist
+ * before anything tries to mount on them, and neither belongs to a package:
+ * an installed system, a live ISO and an image unpacked from a tarball all have
+ * to end up with them. Created here, at every boot, for exactly the reason the
+ * Linux ABI mount points are -- it is the one place that runs on all three and
+ * costs two mkdir(2) calls that fail with EEXIST the rest of the time.
+ *
+ * 0755 root:wheel is what Darwin ships for /Volumes. Modern Darwin has no
+ * /Network to copy: it was an autofs trigger, and NextBSD mounts it for real
+ * from dsjoin(8), so it follows /Volumes.
+ *
+ * network-mount already mkdir -p's the paths it mounts on, so a client works
+ * without this. What this fixes is everything else: /Volumes on a machine that
+ * never joins anything, and /Network existing before the first dsjoin rather
+ * than as a side effect of it.
+ */
+static void
+domain_mkdirs(void)
+{
+	static const char *const dirs[] = { "/Network", "/Volumes" };
+	size_t i;
+
+	for (i = 0; i < nitems(dirs); i++) {
+		if (mkdir(dirs[i], 0755) == -1 && errno != EEXIST) {
+			launchctl_log(LOG_ERR, "cannot create %s: %s",
+			    dirs[i], strerror(errno));
+		}
+	}
+}
+
 static void
 linux_abi_mounts(void)
 {
@@ -4120,24 +4159,24 @@ linux_abi_mounts(void)
 	if (sysctlbyname("compat.linux.emul_path", root, &len, NULL, 0) != 0 || root[0] != '/') {
 		return;
 	}
-	linux_mkdirs(root);
+	bootstrap_mkdirs(root);
 	if (realpath(root, emul) == NULL) {
 		launchctl_log(LOG_ERR, "Linux ABI: cannot use emulation root %s: %s", root, strerror(errno));
 		return;
 	}
 
 	(void)snprintf(path, sizeof(path), "%s/proc", emul);
-	linux_mkdirs(path);
+	bootstrap_mkdirs(path);
 	linux_mount("linprocfs", "linprocfs", path, "nocover");
 
 	(void)snprintf(path, sizeof(path), "%s/sys", emul);
-	linux_mkdirs(path);
+	bootstrap_mkdirs(path);
 	linux_mount("linsysfs", "linsysfs", path, "nocover");
 
 	/* devfs supplies fd/, and the Linuxulator puts shm/ into every devfs
 	 * instance at ABI init, so neither needs (or allows) mkdir. */
 	(void)snprintf(path, sizeof(path), "%s/dev", emul);
-	linux_mkdirs(path);
+	bootstrap_mkdirs(path);
 	linux_mount("devfs", "devfs", path, "nocover");
 
 	(void)snprintf(path, sizeof(path), "%s/dev/fd", emul);
@@ -4160,7 +4199,7 @@ linux_abi_mounts(void)
 
 	if (realpath("/tmp", tmp) != NULL) {
 		(void)snprintf(path, sizeof(path), "%s/tmp", emul);
-		linux_mkdirs(path);
+		bootstrap_mkdirs(path);
 		linux_mount("nullfs", tmp, path, "nocover");
 	}
 }
