@@ -1320,7 +1320,7 @@ else
         printf 'sunrpc 111/tcp rpcbind\nsunrpc 111/udp rpcbind\nnfsd 2049/tcp nfs\nnfsd 2049/udp nfs\n' > /etc/services
         nfs_standins="/etc/services $nfs_standins"
     fi
-    for d in /Network/Library/DirectoryServices /Local/Users; do
+    for d in /Local/Library/DirectoryServices /Local/Users; do
         [ -d "$d" ] || { mkdir -p "$d"; nfs_made="$d $nfs_made"; }
     done
     if [ -e /etc/exports ]; then
@@ -1328,20 +1328,20 @@ else
     else
         # One line: both directories are on /, and the kernel allows one
         # default export per filesystem (see org.nextbsd.mountd.plist).
-        printf '# Written by dspromote; dsdemote removes this file.\n/Local/Users /Network/Library/DirectoryServices\n' > /etc/exports
+        printf '# Written by dspromote; dsdemote removes this file.\n/Local/Users /Local/Library/DirectoryServices\n' > /etc/exports
         for svc_l in org.nextbsd.rpcbind org.nextbsd.mountd org.nextbsd.nfsd; do
             launchctl load -w "$svc_ld/$svc_l.plist"
         done
         i=0; nfs_exports=""
         while [ "$i" -lt 30 ]; do
             nfs_exports=$(timeout 5 showmount -e 127.0.0.1 2>/dev/null)
-            if echo "$nfs_exports" | grep -q '^/Local/Users' && echo "$nfs_exports" | grep -q '^/Network/Library/DirectoryServices'; then
+            if echo "$nfs_exports" | grep -q '^/Local/Users' && echo "$nfs_exports" | grep -q '^/Local/Library/DirectoryServices'; then
                 break
             fi
             sleep 1; i=$((i + 1))
         done
         if [ "$i" -ge 30 ]; then
-            nfs_fail="showmount -e did not list both exports within 30s: [$(echo "$nfs_exports" | tr '\n' ' ')] rpcinfo: [$(timeout 5 rpcinfo -p 127.0.0.1 2>&1 | awk 'NR > 1 { print $5 }' | sort -u | tr '\n' ' ')] rpcbind: [$(grep -v os_assumes /var/log/rpcbind.stderr 2>/dev/null | tail -2 | tr '\n' ' ')] mountd: [$(grep -v os_assumes /var/log/mountd.stderr 2>/dev/null | tail -2 | tr '\n' ' ')] nfsd: [$(grep -v os_assumes /var/log/nfsd.stderr 2>/dev/null | tail -2 | tr '\n' ' ')]"
+            nfs_fail="showmount -e did not list both /Local exports within 30s: [$(echo "$nfs_exports" | tr '\n' ' ')] rpcinfo: [$(timeout 5 rpcinfo -p 127.0.0.1 2>&1 | awk 'NR > 1 { print $5 }' | sort -u | tr '\n' ' ')] rpcbind: [$(grep -v os_assumes /var/log/rpcbind.stderr 2>/dev/null | tail -2 | tr '\n' ' ')] mountd: [$(grep -v os_assumes /var/log/mountd.stderr 2>/dev/null | tail -2 | tr '\n' ' ')] nfsd: [$(grep -v os_assumes /var/log/nfsd.stderr 2>/dev/null | tail -2 | tr '\n' ' ')]"
         else
             for svc_l in org.nextbsd.rpcbind org.nextbsd.mountd org.nextbsd.nfsd; do
                 case "$(svc_pid "$svc_l")" in ''|-) nfs_fail="$nfs_fail $svc_l has no process;" ;; esac
@@ -1382,12 +1382,34 @@ else
             [ -d /Local/Library/DirectoryServices ] || { mkdir -p /Local/Library/DirectoryServices; nfs_made_bind=1; }
             printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n\t<key>server</key>\n\t<string>192.0.2.1</string>\n\t<key>version</key>\n\t<integer>1</integer>\n</dict>\n</plist>\n' > "$nfs_bind"
             nfs_out=$(timeout 25 /usr/libexec/nextbsd/network-mount 2>&1); nfs_rc=$?
-            echo "$nfs_out" | grep -q 'mounting 192.0.2.1:/Network/Library/DirectoryServices on /Network/Library/DirectoryServices' \
+            # The server's /Local path, mounted onto this machine's /Network: a
+            # server shares /Local and moves nothing (#253). Asserting the source
+            # path and not just the mount point is the point -- the old layout
+            # exported /Network, and matching only the target would pass on both.
+            echo "$nfs_out" | grep -q 'mounting 192.0.2.1:/Local/Library/DirectoryServices on /Network/Library/DirectoryServices' \
                 || nfs_fail="$nfs_fail network-mount did not attempt the mounts: rc=$nfs_rc [$nfs_out];"
             pkill -f mount_nfs 2>/dev/null; sleep 1
             for m in /Network/Users /Network/Library/DirectoryServices; do
                 mount | grep -q " on $m " && umount -f "$m" 2>/dev/null
             done
+            # A server mounts nothing, even with a binding left behind. /Local is
+            # what it exports, so mounting its own export back onto /Network
+            # would make every account tool treat it as somebody's client. The
+            # binding is still in place here, so this asserts the ordering and
+            # not merely that a missing binding does nothing.
+            nfs_dom=/Local/Library/DirectoryServices/Domain.plist
+            if [ -e "$nfs_dom" ]; then
+                nfs_fail="$nfs_fail $nfs_dom already exists; not touching it;"
+            else
+                printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict/>\n</plist>\n' > "$nfs_dom"
+                nfs_out=$(timeout 25 /usr/libexec/nextbsd/network-mount 2>&1); nfs_rc=$?
+                [ "$nfs_rc" -eq 0 ] || nfs_fail="$nfs_fail network-mount on a server: rc=$nfs_rc [$nfs_out];"
+                echo "$nfs_out" | grep -q 'directory server; nothing to mount' \
+                    || nfs_fail="$nfs_fail network-mount did not stand down on a server: [$nfs_out];"
+                echo "$nfs_out" | grep -q 'mounting' \
+                    && nfs_fail="$nfs_fail network-mount tried to mount on a server: [$nfs_out];"
+                rm -f "$nfs_dom"
+            fi
             rm -f "$nfs_bind"
             [ -n "$nfs_made_bind" ] && rmdir /Local/Library/DirectoryServices 2>/dev/null
             rmdir /Network/Users 2>/dev/null

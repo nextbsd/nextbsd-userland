@@ -85,6 +85,11 @@
 #define ROOT_LOCAL	"/Local/Users/"
 #define ROOT_NETWORK	"/Network/Users/"
 
+/* Overridable only so the tests can stage a marker outside the system. */
+#ifndef LOCAL_DOMAIN
+#define LOCAL_DOMAIN	"/Local/Library/DirectoryServices/Domain.plist"
+#endif
+
 static bool want_local = false;		/* -c */
 static bool want_network = false;	/* -s */
 static bool dry_run;
@@ -264,6 +269,19 @@ main(int argc, char **argv)
 	/* -b, or none of -b/-c/-s, means both roots. */
 	if (both || (!want_local && !want_network))
 		want_local = want_network = true;
+	/*
+	 * Except on the server, which owns the homes and exports them. Asked
+	 * first and answered from /Local alone, exactly as the account tools
+	 * do it: a server that ever had /Network mounted would otherwise be
+	 * offered its own export as a second root and would build homes inside
+	 * it. -s asks for that explicitly and is refused rather than ignored.
+	 */
+	if (access(LOCAL_DOMAIN, F_OK) == 0) {
+		if (want_network && !want_local && !both)
+			errx(2, "-s: this machine is a directory server;"
+			    " its homes are under %s", ROOT_LOCAL);
+		want_network = false;
+	}
 	/*
 	 * -P is for a PAM session, where the user is in the environment
 	 * because pam_exec(8) cannot substitute it into an argument. It says

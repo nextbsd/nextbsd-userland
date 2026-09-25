@@ -17,10 +17,12 @@ fix=${TMPDIR:-/tmp}/autologin_test.$$
 trap 'rm -rf "$fix"' EXIT
 mkdir -p "$fix"
 
-${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes \
+${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes -Wpointer-arith \
     -Wmissing-prototypes \
     -DLOCAL_USERS="\"$fix/Users.plist\"" \
     -DNETWORK_USERS="\"$fix/Network-Users.plist\"" \
+    -DLOCAL_DOMAIN="\"$fix/Local-Domain.plist\"" \
+    -DNETWORK_DOMAIN="\"$fix/Network-Domain.plist\"" \
     -DLOGINWINDOW_PLIST="\"$fix/loginwindow.plist\"" \
     -I"$top/src/nss_directory_services" \
     -o "$fix/autologin-user" \
@@ -32,7 +34,8 @@ pass=0; fail=0
 # The one state that permits automatic login: a single user, named admin,
 # with noPassword, no network node, no login window.
 seed() {
-	rm -f "$fix/Network-Users.plist" "$fix/loginwindow.plist"
+	rm -f "$fix/Network-Users.plist" "$fix/loginwindow.plist" \
+	      "$fix/Local-Domain.plist" "$fix/Network-Domain.plist"
 	cat > "$fix/Users.plist" <<'P'
 <?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
@@ -76,9 +79,17 @@ echo '<plist version="1.0"><dict/></plist>' > "$fix/loginwindow.plist"
 cksays "the login window's contents do not matter" ""
 
 # ---- clause: a joined directory client
+# The domain marker under /Network is the test, and it is asked only after the
+# /Local one: a server owns the accounts and is not a client of itself, so its
+# own exported marker reappearing under /Network must not suppress anything.
 seed
-: > "$fix/Network-Users.plist"
+: > "$fix/Network-Domain.plist"
 cksays "a joined client suppresses it" ""
+
+seed
+: > "$fix/Network-Domain.plist"
+: > "$fix/Local-Domain.plist"
+cksays "but a server still autologins" "admin"
 
 # ---- clause: exactly one user
 seed

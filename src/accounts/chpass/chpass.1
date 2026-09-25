@@ -119,9 +119,15 @@ everywhere else.
 .Sh FILES
 .Bl -tag -width "/Local/Library/DirectoryServices/Users.plist" -compact
 .It Pa /Local/Library/DirectoryServices/Users.plist
-.It Pa /Local/Library/DirectoryServices/Binding.plist
-present when this machine is a directory client, in which case these commands
+.It Pa /Local/Library/DirectoryServices/Domain.plist
+present when this machine is the directory server, in which case these commands
+edit the record here and never consult
+.Pa /Network
+.It Pa /Network/Library/DirectoryServices/Domain.plist
+present when this machine is bound to a server, in which case these commands
 refuse: the record belongs to the server
+.It Pa /Local/Library/DirectoryServices/Binding.plist
+names that server for the message; it does not decide the role
 .It Pa /etc/shells
 .El
 .Sh EXIT STATUS

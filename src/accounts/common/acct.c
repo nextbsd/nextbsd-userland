@@ -290,12 +290,38 @@ acct_shell_listed(const char *shell)
 }
 
 /*
- * The binding file is a plist, but reading one key out of it does not
- * justify linking CoreFoundation into every account tool. The value we
- * need is the string after <key>server</key>, so scan for it. A binding
- * we cannot parse still counts as bound: refusing is the safe answer,
- * because the alternative is creating a local account that the /Network
- * plists will shadow.
+ * Are we a domain-joined system right now?
+ *
+ * One question, asked in one order, the first answer winning -- the same order
+ * the ds* commands use, and Gershwin's dscli before them:
+ *
+ *	/Local/Library/DirectoryServices/Domain.plist	this machine IS the
+ *		server. Say no, and do not look at /Network at all. It owns the
+ *		accounts; there is nothing to defer to.
+ *	/Network/Library/DirectoryServices/Domain.plist	joined. Say yes.
+ *	neither						standalone. Say no.
+ *
+ * Domain.plist is what dspromote writes and dsdemote removes, so its presence
+ * is the whole of the value -- the file dscli writes holds an empty dict and
+ * reading a value out of it would not recognise a machine Gershwin promoted.
+ *
+ * The server is asked about first for a reason. The whole of /Local is
+ * exported, so a server that ever had /Network mounted on it would see its own
+ * Domain.plist arrive under /Network, and an unordered test would then make
+ * every account tool refuse to work on the one machine that owns the accounts.
+ *
+ * Testing Domain.plist under /Network rather than Users.plist also means a
+ * client whose server has been demoted reads as standalone immediately: the
+ * marker vanishes from the export, and nothing has to notify the client.
+ *
+ * An absent /Network -- never joined, or the mount is not up yet at boot -- is
+ * standalone, and the tools then behave exactly as they would on a machine
+ * that never joined. That is the designed fallback, not a failure.
+ *
+ * Binding.plist is still read, but only to name the server in the message --
+ * never to decide. The value we need is the string after <key>server</key>,
+ * and scanning for it does not justify linking CoreFoundation into every
+ * account tool.
  */
 bool
 acct_bound_server(char *server, size_t len)
@@ -306,9 +332,13 @@ acct_bound_server(char *server, size_t len)
 
 	if (server != NULL && len > 0)
 		server[0] = '\0';
-	if ((f = fopen(ACCT_BINDING_PLIST, "r")) == NULL)
-		return (false);		/* no binding file: not bound */
+	if (access(ACCT_LOCAL_DOMAIN, F_OK) == 0)
+		return (false);		/* this machine is the server */
+	if (access(ACCT_NETWORK_DOMAIN, F_OK) != 0)
+		return (false);		/* no domain there: not joined */
 	bound = true;
+	if ((f = fopen(ACCT_BINDING_PLIST, "r")) == NULL)
+		return (true);		/* joined, but we cannot name it */
 	while (fgets(line, sizeof(line), f) != NULL) {
 		if (!in_key) {
 			if ((p = strstr(line, "<key>server</key>")) == NULL)
@@ -519,16 +549,26 @@ acct_kill_uid(uid_t uid)
 	return (n);
 }
 
+/*
+ * On a server the /Network root is left out entirely. /Local is what is
+ * exported, so a server that had /Network mounted on it would otherwise be
+ * offered a second path to the same home through its own export -- and would
+ * take it whenever /Local/Users/<name> was missing.
+ */
 int
 acct_remove_home(const char *name)
 {
 	char path[PATH_MAX];
 	struct stat st;
-	const char *roots[] = { ACCT_LOCAL_USERS, "/Network/Users", NULL };
+	const char *roots[] = {
+		ACCT_LOCAL_USERS, ACCT_NETWORK_USERS_DIR, NULL
+	};
 	size_t i;
 
 	if (!name_ok_for_path(name))
 		return (-1);
+	if (access(ACCT_LOCAL_DOMAIN, F_OK) == 0)
+		roots[1] = NULL;
 	for (i = 0; roots[i] != NULL; i++) {
 		if (snprintf(path, sizeof(path), "%s/%s", roots[i], name) >=
 		    (int)sizeof(path))

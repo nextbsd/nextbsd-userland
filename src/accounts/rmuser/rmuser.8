@@ -134,10 +134,17 @@ is the right tool when that is wanted.
 .Bl -tag -width "/Local/Library/DirectoryServices/Groups.plist" -compact
 .It Pa /Local/Library/DirectoryServices/Users.plist
 .It Pa /Local/Library/DirectoryServices/Groups.plist
-.It Pa /Local/Library/DirectoryServices/Binding.plist
-present when this machine is a directory client, in which case
+.It Pa /Local/Library/DirectoryServices/Domain.plist
+present when this machine is the directory server, in which case
+.Nm
+manages the accounts here and never consults
+.Pa /Network
+.It Pa /Network/Library/DirectoryServices/Domain.plist
+present when this machine is bound to a server, in which case
 .Nm
 refuses: the account belongs on the server
+.It Pa /Local/Library/DirectoryServices/Binding.plist
+names that server for the message; it does not decide the role
 .It Pa /Local/Users/ Ns Ar name
 the home directory
 .It Pa /var/cron/tabs/ Ns Ar name

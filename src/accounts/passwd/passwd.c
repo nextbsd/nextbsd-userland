@@ -145,25 +145,9 @@ do_directory(const char *name, enum action act, uid_t ruid)
 {
 	struct ds_handle *h;
 	struct ds_userrec u;
-	char newpw[256], server[256];
+	char newpw[256];
 	enum ds_error err;
 	int rc;
-
-	/*
-	 * A joined machine reads its accounts from the server's copy under
-	 * /Network, which this tool has no business rewriting: it belongs to
-	 * the server, and an NFS export with root squashed would refuse the
-	 * write anyway.
-	 */
-	if (acct_bound_server(server, sizeof(server))) {
-		if (server[0] != '\0')
-			warnx("this machine is joined to %s; change the "
-			    "password there", server);
-		else
-			warnx("this machine is joined to a directory server; "
-			    "change the password there");
-		return (1);
-	}
 
 	if ((err = ds_open(DS_LOCAL, DS_RDWR, &h)) != DS_OK) {
 		warnx("%s", err == DS_ELOCK ?
@@ -416,6 +400,7 @@ find_store(const char *name, const char *forced)
 int
 main(int argc, char *argv[])
 {
+	char server[256];
 	const char *forced = NULL;
 	const char *name;
 	struct passwd *self;
@@ -479,6 +464,31 @@ main(int argc, char *argv[])
 	if (act != ACT_CHANGE && ruid != 0) {
 		warnx("only root may use -d, -l or -u");
 		return (1);
+	}
+
+	/*
+	 * Asked before find_store(), because the store is the wrong thing to
+	 * branch on first. A joined machine reads its accounts from the
+	 * server's copy under /Network, which this tool has no business
+	 * rewriting -- it belongs to the server, and an export with root
+	 * squashed would refuse the write anyway.
+	 *
+	 * This check used to live inside do_directory(), which find_store()
+	 * only selects when the name is in the LOCAL plists. On a real client
+	 * it is not, so the routing went to do_files() and the refusal never
+	 * ran. Worse than a missing diagnostic: on a client that still had a
+	 * local master.passwd entry of the same name, passwd rewrote the local
+	 * hash and reported success while login carried on authenticating
+	 * against /Network -- the password had not changed.
+	 */
+	if (acct_bound_server(server, sizeof(server))) {
+		if (server[0] != '\0')
+			warnx("this machine is joined to %s; change the "
+			    "password there", server);
+		else
+			warnx("this machine is joined to a directory server; "
+			    "change the password there");
+		return (ACCT_EX_REFUSED);
 	}
 
 	store = find_store(name, forced);

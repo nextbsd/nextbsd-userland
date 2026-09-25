@@ -42,6 +42,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: autologin-user
         run: sh src/accounts/autologin-user/tests/autologin_test.sh
+      # The directory commands are plain libc and every path they touch is a
+      # build-time override, so they run here rather than only in the image.
+      # They were not wired up before, which meant 199 lines of test and the
+      # whole promote/demote/join/leave lifecycle had nothing running them.
+      - name: directory commands
+        run: sh src/directory/tests/ds_test.sh
 
   # --- Per-arch lanes (parallel, independent) ---
   amd64:

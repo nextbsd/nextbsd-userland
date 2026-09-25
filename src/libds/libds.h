@@ -42,7 +42,7 @@
  *
  *   Domains do not fall back on write. Reads elsewhere prefer the
  *   /Network copy of a plist over the /Local one; a writer cannot guess,
- *   because adduser(8) means local and dspromote(8) means network. So the
+ *   because adduser(8) means local; nothing in the tree passes DS_NETWORK. So the
  *   domain is an argument, not a discovery.
  *
  *   A commit writes Groups.plist before Users.plist, always. Promoting a

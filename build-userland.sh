@@ -982,6 +982,19 @@ run_buildenv "make -C $SRC/accounts/pw DESTDIR=$DESTDIR SYSROOT=$SYSROOT all ins
 test -x "$DESTDIR/usr/sbin/pw" || { echo "FAIL: /usr/sbin/pw not installed"; exit 1; }
 echo "==> pw built"
 
+# ---- directory commands (nextbsd/nextbsd-userland#253, E18 U7) --------------
+# dspromote/dsdemote/dsjoin/dsleave/dsstatus: one binary behind five names,
+# moving a machine between standalone, directory server and client. Plain
+# libc -- it writes small plists by hand rather than parsing or copying any, so it links
+# neither libds nor CoreFoundation.
+comp "directory commands"
+run_buildenv "make -C $SRC/directory DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/sbin/dspromote" || { echo "FAIL: /usr/sbin/dspromote not installed"; exit 1; }
+for l in dsdemote dsjoin dsleave dsstatus; do
+    test -L "$DESTDIR/usr/sbin/$l" || { echo "FAIL: /usr/sbin/$l link not installed"; exit 1; }
+done
+echo "==> directory commands built"
+
 # ---- autologin-user (nextbsd/nextbsd-userland#278, E18 U11) ----------------
 # Names the account the console logs in automatically, or prints nothing. The
 # getty job runs it; the rule is in one place rather than in a shell one-liner.

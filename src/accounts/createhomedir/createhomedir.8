@@ -57,7 +57,11 @@ Only homes under
 .Pa /Local/Users
 or
 .Pa /Network/Users
-are considered; system accounts in
+are considered, and on a directory server \[em] one with
+.Pa /Local/Library/DirectoryServices/Domain.plist \[em]
+only the former, since
+.Pa /Network
+there could only be the machine's own export seen back through a mount; system accounts in
 .Xr master.passwd 5
 point at
 .Pa /var/empty ,
@@ -92,6 +96,9 @@ names a directory domain; NextBSD has no equivalent to select.
 .It Fl s
 Consider only homes under
 .Pa /Network/Users .
+Refused on a directory server, whose homes are the ones it exports and are
+under
+.Pa /Local/Users .
 .It Fl P
 Create the home for the user named by the
 .Ev PAM_USER
