@@ -110,6 +110,12 @@
 #ifndef DS_SERVICE_DIR
 #define DS_SERVICE_DIR	"/Local/Library/Preferences/mDNSResponder/Services"
 #endif
+#ifndef DS_LAUNCHD_DIR
+#define DS_LAUNCHD_DIR	"/System/Library/LaunchDaemons"
+#endif
+#ifndef DS_UMOUNT
+#define DS_UMOUNT	"/sbin/umount"
+#endif
 #ifndef DS_LAUNCHCTL
 #define DS_LAUNCHCTL	"/bin/launchctl"
 #endif
@@ -202,8 +208,8 @@ launchctl(const char *verb, const char *const *labels, size_t n)
 	int st;
 
 	for (i = 0; i < n; i++) {
-		(void)snprintf(path, sizeof(path),
-		    "/System/Library/LaunchDaemons/%s.plist", labels[i]);
+		(void)snprintf(path, sizeof(path), "%s/%s.plist",
+		    DS_LAUNCHD_DIR, labels[i]);
 		if (!exists(path)) {
 			warnx("%s is not installed; skipping", labels[i]);
 			continue;
@@ -307,6 +313,126 @@ write_service(void)
 	return (0);
 }
 
+/* ------------------------------------------------------------- the unmounts */
+
+/*
+ * Unmount what dsjoin mounted. Reported, never fatal: a busy mount is the
+ * administrator's problem to clear, and refusing to finish dsleave over it
+ * would leave the machine bound to a server it has been told to leave.
+ *
+ * This is not cosmetic. nss_directory_services prefers /Network whenever the
+ * file is there (dsdb.c), so a mount that outlives the binding keeps the
+ * machine resolving the old server's accounts while dsstatus reports
+ * standalone -- and in that state every account tool's binding check passes,
+ * so rmuser would remove_tree() a home under the server's export.
+ *
+ * Deliberately not -f: yanking a busy NFS mount to tidy up is worse than
+ * saying so and leaving it.
+ */
+static void
+unmount_network(void)
+{
+	static const char *const points[] = { DS_NETWORK_USERS, DS_NETWORK_DIR };
+	const char *argv[3];
+	size_t i;
+	pid_t pid;
+	int st;
+
+	for (i = 0; i < nitems(points); i++) {
+		if (!exists(points[i]))
+			continue;
+		argv[0] = DS_UMOUNT;
+		argv[1] = points[i];
+		argv[2] = NULL;
+		if ((pid = fork()) == -1) {
+			warn("fork");
+			return;
+		}
+		if (pid == 0) {
+			(void)execv(DS_UMOUNT, (char *const *)argv);
+			_exit(127);
+		}
+		if (waitpid(pid, &st, 0) == -1 || !WIFEXITED(st) ||
+		    WEXITSTATUS(st) != 0)
+			warnx("%s is still mounted; unmount it by hand",
+			    points[i]);
+		else
+			say("  unmounted %s", points[i]);
+	}
+}
+
+/* --------------------------------------------------------- atomic file swap */
+
+/*
+ * Replace `path` in one step. Used for the files whose contents decide what
+ * this machine IS -- a half-written Role.plist reads as "not a server", and
+ * dsdemote then refuses to demote a machine that is still exporting and still
+ * running nfsd, which is exactly the state the value-matching in
+ * role_is_server() was meant to avoid.
+ *
+ * The mode is carried from the file being replaced when there is one, so this
+ * never quietly changes an administrator's permissions -- the bug that made
+ * /etc/ntp.conf 0600 after every dsjoin.
+ */
+struct atomic {
+	char	 tmp[PATH_MAX];
+	char	 path[PATH_MAX];
+	FILE	*f;
+};
+
+static FILE *
+atomic_open(struct atomic *a, const char *path, mode_t fallback)
+{
+	struct stat st;
+	int fd;
+
+	if (strlcpy(a->path, path, sizeof(a->path)) >= sizeof(a->path) ||
+	    (size_t)snprintf(a->tmp, sizeof(a->tmp), "%s.ds.XXXXXX", path) >=
+	    sizeof(a->tmp)) {
+		errno = ENAMETOOLONG;
+		warn("%s", path);
+		return (NULL);
+	}
+	if ((fd = mkstemp(a->tmp)) == -1) {
+		warn("%s", a->tmp);
+		return (NULL);
+	}
+	if (fchmod(fd, stat(path, &st) == 0 ? (st.st_mode & 07777) : fallback)
+	    == -1) {
+		warn("%s", a->tmp);
+		(void)close(fd);
+		(void)unlink(a->tmp);
+		return (NULL);
+	}
+	if ((a->f = fdopen(fd, "w")) == NULL) {
+		warn("%s", a->tmp);
+		(void)close(fd);
+		(void)unlink(a->tmp);
+		return (NULL);
+	}
+	return (a->f);
+}
+
+/* fsync before rename, so the rename cannot land ahead of the bytes. */
+static int
+atomic_commit(struct atomic *a)
+{
+	int fd = fileno(a->f);
+
+	if (fflush(a->f) != 0 || fsync(fd) == -1) {
+		warn("%s", a->tmp);
+		(void)fclose(a->f);
+		(void)unlink(a->tmp);
+		return (-1);
+	}
+	if (fclose(a->f) != 0 || rename(a->tmp, a->path) == -1) {
+		warn("%s", a->path);
+		(void)unlink(a->tmp);
+		return (-1);
+	}
+	return (0);
+}
+
 /* ------------------------------------------------------ the NTP time source */
 
 /*
@@ -314,25 +440,25 @@ write_service(void)
  * shipped by nextbsd-overlays with nothing between them, so the common case
  * is rewriting the body in place. A file that has lost its markers gets them
  * appended, and one we cannot read at all is reported rather than clobbered:
- * ntp.conf is the administrator's file and only this block is ours.
+ * ntp.conf is the administrator's file and only this block is ours -- which
+ * now includes its mode: the replacement goes through atomic_open(), which
+ * carries the mode over. It previously came out 0600 root:wheel after every
+ * dsjoin and dsleave, whatever it had been.
  */
 static int
 ntp_set(const char *server)
 {
-	char line[1024], tmp[PATH_MAX];
+	char line[1024];
+	struct atomic a;
 	FILE *in, *out;
 	bool in_block = false, seen = false;
-	int fd;
 
 	if ((in = fopen(DS_NTP_CONF, "r")) == NULL) {
 		warn("%s", DS_NTP_CONF);
 		return (-1);
 	}
-	(void)snprintf(tmp, sizeof(tmp), "%s.ds.XXXXXX", DS_NTP_CONF);
-	if ((fd = mkstemp(tmp)) == -1 || (out = fdopen(fd, "w")) == NULL) {
-		warn("%s", tmp);
+	if ((out = atomic_open(&a, DS_NTP_CONF, 0644)) == NULL) {
 		(void)fclose(in);
-		if (fd != -1) { (void)close(fd); (void)unlink(tmp); }
 		return (-1);
 	}
 	while (fgets(line, sizeof(line), in) != NULL) {
@@ -360,11 +486,8 @@ ntp_set(const char *server)
 			(void)fprintf(out, "server %s iburst\n", server);
 		(void)fputs(NTP_END "\n", out);
 	}
-	if (fclose(out) != 0 || rename(tmp, DS_NTP_CONF) == -1) {
-		warn("%s", DS_NTP_CONF);
-		(void)unlink(tmp);
+	if (atomic_commit(&a) == -1)
 		return (-1);
-	}
 	say("  %s the time source in %s",
 	    server != NULL ? "set" : "cleared", DS_NTP_CONF);
 	return (0);
@@ -411,12 +534,11 @@ binding_write(const char *server)
 static int
 role_write(void)
 {
+	struct atomic a;
 	FILE *f;
 
-	if ((f = fopen(DS_ROLE, "w")) == NULL) {
-		warn("%s", DS_ROLE);
+	if ((f = atomic_open(&a, DS_ROLE, 0644)) == NULL)
 		return (-1);
-	}
 	(void)fprintf(f,
 	    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
 	    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
@@ -427,18 +549,20 @@ role_write(void)
 	    "\t<key>version</key>\n\t<integer>1</integer>\n"
 	    "</dict>\n"
 	    "</plist>\n");
-	if (fclose(f) != 0) {
-		warn("%s", DS_ROLE);
+	if (atomic_commit(&a) == -1)
 		return (-1);
-	}
 	say("  wrote %s", DS_ROLE);
 	return (0);
 }
 
 /*
  * True when this machine has been promoted. Matched on the value rather than
- * merely on the file existing, so a truncated or half-written file reads as
- * "not a server" instead of stranding the machine in a role it cannot leave.
+ * on the file merely existing, so a stray empty file is not a server.
+ *
+ * That is only safe because role_write() replaces the file atomically: a
+ * half-written Role.plist cannot be observed, so "reads as not-a-server" can
+ * no longer mean "a live server that dsdemote refuses to demote". Before the
+ * write was atomic, this comment claimed a property the code did not have.
  */
 static bool
 role_is_server(void)
@@ -542,9 +666,21 @@ do_promote(void)
 		warn("%s", DS_LOCAL_USERS);
 		return (1);
 	}
-	if (role_write() == -1)
-		return (1);
+	/*
+	 * Order matters, and it used to be wrong. The role marker is written
+	 * LAST, after the exports and the Bonjour record, because it is what
+	 * current_role() reads: written first, a failure in write_exports() or
+	 * write_service() left a machine reporting "directory server" with
+	 * "exports (none)", which dspromote then refused to retry ("already a
+	 * directory server") and only dsdemote could undo.
+	 *
+	 * The jobs come after the marker for the same reason -- a load failure
+	 * is reported but never fatal (see launchctl()), so by then the machine
+	 * genuinely is a server and dsdemote can take it back.
+	 */
 	if (write_exports() == -1 || write_service() == -1)
+		return (1);
+	if (role_write() == -1)
 		return (1);
 	launchctl("load", server_jobs, nitems(server_jobs));
 
@@ -644,6 +780,7 @@ do_leave(void)
 		return (1);
 	}
 	say("  removed %s", DS_BINDING);
+	unmount_network();
 	if (ntp_set(NULL) == -1)
 		warnx("the binding is gone; the time source is not cleared");
 

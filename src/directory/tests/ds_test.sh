@@ -2,10 +2,12 @@
 # Host-side tests for dspromote, dsdemote, dsjoin, dsleave and dsstatus.
 #
 # Every path the program touches is a build-time override, so the whole thing
-# runs against a staged fake root: no /etc is written, no launchctl runs, and
-# the suite needs no privilege. launchctl itself is a stub that records the
-# arguments it was called with, so the tests can assert WHICH jobs each verb
-# loads rather than only that it tried.
+# runs against a staged fake root: no real /etc is written, no real launchctl
+# runs, and the suite needs no privilege. launchctl is a stub that records its
+# arguments, and DS_LAUNCHD_DIR points at the staged LaunchDaemons tree, so the
+# job assertions genuinely fire -- previously the program looked for the real
+# /System path, every job was skipped as "not installed", and the log the stub
+# wrote was never read by any check.
 #
 # What is covered: the role transitions in both directions, every refusal, that
 # promotion SHARES /Local rather than moving anything to /Network, the role
@@ -53,6 +55,7 @@ ${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes
     -DDS_NETWORK_USERS="\"$NET_USERS\"" \
     -DDS_BINDING="\"$BINDING\"" \
     -DDS_ROLE="\"$ROLE\"" \
+    -DDS_LAUNCHD_DIR="\"$R/System/Library/LaunchDaemons\"" \
     -DDS_EXPORTS="\"$EXPORTS\"" \
     -DDS_NTP_CONF="\"$NTP\"" \
     -DDS_SERVICE_DIR="\"$SVCDIR\"" \
@@ -74,6 +77,14 @@ cksay()  { _l=$1; _w=$2; shift 2
            _o=$("$@" 2>&1 </dev/null)
            case "$_o" in *"$_w"*) pass=$((pass+1)) ;;
            *) fail=$((fail+1)); printf 'FAIL %-46s said [%s] want [%s]\n' "$_l" "$(echo "$_o"|head -1)" "$_w" ;; esac; }
+ckrc()   { if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1))
+           printf 'FAIL %-46s exit %s want %s\n' "$1" "$2" "$3"; fi; }
+cklc()   { if grep -q "$2" "$DS_LAUNCHCTL_LOG" 2>/dev/null; then pass=$((pass+1))
+           else fail=$((fail+1))
+           printf 'FAIL %-46s launchctl log has no /%s/\n' "$1" "$2"; fi; }
+cknolc() { if grep -q "$2" "$DS_LAUNCHCTL_LOG" 2>/dev/null; then fail=$((fail+1))
+           printf 'FAIL %-46s launchctl log still has /%s/\n' "$1" "$2"
+           else pass=$((pass+1)); fi; }
 ckgrep() { if grep -q "$3" "$2" 2>/dev/null; then pass=$((pass+1)); else fail=$((fail+1))
            printf 'FAIL %-46s %s has no /%s/\n' "$1" "$2" "$3"; fi; }
 cknogrep(){ if grep -q "$3" "$2" 2>/dev/null; then fail=$((fail+1))
@@ -128,6 +139,12 @@ cknogrep "and exports no /Network path"    "$EXPORTS" "/Network"
 ckgrep   "the record advertises the type"  "$SVC" "_nextbsd-ds._tcp"
 ckgrep   "and nfs's port as an integer"    "$SVC" "<integer>2049</integer>"
 cksay    "status now reports server"       "directory server" "$fix/dsstatus"
+"$fix/dsstatus" >/dev/null 2>&1; ckrc "dsstatus succeeds on a server" "$?" 0
+# The jobs: asserted, not assumed. These could not fire before DS_LAUNCHD_DIR.
+cklc     "promote loads rpcbind"           "load -w .*org.nextbsd.rpcbind"
+cklc     "promote loads mountd"            "load -w .*org.nextbsd.mountd"
+cklc     "promote loads nfsd"              "load -w .*org.nextbsd.nfsd"
+cknolc   "and does not load network-mount" "org.nextbsd.network-mount"
 
 # One line, not two, when both paths share a filesystem -- which they do here.
 ck "exports is one line on one filesystem" \
@@ -135,6 +152,7 @@ ck "exports is one line on one filesystem" \
 
 # ---- promote refusals
 cksay "promote refuses an existing server" "already a directory server" "$fix/dspromote"
+"$fix/dspromote" >/dev/null 2>&1; ckrc "and exits nonzero" "$?" 1
 cksay "join refuses on a server"           "run dsdemote first"         "$fix/dsjoin" other.local
 
 # ---- demote reverses it
@@ -169,9 +187,11 @@ ckgrep   "the NTP block names the server"  "$NTP" "^server server.local iburst$"
 ckgrep   "the markers are still there"     "$NTP" "^# END directory server$"
 cknogrep "the pool line is untouched"      "$NTP" "^#pool"
 cksay    "status reports the binding"      "bound to server.local" "$fix/dsstatus"
+cklc     "join loads network-mount"        "load -w .*org.nextbsd.network-mount"
 
 # ---- join refusals
 cksay "join refuses when already bound"    "already bound to server.local" "$fix/dsjoin" other.local
+"$fix/dsjoin" other.local >/dev/null 2>&1; ckrc "and exits nonzero" "$?" 1
 cksay "promote refuses on a client"        "run dsleave first"             "$fix/dspromote"
 "$fix/dsleave" >/dev/null 2>&1
 cksay "join refuses a bad host name"       "not a usable host name" "$fix/dsjoin" 'evil;rm -rf /'
@@ -182,6 +202,7 @@ seed
 "$fix/dsjoin" server.local >/dev/null 2>&1
 "$fix/dsleave" >/dev/null 2>&1
 cknofile "leave removes the binding"       "$BINDING"
+cklc     "leave unloads network-mount"     "unload -w .*org.nextbsd.network-mount"
 cknogrep "and empties the NTP block"       "$NTP" "^server server.local"
 ckgrep   "leaving the markers behind"      "$NTP" "^# BEGIN directory server"
 cksay    "status is standalone again"      "standalone" "$fix/dsstatus"

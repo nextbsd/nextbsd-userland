@@ -2,8 +2,8 @@
 # (nextbsd/nextbsd-userland#253, E18 U7).
 #
 # One binary behind five names, dispatching on argv[0], the way chpass(1)
-# carries chfn and chsh. Plain libc: the plists it moves are copied as files
-# rather than parsed, and the one value it reads back -- the bound server --
+# carries chfn and chsh. Plain libc: it writes small plists by hand and moves
+# nothing, and the one value it reads back -- the bound server --
 # comes out of the binding plist with the same small reader acct.c uses. So
 # this links neither libds nor CoreFoundation.
 #

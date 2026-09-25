@@ -290,12 +290,31 @@ acct_shell_listed(const char *shell)
 }
 
 /*
- * The binding file is a plist, but reading one key out of it does not
- * justify linking CoreFoundation into every account tool. The value we
- * need is the string after <key>server</key>, so scan for it. A binding
- * we cannot parse still counts as bound: refusing is the safe answer,
- * because the alternative is creating a local account that the /Network
- * plists will shadow.
+ * Are we a domain-joined system right now?
+ *
+ * The answer is whether /Network/Library/DirectoryServices/Users.plist is
+ * there, and nothing else. Not the bare /Network directory -- that exists as an
+ * empty mount point whether or not anything is mounted on it. The full path is
+ * the same one nss_directory_services stats (it prefers the /Network plists
+ * when they are there and falls back to /Local otherwise) and the same one
+ * autologin-user checks, so all three agree on one question.
+ *
+ * If it is absent -- never joined, or the mount is not up yet at boot -- the
+ * machine simply behaves as a non-joined system. That is the designed
+ * fallback, not a failure.
+ *
+ * This used to test whether Binding.plist opened, i.e. "am I configured as
+ * joined" rather than "am I joined". That was both the wrong question and
+ * unreachable in practice: passwd, chpass and pw route to master.passwd as
+ * soon as a name misses the local plists, which is exactly what happens on a
+ * real client, so the check sat behind the routing and never ran. Keying off
+ * the mount makes it true on a client regardless of where the account lives,
+ * so it can be asked first.
+ *
+ * Binding.plist is still read, but only to name the server in the message --
+ * never to decide. The value we need is the string after <key>server</key>,
+ * and scanning for it does not justify linking CoreFoundation into every
+ * account tool.
  */
 bool
 acct_bound_server(char *server, size_t len)
@@ -306,9 +325,11 @@ acct_bound_server(char *server, size_t len)
 
 	if (server != NULL && len > 0)
 		server[0] = '\0';
-	if ((f = fopen(ACCT_BINDING_PLIST, "r")) == NULL)
-		return (false);		/* no binding file: not bound */
+	if (access(ACCT_NETWORK_USERS, F_OK) != 0)
+		return (false);		/* no network plists: not joined */
 	bound = true;
+	if ((f = fopen(ACCT_BINDING_PLIST, "r")) == NULL)
+		return (true);		/* joined, but we cannot name it */
 	while (fgets(line, sizeof(line), f) != NULL) {
 		if (!in_key) {
 			if ((p = strstr(line, "<key>server</key>")) == NULL)

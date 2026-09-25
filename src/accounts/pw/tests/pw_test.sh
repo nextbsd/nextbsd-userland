@@ -27,6 +27,7 @@ esac
 ${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes \
     -Wmissing-prototypes -fblocks -DLIBDS_TEST -DPW_TEST \
     -DACCT_BINDING_PLIST="\"$fix/Binding.plist\"" \
+    -DACCT_NETWORK_USERS="\"$fix/NetworkUsers.plist\"" \
     -I"$top/src/accounts/common" -I"$top/src/libds" \
     -o "$fix/pw" \
     "$top/src/accounts/pw/pw.c" \
@@ -57,7 +58,7 @@ P
 <key>members</key><array><string>joe</string></array></dict>
 </dict></plist>
 P
-	rm -f "$fix/Binding.plist" "$fix/delegated"
+	rm -f "$fix/Binding.plist" "$fix/NetworkUsers.plist" "$fix/delegated"
 }
 
 cd "$fix" || exit 2
@@ -201,6 +202,9 @@ if grep -q '<string>kate</string>' Groups.plist; then pass=$((pass+1)); else
 seed
 printf '<plist version="1.0"><dict><key>server</key><string>ds.example.lan</string></dict></plist>\n' \
     > "$fix/Binding.plist"
+# Joined is decided by the NETWORK plist being present, not by the binding --
+# the binding only supplies the server name for the message.
+printf '<plist version="1.0"><dict/></plist>\n' > "$fix/NetworkUsers.plist"
 cksay "a joined machine refuses a write" "joined to ds.example.lan" \
     ./pw useradd newbie -u 5300 -g 5300
 cklocal "and does not hand it to the base either" ./pw useradd newbie -u 5300 -g 5300

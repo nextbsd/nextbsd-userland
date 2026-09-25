@@ -217,6 +217,24 @@ main(int argc, char *argv[])
 		return (1);
 	}
 
+	/*
+	 * Asked before anything else, because this is the question that decides
+	 * whether we own the record at all. It used to sit after ds_open() and
+	 * after the fall-through to chpass_bsd_main(), which on a real client is
+	 * the path always taken -- the account is in the /Network plists, so the
+	 * local lookup misses, getpwnam() succeeds, and control left for the BSD
+	 * copy before this was ever reached.
+	 */
+	if (acct_bound_server(server, sizeof(server))) {
+		if (server[0] != '\0')
+			warnx("this machine is joined to %s; change the record "
+			    "there", server);
+		else
+			warnx("this machine is joined to a directory server; "
+			    "change the record there");
+		return (ACCT_EX_REFUSED);
+	}
+
 	if ((err = ds_open(DS_LOCAL, DS_RDWR, &h)) != DS_OK) {
 		warnx("%s", err == DS_ELOCK ?
 		    "the directory is locked; another account tool may be "
@@ -242,16 +260,6 @@ main(int argc, char *argv[])
 	/* Authorisation on the real uid, never the effective one. */
 	if (ruid != 0 && ruid != u.uid) {
 		warnx("you may only change your own information");
-		ds_close(h);
-		return (1);
-	}
-	if (acct_bound_server(server, sizeof(server))) {
-		if (server[0] != '\0')
-			warnx("this machine is joined to %s; change the record "
-			    "there", server);
-		else
-			warnx("this machine is joined to a directory server; "
-			    "change the record there");
 		ds_close(h);
 		return (1);
 	}

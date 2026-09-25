@@ -968,7 +968,7 @@ echo "==> pw built"
 # ---- directory commands (nextbsd/nextbsd-userland#253, E18 U7) --------------
 # dspromote/dsdemote/dsjoin/dsleave/dsstatus: one binary behind five names,
 # moving a machine between standalone, directory server and client. Plain
-# libc -- it copies the plists as files rather than parsing them, so it links
+# libc -- it writes small plists by hand rather than parsing or copying any, so it links
 # neither libds nor CoreFoundation.
 comp "directory commands"
 run_buildenv "make -C $SRC/directory DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"

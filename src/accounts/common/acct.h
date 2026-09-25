@@ -68,6 +68,17 @@
 #ifndef ACCT_SHELLS
 #define ACCT_SHELLS		"/etc/shells"
 #endif
+/*
+ * "This record is not ours to change." One value across all five tools: they
+ * used to exit 2 (adduser, rmuser), 1 (passwd, chpass) and 77 (pw) for the
+ * identical condition.
+ */
+#ifndef ACCT_EX_REFUSED
+#define ACCT_EX_REFUSED		2
+#endif
+#ifndef ACCT_NETWORK_USERS
+#define ACCT_NETWORK_USERS	"/Network/Library/DirectoryServices/Users.plist"
+#endif
 #ifndef ACCT_BINDING_PLIST
 #define ACCT_BINDING_PLIST	"/Local/Library/DirectoryServices/Binding.plist"
 #endif

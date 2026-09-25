@@ -364,6 +364,28 @@ main(int argc, char *argv[])
 	if (v == V_USERNEXT || v == V_GROUPNEXT)
 		return (delegate(argc, argv));
 
+	/*
+	 * Asked before ds_open() and before route_to_files(), because routing
+	 * is the wrong thing to decide first. It used to sit after both, and
+	 * after the geteuid() check, inside the `not a show verb` arm -- so on a
+	 * real client route_to_files() had already sent the caller to the base
+	 * copy and this never ran. It also meant the exclusive directory lock
+	 * was held while deciding to refuse.
+	 *
+	 * Show verbs are exempt deliberately: reading is fine on a client, and
+	 * reporting what the server says is useful.
+	 */
+	if (v != V_USERSHOW && v != V_GROUPSHOW &&
+	    acct_bound_server(server, sizeof(server))) {
+		if (server[0] != '\0')
+			warnx("this machine is joined to %s; change the account "
+			    "there", server);
+		else
+			warnx("this machine is joined to a directory server; "
+			    "change the account there");
+		return (ACCT_EX_REFUSED);
+	}
+
 	if ((err = ds_open(DS_LOCAL, DS_RDWR, &h)) != DS_OK) {
 		if (err == DS_ELOCK) {
 			warnx("the directory is locked; another account tool "
@@ -395,16 +417,6 @@ main(int argc, char *argv[])
 	if (v != V_USERSHOW && v != V_GROUPSHOW) {
 		if (geteuid() != 0 && !pw_test_root) {
 			warnx("only root may change accounts");
-			ds_close(h);
-			return (EX_NOPERM);
-		}
-		if (acct_bound_server(server, sizeof(server))) {
-			if (server[0] != '\0')
-				warnx("this machine is joined to %s; change "
-				    "the account there", server);
-			else
-				warnx("this machine is joined to a directory "
-				    "server; change the account there");
 			ds_close(h);
 			return (EX_NOPERM);
 		}

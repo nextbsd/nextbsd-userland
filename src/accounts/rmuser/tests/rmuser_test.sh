@@ -27,6 +27,7 @@ esac
 ${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes \
     -Wmissing-prototypes -fblocks -DLIBDS_TEST -DRMUSER_TEST \
     -DACCT_BINDING_PLIST="\"$fix/Binding.plist\"" \
+    -DACCT_NETWORK_USERS="\"$fix/NetworkUsers.plist\"" \
     -DACCT_LOCAL_USERS="\"$fix/Users\"" \
     -DACCT_CRON_TABS="\"$fix/crontabs\"" \
     -DACCT_AT_JOBS="\"$fix/atjobs\"" \
@@ -77,7 +78,7 @@ P
 <key>members</key><array><string>joe</string><string>kate</string></array></dict>
 </dict></plist>
 P
-	rm -rf "$fix/Binding.plist" "$fix/Users" "$fix/crontabs" "$fix/atjobs"
+	rm -rf "$fix/Binding.plist" "$fix/NetworkUsers.plist" "$fix/Users" "$fix/crontabs" "$fix/atjobs"
 	mkdir -p "$fix/Users/joe/Documents" "$fix/crontabs" "$fix/atjobs"
 	: > "$fix/Users/joe/.zshrc"
 	: > "$fix/crontabs/joe"
@@ -200,9 +201,11 @@ else pass=$((pass+1)); fi
 seed
 printf '<plist version="1.0"><dict><key>server</key><string>ds.example.lan</string></dict></plist>\n' \
     > "$fix/Binding.plist"
+# Joined is the presence of the NETWORK plist; the binding only names the server.
+printf '<plist version="1.0"><dict/></plist>\n' > "$fix/NetworkUsers.plist"
 cksay "a joined machine refuses" "joined to ds.example.lan" ./rmuser -y joe
 ckhas "and changed nothing" '<string>joe</string>' Users.plist
-rm -f "$fix/Binding.plist"
+rm -f "$fix/Binding.plist" "$fix/NetworkUsers.plist"
 
 # ---- batch mode
 seed

@@ -40,7 +40,7 @@
 
 #define EX_OK		0
 #define EX_USAGE	1
-#define EX_REFUSED	2
+#define EX_REFUSED		ACCT_EX_REFUSED
 #define EX_DATABASE	3
 #define EX_CANCELLED	4
 
