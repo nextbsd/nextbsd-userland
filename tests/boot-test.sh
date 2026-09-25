@@ -1722,14 +1722,37 @@ set timeout 180
 #   timeout               = the #398 stall -> FAIL (fall back to halt -p, which
 #                           bypasses init, so the runner is never left hanging)
 #
-# The timeout is measured from the LAST sign of life, not from the start of the
-# shutdown: a poweroff that is still working is not a stall. Measured on an amd64
-# CI runner, `shutdown -p now` to "Uptime:" took 160s against a flat 150s budget,
-# so this stage failed intermittently on a machine that powered off correctly ten
-# seconds later. The kernel alone can account for most of that -- vnlru and
-# syncer are each given "max 60 seconds" to stop -- so raising the number and
-# hoping is not a fix. Progress markers reset the clock instead, which leaves a
-# genuine #398 stall (no output at all) still caught.
+# Two separate things were making this stage fail intermittently, and neither was
+# a stall in launchd.
+#
+# 1. The poweroff was timed from when the command went out rather than from the
+#    last sign of life, so a slow-but-working shutdown could trip the budget.
+#    vnlru and syncer are each granted "max 60 seconds" to stop, so most of a
+#    flat budget can be legitimate kernel waiting. Progress markers now reset the
+#    clock, which still catches a genuine stall (no output at all).
+#
+# 2. The poweroff was sent without waiting for a shell prompt. The block above
+#    matches the IOKIT-RUN-DONE *text*, which leaves the rest of that line and
+#    the prompt unconsumed and can leave run.sh's tail still streaming. Sending
+#    into that races the tty: the typed line is interleaved or lost, zsh sees an
+#    empty line and prints a fresh prompt, and `shutdown` never runs at all.
+#    That is what the failures actually looked like -- a new prompt followed by
+#    180s of silence, with none of shutdown(8)'s OWN output ("Shutdown NOW!",
+#    "shutdown: [pid N]") ever appearing, while the `halt -p` fallback worked
+#    immediately. A real init-protocol stall would have shown shutdown's banner
+#    first and only then gone quiet.
+#
+# So: synchronise on a prompt, then send. The quotes keep the echoed command
+# line from matching the sentinel, and the prompt match after it leaves this
+# block at a known-good prompt rather than mid-line.
+send "\r"
+send "echo NB-PRE'-'SHUTDOWN\r"
+expect {
+    timeout           { puts "\nWARN: no prompt before poweroff; sending anyway" }
+    "NB-PRE-SHUTDOWN" { exp_continue }
+    -re {[#%$] $}     { }
+}
+
 send "r shutdown -p now\r"
 set shutdown_progress 0
 expect {
