@@ -1710,7 +1710,7 @@ send "r /usr/tests/nextbsd-iokit/run.sh\r"
         timeout             { puts "\nWARN: IOKit tests did not finish in 180s (informational)" }
     }
 
-set timeout 150
+set timeout 180
 
 # Stage 4: power off THROUGH launchd — `shutdown -p now` signals PID 1 with
 # SIGUSR2 per the BSD init(8) protocol, so this stage gates nextbsd#398 (the
@@ -1721,10 +1721,51 @@ set timeout 150
 #   "Rebooting"           = wrong reboot_flags (RB_AUTOBOOT) -> FAIL
 #   timeout               = the #398 stall -> FAIL (fall back to halt -p, which
 #                           bypasses init, so the runner is never left hanging)
-send "r shutdown -p now\r"
+#
+# Two separate things were making this stage fail intermittently, and neither was
+# a stall in launchd.
+#
+# 1. The poweroff was timed from when the command went out rather than from the
+#    last sign of life, so a slow-but-working shutdown could trip the budget.
+#    vnlru and syncer are each granted "max 60 seconds" to stop, so most of a
+#    flat budget can be legitimate kernel waiting. Progress markers now reset the
+#    clock, which still catches a genuine stall (no output at all).
+#
+# 2. The poweroff was sent without waiting for a shell prompt. The block above
+#    matches the IOKIT-RUN-DONE *text*, which leaves the rest of that line and
+#    the prompt unconsumed and can leave run.sh's tail still streaming. Sending
+#    into that races the tty: the typed line is interleaved or lost, zsh sees an
+#    empty line and prints a fresh prompt, and `shutdown` never runs at all.
+#    That is what the failures actually looked like -- a new prompt followed by
+#    180s of silence, with none of shutdown(8)'s OWN output ("Shutdown NOW!",
+#    "shutdown: [pid N]") ever appearing, while the `halt -p` fallback worked
+#    immediately. A real init-protocol stall would have shown shutdown's banner
+#    first and only then gone quiet.
+#
+# So: synchronise on a prompt, then send. The quotes keep the echoed command
+# line from matching the sentinel, and the prompt match after it leaves this
+# block at a known-good prompt rather than mid-line.
+send "\r"
+send "echo NB-PRE'-'SHUTDOWN\r"
 expect {
+    timeout           { puts "\nWARN: no prompt before poweroff; sending anyway" }
+    "NB-PRE-SHUTDOWN" { exp_continue }
+    -re {[#%$] $}     { }
+}
+
+send "r shutdown -p now\r"
+set shutdown_progress 0
+expect {
+    -re {Waiting \(max [0-9]+ seconds\) for system process|Syncing disks|All buffers synced|Uptime:} {
+        set shutdown_progress 1
+        exp_continue
+    }
     timeout {
-        puts "\nFAIL: SHUTDOWN-P — no poweroff within 150s of shutdown -p (launchd init-protocol stall, nextbsd#398)"
+        if {$shutdown_progress} {
+            puts "\nFAIL: SHUTDOWN-P — shutdown was progressing but produced nothing for 180s and never powered off"
+        } else {
+            puts "\nFAIL: SHUTDOWN-P — no response at all within 180s of shutdown -p (init-protocol stall; this is what nextbsd#398 was)"
+        }
         send "\r"
         sleep 1
         send "r halt -p\r"
