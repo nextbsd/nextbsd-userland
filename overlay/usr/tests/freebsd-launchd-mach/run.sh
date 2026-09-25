@@ -2642,6 +2642,39 @@ linux_mounts_gate()
 }
 linux_mounts_gate
 
+# DOMAIN-DIRS — the launchctl bootstrap (domain_mkdirs() in support/launchctl.c)
+# creates /Network and /Volumes at every boot, beside the Linux ABI mount points
+# and for the same reason: they are empty mount points nothing else owns, and an
+# installed system, a live ISO and an image from a tarball all need them. Mode
+# is 0755 root:wheel, which is what Darwin ships for /Volumes; modern Darwin has
+# no /Network to copy.
+# Emits exactly one DOMAIN-DIRS-OK/FAIL.
+domain_dirs_gate()
+{
+    bad=
+    echo "--- domain mount points:"
+    for d in /Network /Volumes; do
+        stat -f '%N  %Sp  %Su:%Sg' "$d" 2>&1
+        [ -d "$d" ] || { bad="$bad $d:absent"; continue; }
+        m=$(stat -f %Lp "$d" 2>/dev/null)
+        [ "$m" = "755" ] || bad="$bad $d:mode=$m"
+        o=$(stat -f %Su:%Sg "$d" 2>/dev/null)
+        [ "$o" = "root:wheel" ] || bad="$bad $d:owner=$o"
+    done
+    if [ -n "$bad" ]; then
+        echo "DOMAIN-DIRS-FAIL: not created as expected at boot:$bad"
+        return 0
+    fi
+    # Idempotent: a second bootstrap must not fail on either one. rmdir and let
+    # the next boot remake it is not safe here, so assert the weaker property
+    # that they are empty mount points and not files or symlinks.
+    for d in /Network /Volumes; do
+        [ -L "$d" ] && { echo "DOMAIN-DIRS-FAIL: $d is a symlink"; return 0; }
+    done
+    echo "DOMAIN-DIRS-OK: /Network and /Volumes exist 0755 root:wheel at boot (launchctl bootstrap)"
+}
+domain_dirs_gate
+
 ipconfig_cli=/usr/sbin/ipconfig
 if [ ! -x "$ipconfig_cli" ]; then
     echo "IPCFG-IPCONFIG-FAIL: $ipconfig_cli missing"

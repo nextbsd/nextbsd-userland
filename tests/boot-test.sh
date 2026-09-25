@@ -1464,6 +1464,22 @@ expect {
     }
 }
 
+# DOMAIN-DIRS — the launchctl bootstrap creates /Network and /Volumes at boot,
+# beside the Linux ABI mount points. run.sh emits exactly one OK/FAIL.
+expect {
+    timeout {
+        puts "\nFAIL: DOMAIN-DIRS marker not seen"
+        exit 1
+    }
+    -re {DOMAIN-DIRS-FAIL[^\r\n]*[\r\n]} {
+        puts "\nFAIL: $expect_out(0,string)"
+        exit 1
+    }
+    "DOMAIN-DIRS-OK" {
+        puts "\nOK: /Network and /Volumes created at boot by launchctl bootstrap"
+    }
+}
+
 # IPCFG-IPCONFIG — iter 8 Apple-shape CLI. Same MIG round-trip
 # ipconfigrpctest exercises, but driven through /usr/sbin/ipconfig.
 # Validates that the Apple-canonical CLI parses argv, looks up
