@@ -92,7 +92,7 @@ enum ds_error {
 	DS_ENOENT,	/* no such record */
 	DS_EEXIST,	/* record already present */
 	DS_EPARSE,	/* the file is there but is not a plist we understand */
-	DS_EIO,		/* read, write or rename failed; errno is set */
+	DS_EIO,		/* read/write/chmod/chown/rename failed; errno is set */
 	DS_ELOCK,	/* the domain lock could not be taken; errno is set */
 	DS_EINVAL,	/* bad argument, or a value that will not fit */
 	DS_ERANGE	/* more members than the caller asked for */

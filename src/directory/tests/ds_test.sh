@@ -12,7 +12,8 @@
 # What is covered: the role transitions in both directions, every refusal, that
 # promotion SHARES /Local rather than moving anything to /Network, the role
 # marker and its rejection of a malformed one, the exports grouping, the
-# managed NTP block, and argv[0] dispatch.
+# managed blocks in exports and ntp.conf -- that promotion and demotion leave
+# an administrator's own lines alone -- and argv[0] dispatch.
 #
 #   sh ds_test.sh
 #
@@ -148,6 +149,9 @@ ckfile   "the Bonjour record written"      "$SVC"
 ckgrep   "exports names the homes"         "$EXPORTS" "$LOCAL_USERS"
 ckgrep   "exports shares /Local accounts"  "$EXPORTS" "$LOCAL_DIR"
 cknogrep "and exports no /Network path"    "$EXPORTS" "/Network"
+ckgrep   "exports is a managed block"      "$EXPORTS" "^# BEGIN directory server (managed by dspromote and dsdemote"
+ckgrep   "with its end marker"             "$EXPORTS" "^# END directory server$"
+cksay    "status reports the exports"      "exports    $EXPORTS" "$fix/dsstatus"
 ckgrep   "the record advertises the type"  "$SVC" "_nextbsd-ds._tcp"
 ckgrep   "and nfs's port as an integer"    "$SVC" "<integer>2049</integer>"
 cksay    "status now reports server"       "directory server" "$fix/dsstatus"
@@ -173,9 +177,72 @@ ck       "demote leaves a real directory"  "$( [ -d "$LOCAL_DIR" ] && [ ! -L "$L
 ckfile   "the plists were never disturbed" "$LOCAL_DIR/Users.plist"
 ckfile   "nor were the groups"             "$LOCAL_DIR/Groups.plist"
 cknofile "the domain marker is removed"    "$DOMAIN"
-cknofile "exports removed"                 "$EXPORTS"
+cknofile "exports removed: it was all ours" "$EXPORTS"
 cknofile "the Bonjour record withdrawn"    "$SVC"
 cksay    "status is standalone again"      "standalone" "$fix/dsstatus"
+
+# ---- the administrator's exports survive
+# /etc/exports is the administrator's file; only the block between the markers
+# is ours. This is the assertion that used to be impossible: dspromote opened
+# the file "w" and dsdemote unlink()ed it, so a hand-written export was gone
+# after the first promote and the file itself after the first demote.
+ADMIN_LINE='/usr/ports -ro -network 10.0.0.0 -mask 255.0.0.0'
+seed
+printf '# my exports\n%s\n' "$ADMIN_LINE" > "$EXPORTS"; cp "$EXPORTS" "$fix/exports.orig"
+"$fix/dspromote" >/dev/null 2>&1; ckrc "promote over an admin exports"  "$?" 0
+ckgrep   "the admin's export survives promote" "$EXPORTS" "^$ADMIN_LINE\$"
+ckgrep   "and so does the admin's comment"     "$EXPORTS" "^# my exports$"
+ckgrep   "the block is appended after it"      "$EXPORTS" "^# BEGIN directory server (managed by dspromote"
+ckgrep   "and names the homes"                 "$EXPORTS" "$LOCAL_USERS"
+ck       "exactly one BEGIN marker"            "$(grep -c '^# BEGIN directory server' "$EXPORTS")" "1"
+ck       "two export lines now"                "$(grep -v '^#' "$EXPORTS" | grep -c .)" "2"
+"$fix/dsdemote" >/dev/null 2>&1; ckrc "demote over an admin exports"   "$?" 0
+ckfile   "the file is kept on demote"          "$EXPORTS"
+ckgrep   "the admin's export survives demote"  "$EXPORTS" "^$ADMIN_LINE\$"
+cknogrep "the block is gone, marker"           "$EXPORTS" "^# BEGIN directory server"
+cknogrep "and its end marker"                  "$EXPORTS" "^# END directory server"
+cknogrep "and the /Local line with it"         "$EXPORTS" "$LOCAL_USERS"
+ck       "one non-comment line again"          "$(grep -c -v '^#' "$EXPORTS")" "1"
+ck       "the file is back byte for byte"      "$(cmp -s "$EXPORTS" "$fix/exports.orig" && echo same)" "same"
+
+# A stale block -- a promote that failed after writing it, say -- is rewritten
+# in place rather than doubled, and what it held is dropped.
+seed
+{ printf '%s\n' "$ADMIN_LINE"
+  printf '# BEGIN directory server (managed by dspromote and dsdemote; do not edit)\n'
+  printf '/stale -alldirs\n# END directory server\n'; } > "$EXPORTS"
+"$fix/dspromote" >/dev/null 2>&1; ckrc "promote over a stale block"    "$?" 0
+ck       "still one BEGIN marker"              "$(grep -c '^# BEGIN directory server' "$EXPORTS")" "1"
+ck       "and one END marker"                  "$(grep -c '^# END directory server' "$EXPORTS")" "1"
+cknogrep "the stale body is dropped"           "$EXPORTS" "^/stale"
+ckgrep   "the current body is there"           "$EXPORTS" "$LOCAL_USERS"
+ckgrep   "the admin's line still first"        "$EXPORTS" "^$ADMIN_LINE\$"
+ck       "the admin line was not duplicated"   "$(grep -c "^$ADMIN_LINE\$" "$EXPORTS")" "1"
+
+# A block that lost its END marker is closed again rather than left to run to
+# the end of the file, where the next demote would have taken the rest with it.
+seed
+{ printf '# BEGIN directory server (managed by dspromote and dsdemote; do not edit)\n'
+  printf '/stale -alldirs\n%s\n' "$ADMIN_LINE"; } > "$EXPORTS"
+"$fix/dspromote" >/dev/null 2>&1; ckrc "promote over an unterminated block" "$?" 0
+ck       "the END marker is restored"          "$(grep -c '^# END directory server' "$EXPORTS")" "1"
+
+# A server whose exports has no block at all: dsdemote has nothing of its own
+# there and leaves the file byte for byte as it found it, and dsstatus says so.
+seed
+mkdir -p "$LOCAL_DIR"; printf '<plist><dict/></plist>\n' > "$DOMAIN"
+printf '%s\n' "$ADMIN_LINE" > "$EXPORTS"; cp "$EXPORTS" "$fix/exports.before"
+cksay    "status shows no exports w/o block"   "exports    (none)" "$fix/dsstatus"
+"$fix/dsdemote" >/dev/null 2>&1; ckrc "demote with no block succeeds"  "$?" 0
+ck       "and the file is untouched"           "$(cmp -s "$EXPORTS" "$fix/exports.before" && echo same)" "same"
+
+# The file's mode is carried over, the way ntp.conf's is.
+seed
+printf '%s\n' "$ADMIN_LINE" > "$EXPORTS"; chmod 0600 "$EXPORTS"
+"$fix/dspromote" >/dev/null 2>&1
+ck       "exports keeps its mode on promote"   "$(stat -f %Lp "$EXPORTS" 2>/dev/null || stat -c %a "$EXPORTS")" "600"
+"$fix/dsdemote" >/dev/null 2>&1
+ck       "and on demote"                       "$(stat -f %Lp "$EXPORTS" 2>/dev/null || stat -c %a "$EXPORTS")" "600"
 
 # ---- the marker is presence, not contents
 # dscli writes an empty dict, so matching on a value would fail to recognise a

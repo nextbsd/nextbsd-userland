@@ -310,9 +310,18 @@ read_file(int fd, off_t size, char **out)
 			break;
 		have += (size_t)got;
 	}
+	/*
+	 * A short read is a failure, and the caller sees only the -1: it must
+	 * not also be handed the buffer, or nothing ever frees it -- and this
+	 * runs inside every process that calls getpwnam(3).
+	 */
+	if (have != (size_t)size) {
+		free(buf);
+		return (-1);
+	}
 	buf[have] = '\0';
 	*out = buf;
-	return ((int)have == size ? 0 : -1);
+	return (0);
 }
 
 static void

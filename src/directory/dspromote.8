@@ -152,7 +152,7 @@ be unbound.
 .Ss What each command writes
 .Bl -column "/etc/exports" "dspromote" "dsdemote" -offset indent
 .It Sy Artefact Ta Sy Written by Ta Sy Removed by
-.It Pa /etc/exports Ta dspromote Ta dsdemote
+.It the block in Pa /etc/exports Ta dspromote Ta dsdemote
 .It Pa Domain.plist Ta dspromote Ta dsdemote
 .It the Bonjour record Ta dspromote Ta dsdemote
 .It Pa Binding.plist Ta dsjoin Ta dsleave
@@ -165,6 +165,19 @@ The kernel permits one default export per filesystem, so
 .Pa /etc/exports
 groups the exported directories by device.
 On the usual layout that is a single line.
+.Pp
+Both
+.Pa /etc/exports
+and
+.Pa /etc/ntp.conf
+are the administrator's files: only the block between the
+.Dq BEGIN directory server
+and
+.Dq END directory server
+markers is written, and every other line survives.
+.Nm dsdemote
+removes the exports block, markers included, and removes the file itself only
+when the block was all it held.
 .Sh OPTIONS
 .Bl -tag -width indent
 .It Fl v
@@ -198,8 +211,7 @@ the home directories
 .It Pa /Network/Users
 the mount on a client, absent otherwise
 .It Pa /etc/exports
-written by
-.Nm dspromote
+the managed block only
 .It Pa /etc/ntp.conf
 the managed block only
 .It Pa /Local/Library/Preferences/mDNSResponder/Services

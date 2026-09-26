@@ -383,16 +383,23 @@ write_plist(const char *dir, const char *name, CFDictionaryRef d,
 	 * Carry mode and owner over from the file being replaced, so an
 	 * admin who tightened it keeps that. A file created for the first
 	 * time gets 0644, and its owner from the directory.
+	 *
+	 * A failure here is a failure of the write: a plist that lands with
+	 * the wrong owner or mode is not the file the caller asked for, and
+	 * the returns used to be discarded, so nobody was told.
 	 */
 	if (existed) {
-		(void)fchmod(fd, st->st_mode & 07777);
-		(void)fchown(fd, st->st_uid, st->st_gid);
+		if (fchmod(fd, st->st_mode & 07777) == -1 ||
+		    fchown(fd, st->st_uid, st->st_gid) == -1)
+			goto fail;
 	} else {
 		struct stat ds;
 
-		(void)fchmod(fd, 0644);
-		if (stat(dir, &ds) == 0)
-			(void)fchown(fd, ds.st_uid, ds.st_gid);
+		if (fchmod(fd, 0644) == -1)
+			goto fail;
+		if (stat(dir, &ds) == 0 &&
+		    fchown(fd, ds.st_uid, ds.st_gid) == -1)
+			goto fail;
 	}
 
 	while (off < (size_t)len) {

@@ -164,6 +164,14 @@
 #define NTP_BEGIN "# BEGIN directory server (managed by dsjoin and dsleave; do not edit)"
 #define NTP_END   "# END directory server"
 
+/*
+ * The managed block in /etc/exports. Nothing ships these markers: dspromote
+ * appends the block to whatever the administrator has, or creates the file,
+ * and dsdemote takes the block out again. See exports_set().
+ */
+#define EXPORTS_BEGIN "# BEGIN directory server (managed by dspromote and dsdemote; do not edit)"
+#define EXPORTS_END   "# END directory server"
+
 /* The jobs each role turns on. Order matters: rpcbind before the rest. */
 static const char *const server_jobs[] = {
 	"org.nextbsd.rpcbind", "org.nextbsd.mountd", "org.nextbsd.nfsd"
@@ -262,48 +270,6 @@ launchctl(const char *verb, const char *const *labels, size_t n)
 		else
 			say("  launchctl %s %s", verb, labels[i]);
 	}
-}
-
-/* ------------------------------------------------------------- the exports */
-
-/*
- * The kernel permits one default export line per filesystem, so directories
- * that share a device have to share a line. On the usual single-filesystem
- * layout that is one line naming both paths; on a machine where /Local is its
- * own filesystem it is two.
- */
-static int
-write_exports(void)
-{
-	struct stat a, b;
-	FILE *f;
-
-	if (stat(DS_LOCAL_USERS, &a) == -1) {
-		warn("%s", DS_LOCAL_USERS);
-		return (-1);
-	}
-	if (stat(DS_LOCAL_DIR, &b) == -1) {
-		warn("%s", DS_LOCAL_DIR);
-		return (-1);
-	}
-	if ((f = fopen(DS_EXPORTS, "w")) == NULL) {
-		warn("%s", DS_EXPORTS);
-		return (-1);
-	}
-	(void)fprintf(f, "# Written by dspromote(8). Removed by dsdemote(8).\n");
-	if (a.st_dev == b.st_dev)
-		(void)fprintf(f, "%s %s -alldirs\n", DS_LOCAL_USERS,
-		    DS_LOCAL_DIR);
-	else {
-		(void)fprintf(f, "%s -alldirs\n", DS_LOCAL_USERS);
-		(void)fprintf(f, "%s -alldirs\n", DS_LOCAL_DIR);
-	}
-	if (fclose(f) != 0) {
-		warn("%s", DS_EXPORTS);
-		return (-1);
-	}
-	say("  wrote %s", DS_EXPORTS);
-	return (0);
 }
 
 /* ------------------------------------------------------- the Bonjour record */
@@ -475,6 +441,14 @@ atomic_commit(struct atomic *a)
 	return (0);
 }
 
+/* Give up on a replacement, leaving the file it was for untouched. */
+static void
+atomic_abort(struct atomic *a)
+{
+	(void)fclose(a->f);
+	(void)unlink(a->tmp);
+}
+
 /* ------------------------------------------------------ the NTP time source */
 
 /*
@@ -533,6 +507,168 @@ ntp_set(const char *server)
 	say("  %s the time source in %s",
 	    server != NULL ? "set" : "cleared", DS_NTP_CONF);
 	return (0);
+}
+
+/* ------------------------------------------------------------- the exports */
+
+/*
+ * Fill or remove the managed block in /etc/exports, the way ntp_set() treats
+ * ntp.conf: the file is the administrator's and only the block is ours. It
+ * used to be opened "w", which threw away every export written by hand, and
+ * dsdemote unlinked the whole file.
+ *
+ * Nothing ships these markers, so promotion rewrites the block in place when
+ * one is there and appends it otherwise, creating the file when there is
+ * none. Demotion drops the block, markers included. When the block was the
+ * whole file the file goes too: mountd is unloaded by then, and exports
+ * nothing from an empty file just as from a missing one (the difference is a
+ * "can't open" line in syslog), so the only reader left is a person, to whom
+ * an empty /etc/exports that dspromote invented looks like configuration. A
+ * file that has no block -- including an empty one the administrator made --
+ * is left exactly as found.
+ *
+ * The kernel permits one default export line per filesystem, so directories
+ * that share a device have to share a line. On the usual single-filesystem
+ * layout that is one line naming both paths; on a machine where /Local is its
+ * own filesystem it is two.
+ */
+static void
+exports_body(FILE *out, bool one_line)
+{
+	if (one_line)
+		(void)fprintf(out, "%s %s -alldirs\n", DS_LOCAL_USERS,
+		    DS_LOCAL_DIR);
+	else {
+		(void)fprintf(out, "%s -alldirs\n", DS_LOCAL_USERS);
+		(void)fprintf(out, "%s -alldirs\n", DS_LOCAL_DIR);
+	}
+}
+
+static int
+exports_set(bool on)
+{
+	char line[1024];
+	struct stat a, b;
+	struct atomic at;
+	FILE *in, *out;
+	bool one_line = true;
+	bool in_block = false, seen = false, kept = false, pending = false;
+
+	if (on) {
+		if (stat(DS_LOCAL_USERS, &a) == -1) {
+			warn("%s", DS_LOCAL_USERS);
+			return (-1);
+		}
+		if (stat(DS_LOCAL_DIR, &b) == -1) {
+			warn("%s", DS_LOCAL_DIR);
+			return (-1);
+		}
+		one_line = a.st_dev == b.st_dev;
+	}
+	if ((in = fopen(DS_EXPORTS, "r")) == NULL) {
+		if (errno != ENOENT) {
+			warn("%s", DS_EXPORTS);
+			return (-1);
+		}
+		if (!on) {
+			say("  %s does not exist; nothing to remove",
+			    DS_EXPORTS);
+			return (0);
+		}
+	}
+	if ((out = atomic_open(&at, DS_EXPORTS, 0644)) == NULL) {
+		if (in != NULL)
+			(void)fclose(in);
+		return (-1);
+	}
+	/*
+	 * A blank line is held back until the next line shows whether it is
+	 * the separator promotion put before the block -- which leaves with
+	 * the block, so demotion gives the file back exactly as it was.
+	 */
+	while (in != NULL && fgets(line, sizeof(line), in) != NULL) {
+		if (!in_block &&
+		    strncmp(line, EXPORTS_BEGIN, strlen(EXPORTS_BEGIN)) == 0) {
+			in_block = true; seen = true;
+			if (on) {
+				if (pending)
+					(void)fputs("\n", out);
+				(void)fputs(EXPORTS_BEGIN "\n", out);
+				exports_body(out, one_line);
+			}
+			pending = false;
+			continue;
+		}
+		if (in_block) {
+			if (strncmp(line, EXPORTS_END,
+			    strlen(EXPORTS_END)) == 0) {
+				in_block = false;
+				if (on)
+					(void)fputs(EXPORTS_END "\n", out);
+			}
+			continue;	/* drop whatever the block held */
+		}
+		if (pending) {
+			(void)fputs("\n", out);
+			kept = true;
+		}
+		pending = strcmp(line, "\n") == 0;
+		if (!pending) {
+			(void)fputs(line, out);
+			kept = true;
+		}
+	}
+	if (pending) {
+		(void)fputs("\n", out);
+		kept = true;
+	}
+	if (in != NULL)
+		(void)fclose(in);
+	/* A block that lost its END marker gets one, or it would run to EOF. */
+	if (in_block && on)
+		(void)fputs(EXPORTS_END "\n", out);
+	if (on && !seen) {
+		if (kept)
+			(void)fputs("\n", out);
+		(void)fputs(EXPORTS_BEGIN "\n", out);
+		exports_body(out, one_line);
+		(void)fputs(EXPORTS_END "\n", out);
+	}
+	if (!on && !seen) {
+		atomic_abort(&at);
+		say("  %s has no managed block; left as it is", DS_EXPORTS);
+		return (0);
+	}
+	if (!on && !kept) {
+		atomic_abort(&at);
+		if (unlink(DS_EXPORTS) == -1 && errno != ENOENT) {
+			warn("%s", DS_EXPORTS);
+			return (-1);
+		}
+		say("  removed %s; the block was all it held", DS_EXPORTS);
+		return (0);
+	}
+	if (atomic_commit(&at) == -1)
+		return (-1);
+	say("  %s the managed block in %s", on ? "wrote" : "removed",
+	    DS_EXPORTS);
+	return (0);
+}
+
+/* True when some line of `path` starts with `marker`. */
+static bool
+has_line(const char *path, const char *marker)
+{
+	char line[1024];
+	FILE *f;
+	bool found = false;
+
+	if ((f = fopen(path, "r")) == NULL)
+		return (false);
+	while (!found && fgets(line, sizeof(line), f) != NULL)
+		found = strncmp(line, marker, strlen(marker)) == 0;
+	(void)fclose(f);
+	return (found);
 }
 
 /* ---------------------------------------------------------- the binding file */
@@ -730,7 +866,7 @@ do_promote(void)
 	/*
 	 * Order matters, and it used to be wrong. The role marker is written
 	 * LAST, after the exports and the Bonjour record, because it is what
-	 * current_role() reads: written first, a failure in write_exports() or
+	 * current_role() reads: written first, a failure in exports_set() or
 	 * write_service() left a machine reporting "directory server" with
 	 * "exports (none)", which dspromote then refused to retry ("already a
 	 * directory server") and only dsdemote could undo.
@@ -739,7 +875,7 @@ do_promote(void)
 	 * is reported but never fatal (see launchctl()), so by then the machine
 	 * genuinely is a server and dsdemote can take it back.
 	 */
-	if (write_exports() == -1 || write_service() == -1)
+	if (exports_set(true) == -1 || write_service() == -1)
 		return (1);
 	if (domain_write() == -1)
 		return (1);
@@ -753,6 +889,7 @@ static int
 do_demote(void)
 {
 	char server[MAXHOSTNAMELEN];
+	int rv = 0;
 
 	if (current_role(server, sizeof(server)) != R_SERVER) {
 		warnx("this machine is not a directory server");
@@ -774,17 +911,21 @@ do_demote(void)
 		return (1);
 	}
 	say("  removed %s", DS_DOMAIN);
-	if (unlink(DS_EXPORTS) == -1 && errno != ENOENT)
-		warn("%s", DS_EXPORTS);
-	else
-		say("  removed %s", DS_EXPORTS);
-	if (unlink(DS_SERVICE_FILE) == -1 && errno != ENOENT)
+	/*
+	 * The marker is gone, so the machine IS standalone from here; what
+	 * follows is cleanup, reported and reflected in the exit status but
+	 * never a reason to stop.
+	 */
+	if (exports_set(false) == -1)
+		rv = 1;
+	if (unlink(DS_SERVICE_FILE) == -1 && errno != ENOENT) {
 		warn("%s", DS_SERVICE_FILE);
-	else
+		rv = 1;
+	} else
 		say("  withdrew %s", DS_SERVICE_TYPE);
 
 	(void)printf("This machine is standalone again.\n");
-	return (0);
+	return (rv);
 }
 
 static int
@@ -882,7 +1023,7 @@ do_status(void)
 		(void)printf("  accounts   %s (shared)\n", DS_LOCAL_DIR);
 		(void)printf("  homes      %s (shared)\n", DS_LOCAL_USERS);
 		(void)printf("  exports    %s\n",
-		    exists(DS_EXPORTS) ? DS_EXPORTS : "(none)");
+		    has_line(DS_EXPORTS, EXPORTS_BEGIN) ? DS_EXPORTS : "(none)");
 		(void)printf("  advertised %s\n",
 		    exists(DS_SERVICE_FILE) ? DS_SERVICE_TYPE : "(no)");
 		break;
