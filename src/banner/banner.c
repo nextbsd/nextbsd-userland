@@ -13,8 +13,11 @@
  * WHY THIS IS NOT THE MOTD
  *
  * login(1) copies /etc/motd to the terminal and nothing executes, so a motd
- * cannot report memory or uptime. The task list stays there (#285); this is
- * the half that has to run.
+ * cannot report memory or uptime. Nor could it carry the task list (#285):
+ * login prints the motd and THEN execs the shell that runs this, which would
+ * put the list above the banner rather than below it, and one static file
+ * would tell an installed machine to install. So the list lives here too,
+ * under the banner, and only on live media.
  *
  * WHY IT IS OURS RATHER THAN NEOFETCH
  *
@@ -29,10 +32,11 @@
  * you answered first. Same check autologin-user makes, so "Gershwin is
  * installed" has one definition.
  *
- * Whether the machine is live media is NOT a gate -- an installed machine
- * wants the version, the memory and the uptime just as much. It decides one
- * line: `storage` reads "live media" on a unionfs root and names the real
- * device otherwise.
+ * Whether the machine is live media is NOT a gate on the banner -- an
+ * installed machine wants the version, the memory and the uptime just as
+ * much. It decides two things, from one statfs: `storage` reads "live media"
+ * on a unionfs root and names the real device otherwise, and the task list
+ * follows the banner only when it does.
  */
 
 #include <sys/param.h>
@@ -66,8 +70,12 @@
 #ifndef BANNER_ROOT
 #define BANNER_ROOT		"/"
 #endif
+#ifndef BANNER_LIVE_FSTYPE
+#define BANNER_LIVE_FSTYPE	"unionfs"
+#endif
 
 #define GAP	6		/* columns between the cube and the text */
+#define RULE	32		/* columns of the rule under the heading */
 
 /* ------------------------------------------------------------------ colour */
 
@@ -113,6 +121,23 @@ reset(enum depth d)
 {
 	if (d != D_NONE)
 		(void)fputs("\033[0m", stdout);
+}
+
+/*
+ * The three tones the text is set in, from the 16 colours every terminal
+ * here has: the heading and the commands bright, the descriptions mid, the
+ * keys, the rules and the numbers dim. The values are left as the terminal
+ * draws them. RGB is for the cube.
+ */
+#define BRIGHT	"\033[1;97m"
+#define MID	"\033[0;37m"
+#define DIM	"\033[0;90m"
+
+static void
+tone(enum depth d, const char *t)
+{
+	if (d != D_NONE)
+		(void)fputs(t, stdout);
 }
 
 /* ------------------------------------------------------------- the readings */
@@ -250,10 +275,11 @@ uptime(char *out, size_t len)
 
 /*
  * "live media" on a unionfs root -- the ISO pivots onto /cow tmpfs over /rofs
- * uzip -- and the device with its usage otherwise. The same statfs the live
- * check uses, reporting rather than deciding.
+ * uzip -- and the device with its usage otherwise. Returns whether it is live
+ * media: the one statfs answers that for the task list too, so the line and
+ * the list cannot disagree.
  */
-static void
+static bool
 storage(char *out, size_t len)
 {
 	struct statfs fs;
@@ -263,11 +289,11 @@ storage(char *out, size_t len)
 
 	if (statfs(BANNER_ROOT, &fs) == -1) {
 		(void)strlcpy(out, "unknown", len);
-		return;
+		return (false);
 	}
-	if (strcmp(fs.f_fstypename, "unionfs") == 0) {
+	if (strcmp(fs.f_fstypename, BANNER_LIVE_FSTYPE) == 0) {
 		(void)strlcpy(out, "live media", len);
-		return;
+		return (true);
 	}
 	dev = (dev = strrchr(fs.f_mntfromname, '/')) != NULL ?
 	    dev + 1 : fs.f_mntfromname;
@@ -276,6 +302,7 @@ storage(char *out, size_t len)
 	human(u, used, sizeof(used));
 	human(t, tot, sizeof(tot));
 	(void)snprintf(out, len, "%s  %s / %s", dev, used, tot);
+	return (false);
 }
 
 /* -------------------------------------------------------------- the layout */
@@ -332,6 +359,53 @@ print_cube_row(enum depth d, int row)
 	return (drawn);
 }
 
+/* ---------------------------------------------------------------- the tasks */
+
+/*
+ * What to do first, under the banner on live media only (#285). An installed
+ * machine has done all four, and nothing here is worth its screen space then.
+ *
+ * passwd alone runs without sudo: it is setuid and changes your own account.
+ * The other three write /etc, bring up an interface, or partition a disk.
+ */
+static const struct task { const char *what, *how; } tasks[] = {
+	{ "set a password for admin", "passwd" },
+	{ "set the time zone",        "sudo tzsetup" },
+	{ "connect to wireless",      "sudo wlan" },
+	{ "install NextBSD to disk",  "sudo nextbsd-installer" },
+};
+
+static void
+print_tasks(enum depth d)
+{
+	size_t i;
+
+	/* A rule the width of the banner, the way the design draws one. */
+	(void)fputc('\n', stdout);
+	tone(d, DIM);
+	for (i = 0; i < CUBE_COLS + GAP + RULE; i++)
+		(void)fputs("─", stdout);
+	reset(d);
+	(void)fputs("\n\n", stdout);
+
+	tone(d, DIM);
+	(void)fputs("  Running from live media. Nothing is written to disk.",
+	    stdout);
+	reset(d);
+	(void)fputs("\n\n", stdout);
+
+	for (i = 0; i < nitems(tasks); i++) {
+		tone(d, DIM);
+		(void)printf("  %02zu   ", i + 1);
+		tone(d, MID);
+		(void)printf("%-28s", tasks[i].what);
+		tone(d, BRIGHT);
+		(void)fputs(tasks[i].how, stdout);
+		reset(d);
+		(void)fputc('\n', stdout);
+	}
+}
+
 static void
 print_banner(enum depth d)
 {
@@ -339,12 +413,13 @@ print_banner(enum depth d)
 	struct field f[8];
 	int row, nf = 0, pad, i;
 	size_t nrows;
+	bool live;
 
 	os_name(os, sizeof(os));
 	shell_name(sh, sizeof(sh));
 	memory(mem, sizeof(mem));
 	uptime(up, sizeof(up));
-	storage(st, sizeof(st));
+	live = storage(st, sizeof(st));
 
 	f[nf++] = (struct field){ NULL, NULL };		/* the heading */
 	f[nf++] = (struct field){ "", NULL };		/* the rule */
@@ -375,25 +450,25 @@ print_banner(enum depth d)
 		if (idx == nf + 1) {			/* the strip */
 			print_swatch(d);
 		} else if (idx == 0) {
-			if (d != D_NONE)
-				(void)fputs("\033[1;97m", stdout);
+			tone(d, BRIGHT);
 			(void)fputs("Welcome to NextBSD!", stdout);
 			reset(d);
 		} else if (idx == 1) {
-			if (d != D_NONE)
-				(void)fputs("\033[0;90m", stdout);
-			for (i = 0; i < 32; i++)
+			tone(d, DIM);
+			for (i = 0; i < RULE; i++)
 				(void)fputs("─", stdout);
 			reset(d);
 		} else if (idx >= 3 && idx < nf && f[idx].key != NULL) {
-			if (d != D_NONE)
-				(void)fputs("\033[0;90m", stdout);
+			tone(d, DIM);
 			(void)printf("%-9s", f[idx].key);
 			reset(d);
 			(void)fputs(f[idx].val, stdout);
 		}
 		(void)fputc('\n', stdout);
 	}
+
+	if (live)
+		print_tasks(d);
 }
 
 int
