@@ -2,7 +2,7 @@
 .\"
 .\" Copyright (c) 2026 Joseph Maloney
 .\"
-.Dd September 24, 2026
+.Dd September 25, 2026
 .Dt NEXTBSD-FETCH 1
 .Os NextBSD
 .Sh NAME
@@ -29,6 +29,21 @@ The last of those reads
 when the root filesystem is a
 .Xr unionfs 5 ,
 which is how the live image is put together, and names the device otherwise.
+.Pp
+On live media a task list follows the banner: set a password for admin, set
+the time zone, connect to wireless, and install NextBSD to disk, each with the
+command that does it.
+It answers to the same check as the
+.Li storage
+line, so the two cannot disagree, and an installed machine gets the banner
+alone.
+Only
+.Xr passwd 1
+is listed without
+.Xr sudo 8 ;
+it is setuid and changes your own account, where the other three write
+.Pa /etc ,
+bring up an interface, or partition a disk.
 .Ss When it stays quiet
 .Nm
 prints nothing, and exits 0, in three cases.
@@ -89,8 +104,12 @@ See it on a machine with a desktop installed:
 .Dl $ nextbsd-fetch -f
 .Sh SEE ALSO
 .Xr login 1 ,
+.Xr passwd 1 ,
 .Xr zsh 1 ,
-.Xr motd 5
+.Xr motd 5 ,
+.Xr sudo 8 ,
+.Xr tzsetup 8 ,
+.Xr wlan 8
 .Sh AUTHORS
 .An Joseph Maloney
 .Sh CAVEATS
