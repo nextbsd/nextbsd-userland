@@ -1,15 +1,32 @@
 #!/bin/sh
 
-# Emit the done marker on ANY exit, not only a clean one. boot-test.sh treats
-# it as "no further markers are coming", so a suite that dies part way through
-# fails its remaining checks immediately instead of costing a full timeout in
-# each one. A run that ends normally prints it once at the bottom; this only
-# fires when that line was never reached.
+# The shared sentinel machinery (the nextbsd-ci sentinel contract, epic
+# nextbsd/nextbsd#443 T2): every marker line this suite's stream carries is
+# tallied, the aggregate is printed as NEXTBSD-TEST-SUMMARY on the last line,
+# and the exit code is the capped fail count — the old "259 markers, exit 0"
+# hole. A stale base image without the helper still emits the done marker
+# (the old pull model) and exits 2: no sentinel is a hang for the harness,
+# never a pass.
 nbsd_done=0
+if [ -r /usr/tests/nb-tally.sh ]; then
+    . /usr/tests/nb-tally.sh
+else
+    NB_TALLY_STARTED=0
+    nb_tally_setup() { :; }
+    nb_tally_read() { NB_OK=0; NB_FAIL=0; NB_SKIP=0; }
+    nb_tally_finish() { [ -n "${1:-}" ] && echo "$1"; return 0; }
+    nb_tally_exit() { nbsd_finish; exit 2; }
+fi
+# Emit the done marker + sentinel on ANY exit, not only a clean one. The
+# harness treats the sentinel as "no further markers are coming", so a suite
+# that dies part way through fails its remaining checks immediately instead
+# of costing a full timeout in each one. A run that ends normally prints them
+# once at the bottom (nb_tally_exit); the trap only fires when that was never
+# reached.
 nbsd_finish() {
     [ "$nbsd_done" = 1 ] && return
     nbsd_done=1
-    echo "LAUNCHD-MACH-RUN-DONE"
+    nb_tally_finish "LAUNCHD-MACH-RUN-DONE"
 }
 trap 'nbsd_finish' EXIT
 # A signal trap that only prints would return and let the script carry on, and
@@ -31,6 +48,11 @@ trap 'nbsd_finish; exit 143' TERM
 # etc.), revisit and adopt atf-sh + Kyuafile so `kyua test` works.
 
 set -u
+
+# Mirror the whole stream through the counting reader BEFORE the first
+# output: from here on, every line (from this script or any child) is
+# relayed to the console unchanged and marker-shaped lines are tallied.
+nb_tally_setup
 
 # Job table BEFORE anything runs. Paired with the END dump at the bottom of
 # this script, the two bracket every test here: a daemon that is up at BEGIN
@@ -3083,6 +3105,8 @@ else
     echo "(launchctl-snapshot.sh not installed — skipping the END freebsd-launchd-mach job-table dump)"
 fi
 
-nbsd_done=1
-echo "LAUNCHD-MACH-RUN-DONE"
-exit 0
+# Done. The done marker + the NEXTBSD-TEST-SUMMARY aggregate (last line) are
+# printed by the EXIT trap via nb_tally_finish; the exit code is the capped
+# fail count (0 = no failures, N = N failures, 2 = the tally never started —
+# no sentinel is a hang for the harness, never a pass).
+nb_tally_exit
