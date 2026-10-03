@@ -42,9 +42,9 @@ on:
         default: 'full'
         type: string
       harness_ref:
-        description: 'nextbsd/nextbsd-ci ref the boot lane checks out (T4). main while validating the shared harness against a real image; the 4-repo lockstep pins the shared release tag here.'
+        description: 'nextbsd/nextbsd-ci ref the boot lane checks out (T4). Pinned to the shared release tag the 4-repo lockstep lands on, so this lane does not drift with nextbsd-ci main.'
         required: false
-        default: 'main'
+        default: 'v0.2.0'
         type: string
       fbsd_sha:
         description: 'pinned FreeBSD SHA for the toolchain image tag (blank = latest)'
@@ -253,11 +253,15 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4          # userland repo: workspace root; the image artifact lands here
-      # T4: the shared boot harness. The in-repo tests/boot-test.sh fork (73 KB)
-      # stays in the tree as the fallback but is no longer the gate — the shared
-      # nextbsd-ci harness is (one loader contract, one sentinel protocol, one
-      # audited marker manifest, every repo). Pinned via harness_ref: main while
-      # we validate it against a real image; the lockstep pins the release tag.
+      # T4: the shared boot harness, pinned to the release tag (harness_ref,
+      # v0.2.0) the 4-repo lockstep lands on. The in-repo tests/boot-test.sh
+      # fork (73 KB) stays in the tree as the fallback but is no longer the gate
+      # — the shared nextbsd-ci harness is (one loader contract, one sentinel
+      # protocol, one audited marker manifest, every repo). Pinning a tag (not
+      # main) is what keeps this lane from drifting with harness development.
+      # v0.2.0 is the first real-image-validated cut: it carries the panic-arm
+      # colon fix and the FBSDGLUE userland overlay that a real amd64/arm64
+      # boot surfaced (the mock had never exercised either path).
       - uses: actions/checkout@v4
         with:
           repository: nextbsd/nextbsd-ci
