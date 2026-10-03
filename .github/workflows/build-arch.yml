@@ -41,6 +41,11 @@ on:
         required: false
         default: 'full'
         type: string
+      harness_ref:
+        description: 'nextbsd/nextbsd-ci ref the boot lane checks out (T4). main while validating the shared harness against a real image; the 4-repo lockstep pins the shared release tag here.'
+        required: false
+        default: 'main'
+        type: string
       fbsd_sha:
         description: 'pinned FreeBSD SHA for the toolchain image tag (blank = latest)'
         required: false
@@ -247,12 +252,22 @@ jobs:
     runs-on: ${{ inputs.boot_runner }}
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4          # for the in-repo native tests/boot-test.sh
+      - uses: actions/checkout@v4          # userland repo: workspace root; the image artifact lands here
+      # T4: the shared boot harness. The in-repo tests/boot-test.sh fork (73 KB)
+      # stays in the tree as the fallback but is no longer the gate — the shared
+      # nextbsd-ci harness is (one loader contract, one sentinel protocol, one
+      # audited marker manifest, every repo). Pinned via harness_ref: main while
+      # we validate it against a real image; the lockstep pins the release tag.
+      - uses: actions/checkout@v4
+        with:
+          repository: nextbsd/nextbsd-ci
+          ref: ${{ inputs.harness_ref }}
+          path: nextbsd-ci
       - uses: actions/download-artifact@v4
         with:
           name: nextbsd-ci-image-${{ inputs.arch }}
           path: .
-      - name: Install qemu + expect + UEFI firmware
+      - name: Install qemu + expect + UEFI firmware (expect provides tclsh)
         run: |
           sudo apt-get update
           if [ "${{ inputs.arch }}" = arm64 ]; then
@@ -260,22 +275,29 @@ jobs:
           else
             sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf expect
           fi
-      # Use the IN-REPO native boot test (tests/boot-test.sh), NOT nextbsd's
-      # Apple-image one: the native FreeBSD-based image validates only the
-      # Darwin+Mach layer (the FreeBSD-component markers — FBSDGLUE, *-LEAF,
-      # PAM-* — were dropped; those test Apple ports this image doesn't ship).
-      # boot_soft (arm64's first bring-up) makes a failure non-gating: the log
-      # is still captured below, but the lane stays green while we shake it out.
-      - name: Boot test (native-assembled image, Darwin+Mach gate)
+      # The shared harness boots the native-assembled image, applies the loader
+      # contract, logs in, runs the on-image suite(s) from NB_SUITE, and gates
+      # on the sentinel: exit 0 = clean, 1 = a must-pass marker/verdict failed,
+      # 2 = a hang (re-gated below regardless of boot_soft).
+      #
+      # NB_SUITE is the launchd-mach suite ONLY for now: the nextbsd-iokit suite
+      # is currently SILENT in a real boot (the csh `r` no-ops — zero markers, no
+      # NEXTBSD-TEST-SUMMARY), and the shared harness exits 2 on a suite that
+      # never prints its sentinel. iokit adds nothing today (0 markers seen); it
+      # rejoins NB_SUITE when the silence is fixed. NB_DEBUG=1 for this validation
+      # pass: on any timeout/EOF it dumps the transcript tail so a real-image
+      # mismatch is diagnosable from the log.
+      - name: Boot test (shared nextbsd-ci harness, Darwin+Mach gate)
         id: boot
         continue-on-error: ${{ inputs.boot_soft }}
         env:
           ARCH: ${{ inputs.arch }}
-          BOOT_GATE: ${{ inputs.boot_gate }}
+          NB_SUITE: /usr/tests/freebsd-launchd-mach/run.sh
+          NB_OVERLAY: nextbsd-ci/manifest/overlay-nextbsd-userland.tsv
+          NB_DEBUG: '1'
         run: |
-          chmod +x tests/boot-test.sh
           set +e
-          ./tests/boot-test.sh disk.img
+          sh nextbsd-ci/harness/boot-test.sh disk.img
           rc=$?
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
           exit $rc
