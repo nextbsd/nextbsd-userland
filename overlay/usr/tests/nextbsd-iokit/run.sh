@@ -12,6 +12,43 @@
 
 set -u
 
+# The shared sentinel machinery (the nextbsd-ci sentinel contract, epic
+# nextbsd/nextbsd#443 T2): every marker line this suite's stream carries is
+# tallied, the aggregate is printed as NEXTBSD-TEST-SUMMARY on the last line,
+# and the exit code is the capped fail count. A stale base image without the
+# helper still emits the done marker (the old pull model) and exits 2: no
+# sentinel is a hang for the harness, never a pass.
+nbsd_done=0
+if [ -r /usr/tests/nb-tally.sh ]; then
+    . /usr/tests/nb-tally.sh
+else
+    NB_TALLY_STARTED=0
+    nb_tally_setup() { :; }
+    nb_tally_read() { NB_OK=0; NB_FAIL=0; NB_SKIP=0; }
+    nb_tally_finish() { [ -n "${1:-}" ] && echo "$1"; return 0; }
+    nb_tally_exit() { nbsd_finish; exit 2; }
+fi
+# Emit the done marker + sentinel on ANY exit, not only a clean one: the
+# harness treats the sentinel as "no further markers are coming", so a suite
+# that dies part way through fails its remaining checks immediately instead
+# of costing a full timeout in each one.
+nbsd_finish() {
+    [ "$nbsd_done" = 1 ] && return
+    nbsd_done=1
+    nb_tally_finish "IOKIT-RUN-DONE"
+}
+trap 'nbsd_finish' EXIT
+# A signal trap that only prints would return and let the script carry on, and
+# the marker would then be emitted twice. Exit from these.
+trap 'nbsd_finish; exit 129' HUP
+trap 'nbsd_finish; exit 130' INT
+trap 'nbsd_finish; exit 143' TERM
+
+# Mirror the whole stream through the counting reader BEFORE the first output:
+# from here on, every line (from this script or any child) is relayed to the
+# console unchanged and marker-shaped lines are tallied.
+nb_tally_setup
+
 # Job table BEFORE the IOKit tests. This job runs AFTER freebsd-launchd-mach,
 # so this dump doubles as the record of what that suite left behind. kextd
 # loads kexts here, which is the most likely way this job perturbs the daemon
@@ -174,8 +211,9 @@ amd64|x86_64)
 	if [ -x /usr/tests/launchctl-snapshot.sh ]; then
 		/usr/tests/launchctl-snapshot.sh "END nextbsd-iokit (arm64 early exit)"
 	fi
-	echo "IOKIT-RUN-DONE"
-	exit 0
+	# The done marker + sentinel print via the EXIT trap (nb_tally_finish);
+	# the exit code is the capped fail count of the markers above.
+	nb_tally_exit
 	;;
 esac
 
@@ -321,8 +359,6 @@ else
 	echo "CAFFEINATE-SKIP: /usr/bin/caffeinate not present"
 fi
 
-# Done-sentinel: lets boot-test.sh end the IOKit section the instant this script
-# finishes (pull model) instead of waiting a fixed per-marker timeout.
 # Job table AFTER the IOKit tests. Diff against the BEGIN dump above.
 if [ -x /usr/tests/launchctl-snapshot.sh ]; then
     /usr/tests/launchctl-snapshot.sh "END nextbsd-iokit"
@@ -330,5 +366,8 @@ else
     echo "(launchctl-snapshot.sh not installed — skipping the END nextbsd-iokit job-table dump)"
 fi
 
-echo "IOKIT-RUN-DONE"
-exit 0
+# Done. The done marker + the NEXTBSD-TEST-SUMMARY aggregate (last line) are
+# printed by the EXIT trap via nb_tally_finish; the exit code is the capped
+# fail count (0 = no failures, N = N failures, 2 = the tally never started —
+# no sentinel is a hang for the harness, never a pass).
+nb_tally_exit
