@@ -50,8 +50,11 @@ SEED="apt dpkg libc6 libc-bin libgcc-s1 base-passwd base-files dash ca-certifica
 # AppImages/portable software from inside the root), and zsh + its autosuggestions
 # + syntax-highlighting plugins for users later. Debian's zsh-suggestions
 # metapackage is not in the Devuan excalibur index, so the two constituents are
-# named directly.
-BASE_EXTRA="sysvinit login passwd tar gzip xz-utils mawk bash curl zsh zsh-autosuggestions zsh-syntax-highlighting"
+# named directly. util-linux supplies mountpoint: initscripts' postinst probes
+# `mountpoint -q /dev` to detect our separately-mounted devfs and SKIP its
+# /dev/pts + /dev/shm mkdir (devfs rejects mkdir; /dev/shm we mount ourselves) --
+# without the binary the 127 is read as "not a mountpoint" and the postinst dies.
+BASE_EXTRA="sysvinit login passwd tar gzip xz-utils mawk bash curl zsh zsh-autosuggestions zsh-syntax-highlighting util-linux"
 CLIENT_LIBS="libgl1 libglvnd0 libegl1 libgbm1 libglx-mesa0 libgl1-mesa-dri libx11-6 libx11-xcb1 libxcb1 libxkbcommon0 libxkbcommon-x11-0 libxcursor1 libxext6 libxi6 libxrender1 libxrandr2 libxfixes3 libxss1 libxtst6 libxcomposite1 libxdamage1 libxinerama1 libice6 libsm6 fontconfig libfreetype6 fonts-dejavu-core libasound2 libpulse0 libgtk-3-0 libdbus-1-3 dbus xauth"
 # Host global zsh config, copied into the chroot by do_zsh_config. The host
 # (a Darwin userland) keeps the single files /etc/zshrc, /etc/zprofile,
