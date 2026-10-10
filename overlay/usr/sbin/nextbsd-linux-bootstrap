@@ -168,7 +168,12 @@ do_mounts() {
 	mkdir -p "$e/tmp"
 	is_mounted "$e/tmp" || mount -t nullfs -o nocover "$tmpreal" "$e/tmp" || die "mount $e/tmp"
 
-	n=$(mount -p 2>/dev/null | grep -c -F "$e" || true)
+	# Count the six ABI mountpoints exactly -- a substring grep would also count
+	# the persistent apt cache data mount (which is not one of the six).
+	n=0
+	for m in "$e/proc" "$e/sys" "$e/dev" "$e/dev/fd" "$e/dev/shm" "$e/tmp"; do
+		is_mounted "$m" && n=$((n + 1))
+	done
 	info "$n Linux ABI mounts up under $e"
 }
 
