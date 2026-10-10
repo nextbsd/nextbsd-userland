@@ -15,6 +15,8 @@
 #
 #   nextbsd-linux-bootstrap probe      read-only: arch, emul_path, base, tools, mounts
 #   nextbsd-linux-bootstrap mounts     (re)establish the six ABI mounts + apt cache
+#   nextbsd-linux-bootstrap teardown   DESTRUCTIVE: unmount everything + wipe /compat/linux (no rebuild)
+#   nextbsd-linux-bootstrap bootstrap  wipe + build the base in place (fresh base; no final verify)
 #   nextbsd-linux-bootstrap provision  DESTRUCTIVE: unmount, wipe, bootstrap Devuan, remount, verify
 #   nextbsd-linux-bootstrap all        probe + provision
 #
@@ -58,6 +60,14 @@ GZIP=${GZIP:-/usr/bin/gzip}
 # copied) and re-runs do not re-download them. /var is a symlink to /private/var, so
 # the real backing store is /private/var/cache/apt (mirrors the in-chroot path).
 APT_CACHE=${APT_CACHE:-/private/var/cache/apt}
+#
+# Persistent seed .deb cache (host dir, overridable). The base closure's .debs are
+# fetched here once and reused on re-provision -- the fetch is skipped when a file is
+# already present (basenames are versioned, so a suite bump downloads the new file
+# rather than silently reusing a stale one) -- so re-runs do not re-download the whole
+# closure. It lives under /tmp, which do_mounts nullfs-mounts onto the chroot's /tmp
+# at the same path, so `dpkg -i` in the chroot sees the host's copies with no extra mount.
+SEED_CACHE=${SEED_CACHE:-/tmp/nextbsd-nbs-seed}
 
 die()  { printf 'nextbsd-linux-bootstrap: %s\n' "$*" >&2; exit 1; }
 info() { printf 'nextbsd-linux-bootstrap: %s\n' "$*"; }
@@ -250,22 +260,34 @@ do_bootstrap() {
 	# Non-interactive: use the built-in debconf library frontend (libdebconfclient0)
 	# instead of the interactive debconf-2.0 binary, which the minimal base lacks.
 	export DEBIAN_FRONTEND=noninteractive
-	WORK=$(mktemp -d); mkdir -p "$WORK/debs"
+	# WORK = transient scratch (Packages index + resolved closure); removed at the end.
+	# SEED_CACHE = persistent .deb store, kept so re-runs reuse it (no re-fetch).
+	WORK=$(mktemp -d)
+	mkdir -p "$SEED_CACHE"
 
 	fetch_packages_index "$a"
 	resolve_closure "$SEED" > "$WORK/filenames"
 	sort -u "$WORK/filenames" -o "$WORK/filenames"
 	info "base closure: $(wc -l < "$WORK/filenames" | tr -d ' ') .deb packages"
 
+	# Fetch the closure into the persistent cache, skipping any .deb already present
+	# (so a re-provision reuses what was already downloaded). DEBS = the current
+	# closure, used for extract + install; stale versions from earlier suite bumps stay
+	# in the cache but are never touched -- only the freshly-resolved closure is used.
+	DEBS=""
 	while IFS= read -r f; do
 		[ -n "$f" ] || continue
 		b=$(basename "$f")
-		info "  fetch $b"
-		"$FETCH" -q -o "$WORK/debs/$b" "$DEVUAN_MIRROR/$f" || die "download failed: $f"
+		if [ -s "$SEED_CACHE/$b" ]; then
+			info "  keep  $b (seed cache)"
+		else
+			info "  fetch $b"
+			"$FETCH" -q -o "$SEED_CACHE/$b" "$DEVUAN_MIRROR/$f" || die "download failed: $f"
+		fi
+		DEBS="$DEBS $SEED_CACHE/$b"
 	done < "$WORK/filenames"
 
-	for deb in "$WORK/debs"/*.deb; do
-		[ -e "$deb" ] || continue
+	for deb in $DEBS; do
 		extract_deb "$deb" "$e" || die "extract failed: $deb"
 	done
 
@@ -304,9 +326,9 @@ do_bootstrap() {
 	# never told dpkg about them (debootstrap registers via dpkg, not tar); without
 	# this the db is out of sync with the files, so apt re-installs libc6 & friends
 	# into a half-configured base and their postinsts race it. DEBIAN_FRONTEND
-	# (non-interactive) is exported; the .debs live under $WORK in host /tmp, which
+	# (non-interactive) is exported; the .debs live in SEED_CACHE under /tmp, which
 	# the /tmp nullfs mount exposes at the same path inside the chroot.
-	chroot "$e" /usr/bin/dpkg -i "$WORK"/debs/*.deb || info "some seed postinst deferred; continuing"
+	chroot "$e" /usr/bin/dpkg -i $DEBS || info "some seed postinst deferred; continuing"
 	chroot "$e" /usr/bin/dpkg --configure -a || info "some postinst deferred; apt-get will resolve"
 	chroot "$e" /usr/bin/apt-get -o APT::Cache-Start=536870912 update || info "apt-get update failed; continuing"
 	chroot "$e" /usr/bin/apt-get -o APT::Cache-Start=536870912 install -y --no-install-recommends $BASE_EXTRA $CLIENT_LIBS || die "apt-get install failed"
@@ -378,6 +400,8 @@ cmd=${1:-probe}
 case $cmd in
 	probe)     do_probe ;;
 	mounts)    require_root; do_mount_all ;;
+	teardown)  require_root; do_teardown ;;
+	bootstrap) require_root; do_teardown; do_bootstrap ;;
 	provision) do_provision ;;
 	all)       require_root; do_probe; do_provision ;;
 	*)         die "unknown command: $cmd" ;;
