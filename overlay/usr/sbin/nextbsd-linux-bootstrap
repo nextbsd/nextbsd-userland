@@ -114,7 +114,10 @@ is_mounted() {
 	mount -p 2>/dev/null | awk -v p="$1" '$2 == p { f = 1 } END { exit f ? 0 : 1 }'
 }
 
-# Six ABI mounts -- mirrors launchctl.c linux_abi_mounts().
+# Six ABI mounts -- mirrors launchctl.c linux_abi_mounts(). A seventh
+# (/dev/pts) will join here once the kernel exposes devpts in the linux
+# root (nextbsd/nextbsd#530); until then pty userspace is guarded in
+# do_zsh_config and apt's opq path logs a non-fatal warning.
 do_mounts() {
 	e=$(real_emul)
 	info "establishing Linux ABI mounts under $e"
@@ -337,7 +340,12 @@ do_bootstrap() {
 	# into a half-configured base and their postinsts race it. DEBIAN_FRONTEND
 	# (non-interactive) is exported; the .debs live in SEED_CACHE under /tmp, which
 	# the /tmp nullfs mount exposes at the same path inside the chroot.
-	chroot "$e" /usr/bin/dpkg -i $DEBS || info "some seed postinst deferred; continuing"
+	# Expected noise: the closure sorts alphabetically, so members that
+	# pre-depend on libc6 (dash, diffutils, ...) fail here -- "libc6 is
+	# not installed" at their turn, because libc6 sorts later. apt-get
+	# below installs the full closure in dependency order and completes
+	# the base; the final --configure sweeps the remainder.
+	chroot "$e" /usr/bin/dpkg -i $DEBS || info "expected: some seed .debs deferred on pre-deps (they sort before libc6); apt-get installs them in dependency order"
 	chroot "$e" /usr/bin/dpkg --configure -a || info "some postinst deferred; apt-get will resolve"
 	chroot "$e" /usr/bin/apt-get -o APT::Cache-Start=536870912 update || info "apt-get update failed; continuing"
 	chroot "$e" /usr/bin/apt-get -o APT::Cache-Start=536870912 install -y --no-install-recommends $BASE_EXTRA $CLIENT_LIBS || die "apt-get install failed"
@@ -378,6 +386,24 @@ do_zsh_config() {
 			rm -rf "$e/usr/share/zsh/plugins/zsh-syntax-highlighting"
 			ln -s /usr/share/zsh-syntax-highlighting "$e/usr/share/zsh/plugins/zsh-syntax-highlighting" || info "warn: syntax-highlighting bridge failed"
 		fi
+	fi
+	# posix_openpt() has no device in the linux root yet (no devpts/ptmx
+	# in the kernel; nextbsd/nextbsd#530), so zsh's pty-based completion
+	# strategy would spam "can't open pseudo terminal" on every completion.
+	# While /dev/ptmx is absent, append a guard to the copied rc that drops
+	# just that strategy (match_prev_cmd + history are pty-free); it becomes
+	# a no-op once the kernel exposes devpts and /dev/ptmx exists.
+	if [ -f "$e/etc/zsh/zshrc" ] && [ ! -e "$e/dev/ptmx" ]; then
+		cat >> "$e/etc/zsh/zshrc" <<'EOF'
+
+# Appended by nextbsd-linux-bootstrap: the linux root has no /dev/pts yet
+# (kernel gap, nextbsd/nextbsd#530), so the pty-based completion strategy
+# cannot open a pty and would spam errors. Keep only the pty-free strategies.
+if [[ ! -e /dev/ptmx ]]; then
+	ZSH_AUTOSUGGEST_STRATEGY=(match_prev_cmd history)
+fi
+EOF
+		info "zsh config: no /dev/ptmx in root yet -- completion strategy dropped until nextbsd/nextbsd#530"
 	fi
 }
 
