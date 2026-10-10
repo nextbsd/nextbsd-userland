@@ -128,11 +128,11 @@ is_mounted() {
 }
 
 # Six ABI mounts -- mirrors launchctl.c linux_abi_mounts(). No /dev/pts
-# mount: on a healthy linux devfs instance the kernel creates ptys on demand
-# (posix_openpt() works; /dev/pts/<N> nodes appear per session), so zsh/zpty
-# and the completion strategy work without any mount. The only missing piece
-# (nextbsd/nextbsd#530) is the /dev/ptmx PATH node, which costs apt's opq
-# log path a non-fatal "Can not write log (Is /dev/pts mounted?)" warning.
+# mount: session terminals work without one -- the linuxulator mediates
+# INHERITED ptys into /dev/pts/<N> nodes in the linux devfs. NEW ptys do
+# not work (nextbsd/nextbsd#530): there is no /dev/ptmx node, so zpty and
+# apt's opq log get ENOENT; the bootstrap handles it (zsh strategy guard in
+# do_zsh_config; the apt warning is non-fatal).
 do_mounts() {
 	e=$(real_emul)
 	info "establishing Linux ABI mounts under $e"
@@ -426,14 +426,28 @@ do_zsh_config() {
 			ln -s /usr/share/zsh-syntax-highlighting "$e/usr/share/zsh/plugins/zsh-syntax-highlighting" || info "warn: syntax-highlighting bridge failed"
 		fi
 	fi
-	# No pty workaround needed: on a healthy linux devfs instance the kernel
-	# creates ptys on demand (posix_openpt() works; /dev/pts/<N> nodes appear
-	# per session), so zpty and the completion strategy work as on the host.
-	# The earlier "can't open pseudo terminal" crashes came from a GUTTED
-	# devfs (a teardown that wiped through it), which the teardown alive-mount
-	# guard and the degraded-devfs remount in do_mounts now make impossible.
-	# Remaining kernel gap (nextbsd/nextbsd#530) is only the /dev/ptmx PATH
-	# node, which costs apt a non-fatal "Can not write log" warning.
+	# pty situation in the linux root, precisely: INHERITED session ptys work
+	# (the linuxulator mediates them into /dev/pts/<N> nodes -- that is why a
+	# chrooted terminal works), but NEW ptys fail: there is no /dev/ptmx node,
+	# so zpty -- and thus autosuggestions' completion strategy, and apt's opq
+	# log -- get ENOENT ("can't open pseudo terminal"). The guard below keeps
+	# the session clean: it drops only the pty-based completion strategy
+	# (match_prev_cmd + history are pty-free; TAB completion is untouched).
+	# It is self-disabling: once the kernel registers /dev/ptmx in the linux
+	# devfs (nextbsd/nextbsd#530) the node exists and the guard never fires.
+	if [ -f "$e/etc/zsh/zshrc" ] && [ ! -e "$e/dev/ptmx" ]; then
+		cat >> "$e/etc/zsh/zshrc" <<'EOF'
+
+# Appended by nextbsd-linux-bootstrap: the linux root has no /dev/ptmx yet
+# (kernel gap, nextbsd/nextbsd#530), so zpty cannot create a pty and the
+# pty-based completion strategy would spam errors on every suggestion.
+# Keep only the pty-free strategies; TAB completion is unaffected.
+if [[ ! -e /dev/ptmx ]]; then
+	ZSH_AUTOSUGGEST_STRATEGY=(match_prev_cmd history)
+fi
+EOF
+		info "zsh config: no /dev/ptmx in root yet -- completion strategy dropped until nextbsd/nextbsd#530"
+	fi
 }
 
 do_reprovision() {
