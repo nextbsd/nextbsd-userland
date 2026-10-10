@@ -17,6 +17,10 @@
 #                             Devuan Excalibur base in place (zsh + plugins, and the
 #                             host's global zsh config), remount, and verify.
 #                             No subcommands, no prompts -- it runs the whole job as root.
+#                             Safety: a teardown that cannot unmount every mount
+#                             (a process in the root holds one) ABORTS instead of
+#                             wiping through the live mount; a degraded devfs
+#                             (gutted node tree) is remounted fresh and verified.
 #
 # The six ABI mounts mirror launchctl.c linux_abi_mounts() exactly; the apt cache
 # is one added data mount (persistent on the host, survives teardown).
@@ -130,6 +134,17 @@ do_mounts() {
 
 	mkdir -p "$e/dev"
 	is_mounted "$e/dev" || mount -t devfs -o nocover devfs "$e/dev" || die "mount $e/dev"
+	# A devfs instance whose node tree was destroyed (a teardown that wiped
+	# through it before this guard existed) comes back without /dev/null and
+	# friends. Remount it fresh; if the nodes still do not come back, no
+	# userland action can restore the kernel's devfs state -- fail loudly.
+	if [ ! -e "$e/dev/null" ]; then
+		info "devfs at $e/dev is degraded (no /dev/null) -- remounting fresh"
+		umount "$e/dev" 2>/dev/null || die "cannot unmount degraded devfs at $e/dev"
+		mkdir -p "$e/dev"
+		mount -t devfs -o nocover devfs "$e/dev" || die "mount $e/dev (fresh)"
+		[ -e "$e/dev/null" ] || die "devfs at $e/dev still lacks /dev/null after remount -- kernel devfs state is corrupt; reboot and re-run"
+	fi
 
 	# devfs supplies dev/fd, and the Linuxulator puts dev/shm into every devfs
 	# instance at ABI init -- so neither is mkdir'ed here (matches launchctl.c).
@@ -182,7 +197,7 @@ do_unmounts() {
 	do_cache_unmount
 	for d in "$e/tmp" "$e/dev/shm" "$e/dev/fd" "$e/dev" "$e/sys" "$e/proc"; do
 		if is_mounted "$d"; then
-			umount "$d" 2>/dev/null || info "warn: left mounted (busy?): $d"
+			umount "$d" 2>/dev/null || info "warn: umount $d failed (busy?) -- a process in the root holds it; teardown will abort"
 		fi
 	done
 }
@@ -194,6 +209,14 @@ do_teardown() {
 		return 0
 	fi
 	do_unmounts
+	# A mount that survived the umount (busy: a process in the root -- e.g. an
+	# orphaned zsh/zpty from an interactive session -- holds it) must ABORT the
+	# teardown, not be waded through: rm -rf must never descend into a live
+	# mount. Wiping through a live devfs guts its node tree (no /dev/null,
+	# no /dev/zero, ...) and the rebuild then fails inside the chroot.
+	re=$(real_emul)
+	alive=$(mount -p 2>/dev/null | awk -v r="$re" '$2 == r || index($2, r "/") == 1 { s = s (s ? ", " : "") $1 " on " $2 } END { print s }')
+	[ -z "$alive" ] || die "teardown aborted: mounts still live under $re -- kill whatever holds them (e.g. an orphaned zsh in the root), then re-run: $alive"
 	# Remove the base's symlinks, then the unmounted mountpoints and the tree.
 	find "$e" -maxdepth 2 -type l -delete 2>/dev/null || true
 	rm -rf "$e" 2>/dev/null || true
