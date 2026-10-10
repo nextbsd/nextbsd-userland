@@ -13,12 +13,9 @@
 # dpkg. Host tools are base-only (fetch + tar + gzip, all in /usr/bin); it NEVER
 # depends on /usr/local (pkg) -- the rule is recorded in nextbsd/nextbsd#527.
 #
-#   nextbsd-linux-bootstrap probe      read-only: arch, emul_path, base, tools, mounts
-#   nextbsd-linux-bootstrap mounts     (re)establish the six ABI mounts + apt cache
-#   nextbsd-linux-bootstrap teardown   DESTRUCTIVE: unmount everything + wipe /compat/linux (no rebuild)
-#   nextbsd-linux-bootstrap bootstrap  wipe + build the base in place (fresh base; no final verify)
-#   nextbsd-linux-bootstrap provision  DESTRUCTIVE: unmount, wipe, bootstrap Devuan, remount, verify
-#   nextbsd-linux-bootstrap all        probe + provision
+#   nextbsd-linux-bootstrap   DESTRUCTIVE: unmount, wipe /compat/linux, build a fresh
+#                             Devuan Excalibur base in place, remount, and verify.
+#                             No subcommands, no prompts -- it runs the whole job as root.
 #
 # The six ABI mounts mirror launchctl.c linux_abi_mounts() exactly; the apt cache
 # is one added data mount (persistent on the host, survives teardown).
@@ -361,29 +358,6 @@ do_verify() {
 	do_mount_all
 }
 
-do_probe() {
-	printf 'host arch:    %s\n' "$(host_arch)"
-	printf 'emul_path:    %s (real %s)\n' "$(emul_path)" "$(real_emul)"
-	printf 'tooling:      '
-	for t in "$FETCH" "$TAR" "$GZIP"; do
-		if [ -x "$t" ]; then
-			printf '%s=ok ' "$(basename "$t")"
-		else
-			printf '%s=MISSING ' "$(basename "$t")"
-		fi
-	done
-	printf '\n'
-	printf '  base-only deps (fetch tar gzip); no /usr/local (pkg) dependencies\n'
-	osr=$(real_emul)/etc/os-release
-	base=$(grep -m1 PRETTY_NAME "$osr" 2>/dev/null || true)
-	if [ -z "$base" ]; then
-		base=none
-	fi
-	printf 'current base: %s\n' "$base"
-	printf 'ABI mounts under emul_path:\n'
-	mount -p 2>/dev/null | awk -v p="$(real_emul)" 'index($2, p) == 1 { printf "  %s\n", $0 }'
-}
-
 do_provision() {
 	require_root
 	e=$(emul_path); a=$(host_arch)
@@ -396,13 +370,4 @@ do_provision() {
 	info "done: $e is Devuan $DEVUAN_SUITE ($a); six ABI mounts up"
 }
 
-cmd=${1:-probe}
-case $cmd in
-	probe)     do_probe ;;
-	mounts)    require_root; do_mount_all ;;
-	teardown)  require_root; do_teardown ;;
-	bootstrap) require_root; do_teardown; do_bootstrap ;;
-	provision) do_provision ;;
-	all)       require_root; do_probe; do_provision ;;
-	*)         die "unknown command: $cmd" ;;
-esac
+do_provision
