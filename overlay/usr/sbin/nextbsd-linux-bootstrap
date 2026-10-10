@@ -14,7 +14,8 @@
 # depends on /usr/local (pkg) -- the rule is recorded in nextbsd/nextbsd#527.
 #
 #   nextbsd-linux-bootstrap   DESTRUCTIVE: unmount, wipe /compat/linux, build a fresh
-#                             Devuan Excalibur base in place, remount, and verify.
+#                             Devuan Excalibur base in place (zsh + plugins, and the
+#                             host's global zsh config), remount, and verify.
 #                             No subcommands, no prompts -- it runs the whole job as root.
 #
 # The six ABI mounts mirror launchctl.c linux_abi_mounts() exactly; the apt cache
@@ -41,8 +42,19 @@ DEVUAN_MIRROR=${DEVUAN_MIRROR:-http://deb.devuan.org/merged}
 # (libc6's preinst calls sed) -- they must be tar-extracted into the base BEFORE the
 # dpkg -i runs the maintainer scripts, so they are in the seed, not just apt-pulled.
 SEED="apt dpkg libc6 libc-bin libgcc-s1 base-passwd base-files dash ca-certificates init-system-helpers coreutils diffutils sed grep findutils mawk debconf perl-base"
-BASE_EXTRA="sysvinit login passwd tar gzip xz-utils mawk bash curl"
+# The base also gets everyday tools: bash (interactive shell) + curl (fetching
+# AppImages/portable software from inside the root), and zsh + its autosuggestions
+# + syntax-highlighting plugins for users later. Debian's zsh-suggestions
+# metapackage is not in the Devuan excalibur index, so the two constituents are
+# named directly.
+BASE_EXTRA="sysvinit login passwd tar gzip xz-utils mawk bash curl zsh zsh-autosuggestions zsh-syntax-highlighting"
 CLIENT_LIBS="libgl1 libglvnd0 libegl1 libgbm1 libglx-mesa0 libgl1-mesa-dri libx11-6 libx11-xcb1 libxcb1 libxkbcommon0 libxkbcommon-x11-0 libxcursor1 libxext6 libxi6 libxrender1 libxrandr2 libxfixes3 libxss1 libxtst6 libxcomposite1 libxdamage1 libxinerama1 libice6 libsm6 fontconfig libfreetype6 fonts-dejavu-core libasound2 libpulse0 libgtk-3-0 libdbus-1-3 dbus xauth"
+# Host global zsh config, copied into the chroot by do_zsh_config. The host
+# (a Darwin userland) keeps the single files /etc/zshrc, /etc/zprofile,
+# /etc/zshenv; the chroot's Devuan zsh reads the directory form /etc/zsh/*. Map
+# each host file onto the location the chroot's zsh actually reads (the
+# /etc/zsh/* entries cover a host with the FreeBSD directory layout instead).
+ZSH_CONFIG_MAP="/etc/zshenv:/etc/zsh/zshenv /etc/zprofile:/etc/zsh/zprofile /etc/zshrc:/etc/zsh/zshrc /etc/zsh/zshenv:/etc/zsh/zshenv /etc/zsh/zprofile:/etc/zsh/zprofile /etc/zsh/zshrc:/etc/zsh/zshrc /etc/zsh/zlogin:/etc/zsh/zlogin"
 
 # Base-only tools -- absolute /usr/bin paths, immune to any /usr/local (pkg) port
 # shadowing them in PATH. RULE (nextbsd/nextbsd#527): never depend on /usr/local.
@@ -330,9 +342,43 @@ do_bootstrap() {
 	chroot "$e" /usr/bin/apt-get -o APT::Cache-Start=536870912 update || info "apt-get update failed; continuing"
 	chroot "$e" /usr/bin/apt-get -o APT::Cache-Start=536870912 install -y --no-install-recommends $BASE_EXTRA $CLIENT_LIBS || die "apt-get install failed"
 	chroot "$e" /usr/bin/dpkg --configure -a || die "final dpkg --configure failed"
+	do_zsh_config
 
 	rm -rf "$WORK"
 	info "base provisioned: Devuan $DEVUAN_SUITE ($a)"
+}
+
+# Copy the host's global zsh config into the chroot so a zsh session inside the
+# root looks like one on the host (compinit, history, keybindings, plugins).
+# Best-effort: a missing host file is skipped and the zsh package's own default
+# takes its place; the copied files land where the chroot's zsh reads them.
+do_zsh_config() {
+	e=$(real_emul)
+	for pair in $ZSH_CONFIG_MAP; do
+		src=${pair%%:*}
+		dst=${pair#*:}
+		[ -f "$src" ] || continue
+		d=$(dirname "$dst")
+		if mkdir -p "$e$d" && cp -f "$src" "$e$dst"; then
+			info "zsh config: $src -> $e$dst"
+		else
+			info "warn: could not install $src as $e$dst"
+		fi
+	done
+	# The copied rc sources the plugins from the FreeBSD layout
+	# /usr/share/zsh/plugins/<name>/; the chroot's packages live in
+	# /usr/share/<name>/. Bridge the two so the copied rc finds them.
+	if [ -d "$e/usr/share/zsh-autosuggestions" ] || [ -d "$e/usr/share/zsh-syntax-highlighting" ]; then
+		mkdir -p "$e/usr/share/zsh/plugins"
+		if [ -d "$e/usr/share/zsh-autosuggestions" ]; then
+			rm -rf "$e/usr/share/zsh/plugins/zsh-autosuggestions"
+			ln -s /usr/share/zsh-autosuggestions "$e/usr/share/zsh/plugins/zsh-autosuggestions" || info "warn: autosuggestions bridge failed"
+		fi
+		if [ -d "$e/usr/share/zsh-syntax-highlighting" ]; then
+			rm -rf "$e/usr/share/zsh/plugins/zsh-syntax-highlighting"
+			ln -s /usr/share/zsh-syntax-highlighting "$e/usr/share/zsh/plugins/zsh-syntax-highlighting" || info "warn: syntax-highlighting bridge failed"
+		fi
+	fi
 }
 
 do_reprovision() {
