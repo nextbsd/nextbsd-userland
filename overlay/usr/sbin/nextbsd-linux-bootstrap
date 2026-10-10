@@ -1,0 +1,488 @@
+#!/bin/sh
+#
+# nextbsd-linux-bootstrap(8) -- provision the single /compat/linux root in place.
+#
+# v1 of nextbsd/nextbsd#526. Run as root. Idempotent / re-runnable: it converges
+# /compat/linux to a fresh Devuan Excalibur base (Debian 12.x without systemd) so
+# self-contained AppImages and portable (apt) software run from the one Linuxulator
+# root. The one root is either rl9 or Devuan; this picks Devuan (rl9 ports aside).
+#
+# Self-contained: it RE-IMPLEMENTS the debootstrap step (fetch the Packages index,
+# resolve a minimal base, download + extract the .debs, configure with the base's own
+# dpkg, then finish with apt-get) -- so it needs NO external debootstrap and NO host
+# dpkg. Host tools are base-only (fetch + tar + gzip, all in /usr/bin); it NEVER
+# depends on /usr/local (pkg) -- the rule is recorded in nextbsd/nextbsd#527.
+#
+#   nextbsd-linux-bootstrap   DESTRUCTIVE: unmount, wipe /compat/linux, build a fresh
+#                             Devuan Excalibur base in place (zsh + plugins, and the
+#                             host's global zsh config), remount, and verify.
+#                             No subcommands, no prompts -- it runs the whole job as root.
+#                             Safety: a teardown that cannot unmount every mount
+#                             (a process in the root holds one) ABORTS instead of
+#                             wiping through the live mount; a degraded devfs
+#                             (gutted node tree) is remounted fresh and verified.
+#
+# The six ABI mounts mirror launchctl.c linux_abi_mounts() exactly; the apt cache
+# is one added data mount (persistent on the host, survives teardown).
+
+set -eu
+
+EMUL_FALLBACK=/compat/linux
+DEVUAN_SUITE=${DEVUAN_SUITE:-excalibur}
+DEVUAN_MIRROR=${DEVUAN_MIRROR:-http://deb.devuan.org/merged}
+#
+# The Devuan "merged" repo 302-redirects *unmodified* packages (glibc, dash,
+# base-passwd, coreutils, ...) listed at pool/DEBIAN/... to the Debian pool; only
+# Devuan-rebuilt packages (...devuan1) at pool/DEVUAN/... are served directly. The
+# sources still point only at Devuan; fetch follows the bounce, so the result is a
+# correct Devuan base. Set DEVUAN_MIRROR to a country mirror if the global one is slow.
+
+# Minimal seed: enough to configure a base and run apt-get. The resolver expands
+# its dependency closure; apt-get then completes the base + installs client libs.
+# dpkg refuses to run ANY maintainer script until its expected programs exist:
+# ldconfig (libc-bin), rm (coreutils), diff (diffutils). All three MUST be in the
+# seed so they are in the base before the first apt-get. debconf (dpkg-preconfigure)
+# + perl-base let preconfigure run. sed/grep/find are needed by package *pre*insts
+# (libc6's preinst calls sed) -- they must be tar-extracted into the base BEFORE the
+# dpkg -i runs the maintainer scripts, so they are in the seed, not just apt-pulled.
+SEED="apt dpkg libc6 libc-bin libgcc-s1 base-passwd base-files dash ca-certificates init-system-helpers coreutils diffutils sed grep findutils mawk debconf perl-base"
+# The base also gets everyday tools: bash (interactive shell) + curl (fetching
+# AppImages/portable software from inside the root), and zsh + its autosuggestions
+# + syntax-highlighting plugins for users later. Debian's zsh-suggestions
+# metapackage is not in the Devuan excalibur index, so the two constituents are
+# named directly. util-linux supplies mountpoint: initscripts' postinst probes
+# `mountpoint -q /dev` to detect our separately-mounted devfs and SKIP its
+# /dev/pts + /dev/shm mkdir (devfs rejects mkdir; /dev/shm we mount ourselves) --
+# without the binary the 127 is read as "not a mountpoint" and the postinst dies.
+# ncurses-base + ncurses-term supply the terminfo database (/lib/terminfo,
+# /usr/share/terminfo): zsh bundles its own terminfo PARSER and has no package
+# edge to ncurses, so the minimal seed never pulls it in -- without the database
+# zsh loads zero capabilities and zle redisplay degrades (colors yes, cursor
+# movement no) -- every redraw appends instead of replacing, duplicating input
+# and never clearing autosuggestion ghosts.
+BASE_EXTRA="sysvinit login passwd tar gzip xz-utils mawk bash curl zsh zsh-autosuggestions zsh-syntax-highlighting util-linux ncurses-base ncurses-term"
+CLIENT_LIBS="libgl1 libglvnd0 libegl1 libgbm1 libglx-mesa0 libgl1-mesa-dri libx11-6 libx11-xcb1 libxcb1 libxkbcommon0 libxkbcommon-x11-0 libxcursor1 libxext6 libxi6 libxrender1 libxrandr2 libxfixes3 libxss1 libxtst6 libxcomposite1 libxdamage1 libxinerama1 libice6 libsm6 fontconfig libfreetype6 fonts-dejavu-core libasound2 libpulse0 libgtk-3-0 libdbus-1-3 dbus xauth"
+# Host global zsh config, copied into the chroot by do_zsh_config. The host
+# (a Darwin userland) keeps the single files /etc/zshrc, /etc/zprofile,
+# /etc/zshenv; the chroot's Devuan zsh reads the directory form /etc/zsh/*. Map
+# each host file onto the location the chroot's zsh actually reads (the
+# /etc/zsh/* entries cover a host with the FreeBSD directory layout instead).
+ZSH_CONFIG_MAP="/etc/zshenv:/etc/zsh/zshenv /etc/zprofile:/etc/zsh/zprofile /etc/zshrc:/etc/zsh/zshrc /etc/zsh/zshenv:/etc/zsh/zshenv /etc/zsh/zprofile:/etc/zsh/zprofile /etc/zsh/zshrc:/etc/zsh/zshrc /etc/zsh/zlogin:/etc/zsh/zlogin"
+
+# Base-only tools -- absolute /usr/bin paths, immune to any /usr/local (pkg) port
+# shadowing them in PATH. RULE (nextbsd/nextbsd#527): never depend on /usr/local.
+# fetch + gzip + tar(libarchive) are all in the NextBSD base; base tar reads the
+# .deb (the ar wrapper) and the xz/gz data member natively -- no ar, no xz, no curl.
+FETCH=${FETCH:-/usr/bin/fetch}
+TAR=${TAR:-/usr/bin/tar}
+GZIP=${GZIP:-/usr/bin/gzip}
+
+# Host-side persistent apt cache, nullfs-mounted onto the chroot's /var/cache/apt so
+# downloaded .debs survive a teardown/re-provision (unmounted before wiping, never
+# copied) and re-runs do not re-download them. /var is a symlink to /private/var, so
+# the real backing store is /private/var/cache/apt (mirrors the in-chroot path).
+APT_CACHE=${APT_CACHE:-/private/var/cache/apt}
+#
+# Persistent seed .deb cache (host dir, overridable). The base closure's .debs are
+# fetched here once and reused on re-provision -- the fetch is skipped when a file is
+# already present (basenames are versioned, so a suite bump downloads the new file
+# rather than silently reusing a stale one) -- so re-runs do not re-download the whole
+# closure. It lives under /tmp, which do_mounts nullfs-mounts onto the chroot's /tmp
+# at the same path, so `dpkg -i` in the chroot sees the host's copies with no extra mount.
+SEED_CACHE=${SEED_CACHE:-/tmp/nextbsd-nbs-seed}
+
+die()  { printf 'nextbsd-linux-bootstrap: %s\n' "$*" >&2; exit 1; }
+info() { printf 'nextbsd-linux-bootstrap: %s\n' "$*"; }
+require_root() { [ "$(id -u)" = 0 ] || die "must run as root"; }
+
+# The three base tools must exist and be executable before we start.
+require_base_tools() {
+	for t in "$FETCH" "$TAR" "$GZIP"; do
+		[ -x "$t" ] || die "missing base tool: $t (rule: base-only, no /usr/local)"
+	done
+}
+
+emul_path() {
+	p=$(sysctl -n compat.linux.emul_path 2>/dev/null || true)
+	case $p in
+	/*) printf '%s' "$p" ;;
+	*)  printf '%s' "$EMUL_FALLBACK" ;;
+	esac
+}
+
+host_arch() {
+	case $(uname -m) in
+	amd64 | x86_64)  printf 'amd64' ;;
+	arm64 | aarch64) printf 'arm64' ;;
+	*)               die "unsupported host arch: $(uname -m)" ;;
+	esac
+}
+
+real_emul() {
+	e=$(emul_path); mkdir -p "$e" 2>/dev/null || true
+	(cd "$e" 2>/dev/null && pwd -P) || printf '%s' "$e"
+}
+
+is_mounted() {
+	mount -p 2>/dev/null | awk -v p="$1" '$2 == p { f = 1 } END { exit f ? 0 : 1 }'
+}
+
+# Six ABI mounts -- mirrors launchctl.c linux_abi_mounts(). No /dev/pts
+# mount: session terminals work without one -- the linuxulator mediates
+# INHERITED ptys into /dev/pts/<N> nodes in the linux devfs. NEW ptys do
+# not work (nextbsd/nextbsd#530): there is no /dev/ptmx node, so zpty and
+# apt's opq log get ENOENT; the bootstrap handles it (zsh strategy guard in
+# do_zsh_config; the apt warning is non-fatal).
+do_mounts() {
+	e=$(real_emul)
+	info "establishing Linux ABI mounts under $e"
+
+	mkdir -p "$e/proc"
+	is_mounted "$e/proc" || mount -t linprocfs -o nocover linprocfs "$e/proc" || die "mount $e/proc"
+
+	mkdir -p "$e/sys"
+	is_mounted "$e/sys" || mount -t linsysfs -o nocover linsysfs "$e/sys" || die "mount $e/sys"
+
+	mkdir -p "$e/dev"
+	is_mounted "$e/dev" || mount -t devfs -o nocover devfs "$e/dev" || die "mount $e/dev"
+	# A devfs instance whose node tree was destroyed (a teardown that wiped
+	# through it before this guard existed) comes back without /dev/null and
+	# friends. Remount it fresh; if the nodes still do not come back, no
+	# userland action can restore the kernel's devfs state -- fail loudly.
+	if [ ! -e "$e/dev/null" ]; then
+		info "devfs at $e/dev is degraded (no /dev/null) -- remounting fresh"
+		umount "$e/dev" 2>/dev/null || die "cannot unmount degraded devfs at $e/dev"
+		mkdir -p "$e/dev"
+		mount -t devfs -o nocover devfs "$e/dev" || die "mount $e/dev (fresh)"
+		[ -e "$e/dev/null" ] || die "devfs at $e/dev still lacks /dev/null after remount -- kernel devfs state is corrupt; reboot and re-run"
+	fi
+
+	# devfs supplies dev/fd, and the Linuxulator puts dev/shm into every devfs
+	# instance at ABI init -- so neither is mkdir'ed here (matches launchctl.c).
+	is_mounted "$e/dev/fd" || mount -t fdescfs -o nocover,linrdlnk fdescfs "$e/dev/fd" || die "mount $e/dev/fd"
+
+	physmem=$(sysctl -n hw.physmem); div=2
+	rootfs=$(mount -p 2>/dev/null | awk -v r=/ '$2 == r { print $3; exit }')
+	if [ "$rootfs" = unionfs ]; then
+		div=4
+	fi
+	shm=$((physmem / div)); min=$((128 * 1024 * 1024))
+	if [ "$shm" -lt "$min" ]; then
+		shm=$min
+	fi
+	is_mounted "$e/dev/shm" || mount -t tmpfs -o "nocover,mode=1777,size=$shm" tmpfs "$e/dev/shm" || die "mount $e/dev/shm"
+
+	tmpreal=$(cd /tmp 2>/dev/null && pwd -P) || tmpreal=/tmp
+	mkdir -p "$e/tmp"
+	is_mounted "$e/tmp" || mount -t nullfs -o nocover "$tmpreal" "$e/tmp" || die "mount $e/tmp"
+
+	# Count the six ABI mountpoints exactly -- a substring grep would also count
+	# the persistent apt cache data mount (which is not one of the six).
+	n=0
+	for m in "$e/proc" "$e/sys" "$e/dev" "$e/dev/fd" "$e/dev/shm" "$e/tmp"; do
+		is_mounted "$m" && n=$((n + 1))
+	done
+	info "$n Linux ABI mounts up under $e"
+}
+
+# Persistent apt cache (host dir, outside emul_path) nullfs-mounted into the
+# chroot's /var/cache/apt -- a data mount, NOT one of the six ABI mounts. Downloaded
+# .debs survive a teardown/re-provision, so re-runs do not re-download them.
+do_cache_mount() {
+	e=$(real_emul)
+	mkdir -p "$APT_CACHE" "$e/var/cache/apt"
+	is_mounted "$e/var/cache/apt" || mount -t nullfs -o nocover "$APT_CACHE" "$e/var/cache/apt" || info "warn: apt cache not mounted at $e/var/cache/apt"
+}
+
+do_cache_unmount() {
+	e=$(real_emul)
+	if is_mounted "$e/var/cache/apt"; then
+		umount "$e/var/cache/apt" 2>/dev/null || info "warn: apt cache busy, left mounted"
+	fi
+}
+
+# The six ABI mounts + the persistent apt cache.
+do_mount_all() {
+	do_mounts
+	do_cache_mount
+}
+
+# Reverse-dependency order: children (dev/shm, dev/fd) before dev; then the rest.
+do_unmounts() {
+	e=$(real_emul)
+	do_cache_unmount
+	for d in "$e/tmp" "$e/dev/shm" "$e/dev/fd" "$e/dev" "$e/sys" "$e/proc"; do
+		if is_mounted "$d"; then
+			umount "$d" 2>/dev/null || info "warn: umount $d failed (busy?) -- a process in the root holds it; teardown will abort"
+		fi
+	done
+}
+
+do_teardown() {
+	e=$(emul_path)
+	if [ ! -e "$e" ]; then
+		info "$e absent -- nothing to tear down"
+		return 0
+	fi
+	do_unmounts
+	# A mount that survived the umount (busy: a process in the root -- e.g. an
+	# orphaned zsh/zpty from an interactive session -- holds it) must ABORT the
+	# teardown, not be waded through: rm -rf must never descend into a live
+	# mount. Wiping through a live devfs guts its node tree (no /dev/null,
+	# no /dev/zero, ...) and the rebuild then fails inside the chroot.
+	re=$(real_emul)
+	alive=$(mount -p 2>/dev/null | awk -v r="$re" '$2 == r || index($2, r "/") == 1 { s = s (s ? ", " : "") $1 " on " $2 } END { print s }')
+	[ -z "$alive" ] || die "teardown aborted: mounts still live under $re -- kill whatever holds them (e.g. an orphaned zsh in the root), then re-run: $alive"
+	# Remove the base's symlinks, then the unmounted mountpoints and the tree.
+	find "$e" -maxdepth 2 -type l -delete 2>/dev/null || true
+	rm -rf "$e" 2>/dev/null || true
+	info "tore down $e"
+}
+
+# --- self-contained bootstrap (re-implements debootstrap; base tools only) ---
+
+# $1 = arch. Downloads + decompresses the Packages index to $WORK/packages.
+# .gz + gzip (both base) avoids any xz dependency.
+fetch_packages_index() {
+	a=$1
+	url="$DEVUAN_MIRROR/dists/$DEVUAN_SUITE/main/binary-$a/Packages.gz"
+	info "fetching $url"
+	"$FETCH" -q -o "$WORK/packages.gz" "$url" || die "fetch $url failed"
+	"$GZIP" -dc "$WORK/packages.gz" > "$WORK/packages" || die "decompress Packages failed"
+	rm -f "$WORK/packages.gz"
+}
+
+# Reads $WORK/packages; expands $1 (seed names) to the full dependency closure
+# (version-constraint / alternative / arch aware); prints .deb pool paths.
+resolve_closure() {
+	awk -v SEED="$1" '
+		function flush() { if (pkg != "") { FN[pkg] = fn; DP[pkg] = ds } pkg = ""; fn = ""; ds = "" }
+		/^Package:/     { flush(); pkg = $2 }
+		/^Filename:/    { fn = $2 }
+		/^Depends:/     { $1 = ""; ds = ds " " $0 }
+		/^Pre-Depends:/ { $1 = ""; ds = ds " " $0 }
+		END {
+			flush()
+			m = split(SEED, S, /[ ,]+/)
+			for (i = 1; i <= m; i++) if (S[i] in FN) want[S[i]] = 1
+			grow = 1
+			while (grow) {
+				grow = 0
+				for (p in want) {
+					if (seen[p]) continue
+					seen[p] = 1
+					n = split(DP[p], T, ",")
+					for (j = 1; j <= n; j++) {
+						d = T[j]
+						if (index(d, "|") > 0) { split(d, A, "|"); d = A[1] }
+						gsub(/[ \t]/, "", d)
+						sub(/ *\(.*/, "", d)
+						sub(/:.*$/, "", d)
+						if (d == "") continue
+						if ((d in FN) && !(d in want)) { want[d] = 1; grow = 1 }
+					}
+				}
+			}
+			for (p in want) if (FN[p] != "") print FN[p]
+		}' "$WORK/packages"
+}
+
+# $1 = path to a .deb ; extract its payload into $2 (base tar only; no host dpkg).
+# A .deb is an ar archive (debian-binary, control.tar.*, data.tar.*). base tar
+# (libarchive) reads the ar wrapper, then the xz/gz data member -- no ar, no xz.
+extract_deb() {
+	deb=$1; target=$2
+	tmp=$(mktemp -d)
+	"$TAR" -xf "$deb" -C "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "cannot read $deb"; }
+	if [ -f "$tmp/data.tar.xz" ]; then
+		"$TAR" -xJf "$tmp/data.tar.xz" -C "$target"
+	elif [ -f "$tmp/data.tar.gz" ]; then
+		"$TAR" -xzf "$tmp/data.tar.gz" -C "$target"
+	else
+		"$TAR" -xf "$tmp/data.tar" -C "$target"
+	fi
+	rm -rf "$tmp"
+}
+
+do_bootstrap() {
+	require_base_tools
+	e=$(real_emul); a=$(host_arch)
+	export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+	# Non-interactive: use the built-in debconf library frontend (libdebconfclient0)
+	# instead of the interactive debconf-2.0 binary, which the minimal base lacks.
+	export DEBIAN_FRONTEND=noninteractive
+	# WORK = transient scratch (Packages index + resolved closure); removed at the end.
+	# SEED_CACHE = persistent .deb store, kept so re-runs reuse it (no re-fetch).
+	WORK=$(mktemp -d)
+	mkdir -p "$SEED_CACHE"
+
+	fetch_packages_index "$a"
+	resolve_closure "$SEED" > "$WORK/filenames"
+	sort -u "$WORK/filenames" -o "$WORK/filenames"
+	info "base closure: $(wc -l < "$WORK/filenames" | tr -d ' ') .deb packages"
+
+	# Fetch the closure into the persistent cache, skipping any .deb already present
+	# (so a re-provision reuses what was already downloaded). DEBS = the current
+	# closure, used for extract + install; stale versions from earlier suite bumps stay
+	# in the cache but are never touched -- only the freshly-resolved closure is used.
+	DEBS=""
+	while IFS= read -r f; do
+		[ -n "$f" ] || continue
+		b=$(basename "$f")
+		if [ -s "$SEED_CACHE/$b" ]; then
+			info "  keep  $b (seed cache)"
+		else
+			info "  fetch $b"
+			"$FETCH" -q -o "$SEED_CACHE/$b" "$DEVUAN_MIRROR/$f" || die "download failed: $f"
+		fi
+		DEBS="$DEBS $SEED_CACHE/$b"
+	done < "$WORK/filenames"
+
+	for deb in $DEBS; do
+		extract_deb "$deb" "$e" || die "extract failed: $deb"
+	done
+
+	do_mount_all
+	# Ensure the dynamic-linker path resolves before running chroot'd dpkg/apt:
+	# usr-merged glibc keeps ld-linux under /usr/lib64; map the classic /lib64 + /lib.
+	if [ "$a" = amd64 ]; then
+		mkdir -p "$e/usr/lib64"
+		cp -f "$e/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" "$e/usr/lib64/" 2>/dev/null || true
+		[ -e "$e/lib64" ] || ln -s usr/lib64 "$e/lib64"
+		[ -e "$e/lib" ] || ln -s usr/lib "$e/lib"
+	fi
+	# apt (and the whole base) needs DNS: the base ships no /etc/resolv.conf, so
+	# mirror the host's into the chroot (the six ABI mounts do not cover /etc).
+	if [ -r /etc/resolv.conf ]; then
+		rm -f "$e/etc/resolv.conf" 2>/dev/null || true
+		cp -f /etc/resolv.conf "$e/etc/resolv.conf" || true
+	fi
+	# apt needs a source; point it at the Devuan suite. trusted=yes skips Release
+	# signature checks (the Devuan archive key is absent from the minimal base's
+	# Debian keyring) -- an acceptable bootstrap tradeoff from a pinned mirror.
+	mkdir -p "$e/etc/apt"
+	printf 'deb [trusted=yes] %s %s main\n' "$DEVUAN_MIRROR" "$DEVUAN_SUITE" > "$e/etc/apt/sources.list"
+	# The Devuan merged index is large; the 24 MB default MMap cache overflows on
+	# it, so raise it (persistent for the base, and also passed via -o below).
+	mkdir -p "$e/etc/apt/apt.conf.d"
+	printf 'APT::Cache-Start "536870912";\n' > "$e/etc/apt/apt.conf.d/99nbs-cache"
+	# apt sanitizes the PATH it passes to postinsts (drops /usr/sbin), so dpkg
+	# cannot see the ldconfig/start-stop-daemon/invoke-rc.d it needs; expose them
+	# in /usr/bin (always on PATH) so package maintainer scripts can run.
+	for prog in ldconfig start-stop-daemon invoke-rc.d; do
+		[ -x "$e/usr/sbin/$prog" ] && [ ! -e "$e/usr/bin/$prog" ] && ln -s "/usr/sbin/$prog" "$e/usr/bin/$prog" 2>/dev/null || true
+	done
+	# Register the extracted seed in the base's own dpkg database + run its
+	# maintainer scripts. The tar extraction above placed the files on disk but
+	# never told dpkg about them (debootstrap registers via dpkg, not tar); without
+	# this the db is out of sync with the files, so apt re-installs libc6 & friends
+	# into a half-configured base and their postinsts race it. DEBIAN_FRONTEND
+	# (non-interactive) is exported; the .debs live in SEED_CACHE under /tmp, which
+	# the /tmp nullfs mount exposes at the same path inside the chroot.
+	# Expected noise: the closure sorts alphabetically, so members that
+	# pre-depend on libc6 (dash, diffutils, ...) fail here -- "libc6 is
+	# not installed" at their turn, because libc6 sorts later. apt-get
+	# below installs the full closure in dependency order and completes
+	# the base; the final --configure sweeps the remainder.
+	chroot "$e" /usr/bin/dpkg -i $DEBS || info "expected: some seed .debs deferred on pre-deps (they sort before libc6); apt-get installs them in dependency order"
+	chroot "$e" /usr/bin/dpkg --configure -a || info "some postinst deferred; apt-get will resolve"
+	chroot "$e" /usr/bin/apt-get -o APT::Cache-Start=536870912 update || info "apt-get update failed; continuing"
+	chroot "$e" /usr/bin/apt-get -o APT::Cache-Start=536870912 install -y --no-install-recommends $BASE_EXTRA $CLIENT_LIBS || die "apt-get install failed"
+	chroot "$e" /usr/bin/dpkg --configure -a || die "final dpkg --configure failed"
+	do_zsh_config
+
+	rm -rf "$WORK"
+	info "base provisioned: Devuan $DEVUAN_SUITE ($a)"
+}
+
+# Copy the host's global zsh config into the chroot so a zsh session inside the
+# root looks like one on the host (compinit, history, keybindings, plugins).
+# Best-effort: a missing host file is skipped and the zsh package's own default
+# takes its place; the copied files land where the chroot's zsh reads them.
+do_zsh_config() {
+	e=$(real_emul)
+	for pair in $ZSH_CONFIG_MAP; do
+		src=${pair%%:*}
+		dst=${pair#*:}
+		[ -f "$src" ] || continue
+		d=$(dirname "$dst")
+		if mkdir -p "$e$d" && cp -f "$src" "$e$dst"; then
+			info "zsh config: $src -> $e$dst"
+		else
+			info "warn: could not install $src as $e$dst"
+		fi
+	done
+	# The copied rc sources the plugins from the FreeBSD layout
+	# /usr/share/zsh/plugins/<name>/; the chroot's packages live in
+	# /usr/share/<name>/. Bridge the two so the copied rc finds them.
+	if [ -d "$e/usr/share/zsh-autosuggestions" ] || [ -d "$e/usr/share/zsh-syntax-highlighting" ]; then
+		mkdir -p "$e/usr/share/zsh/plugins"
+		if [ -d "$e/usr/share/zsh-autosuggestions" ]; then
+			rm -rf "$e/usr/share/zsh/plugins/zsh-autosuggestions"
+			ln -s /usr/share/zsh-autosuggestions "$e/usr/share/zsh/plugins/zsh-autosuggestions" || info "warn: autosuggestions bridge failed"
+		fi
+		if [ -d "$e/usr/share/zsh-syntax-highlighting" ]; then
+			rm -rf "$e/usr/share/zsh/plugins/zsh-syntax-highlighting"
+			ln -s /usr/share/zsh-syntax-highlighting "$e/usr/share/zsh/plugins/zsh-syntax-highlighting" || info "warn: syntax-highlighting bridge failed"
+		fi
+	fi
+	# pty situation in the linux root, precisely: INHERITED session ptys work
+	# (the linuxulator mediates them into /dev/pts/<N> nodes -- that is why a
+	# chrooted terminal works), but NEW ptys fail: there is no /dev/ptmx node,
+	# so zpty -- and thus autosuggestions' completion strategy, and apt's opq
+	# log -- get ENOENT ("can't open pseudo terminal"). The guard below keeps
+	# the session clean: it drops only the pty-based completion strategy
+	# (match_prev_cmd + history are pty-free; TAB completion is untouched).
+	# It is self-disabling: once the kernel registers /dev/ptmx in the linux
+	# devfs (nextbsd/nextbsd#530) the node exists and the guard never fires.
+	if [ -f "$e/etc/zsh/zshrc" ] && [ ! -e "$e/dev/ptmx" ]; then
+		cat >> "$e/etc/zsh/zshrc" <<'EOF'
+
+# Appended by nextbsd-linux-bootstrap: the linux root has no /dev/ptmx yet
+# (kernel gap, nextbsd/nextbsd#530), so zpty cannot create a pty and the
+# pty-based completion strategy would spam errors on every suggestion.
+# Keep only the pty-free strategies; TAB completion is unaffected.
+if [[ ! -e /dev/ptmx ]]; then
+	ZSH_AUTOSUGGEST_STRATEGY=(match_prev_cmd history)
+fi
+EOF
+		info "zsh config: no /dev/ptmx in root yet -- completion strategy dropped until nextbsd/nextbsd#530"
+	fi
+}
+
+do_reprovision() {
+	e=$(real_emul)
+	# /lib64 is amd64-only: aarch64 glibc uses /lib/ld-linux-aarch64.so.1.
+	if [ "$(host_arch)" = amd64 ]; then
+		mkdir -p "$e/usr/lib64"
+		cp -f "$e/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" "$e/usr/lib64/" 2>/dev/null || true
+		if [ ! -e "$e/lib64" ]; then
+			ln -s usr/lib64 "$e/lib64"
+		fi
+	fi
+	mkdir -p "$e/dev/shm"
+}
+
+do_verify() {
+	e=$(real_emul)
+	if chroot "$e" /bin/ls / >/dev/null 2>&1; then
+		info "verify: chroot $e /bin/ls OK"
+	else
+		die "verify: chroot $e /bin/ls failed"
+	fi
+	do_mount_all
+}
+
+do_provision() {
+	require_root
+	e=$(emul_path); a=$(host_arch)
+	info "PROVISION (destructive): $e -> Devuan $DEVUAN_SUITE ($a)"
+	do_teardown
+	do_bootstrap
+	do_reprovision
+	do_mount_all
+	do_verify
+	info "done: $e is Devuan $DEVUAN_SUITE ($a); six ABI mounts up"
+}
+
+do_provision
