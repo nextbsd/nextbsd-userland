@@ -14,11 +14,12 @@
 # depends on /usr/local (pkg) -- the rule is recorded in nextbsd/nextbsd#527.
 #
 #   nextbsd-linux-bootstrap probe      read-only: arch, emul_path, base, tools, mounts
-#   nextbsd-linux-bootstrap mounts     (re)establish the six Linux ABI mounts
+#   nextbsd-linux-bootstrap mounts     (re)establish the six ABI mounts + apt cache
 #   nextbsd-linux-bootstrap provision  DESTRUCTIVE: unmount, wipe, bootstrap Devuan, remount, verify
 #   nextbsd-linux-bootstrap all        probe + provision
 #
-# The six mounts mirror launchctl.c linux_abi_mounts() exactly.
+# The six ABI mounts mirror launchctl.c linux_abi_mounts() exactly; the apt cache
+# is one added data mount (persistent on the host, survives teardown).
 
 set -eu
 
@@ -34,8 +35,14 @@ DEVUAN_MIRROR=${DEVUAN_MIRROR:-http://deb.devuan.org/merged}
 
 # Minimal seed: enough to configure a base and run apt-get. The resolver expands
 # its dependency closure; apt-get then completes the base + installs client libs.
-SEED="apt dpkg libc6 libgcc-s1 base-passwd base-files dash ca-certificates"
-BASE_EXTRA="sysvinit coreutils login passwd tar gzip xz-utils perl-base mawk"
+# dpkg refuses to run ANY maintainer script until its expected programs exist:
+# ldconfig (libc-bin), rm (coreutils), diff (diffutils). All three MUST be in the
+# seed so they are in the base before the first apt-get. debconf (dpkg-preconfigure)
+# + perl-base let preconfigure run. sed/grep/find are needed by package *pre*insts
+# (libc6's preinst calls sed) -- they must be tar-extracted into the base BEFORE the
+# dpkg -i runs the maintainer scripts, so they are in the seed, not just apt-pulled.
+SEED="apt dpkg libc6 libc-bin libgcc-s1 base-passwd base-files dash ca-certificates init-system-helpers coreutils diffutils sed grep findutils mawk debconf perl-base"
+BASE_EXTRA="sysvinit login passwd tar gzip xz-utils mawk"
 CLIENT_LIBS="libgl1 libglvnd0 libegl1 libgbm1 libglx-mesa0 libgl1-mesa-dri libx11-6 libx11-xcb1 libxcb1 libxkbcommon0 libxkbcommon-x11-0 libxcursor1 libxext6 libxi6 libxrender1 libxrandr2 libxfixes3 libxss1 libxtst6 libxcomposite1 libxdamage1 libxinerama1 libice6 libsm6 fontconfig libfreetype6 fonts-dejavu-core libasound2 libpulse0 libgtk-3-0 libdbus-1-3 dbus xauth"
 
 # Base-only tools -- absolute /usr/bin paths, immune to any /usr/local (pkg) port
@@ -45,6 +52,12 @@ CLIENT_LIBS="libgl1 libglvnd0 libegl1 libgbm1 libglx-mesa0 libgl1-mesa-dri libx1
 FETCH=${FETCH:-/usr/bin/fetch}
 TAR=${TAR:-/usr/bin/tar}
 GZIP=${GZIP:-/usr/bin/gzip}
+
+# Host-side persistent apt cache, nullfs-mounted onto the chroot's /var/cache/apt so
+# downloaded .debs survive a teardown/re-provision (unmounted before wiping, never
+# copied) and re-runs do not re-download them. /var is a symlink to /private/var, so
+# the real backing store is /private/var/cache/apt (mirrors the in-chroot path).
+APT_CACHE=${APT_CACHE:-/private/var/cache/apt}
 
 die()  { printf 'nextbsd-linux-bootstrap: %s\n' "$*" >&2; exit 1; }
 info() { printf 'nextbsd-linux-bootstrap: %s\n' "$*"; }
@@ -119,9 +132,32 @@ do_mounts() {
 	info "$n Linux ABI mounts up under $e"
 }
 
+# Persistent apt cache (host dir, outside emul_path) nullfs-mounted into the
+# chroot's /var/cache/apt -- a data mount, NOT one of the six ABI mounts. Downloaded
+# .debs survive a teardown/re-provision, so re-runs do not re-download them.
+do_cache_mount() {
+	e=$(real_emul)
+	mkdir -p "$APT_CACHE" "$e/var/cache/apt"
+	is_mounted "$e/var/cache/apt" || mount -t nullfs -o nocover "$APT_CACHE" "$e/var/cache/apt" || info "warn: apt cache not mounted at $e/var/cache/apt"
+}
+
+do_cache_unmount() {
+	e=$(real_emul)
+	if is_mounted "$e/var/cache/apt"; then
+		umount "$e/var/cache/apt" 2>/dev/null || info "warn: apt cache busy, left mounted"
+	fi
+}
+
+# The six ABI mounts + the persistent apt cache.
+do_mount_all() {
+	do_mounts
+	do_cache_mount
+}
+
 # Reverse-dependency order: children (dev/shm, dev/fd) before dev; then the rest.
 do_unmounts() {
 	e=$(real_emul)
+	do_cache_unmount
 	for d in "$e/tmp" "$e/dev/shm" "$e/dev/fd" "$e/dev" "$e/sys" "$e/proc"; do
 		if is_mounted "$d"; then
 			umount "$d" 2>/dev/null || info "warn: left mounted (busy?): $d"
@@ -209,7 +245,11 @@ extract_deb() {
 
 do_bootstrap() {
 	require_base_tools
-	e=$(emul_path); a=$(host_arch)
+	e=$(real_emul); a=$(host_arch)
+	export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+	# Non-interactive: use the built-in debconf library frontend (libdebconfclient0)
+	# instead of the interactive debconf-2.0 binary, which the minimal base lacks.
+	export DEBIAN_FRONTEND=noninteractive
 	WORK=$(mktemp -d); mkdir -p "$WORK/debs"
 
 	fetch_packages_index "$a"
@@ -229,10 +269,47 @@ do_bootstrap() {
 		extract_deb "$deb" "$e" || die "extract failed: $deb"
 	done
 
-	do_mounts
+	do_mount_all
+	# Ensure the dynamic-linker path resolves before running chroot'd dpkg/apt:
+	# usr-merged glibc keeps ld-linux under /usr/lib64; map the classic /lib64 + /lib.
+	if [ "$a" = amd64 ]; then
+		mkdir -p "$e/usr/lib64"
+		cp -f "$e/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" "$e/usr/lib64/" 2>/dev/null || true
+		[ -e "$e/lib64" ] || ln -s usr/lib64 "$e/lib64"
+		[ -e "$e/lib" ] || ln -s usr/lib "$e/lib"
+	fi
+	# apt (and the whole base) needs DNS: the base ships no /etc/resolv.conf, so
+	# mirror the host's into the chroot (the six ABI mounts do not cover /etc).
+	if [ -r /etc/resolv.conf ]; then
+		rm -f "$e/etc/resolv.conf" 2>/dev/null || true
+		cp -f /etc/resolv.conf "$e/etc/resolv.conf" || true
+	fi
+	# apt needs a source; point it at the Devuan suite. trusted=yes skips Release
+	# signature checks (the Devuan archive key is absent from the minimal base's
+	# Debian keyring) -- an acceptable bootstrap tradeoff from a pinned mirror.
+	mkdir -p "$e/etc/apt"
+	printf 'deb [trusted=yes] %s %s main\n' "$DEVUAN_MIRROR" "$DEVUAN_SUITE" > "$e/etc/apt/sources.list"
+	# The Devuan merged index is large; the 24 MB default MMap cache overflows on
+	# it, so raise it (persistent for the base, and also passed via -o below).
+	mkdir -p "$e/etc/apt/apt.conf.d"
+	printf 'APT::Cache-Start "536870912";\n' > "$e/etc/apt/apt.conf.d/99nbs-cache"
+	# apt sanitizes the PATH it passes to postinsts (drops /usr/sbin), so dpkg
+	# cannot see the ldconfig/start-stop-daemon/invoke-rc.d it needs; expose them
+	# in /usr/bin (always on PATH) so package maintainer scripts can run.
+	for prog in ldconfig start-stop-daemon invoke-rc.d; do
+		[ -x "$e/usr/sbin/$prog" ] && [ ! -e "$e/usr/bin/$prog" ] && ln -s "/usr/sbin/$prog" "$e/usr/bin/$prog" 2>/dev/null || true
+	done
+	# Register the extracted seed in the base's own dpkg database + run its
+	# maintainer scripts. The tar extraction above placed the files on disk but
+	# never told dpkg about them (debootstrap registers via dpkg, not tar); without
+	# this the db is out of sync with the files, so apt re-installs libc6 & friends
+	# into a half-configured base and their postinsts race it. DEBIAN_FRONTEND
+	# (non-interactive) is exported; the .debs live under $WORK in host /tmp, which
+	# the /tmp nullfs mount exposes at the same path inside the chroot.
+	chroot "$e" /usr/bin/dpkg -i "$WORK"/debs/*.deb || info "some seed postinst deferred; continuing"
 	chroot "$e" /usr/bin/dpkg --configure -a || info "some postinst deferred; apt-get will resolve"
-	chroot "$e" /usr/bin/apt-get update || info "apt-get update failed; continuing"
-	chroot "$e" /usr/bin/apt-get install -y --no-install-recommends $BASE_EXTRA $CLIENT_LIBS || die "apt-get install failed"
+	chroot "$e" /usr/bin/apt-get -o APT::Cache-Start=536870912 update || info "apt-get update failed; continuing"
+	chroot "$e" /usr/bin/apt-get -o APT::Cache-Start=536870912 install -y --no-install-recommends $BASE_EXTRA $CLIENT_LIBS || die "apt-get install failed"
 	chroot "$e" /usr/bin/dpkg --configure -a || die "final dpkg --configure failed"
 
 	rm -rf "$WORK"
@@ -259,7 +336,7 @@ do_verify() {
 	else
 		die "verify: chroot $e /bin/ls failed"
 	fi
-	do_mounts
+	do_mount_all
 }
 
 do_probe() {
@@ -292,7 +369,7 @@ do_provision() {
 	do_teardown
 	do_bootstrap
 	do_reprovision
-	do_mounts
+	do_mount_all
 	do_verify
 	info "done: $e is Devuan $DEVUAN_SUITE ($a); six ABI mounts up"
 }
@@ -300,7 +377,7 @@ do_provision() {
 cmd=${1:-probe}
 case $cmd in
 	probe)     do_probe ;;
-	mounts)    require_root; do_mounts ;;
+	mounts)    require_root; do_mount_all ;;
 	provision) do_provision ;;
 	all)       require_root; do_probe; do_provision ;;
 	*)         die "unknown command: $cmd" ;;
