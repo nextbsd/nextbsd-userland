@@ -41,7 +41,7 @@ DEVUAN_MIRROR=${DEVUAN_MIRROR:-http://deb.devuan.org/merged}
 # (libc6's preinst calls sed) -- they must be tar-extracted into the base BEFORE the
 # dpkg -i runs the maintainer scripts, so they are in the seed, not just apt-pulled.
 SEED="apt dpkg libc6 libc-bin libgcc-s1 base-passwd base-files dash ca-certificates init-system-helpers coreutils diffutils sed grep findutils mawk debconf perl-base"
-BASE_EXTRA="sysvinit login passwd tar gzip xz-utils mawk"
+BASE_EXTRA="sysvinit login passwd tar gzip xz-utils mawk bash curl"
 CLIENT_LIBS="libgl1 libglvnd0 libegl1 libgbm1 libglx-mesa0 libgl1-mesa-dri libx11-6 libx11-xcb1 libxcb1 libxkbcommon0 libxkbcommon-x11-0 libxcursor1 libxext6 libxi6 libxrender1 libxrandr2 libxfixes3 libxss1 libxtst6 libxcomposite1 libxdamage1 libxinerama1 libice6 libsm6 fontconfig libfreetype6 fonts-dejavu-core libasound2 libpulse0 libgtk-3-0 libdbus-1-3 dbus xauth"
 
 # Base-only tools -- absolute /usr/bin paths, immune to any /usr/local (pkg) port
