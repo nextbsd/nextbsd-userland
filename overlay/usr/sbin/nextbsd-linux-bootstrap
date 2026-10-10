@@ -1,0 +1,307 @@
+#!/bin/sh
+#
+# nextbsd-linux-bootstrap(8) -- provision the single /compat/linux root in place.
+#
+# v1 of nextbsd/nextbsd#526. Run as root. Idempotent / re-runnable: it converges
+# /compat/linux to a fresh Devuan Excalibur base (Debian 12.x without systemd) so
+# self-contained AppImages and portable (apt) software run from the one Linuxulator
+# root. The one root is either rl9 or Devuan; this picks Devuan (rl9 ports aside).
+#
+# Self-contained: it RE-IMPLEMENTS the debootstrap step (fetch the Packages index,
+# resolve a minimal base, download + extract the .debs, configure with the base's own
+# dpkg, then finish with apt-get) -- so it needs NO external debootstrap and NO host
+# dpkg. Host tools are base-only (fetch + tar + gzip, all in /usr/bin); it NEVER
+# depends on /usr/local (pkg) -- the rule is recorded in nextbsd/nextbsd#527.
+#
+#   nextbsd-linux-bootstrap probe      read-only: arch, emul_path, base, tools, mounts
+#   nextbsd-linux-bootstrap mounts     (re)establish the six Linux ABI mounts
+#   nextbsd-linux-bootstrap provision  DESTRUCTIVE: unmount, wipe, bootstrap Devuan, remount, verify
+#   nextbsd-linux-bootstrap all        probe + provision
+#
+# The six mounts mirror launchctl.c linux_abi_mounts() exactly.
+
+set -eu
+
+EMUL_FALLBACK=/compat/linux
+DEVUAN_SUITE=${DEVUAN_SUITE:-excalibur}
+DEVUAN_MIRROR=${DEVUAN_MIRROR:-http://deb.devuan.org/merged}
+#
+# The Devuan "merged" repo 302-redirects *unmodified* packages (glibc, dash,
+# base-passwd, coreutils, ...) listed at pool/DEBIAN/... to the Debian pool; only
+# Devuan-rebuilt packages (...devuan1) at pool/DEVUAN/... are served directly. The
+# sources still point only at Devuan; fetch follows the bounce, so the result is a
+# correct Devuan base. Set DEVUAN_MIRROR to a country mirror if the global one is slow.
+
+# Minimal seed: enough to configure a base and run apt-get. The resolver expands
+# its dependency closure; apt-get then completes the base + installs client libs.
+SEED="apt dpkg libc6 libgcc-s1 base-passwd base-files dash ca-certificates"
+BASE_EXTRA="sysvinit coreutils login passwd tar gzip xz-utils perl-base mawk"
+CLIENT_LIBS="libgl1 libglvnd0 libegl1 libgbm1 libglx-mesa0 libgl1-mesa-dri libx11-6 libx11-xcb1 libxcb1 libxkbcommon0 libxkbcommon-x11-0 libxcursor1 libxext6 libxi6 libxrender1 libxrandr2 libxfixes3 libxss1 libxtst6 libxcomposite1 libxdamage1 libxinerama1 libice6 libsm6 fontconfig libfreetype6 fonts-dejavu-core libasound2 libpulse0 libgtk-3-0 libdbus-1-3 dbus xauth"
+
+# Base-only tools -- absolute /usr/bin paths, immune to any /usr/local (pkg) port
+# shadowing them in PATH. RULE (nextbsd/nextbsd#527): never depend on /usr/local.
+# fetch + gzip + tar(libarchive) are all in the NextBSD base; base tar reads the
+# .deb (the ar wrapper) and the xz/gz data member natively -- no ar, no xz, no curl.
+FETCH=${FETCH:-/usr/bin/fetch}
+TAR=${TAR:-/usr/bin/tar}
+GZIP=${GZIP:-/usr/bin/gzip}
+
+die()  { printf 'nextbsd-linux-bootstrap: %s\n' "$*" >&2; exit 1; }
+info() { printf 'nextbsd-linux-bootstrap: %s\n' "$*"; }
+require_root() { [ "$(id -u)" = 0 ] || die "must run as root"; }
+
+# The three base tools must exist and be executable before we start.
+require_base_tools() {
+	for t in "$FETCH" "$TAR" "$GZIP"; do
+		[ -x "$t" ] || die "missing base tool: $t (rule: base-only, no /usr/local)"
+	done
+}
+
+emul_path() {
+	p=$(sysctl -n compat.linux.emul_path 2>/dev/null || true)
+	case $p in
+	/*) printf '%s' "$p" ;;
+	*)  printf '%s' "$EMUL_FALLBACK" ;;
+	esac
+}
+
+host_arch() {
+	case $(uname -m) in
+	amd64 | x86_64)  printf 'amd64' ;;
+	arm64 | aarch64) printf 'arm64' ;;
+	*)               die "unsupported host arch: $(uname -m)" ;;
+	esac
+}
+
+real_emul() {
+	e=$(emul_path); mkdir -p "$e" 2>/dev/null || true
+	(cd "$e" 2>/dev/null && pwd -P) || printf '%s' "$e"
+}
+
+is_mounted() {
+	mount -p 2>/dev/null | awk -v p="$1" '$2 == p { f = 1 } END { exit f ? 0 : 1 }'
+}
+
+# Six ABI mounts -- mirrors launchctl.c linux_abi_mounts().
+do_mounts() {
+	e=$(real_emul)
+	info "establishing Linux ABI mounts under $e"
+
+	mkdir -p "$e/proc"
+	is_mounted "$e/proc" || mount -t linprocfs -o nocover linprocfs "$e/proc" || die "mount $e/proc"
+
+	mkdir -p "$e/sys"
+	is_mounted "$e/sys" || mount -t linsysfs -o nocover linsysfs "$e/sys" || die "mount $e/sys"
+
+	mkdir -p "$e/dev"
+	is_mounted "$e/dev" || mount -t devfs -o nocover devfs "$e/dev" || die "mount $e/dev"
+
+	# devfs supplies dev/fd, and the Linuxulator puts dev/shm into every devfs
+	# instance at ABI init -- so neither is mkdir'ed here (matches launchctl.c).
+	is_mounted "$e/dev/fd" || mount -t fdescfs -o nocover,linrdlnk fdescfs "$e/dev/fd" || die "mount $e/dev/fd"
+
+	physmem=$(sysctl -n hw.physmem); div=2
+	rootfs=$(mount -p 2>/dev/null | awk -v r=/ '$2 == r { print $3; exit }')
+	if [ "$rootfs" = unionfs ]; then
+		div=4
+	fi
+	shm=$((physmem / div)); min=$((128 * 1024 * 1024))
+	if [ "$shm" -lt "$min" ]; then
+		shm=$min
+	fi
+	is_mounted "$e/dev/shm" || mount -t tmpfs -o "nocover,mode=1777,size=$shm" tmpfs "$e/dev/shm" || die "mount $e/dev/shm"
+
+	tmpreal=$(cd /tmp 2>/dev/null && pwd -P) || tmpreal=/tmp
+	mkdir -p "$e/tmp"
+	is_mounted "$e/tmp" || mount -t nullfs -o nocover "$tmpreal" "$e/tmp" || die "mount $e/tmp"
+
+	n=$(mount -p 2>/dev/null | grep -c -F "$e" || true)
+	info "$n Linux ABI mounts up under $e"
+}
+
+# Reverse-dependency order: children (dev/shm, dev/fd) before dev; then the rest.
+do_unmounts() {
+	e=$(real_emul)
+	for d in "$e/tmp" "$e/dev/shm" "$e/dev/fd" "$e/dev" "$e/sys" "$e/proc"; do
+		if is_mounted "$d"; then
+			umount "$d" 2>/dev/null || info "warn: left mounted (busy?): $d"
+		fi
+	done
+}
+
+do_teardown() {
+	e=$(emul_path)
+	if [ ! -e "$e" ]; then
+		info "$e absent -- nothing to tear down"
+		return 0
+	fi
+	do_unmounts
+	# Remove the base's symlinks, then the unmounted mountpoints and the tree.
+	find "$e" -maxdepth 2 -type l -delete 2>/dev/null || true
+	rm -rf "$e" 2>/dev/null || true
+	info "tore down $e"
+}
+
+# --- self-contained bootstrap (re-implements debootstrap; base tools only) ---
+
+# $1 = arch. Downloads + decompresses the Packages index to $WORK/packages.
+# .gz + gzip (both base) avoids any xz dependency.
+fetch_packages_index() {
+	a=$1
+	url="$DEVUAN_MIRROR/dists/$DEVUAN_SUITE/main/binary-$a/Packages.gz"
+	info "fetching $url"
+	"$FETCH" -q -o "$WORK/packages.gz" "$url" || die "fetch $url failed"
+	"$GZIP" -dc "$WORK/packages.gz" > "$WORK/packages" || die "decompress Packages failed"
+	rm -f "$WORK/packages.gz"
+}
+
+# Reads $WORK/packages; expands $1 (seed names) to the full dependency closure
+# (version-constraint / alternative / arch aware); prints .deb pool paths.
+resolve_closure() {
+	awk -v SEED="$1" '
+		function flush() { if (pkg != "") { FN[pkg] = fn; DP[pkg] = ds } pkg = ""; fn = ""; ds = "" }
+		/^Package:/     { flush(); pkg = $2 }
+		/^Filename:/    { fn = $2 }
+		/^Depends:/     { $1 = ""; ds = ds " " $0 }
+		/^Pre-Depends:/ { $1 = ""; ds = ds " " $0 }
+		END {
+			flush()
+			m = split(SEED, S, /[ ,]+/)
+			for (i = 1; i <= m; i++) if (S[i] in FN) want[S[i]] = 1
+			grow = 1
+			while (grow) {
+				grow = 0
+				for (p in want) {
+					if (seen[p]) continue
+					seen[p] = 1
+					n = split(DP[p], T, ",")
+					for (j = 1; j <= n; j++) {
+						d = T[j]
+						if (index(d, "|") > 0) { split(d, A, "|"); d = A[1] }
+						gsub(/[ \t]/, "", d)
+						sub(/ *\(.*/, "", d)
+						sub(/:.*$/, "", d)
+						if (d == "") continue
+						if ((d in FN) && !(d in want)) { want[d] = 1; grow = 1 }
+					}
+				}
+			}
+			for (p in want) if (FN[p] != "") print FN[p]
+		}' "$WORK/packages"
+}
+
+# $1 = path to a .deb ; extract its payload into $2 (base tar only; no host dpkg).
+# A .deb is an ar archive (debian-binary, control.tar.*, data.tar.*). base tar
+# (libarchive) reads the ar wrapper, then the xz/gz data member -- no ar, no xz.
+extract_deb() {
+	deb=$1; target=$2
+	tmp=$(mktemp -d)
+	"$TAR" -xf "$deb" -C "$tmp" 2>/dev/null || { rm -rf "$tmp"; die "cannot read $deb"; }
+	if [ -f "$tmp/data.tar.xz" ]; then
+		"$TAR" -xJf "$tmp/data.tar.xz" -C "$target"
+	elif [ -f "$tmp/data.tar.gz" ]; then
+		"$TAR" -xzf "$tmp/data.tar.gz" -C "$target"
+	else
+		"$TAR" -xf "$tmp/data.tar" -C "$target"
+	fi
+	rm -rf "$tmp"
+}
+
+do_bootstrap() {
+	require_base_tools
+	e=$(emul_path); a=$(host_arch)
+	WORK=$(mktemp -d); mkdir -p "$WORK/debs"
+
+	fetch_packages_index "$a"
+	resolve_closure "$SEED" > "$WORK/filenames"
+	sort -u "$WORK/filenames" -o "$WORK/filenames"
+	info "base closure: $(wc -l < "$WORK/filenames" | tr -d ' ') .deb packages"
+
+	while IFS= read -r f; do
+		[ -n "$f" ] || continue
+		b=$(basename "$f")
+		info "  fetch $b"
+		"$FETCH" -q -o "$WORK/debs/$b" "$DEVUAN_MIRROR/$f" || die "download failed: $f"
+	done < "$WORK/filenames"
+
+	for deb in "$WORK/debs"/*.deb; do
+		[ -e "$deb" ] || continue
+		extract_deb "$deb" "$e" || die "extract failed: $deb"
+	done
+
+	do_mounts
+	chroot "$e" /usr/bin/dpkg --configure -a || info "some postinst deferred; apt-get will resolve"
+	chroot "$e" /usr/bin/apt-get update || info "apt-get update failed; continuing"
+	chroot "$e" /usr/bin/apt-get install -y --no-install-recommends $BASE_EXTRA $CLIENT_LIBS || die "apt-get install failed"
+	chroot "$e" /usr/bin/dpkg --configure -a || die "final dpkg --configure failed"
+
+	rm -rf "$WORK"
+	info "base provisioned: Devuan $DEVUAN_SUITE ($a)"
+}
+
+do_reprovision() {
+	e=$(real_emul)
+	# /lib64 is amd64-only: aarch64 glibc uses /lib/ld-linux-aarch64.so.1.
+	if [ "$(host_arch)" = amd64 ]; then
+		mkdir -p "$e/usr/lib64"
+		cp -f "$e/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" "$e/usr/lib64/" 2>/dev/null || true
+		if [ ! -e "$e/lib64" ]; then
+			ln -s usr/lib64 "$e/lib64"
+		fi
+	fi
+	mkdir -p "$e/dev/shm"
+}
+
+do_verify() {
+	e=$(real_emul)
+	if chroot "$e" /bin/ls / >/dev/null 2>&1; then
+		info "verify: chroot $e /bin/ls OK"
+	else
+		die "verify: chroot $e /bin/ls failed"
+	fi
+	do_mounts
+}
+
+do_probe() {
+	printf 'host arch:    %s\n' "$(host_arch)"
+	printf 'emul_path:    %s (real %s)\n' "$(emul_path)" "$(real_emul)"
+	printf 'tooling:      '
+	for t in "$FETCH" "$TAR" "$GZIP"; do
+		if [ -x "$t" ]; then
+			printf '%s=ok ' "$(basename "$t")"
+		else
+			printf '%s=MISSING ' "$(basename "$t")"
+		fi
+	done
+	printf '\n'
+	printf '  base-only deps (fetch tar gzip); no /usr/local (pkg) dependencies\n'
+	osr=$(real_emul)/etc/os-release
+	base=$(grep -m1 PRETTY_NAME "$osr" 2>/dev/null || true)
+	if [ -z "$base" ]; then
+		base=none
+	fi
+	printf 'current base: %s\n' "$base"
+	printf 'ABI mounts under emul_path:\n'
+	mount -p 2>/dev/null | awk -v p="$(real_emul)" 'index($2, p) == 1 { printf "  %s\n", $0 }'
+}
+
+do_provision() {
+	require_root
+	e=$(emul_path); a=$(host_arch)
+	info "PROVISION (destructive): $e -> Devuan $DEVUAN_SUITE ($a)"
+	do_teardown
+	do_bootstrap
+	do_reprovision
+	do_mounts
+	do_verify
+	info "done: $e is Devuan $DEVUAN_SUITE ($a); six ABI mounts up"
+}
+
+cmd=${1:-probe}
+case $cmd in
+	probe)     do_probe ;;
+	mounts)    require_root; do_mounts ;;
+	provision) do_provision ;;
+	all)       require_root; do_probe; do_provision ;;
+	*)         die "unknown command: $cmd" ;;
+esac
