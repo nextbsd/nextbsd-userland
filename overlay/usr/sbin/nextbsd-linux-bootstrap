@@ -54,7 +54,13 @@ SEED="apt dpkg libc6 libc-bin libgcc-s1 base-passwd base-files dash ca-certifica
 # `mountpoint -q /dev` to detect our separately-mounted devfs and SKIP its
 # /dev/pts + /dev/shm mkdir (devfs rejects mkdir; /dev/shm we mount ourselves) --
 # without the binary the 127 is read as "not a mountpoint" and the postinst dies.
-BASE_EXTRA="sysvinit login passwd tar gzip xz-utils mawk bash curl zsh zsh-autosuggestions zsh-syntax-highlighting util-linux"
+# ncurses-base + ncurses-term supply the terminfo database (/lib/terminfo,
+# /usr/share/terminfo): zsh bundles its own terminfo PARSER and has no package
+# edge to ncurses, so the minimal seed never pulls it in -- without the database
+# zsh loads zero capabilities and zle redisplay degrades (colors yes, cursor
+# movement no) -- every redraw appends instead of replacing, duplicating input
+# and never clearing autosuggestion ghosts.
+BASE_EXTRA="sysvinit login passwd tar gzip xz-utils mawk bash curl zsh zsh-autosuggestions zsh-syntax-highlighting util-linux ncurses-base ncurses-term"
 CLIENT_LIBS="libgl1 libglvnd0 libegl1 libgbm1 libglx-mesa0 libgl1-mesa-dri libx11-6 libx11-xcb1 libxcb1 libxkbcommon0 libxkbcommon-x11-0 libxcursor1 libxext6 libxi6 libxrender1 libxrandr2 libxfixes3 libxss1 libxtst6 libxcomposite1 libxdamage1 libxinerama1 libice6 libsm6 fontconfig libfreetype6 fonts-dejavu-core libasound2 libpulse0 libgtk-3-0 libdbus-1-3 dbus xauth"
 # Host global zsh config, copied into the chroot by do_zsh_config. The host
 # (a Darwin userland) keeps the single files /etc/zshrc, /etc/zprofile,
@@ -121,10 +127,12 @@ is_mounted() {
 	mount -p 2>/dev/null | awk -v p="$1" '$2 == p { f = 1 } END { exit f ? 0 : 1 }'
 }
 
-# Six ABI mounts -- mirrors launchctl.c linux_abi_mounts(). A seventh
-# (/dev/pts) will join here once the kernel exposes devpts in the linux
-# root (nextbsd/nextbsd#530); until then pty userspace is guarded in
-# do_zsh_config and apt's opq path logs a non-fatal warning.
+# Six ABI mounts -- mirrors launchctl.c linux_abi_mounts(). No /dev/pts
+# mount: on a healthy linux devfs instance the kernel creates ptys on demand
+# (posix_openpt() works; /dev/pts/<N> nodes appear per session), so zsh/zpty
+# and the completion strategy work without any mount. The only missing piece
+# (nextbsd/nextbsd#530) is the /dev/ptmx PATH node, which costs apt's opq
+# log path a non-fatal "Can not write log (Is /dev/pts mounted?)" warning.
 do_mounts() {
 	e=$(real_emul)
 	info "establishing Linux ABI mounts under $e"
@@ -418,24 +426,14 @@ do_zsh_config() {
 			ln -s /usr/share/zsh-syntax-highlighting "$e/usr/share/zsh/plugins/zsh-syntax-highlighting" || info "warn: syntax-highlighting bridge failed"
 		fi
 	fi
-	# posix_openpt() has no device in the linux root yet (no devpts/ptmx
-	# in the kernel; nextbsd/nextbsd#530), so zsh's pty-based completion
-	# strategy would spam "can't open pseudo terminal" on every completion.
-	# While /dev/ptmx is absent, append a guard to the copied rc that drops
-	# just that strategy (match_prev_cmd + history are pty-free); it becomes
-	# a no-op once the kernel exposes devpts and /dev/ptmx exists.
-	if [ -f "$e/etc/zsh/zshrc" ] && [ ! -e "$e/dev/ptmx" ]; then
-		cat >> "$e/etc/zsh/zshrc" <<'EOF'
-
-# Appended by nextbsd-linux-bootstrap: the linux root has no /dev/pts yet
-# (kernel gap, nextbsd/nextbsd#530), so the pty-based completion strategy
-# cannot open a pty and would spam errors. Keep only the pty-free strategies.
-if [[ ! -e /dev/ptmx ]]; then
-	ZSH_AUTOSUGGEST_STRATEGY=(match_prev_cmd history)
-fi
-EOF
-		info "zsh config: no /dev/ptmx in root yet -- completion strategy dropped until nextbsd/nextbsd#530"
-	fi
+	# No pty workaround needed: on a healthy linux devfs instance the kernel
+	# creates ptys on demand (posix_openpt() works; /dev/pts/<N> nodes appear
+	# per session), so zpty and the completion strategy work as on the host.
+	# The earlier "can't open pseudo terminal" crashes came from a GUTTED
+	# devfs (a teardown that wiped through it), which the teardown alive-mount
+	# guard and the degraded-devfs remount in do_mounts now make impossible.
+	# Remaining kernel gap (nextbsd/nextbsd#530) is only the /dev/ptmx PATH
+	# node, which costs apt a non-fatal "Can not write log" warning.
 }
 
 do_reprovision() {
