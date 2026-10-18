@@ -63,7 +63,10 @@ SEED="apt dpkg libc6 libc-bin libgcc-s1 base-passwd base-files dash ca-certifica
 # zsh loads zero capabilities and zle redisplay degrades (colors yes, cursor
 # movement no) -- every redraw appends instead of replacing, duplicating input
 # and never clearing autosuggestion ghosts.
-BASE_EXTRA="sysvinit login passwd tar gzip xz-utils mawk bash curl zsh zsh-autosuggestions zsh-syntax-highlighting util-linux ncurses-base ncurses-term"
+# sudo lets a DirectoryServices account (no password, so a prompt is
+# unsatisfiable) escalate in the base; nextbsd-linux-users drops a NOPASSWD
+# rule for the `admin` group in /etc/sudoers.d. Binary here, rule there.
+BASE_EXTRA="sysvinit login passwd tar gzip xz-utils mawk bash curl zsh zsh-autosuggestions zsh-syntax-highlighting util-linux ncurses-base ncurses-term sudo"
 CLIENT_LIBS="libgl1 libglvnd0 libegl1 libgbm1 libglx-mesa0 libgl1-mesa-dri libx11-6 libx11-xcb1 libxcb1 libxkbcommon0 libxkbcommon-x11-0 libxcursor1 libxext6 libxi6 libxrender1 libxrandr2 libxfixes3 libxss1 libxtst6 libxcomposite1 libxdamage1 libxinerama1 libice6 libsm6 fontconfig libfreetype6 fonts-dejavu-core libasound2 libpulse0 libgtk-3-0 libdbus-1-3 dbus xauth"
 # Host global zsh config, copied into the chroot by do_zsh_config. The host
 # (a Darwin userland) keeps the single files /etc/zshrc, /etc/zprofile,

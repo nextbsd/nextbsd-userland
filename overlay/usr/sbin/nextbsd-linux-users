@@ -1819,5 +1819,45 @@ do_build() {
 	info "done: $e/usr/lib/$ma/libnss_nextbsd.so.2"
 }
 
+# DS accounts carry no password (noPassword); a sudo prompt would never be
+# satisfiable. Grant the DirectoryServices `admin` group -- the privilege group
+# the nss module treats as admins, whose members are the owner's accounts --
+# passwordless sudo so they can escalate in the base. The `admin` group is
+# resolvable in the base only via the module, so this rule belongs with the
+# users step (and is inert, not harmful, if the module is absent).
+do_sudo() {
+	e=$(real_emul)
+	d="$e/etc/sudoers.d/nextbsd"
+	mkdir -p "$e/etc/sudoers.d"
+	cat > "$d" <<'EOF'
+# nextbsd-linux: passwordless sudo for the DirectoryServices admin group.
+# Written by nextbsd-linux-users. The nss module makes the `admin` group
+# resolvable in the base; DS accounts have no password (noPassword), so a
+# sudo prompt would be unsatisfiable -- NOPASSWD lets them escalate.
+%admin ALL=(ALL:ALL) NOPASSWD: ALL
+EOF
+	# chown/chmod inside the chroot: the host has no `root` *group* (only the
+	# base does), so a host-side name chown would misfire on a base file.
+	chroot "$e" /bin/sh -c 'chown root:root /etc/sudoers.d/nextbsd && chmod 0440 /etc/sudoers.d/nextbsd' || true
+	# A custom base might lack the includedir the sudo package normally ships.
+	if ! chroot "$e" /bin/sh -c 'grep -q "includedir /etc/sudoers.d" /etc/sudoers 2>/dev/null'; then
+		printf '@includedir /etc/sudoers.d\n' >> "$e/etc/sudoers"
+		info "added @includedir /etc/sudoers.d to $e/etc/sudoers"
+	fi
+	# Locate visudo inside the base (Debian/Devuan put it in /usr/sbin, but a
+	# custom base might differ); validate the drop-in, and remove it if it is
+	# malformed so the stock sudoers still works.
+	if v=$(chroot "$e" /bin/sh -c 'command -v visudo' 2>/dev/null) && [ -n "$v" ]; then
+		if ! chroot "$e" "$v" -c -f /etc/sudoers.d/nextbsd >/dev/null 2>&1; then
+			rm -f "$d"
+			info "warn: visudo rejected the drop-in; removed it (sudo still works)"
+		fi
+	else
+		info "sudo/visudo not installed in the base; the drop-in is inert until it is"
+	fi
+	[ -f "$d" ] && info "wrote $d (%admin ALL=(ALL:ALL) NOPASSWD: ALL)"
+}
+
 require_root
 do_build
+do_sudo
