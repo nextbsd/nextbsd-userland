@@ -27,6 +27,12 @@ shell=${SHELL:-/bin/zsh}
 [ -x "$emul$shell" ] || shell=/bin/zsh
 [ -x "$emul$shell" ] || shell=/bin/sh
 
+# The host's $SHELL (e.g. a /usr/local/bin/... path) is not a file in the base, and
+# sudo -s/-i consult it before root's login shell -- so a stale host value makes
+# `sudo -s` fail with "command not found". Point it at the shell we actually run,
+# which the checks above validated exists in the base.
+export SHELL="$shell"
+
 # chroot(1) takes `[-g][-G][-u][-n] newroot [command]`. -n (NO_NEW_PRIVS) is the
 # default so a regular user can enter (nextbsd-kernel 0059). Trusted groups -- the
 # kernel's security.bsd.unprivileged_chroot_escalate (0060, default "0"/wheel) --
