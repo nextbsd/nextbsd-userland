@@ -2,28 +2,36 @@
 #
 # nextbsd-linux(1) -- enter the /compat/linux (glibc) root as yourself.
 #
-# nextbsd/nextbsd#529. A thin, non-setuid wrapper around chroot(1). It drops
-# into the Linux root with NO_NEW_PRIVS (the unprivileged_chroot gate), resolves
-# the caller's home through the root's own NSS -- the nss_nextbsd module maps a
-# directory user to /Local|/Network/Users/<name>, everyone else to /etc/passwd --
-# cd's there, and execs a login shell.
+# nextbsd/nextbsd#529. A thin, non-setuid wrapper around chroot(1): it drops into
+# the Linux root with NO_NEW_PRIVS (the unprivileged_chroot gate), resolves the
+# caller's home through the root's own NSS (a directory user -> /Local|/Network/
+# Users/<name>; everyone else -> /etc/passwd), cd's there, and execs a login shell.
+# Root works unconditionally; a regular user needs
+# security.bsd.unprivileged_chroot=1 (nextbsd-kernel PR #263).
 #
-# Root may use it unconditionally. A regular user needs the kernel gate
-# compat.linux.unprivileged_chroot=1 (nextbsd-kernel PR #263); without it
-# chroot(2) is EPERM. The home is read through the root so it tracks the plist.
+# It unsets the host's dynamic-linker variables -- a host path in LD_PRELOAD (e.g. a
+# /System/... GUI helper) would otherwise fail to open in the base and warn on every
+# command -- and, on first zsh entry, seeds a minimal ~/.zshrc so zsh's new-user
+# wizard does not fire.
 
 emul=$(sysctl -n compat.linux.emul_path 2>/dev/null)
 [ -d "$emul" ] || emul=/compat/linux
+
+# Host dynamic-linker settings do not apply in the base, and a host path in
+# LD_PRELOAD cannot be opened there; drop them. The base has its own ld config.
+unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG
 
 # Use the caller's shell when the base ships it; else the base's zsh, else dash.
 shell=${SHELL:-/bin/zsh}
 [ -x "$emul$shell" ] || shell=/bin/zsh
 [ -x "$emul$shell" ] || shell=/bin/sh
 
-# The inner /bin/sh resolves the home via the root's NSS (so a directory user
-# lands in /Local|/Network/Users/<name>, not the host's /Users/<name>), then
-# hands off to a login shell. No `--`: this chroot(1) takes
-# `[-g][-G][-u][-n] newroot [command]`, and the absolute /bin/sh is not an
-# option. Full paths inside: the inherited PATH is not trusted.
+# The inner /bin/sh resolves the home via the root's NSS (so a directory user lands
+# in /Local|/Network/Users/<name>, not the host's home), seeds a minimal ~/.zshrc on
+# a first zsh entry, then hands off to a login shell. The chosen shell is passed as $0
+# (the first arg after -c) so it needs no environment variable. No `--`: this
+# chroot(1) takes `[-g][-G][-u][-n] newroot [command]`, and /bin/sh is not an option.
+# Full paths inside: the inherited PATH is not trusted.
 exec chroot -n "$emul" /bin/sh -c \
-    'h=$(/usr/bin/getent passwd "$(/usr/bin/id -u)" 2>/dev/null | /usr/bin/cut -d: -f6); [ -n "$h" ] || h=/; cd "$h" 2>/dev/null || cd /; exec '"$shell"' -l'
+    'h=$(/usr/bin/getent passwd "$(/usr/bin/id -u)" 2>/dev/null | /usr/bin/cut -d: -f6); [ -n "$h" ] || h=/; export HOME="$h"; cd "$h" 2>/dev/null || cd /; case "$0" in *zsh*) [ -e .zshrc ] || printf "# created by nextbsd-linux to skip zsh new-user wizard; edit freely\n" > .zshrc 2>/dev/null ;; esac; exec "$0" -l' \
+    "$shell"
