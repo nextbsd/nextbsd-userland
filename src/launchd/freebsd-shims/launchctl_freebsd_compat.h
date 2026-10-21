@@ -5,11 +5,10 @@
  * Makefile (-include) so launchctl.c sees these identifiers without
  * patching its source.
  *
- * Each define is paired with a brief justification — none of these
- * code paths are reached by `launchctl version` (the LAUNCHCTL-BUILD-OK
- * smoke target). The shimmed values let the affected functions
- * compile; at runtime they either return safely-failing values
- * (sysctl ENOENT) or touch a harmless file path.
+ * Each define is paired with a brief justification. The shimmed
+ * values let the affected functions compile; at runtime they either
+ * return safely-failing values (sysctl ENOENT) or touch a harmless
+ * file path.
  */
 #ifndef _FREEBSD_LAUNCHD_MACH_LAUNCHCTL_COMPAT_H_
 #define _FREEBSD_LAUNCHD_MACH_LAUNCHCTL_COMPAT_H_
