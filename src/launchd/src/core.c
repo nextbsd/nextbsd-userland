@@ -4933,14 +4933,33 @@ job_start_child(job_t j)
 	 * an in-place replacement, libc posix_spawn would fork *again*
 	 * (creating a grandchild) and the runtime_fork child would then
 	 * _exit -- breaking launchd's process tracking and losing the
-	 * grandchild's tty I/O. Read the SETEXEC bit off the attr and
-	 * dispatch to execve directly to get the right semantics; fall
-	 * back to libc posix_spawn for the (rare) non-SETEXEC path.
+	 * grandchild's tty I/O. Test the SETEXEC bit and dispatch to
+	 * execve directly to get the right semantics; fall back to libc
+	 * posix_spawn for the (rare) non-SETEXEC path.
+	 *
+	 * Test the local spflags rather than reading the flags back from
+	 * spattr: posix_spawnattr_setflags(), inherited from FreeBSD,
+	 * rejects any bit outside its own set with EINVAL and leaves the
+	 * attr untouched. Once an Apple-only bit such as START_SUSPENDED
+	 * is set, posix_spawnattr_getflags() returns 0, SETEXEC is lost
+	 * and the job would take the double-fork path.
+	 *
+	 * NextBSD: emulate Apple's POSIX_SPAWN_START_SUSPENDED as well
+	 * ('launchctl debug', WaitForDebugger). Darwin creates the task
+	 * suspended after exec, at the new image's first instruction.
+	 * There is no way to stop a process at exec on NextBSD without
+	 * making launchd (PID 1) its ptrace(2) tracer, so the child stops
+	 * itself with SIGSTOP immediately before execve() instead, after
+	 * all job attributes have been applied. A debugger attaches to the
+	 * stopped PID, continues it, and follows the exec. A stopped child
+	 * raises no NOTE_EXIT on launchd's EVFILT_PROC watch, so launchd
+	 * keeps treating the job as running, as it does on Darwin.
 	 */
 	{
-		short __spflags = 0;
-		(void)posix_spawnattr_getflags(&spattr, &__spflags);
-		if (__spflags & POSIX_SPAWN_SETEXEC) {
+		if (spflags & POSIX_SPAWN_SETEXEC) {
+			if (unlikely(spflags & POSIX_SPAWN_START_SUSPENDED)) {
+				(void)raise(SIGSTOP);
+			}
 			(void)execve(file2exec, (char *const *)argv, environ);
 		} else {
 			errno = psf(NULL, file2exec, NULL, &spattr,
