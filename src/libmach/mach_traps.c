@@ -1331,6 +1331,33 @@ task_for_pid(mach_port_name_t target_tport, int pid, mach_port_name_t *t)
 	return (rv);
 }
 
+/*
+ * task_set_importance_watchports_np() — hand the next exec its process
+ * type and importance watch ports (nextbsd#539 part E).
+ *
+ * Calls the mach.syscall.task_set_importance_watchports_np trap
+ * (nextbsd-kernel part E). launchd's NextBSD job_start_child() calls it
+ * right before execve(2), in place of the posix_spawn(POSIX_SPAWN_SETEXEC)
+ * attributes xnu-2422 takes. If the trap is not registered (an older
+ * kernel, or mach.ko not loaded) this fails open: it does nothing and
+ * returns KERN_NOT_SUPPORTED, and the exec goes ahead without them.
+ */
+kern_return_t
+task_set_importance_watchports_np(mach_port_name_t *names, int count,
+    int proctype)
+{
+	static int num = SYSCALL_UNRESOLVED;
+	int sc = resolve_syscall_once(&num, "task_set_importance_watchports_np");
+	kern_return_t rv;
+
+	if (sc == NO_SYSCALL)
+		return (KERN_NOT_SUPPORTED);
+	rv = (kern_return_t)syscall(sc, names, count, proctype);
+	if (rv == -1)		/* the syscall itself failed: errno, not kr */
+		return (KERN_FAILURE);
+	return (rv);
+}
+
 kern_return_t
 task_name_for_pid(mach_port_name_t target_task, int pid,
     mach_port_name_t *t)

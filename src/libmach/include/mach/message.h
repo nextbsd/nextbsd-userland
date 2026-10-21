@@ -374,9 +374,10 @@ typedef union {
  * format/element type tuple selects which struct is appended; libxpc
  * uses MACH_RCV_TRAILER_AUDIT to pull credentials off Mach IPC.
  *
- * NB: our kernel does not currently materialize audit trailers — the
- * trailer struct fields will be zero — but Apple-source code that
- * reads them still has to type-check at compile time.
+ * The NextBSD kernel fills the audit trailer (since nextbsd#268): for a
+ * message sent from user space, msgh_audit carries the sending thread's
+ * credentials and its pid in val[5] (what launchd's job_mig_intran
+ * reads); kernel-sent messages carry KERNEL_AUDIT_TOKEN.
  */
 typedef unsigned int mach_msg_trailer_type_t;
 typedef unsigned int mach_msg_trailer_size_t;

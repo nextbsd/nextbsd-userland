@@ -4939,9 +4939,21 @@ job_start_child(job_t j)
 	 * stopped PID, continues it, and follows the exec. A stopped child
 	 * raises no NOTE_EXIT on launchd's EVFILT_PROC watch, so launchd
 	 * keeps treating the job as running, as it does on Darwin.
+	 *
+	 * NextBSD: the process type and importance watch ports
+	 * (posix_spawnattr_setprocesstype_np() and
+	 * posix_spawnattr_set_importancewatch_port_np() above) are handed
+	 * to the kernel just before execve(), and before any SIGSTOP. The
+	 * kernel applies them once the new image is loaded, as Darwin's
+	 * posix_spawn does (nextbsd#539 part E). This fails open: on a
+	 * kernel without the trap the job runs without them.
 	 */
 	{
 		if (spflags & POSIX_SPAWN_SETEXEC) {
+			kern_return_t ikr = _posix_spawnattr_apply_importance_np(&spattr);
+			if (ikr != KERN_SUCCESS && ikr != KERN_NOT_SUPPORTED) {
+				job_log(j, LOG_DEBUG, "Could not pass the process type and importance watch ports to the kernel: 0x%x", ikr);
+			}
 			if (unlikely(spflags & POSIX_SPAWN_START_SUSPENDED)) {
 				(void)raise(SIGSTOP);
 			}

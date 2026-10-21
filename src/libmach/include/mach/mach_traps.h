@@ -50,6 +50,19 @@ kern_return_t task_for_pid(mach_port_name_t target_tport, int pid,
     mach_port_name_t *t);
 
 /*
+ * task_set_importance_watchports_np() — NextBSD (nextbsd#539 part E).
+ * Record the calling task's process type (an xnu-2422
+ * POSIX_SPAWN_PROC_TYPE_* value, 0 for none) and its importance watch
+ * ports (send rights in the caller's space) for its next exec; the kernel
+ * applies them once the new image is loaded, as xnu-2422's posix_spawn
+ * does for POSIX_SPAWN_SETEXEC. launchd calls it right before execve(2).
+ * KERN_NOT_SUPPORTED if the trap is not registered; the caller should
+ * carry on without it.
+ */
+kern_return_t task_set_importance_watchports_np(mach_port_name_t *names,
+    int count, int proctype);
+
+/*
  * task_name_for_pid() — open a task-name port (introspection-only)
  * for a given pid. Stubbed; returns KERN_FAILURE.
  */
