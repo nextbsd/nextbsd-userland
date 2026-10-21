@@ -54,13 +54,52 @@ Move this session to the launchd session type specified.
 .\" NextBSD: the section below documents the NextBSD changes (VENDORED.md).
 .Sh NEXTBSD
 The module only acts when run as root.
-Before it moves the session, it checks that the user's per-user
+Before it moves the session, it checks the user's per-user
 .Xr launchd 8
-answers a request within 3 seconds.
-Any failure, including a missing or unresponsive per-user launchd,
-leaves the session on the root bootstrap and returns
+with two requests, each of which must be answered within 3 seconds.
+The first is answered by the per-user launchd itself.
+The second looks up
+.Li com.apple.system.notification_center ,
+a service only PID 1 has, so the per-user launchd must forward it to PID 1.
+Any failure, including a missing or unresponsive per-user launchd or one
+that does not forward, leaves the session on the root bootstrap and returns
 .Dv PAM_IGNORE ,
 so a broken per-user launchd never blocks a login.
+.Pp
+The default session type is
+.Li Background :
+the session joins the per-user launchd's own
+.Li Background
+session, which that launchd creates when it starts, and no new session is
+created.
+.Cm launchd_session_type=StandardIO
+is opt-in.
+With it, the per-user launchd creates a
+.Li StandardIO
+session for the login process, runs
+.Ic launchctl bootstrap -S StandardIO
+in it, which loads the LaunchAgents from all domains
+.Pq Ic load -S StandardIO -D all ,
+and tears the session down when the login process exits.
+On NextBSD the login process is identified to launchd by a port it holds
+for its lifetime rather than by its task-name port, so the session also
+ends if that process calls
+.Xr execve 2 .
+If the switch fails, the session stays on the root bootstrap and the
+module returns
+.Dv PAM_IGNORE .
+.Pp
+A LaunchAgent loads into a
+.Li StandardIO
+or
+.Li Background
+session only if its property list sets
+.Li LimitLoadToSessionType
+to that session type (a string, or an array that contains it).
+.Xr launchctl 1
+gives an agent without the key the default
+.Li Aqua ,
+as on Darwin, and so skips it in every other session.
 .Pp
 No
 .Pa /etc/pam.d

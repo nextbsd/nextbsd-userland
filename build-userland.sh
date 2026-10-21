@@ -1066,8 +1066,9 @@ echo "==> nss_directory_services built"
 # link), the name every base module uses. NOTHING references it yet: the
 # pam.d policy files live in nextbsd-overlays and add it later.
 #
-# Its liveness probe is a client stub for launchd's get_root_bootstrap with a
-# MIG WaitTime, generated here by the host mig from pam_launchd_probe.defs.
+# Its probe is a client stub for launchd's get_root_bootstrap and look_up2
+# (liveness, then forwarding to PID 1), each with a MIG WaitTime, generated
+# here by the host mig from pam_launchd_probe.defs.
 comp "pam_launchd"
 PAM_LAUNCHD_MIG="$MIGROOT/pam_launchd"
 rm -rf "$PAM_LAUNCHD_MIG"; mkdir -p "$PAM_LAUNCHD_MIG"

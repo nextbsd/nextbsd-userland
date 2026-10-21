@@ -1,22 +1,34 @@
 /*
  * pam_launchd_probe.defs -- NextBSD addition to Apple's pam_launchd.
  *
- * A client-side copy of ONE routine from launchd's job.defs
- * (src/launchd/src/job.defs, subsystem job 400), get_root_bootstrap, with a
- * MIG WaitTime argument added so the call gives up after a bounded time
- * (MACH_SEND_TIMEOUT | MACH_RCV_TIMEOUT) instead of blocking forever.
- * pam_launchd uses it as a liveness probe of the per-user launchd before it
- * moves a login session onto that launchd's bootstrap port.
+ * Client-side copies of TWO routines from launchd's job.defs
+ * (src/launchd/src/job.defs, subsystem job 400), look_up2 and
+ * get_root_bootstrap, each with a MIG WaitTime argument added so the call
+ * gives up after a bounded time (MACH_SEND_TIMEOUT | MACH_RCV_TIMEOUT)
+ * instead of blocking forever. pam_launchd uses them as a probe of the
+ * per-user launchd before it moves a login session onto that launchd's
+ * bootstrap port:
+ *   - get_root_bootstrap is answered by the per-user launchd itself, so it
+ *     shows that launchd is alive;
+ *   - look_up2 of a service only PID 1 has makes the per-user launchd
+ *     forward the request to PID 1 (job_mig_look_up2 ->
+ *     vproc_mig_look_up2_forward, MIG_NO_REPLY), and PID 1 replies to us
+ *     directly, so it shows that forwarding works.
  *
  * Only the client stub (-user/-header) is generated from this file. The
  * server is launchd's own jobServer.c, so the wire format must match
  * job.defs exactly:
- *   - the subsystem base is 400, and the routine sits at index 36 (36 skips
- *     below), so its request id is 436, as in job.defs;
+ *   - the subsystem base is 400, look_up2 sits at index 4 (4 skips below)
+ *     and get_root_bootstrap at index 36 (31 more skips), so their request
+ *     ids are 404 and 436, as in job.defs;
  *   - job_t is a mach_port_t on the wire (its intran/outtran run only in the
  *     server), so plain mach_port_t is the same request;
- *   - WaitTime adds no field to the message.
- * If get_root_bootstrap ever moves in job.defs, move it here too.
+ *   - name_t, pid_t and uuid_t are declared below exactly as in
+ *     job_types.defs;
+ *   - sreplyport (server side only), UserAuditToken (client receive option
+ *     only) and WaitTime add no field to the request.
+ * If look_up2 or get_root_bootstrap ever moves or changes in job.defs,
+ * change it here too.
  */
 
 subsystem pam_launchd_probe 400;
@@ -24,14 +36,37 @@ subsystem pam_launchd_probe 400;
 #include <mach/std_types.defs>
 #include <mach/mach_types.defs>
 
+import <uuid/uuid.h>;		/* uuid_t */
+import <servers/bootstrap.h>;	/* name_t */
+
+/* As in job_types.defs. */
+type pid_t = integer_t;
+type name_t = c_string[128];
+type uuid_t = array [16] of MACH_MSG_TYPE_BYTE;
+
 userprefix pam_launchd_probe_;
 
-/* job.defs routines 0-35: create_server ... event_set_state. */
+/* job.defs routines 0-3: create_server, reboot2, check_in2, register2. */
 skip;
 skip;
 skip;
 skip;
-skip;
+
+/* job.defs routine 4. */
+routine
+look_up2(
+				j			: mach_port_t;
+sreplyport		rp			: mach_port_make_send_once_t;
+				servicename	: name_t;
+out				serviceport	: mach_port_t;
+UserAuditToken	servercreds	: audit_token_t;
+				targetpid	: pid_t;
+				instanceid	: uuid_t;
+				flags		: uint64_t;
+		WaitTime	timeout		: natural_t
+);
+
+/* job.defs routines 5-35: send_signal ... spawn2. */
 skip;
 skip;
 skip;
