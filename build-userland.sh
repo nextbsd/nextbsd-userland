@@ -15,6 +15,8 @@
 #     are curated via compat's srclist, not built in this repo.
 #   * PAM (OpenPAM port, build.sh step 3y2 ~2609+) — a later tier; it overlays
 #     FreeBSD-pam and needs its own conflict handling. Not a Tier 0-2 concern.
+#     (The one PAM piece built here is pam_launchd, a single module for the
+#     inherited OpenPAM that no base path collides with; see its block.)
 #   * Every smoke/round-trip TEST binary build.sh compiles next to each
 #     component (test_libmach, configtest, iokittest, sctest, datest, ...).
 #     Those exec just-built TARGET binaries on the host — impossible when
@@ -1054,6 +1056,36 @@ run_buildenv "make -C $SRC/nss_directory_services DESTDIR=$DESTDIR SYSROOT=$SYSR
 test -f "$DESTDIR/usr/lib/nss_directory_services.so.1" || { echo "FAIL: /usr/lib/nss_directory_services.so.1 not installed"; exit 1; }
 test ! -e "$DESTDIR/usr/lib/libnss_directory_services.a" || { echo "FAIL: nss_directory_services must not install a static library"; exit 1; }
 echo "==> nss_directory_services built"
+
+# ---- pam_launchd (nextbsd/nextbsd-userland#354, PR 3) ----------------------
+# Apple's launchd PAM session module (pam_modules-126), built for the OpenPAM
+# inherited from FreeBSD: OpenPAM headers and libpam come from the compat base
+# in the sysroot, liblaunch and libsystem_kernel from the steps above. It moves
+# a login session onto the user's per-user launchd bootstrap; every failure is
+# PAM_IGNORE. Installed as /usr/lib/pam_launchd.so.6 (+ the pam_launchd.so
+# link), the name every base module uses. NOTHING references it yet: the
+# pam.d policy files live in nextbsd-overlays and add it later.
+#
+# Its liveness probe is a client stub for launchd's get_root_bootstrap with a
+# MIG WaitTime, generated here by the host mig from pam_launchd_probe.defs.
+comp "pam_launchd"
+PAM_LAUNCHD_MIG="$MIGROOT/pam_launchd"
+rm -rf "$PAM_LAUNCHD_MIG"; mkdir -p "$PAM_LAUNCHD_MIG"
+run_mig "$PAM_LAUNCHD_MIG" -I"$SRC/libmach/include" \
+    -header pam_launchd_probe.h -user pam_launchd_probeUser.c \
+    -server /dev/null \
+    "$SRC/pam_launchd/pam_launchd_probe.defs" \
+    || { echo "FAIL: mig could not process pam_launchd_probe.defs"; exit 1; }
+test -s "$PAM_LAUNCHD_MIG/pam_launchd_probeUser.c" || { echo "FAIL: mig produced no pam_launchd_probeUser.c"; exit 1; }
+grep -q "MACH_RCV_TIMEOUT" "$PAM_LAUNCHD_MIG/pam_launchd_probeUser.c" \
+    || { echo "FAIL: pam_launchd probe stub has no receive timeout"; exit 1; }
+mkdir -p "$DESTDIR/usr/lib"
+run_buildenv "make -C $SRC/pam_launchd DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$PAM_LAUNCHD_MIG all install"
+test -f "$DESTDIR/usr/lib/pam_launchd.so.6" || { echo "FAIL: /usr/lib/pam_launchd.so.6 not installed"; exit 1; }
+test ! -e "$DESTDIR/usr/lib/libpam_launchd.a" || { echo "FAIL: pam_launchd must not install a static library"; exit 1; }
+needed_check "$DESTDIR/usr/lib/pam_launchd.so.6" "liblaunch"
+needed_check "$DESTDIR/usr/lib/pam_launchd.so.6" "libpam"
+echo "==> pam_launchd built"
 
 # =============================================================================
 # TIER 3 — on-image test binaries (freebsd-launchd-mach suite).

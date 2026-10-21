@@ -1,0 +1,73 @@
+/*
+ * pam_launchd_probe.defs -- NextBSD addition to Apple's pam_launchd.
+ *
+ * A client-side copy of ONE routine from launchd's job.defs
+ * (src/launchd/src/job.defs, subsystem job 400), get_root_bootstrap, with a
+ * MIG WaitTime argument added so the call gives up after a bounded time
+ * (MACH_SEND_TIMEOUT | MACH_RCV_TIMEOUT) instead of blocking forever.
+ * pam_launchd uses it as a liveness probe of the per-user launchd before it
+ * moves a login session onto that launchd's bootstrap port.
+ *
+ * Only the client stub (-user/-header) is generated from this file. The
+ * server is launchd's own jobServer.c, so the wire format must match
+ * job.defs exactly:
+ *   - the subsystem base is 400, and the routine sits at index 36 (36 skips
+ *     below), so its request id is 436, as in job.defs;
+ *   - job_t is a mach_port_t on the wire (its intran/outtran run only in the
+ *     server), so plain mach_port_t is the same request;
+ *   - WaitTime adds no field to the message.
+ * If get_root_bootstrap ever moves in job.defs, move it here too.
+ */
+
+subsystem pam_launchd_probe 400;
+
+#include <mach/std_types.defs>
+#include <mach/mach_types.defs>
+
+userprefix pam_launchd_probe_;
+
+/* job.defs routines 0-35: create_server ... event_set_state. */
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+skip;
+
+/* job.defs routine 36. */
+routine
+get_root_bootstrap(
+				j			: mach_port_t;
+		WaitTime	timeout		: natural_t;
+out				rootbs		: mach_port_move_send_t
+);
