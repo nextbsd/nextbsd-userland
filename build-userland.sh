@@ -258,52 +258,82 @@ export SYSROOT
 # the deferral is unnecessary AND harmful: with HAVE_MACH=ON, libdispatch's
 # SOURCES (mach_private.h) #include <mach/mach.h> and need it present to compile.
 # So we keep mach.h installed (no removal).
-# ---- libmach MIG client (mach_port) -----------------------------------------
-# Generate the mach_port MIG client from the kernel's mach_port.defs, so the
-# libmach entry points that used to fabricate success are real RPCs
-# (nextbsd-kernel#125, #83).
+# ---- libmach MIG clients (mach_port, task, host_priv, mach_host) ------------
+# Generate libmach's MIG clients from the kernel's .defs, so the libmach entry
+# points that used to fabricate success are real RPCs (nextbsd-kernel#125,
+# #83, #84, #93).
 #
-# The .defs lives in nextbsd-kernel, deliberately: it describes the WIRE, and
+# The .defs live in nextbsd-kernel, deliberately: each describes the WIRE, and
 # a wire needs exactly one description or the two ends can drift -- which is
-# the whole failure this work removes. The kernel repo generates its server
-# from the same file. This mirrors nextbsd-kernel's own build, which checks
+# the whole failure this work removes. The kernel repo generates its servers
+# from the same files. This mirrors nextbsd-kernel's own build, which checks
 # out THIS repo to build migcom.
 #
-# UserPrefix _kernelrpc_ in that .defs means the generated stubs are named
-# _kernelrpc_mach_port_*, so they sit underneath the public entry points in
+# UserPrefix _kernelrpc_ in each .defs means the generated stubs are named
+# _kernelrpc_<routine>, so they sit underneath the public entry points in
 # mach_traps.c rather than colliding with them -- the libsyscall arrangement.
+# libmach defines public task_* and host_* symbols (task_get_special_port,
+# task_policy_*, host_info, semaphore_*, ...), so an unprefixed client would
+# not link.
 KERNEL_DEFS="${KERNEL_DEFS:-$ROOT/.kernel}"
 LIBMACH_MIG="$MIGROOT/libmach"
 rm -rf "$LIBMACH_MIG"; mkdir -p "$LIBMACH_MIG"
 
-if [ ! -f "$KERNEL_DEFS/src-overlay/sys/sys/mach/mach_port.defs" ]; then
-    echo "FAIL: mach_port.defs not found under KERNEL_DEFS=$KERNEL_DEFS"
-    echo "      Expected a nextbsd-kernel checkout; CI provides one, and a"
-    echo "      local build can point KERNEL_DEFS at its own clone."
-    exit 1
-fi
+# subsystem:routine -- the routine is one the subsystem must contain, used to
+# assert the prefix took effect.
+LIBMACH_MIG_SUBS="mach_port:mach_port_get_set_status task:task_get_special_port host_priv:host_set_special_port mach_host:host_info"
 
-# mach_debug_types.defs is included by mach_port.defs and also lives kernel-side.
+for ent in $LIBMACH_MIG_SUBS; do
+    sub=${ent%%:*}
+    if [ ! -f "$KERNEL_DEFS/src-overlay/sys/sys/mach/$sub.defs" ]; then
+        echo "FAIL: $sub.defs not found under KERNEL_DEFS=$KERNEL_DEFS"
+        echo "      Expected a nextbsd-kernel checkout; CI provides one, and a"
+        echo "      local build can point KERNEL_DEFS at its own clone."
+        exit 1
+    fi
+done
+
+# Includes, all from the kernel repo except the userland wire vocabulary
+# (std_types / mach_types / machine_types.defs, which the kernel build also
+# takes from here):
+#   mach_debug_types.defs  -- every one of the four
+#   clock_types.defs       -- host_priv.defs and mach_host.defs; userland
+#                             ships no .defs for it
 MIGTMP="$LIBMACH_MIG/incl"
 mkdir -p "$MIGTMP/mach" "$MIGTMP/mach_debug"
 cp "$SRC/libmach/include/mach/"*.defs "$MIGTMP/mach/"
-cp "$KERNEL_DEFS/src-overlay/sys/sys/mach/mach_port.defs" "$MIGTMP/mach/"
+cp "$KERNEL_DEFS/src-overlay/sys/sys/mach/clock_types.defs" "$MIGTMP/mach/"
 cp "$KERNEL_DEFS/src-overlay/sys/sys/mach_debug/mach_debug_types.defs" "$MIGTMP/mach_debug/"
 
-run_mig "$LIBMACH_MIG" -I"$MIGTMP" \
-    -header mach_port_mig.h -user mach_portUser.c \
-    -server /dev/null \
-    "$MIGTMP/mach/mach_port.defs" \
-    || { echo "FAIL: mig could not process mach_port.defs"; exit 1; }
-test -s "$LIBMACH_MIG/mach_portUser.c" \
-    || { echo "FAIL: mig produced no mach_portUser.c"; exit 1; }
-# The prefix is load-bearing: without it these would collide with the public
-# entry points. Assert it rather than trust it.
-grep -q '_kernelrpc_mach_port_get_set_status' "$LIBMACH_MIG/mach_portUser.c" \
-    || { echo "FAIL: mach_portUser.c has no _kernelrpc_ stubs -- UserPrefix missing?"; exit 1; }
-grep -qE '^mach_port_get_set_status\(' "$LIBMACH_MIG/mach_portUser.c" \
-    && { echo "FAIL: mach_portUser.c defines UNPREFIXED entry points; would collide"; exit 1; }
-echo "==> LIBMACH-MIG-OK: $(wc -l < "$LIBMACH_MIG/mach_portUser.c") lines of mach_port client"
+for ent in $LIBMACH_MIG_SUBS; do
+    sub=${ent%%:*}
+    probe=${ent#*:}
+    user="${sub}User.c"
+    cp "$KERNEL_DEFS/src-overlay/sys/sys/mach/$sub.defs" "$MIGTMP/mach/"
+    run_mig "$LIBMACH_MIG" -I"$MIGTMP" \
+        -header "${sub}_mig.h" -user "$user" \
+        -server /dev/null \
+        "$MIGTMP/mach/$sub.defs" \
+        || { echo "FAIL: mig could not process $sub.defs"; exit 1; }
+    test -s "$LIBMACH_MIG/$user" \
+        || { echo "FAIL: mig produced no $user"; exit 1; }
+    # The prefix is load-bearing: without it these would collide with the
+    # public entry points. Assert it rather than trust it: the probe routine
+    # is there under its prefixed name, and no generated entry point
+    # (migcom writes "mig_external <type> <name>" on one line) lacks it.
+    grep -qE "^mig_external [a-z_]+ _kernelrpc_${probe}\$" "$LIBMACH_MIG/$user" \
+        || { echo "FAIL: $user has no _kernelrpc_$probe -- UserPrefix missing?"; exit 1; }
+    grep -qE "^kern_return_t _kernelrpc_${probe}\$" "$LIBMACH_MIG/${sub}_mig.h" \
+        || { echo "FAIL: ${sub}_mig.h declares no _kernelrpc_$probe -- UserPrefix missing?"; exit 1; }
+    if grep -E '^mig_external [a-z_]+ ' "$LIBMACH_MIG/$user" | grep -vqE ' _kernelrpc_[A-Za-z0-9_]+$'; then
+        echo "FAIL: $user defines UNPREFIXED entry points; would collide:"
+        grep -E '^mig_external [a-z_]+ ' "$LIBMACH_MIG/$user" | grep -vE ' _kernelrpc_[A-Za-z0-9_]+$'
+        exit 1
+    fi
+    grep -qE "^${probe}\(" "$LIBMACH_MIG/$user" \
+        && { echo "FAIL: $user defines UNPREFIXED entry points; would collide"; exit 1; }
+    echo "==> LIBMACH-MIG-OK: $(wc -l < "$LIBMACH_MIG/$user") lines of $sub client"
+done
 
 comp "libmach (libsystem_kernel) — installs mach/* headers into sysroot first"
 # bsd.lib.mk does NOT auto-create INCSDIR, hence the pre-creation here.
