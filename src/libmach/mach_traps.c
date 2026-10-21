@@ -1358,14 +1358,40 @@ task_set_importance_watchports_np(mach_port_name_t *names, int count,
 	return (rv);
 }
 
+/*
+ * task_name_for_pid() — get a send right to pid's task name port
+ * (nextbsd-kernel#308).
+ *
+ * Calls the mach.syscall.task_name_for_pid trap (nextbsd-kernel#309). As
+ * in XNU this is a trap only; there is no MIG routine to fall back to. A
+ * name port is introspection-only: it identifies the task and is accepted
+ * by task_info(), but never converts to a task, space or map. The kernel
+ * writes *t on every path (MACH_PORT_NULL on failure) and decides who may
+ * ask, using xnu-2422's rule: pid 0, a target_task that is not the
+ * caller's own task, a process the caller cannot see, or a caller that is
+ * not the target, not root and not the same effective and real uid all
+ * give KERN_FAILURE.
+ *
+ * If the trap is not registered (an older kernel, or mach.ko not loaded)
+ * this fails closed with KERN_FAILURE and *t = MACH_PORT_NULL, the same
+ * answer as a denied caller.
+ */
 kern_return_t
 task_name_for_pid(mach_port_name_t target_task, int pid,
     mach_port_name_t *t)
 {
-	(void)target_task; (void)pid;
+	static int num = SYSCALL_UNRESOLVED;
+	int sc = resolve_syscall_once(&num, "task_name_for_pid");
+	kern_return_t rv;
+
 	if (t != NULL)
 		*t = MACH_PORT_NULL;
-	return KERN_FAILURE;
+	if (sc == NO_SYSCALL)
+		return (KERN_FAILURE);
+	rv = (kern_return_t)syscall(sc, target_task, pid, t);
+	if (rv == -1)		/* the syscall itself failed: errno, not kr */
+		return (KERN_FAILURE);
+	return (rv);
 }
 
 kern_return_t
