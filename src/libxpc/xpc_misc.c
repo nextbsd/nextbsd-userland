@@ -558,8 +558,15 @@ xpc_pipe_try_receive(mach_port_t portset, xpc_object_t *requestobj, mach_port_t 
             err->Head.msgh_remote_port = MACH_PORT_NULL;
         if(response->msgh_remote_port != MACH_PORT_NULL) {
             XPC_TRACE("[T41-xpc] pre-mach_msg_send reply");
-            (void)mach_msg_send(response);
+            kr = mach_msg_send(response);
             XPC_TRACE("[T41-xpc] post-mach_msg_send reply");
+            /*
+             * As Darwin's mach_msg_server: a reply that can't be
+             * delivered still owns its rights (reply send-once right,
+             * port descriptors), so destroy it rather than leak them.
+             */
+            if (kr == MACH_SEND_INVALID_DEST || kr == MACH_SEND_TIMED_OUT)
+                mach_msg_destroy(response);
         }
 		/*  can't do anything with the return code
 		* just tell the caller this has been handled

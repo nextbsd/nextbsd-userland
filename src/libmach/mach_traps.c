@@ -821,8 +821,13 @@ mach_port_set_mscount(mach_port_name_t task, mach_port_name_t name,
  * descriptors in a complex body. Those are fd-backed here, so they
  * accumulate as the type-`?` Mach-port fd leak (see #342).
  *
- * Header ports are disposed per their msgh_bits disposition; complex
- * body port / OOL-ports descriptors have their rights deallocated.
+ * Header ports and complex-body port / OOL-ports descriptors are all
+ * disposed per their disposition, as Apple's mach_msg_destroy does. A
+ * received message carries MOVE_* types, so its rights are released.
+ * A reply that failed to send still carries the sender's COPY_* or
+ * MAKE_* types, which moved no right, so the sender's own rights (e.g.
+ * launchd's send rights on the receive rights it hands out with
+ * MAKE_SEND) are left alone.
  *
  * OOL *memory* is intentionally NOT freed here, matching the deliberate
  * policy already documented on mig_deallocate()/vm_deallocate() below:
@@ -890,9 +895,8 @@ mach_msg_destroy(mach_msg_header_t *msg)
 		/* `type` sits at a common offset in every descriptor variant. */
 		switch (d->port.type) {
 		case MACH_MSG_PORT_DESCRIPTOR:
-			if (MACH_PORT_VALID(d->port.name))
-				(void)mach_port_deallocate(mach_task_self(),
-				    d->port.name);
+			mach_msg_destroy_port(d->port.name,
+			    d->port.disposition);
 			p += sizeof(mach_msg_port_descriptor_t);
 			break;
 		case MACH_MSG_OOL_DESCRIPTOR:
@@ -906,9 +910,8 @@ mach_msg_destroy(mach_msg_header_t *msg)
 
 			if (ports != NULL)
 				for (j = 0; j < d->ool_ports.count; j++)
-					if (MACH_PORT_VALID(ports[j]))
-						(void)mach_port_deallocate(
-						    mach_task_self(), ports[j]);
+					mach_msg_destroy_port(ports[j],
+					    d->ool_ports.disposition);
 			p += sizeof(mach_msg_ool_ports_descriptor_t);
 			break;
 		}
