@@ -88,4 +88,24 @@ PREFIX?=	/usr
 # handler; link libthr so it binds there rather than to libc's stub.
 LIBADD+=	pthread
 
+# Record liblaunch's real dependencies (nextbsd/nextbsd-userland#354).
+# libvproc.c, libbootstrap.c and the MIG stubs call into
+#   - libsystem_kernel: mach_msg, mach_port_*, task_*_special_port,
+#     task_name_for_pid, mig_*_reply_port, NDR_record, ...
+#   - libsystem_dispatch: dispatch_once_f, dispatch_sync_f,
+#     dispatch_async_f, dispatch_queue_create, dispatch_retain.
+# Without DT_NEEDED entries for these, liblaunch only loads where the
+# executable happens to link both itself; dlopen()ing anything that pulls in
+# liblaunch (pam_launchd.so.6 from login/sshd) fails with RTLD_NOW.
+# Same layering as Apple's libSystem: liblaunch sits above libdispatch and
+# libsystem_kernel, and neither of those links liblaunch, so there is no
+# cycle. Both are built before liblaunch.
+# These are OUR /usr/lib/system libs, not FreeBSD _LIBRARIES, so they go
+# through LDADD (as in libxpc/Makefile).
+LDADD+=		-lsystem_kernel -lsystem_dispatch
+LDFLAGS+=	-Wl,-rpath,${PREFIX}/lib/system
+# Every undefined reference must resolve against the libraries named above,
+# so a missing dependency fails the link instead of the first dlopen.
+LDFLAGS+=	-Wl,-z,defs
+
 .include <bsd.lib.mk>

@@ -50,16 +50,28 @@ CFLAGS+=	--sysroot=${SYSROOT}
 CFLAGS+=	-I${SYSROOT}/usr/include	# security/ (OpenPAM), dispatch/, uuid/, launch.h
 LDFLAGS+=	-L${SYSROOT}/usr/lib/system
 LDFLAGS+=	-Wl,-rpath,/usr/lib/system
-# liblaunch and libsystem_kernel carry their own undefined references that
-# resolve at run time (as for launchctl).
-LDFLAGS+=	-Wl,--allow-shlib-undefined
 .endif
+
+# No --allow-shlib-undefined (nextbsd/nextbsd-userland#354). login and sshd
+# dlopen this module with RTLD_NOW and link none of the Mach libraries
+# themselves, so every symbol must be reachable from this module's own
+# DT_NEEDED closure. -z defs fails the link on an unresolved reference here;
+# --no-allow-shlib-undefined fails it on one inside a linked library whose
+# dependencies are all on this link line (liblaunch's are: libsystem_kernel,
+# libsystem_dispatch, libthr, libc).
+LDFLAGS+=	-Wl,-z,defs -Wl,--no-allow-shlib-undefined
 
 # liblaunch: bootstrap_*, _vprocmgr_switch_to_session, _vproc_post_fork_ping,
 # the bootstrap_port global. libsystem_kernel: mach_msg, mach_port_*,
 # task_set_special_port, mig_get_reply_port and the rest of the MIG runtime.
-LDADD+=		-llaunch -lsystem_kernel
-# openpam_get_option, openpam_log, pam_get_item, pam_getenv.
-LIBADD+=	pam
+# libsystem_dispatch: not called here, but liblaunch calls dispatch_*; naming
+# it puts it in this module's own DT_NEEDED as well as liblaunch's, and lets
+# the linker check liblaunch's references (above).
+LDADD+=		-llaunch -lsystem_kernel -lsystem_dispatch
+# openpam_get_option, openpam_log, pam_get_item, pam_getenv. pthread (libthr)
+# is liblaunch's own dependency, listed so --no-allow-shlib-undefined sees
+# liblaunch's full DT_NEEDED set; it adds nothing liblaunch does not already
+# load.
+LIBADD+=	pam pthread
 
 .include <bsd.lib.mk>

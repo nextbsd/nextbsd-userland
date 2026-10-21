@@ -152,16 +152,37 @@ run_buildenv_host() {
 # foreign-arch ldd on the runner, so verify the just-linked TARGET object
 # DECLARES the expected DT_NEEDED instead. Actual rtld resolution is re-checked
 # in the boot test. $1 = path under $DESTDIR; $2 = soname substring to require.
+#
+# Reading the dynamic section is target-independent, so any ELF reader will
+# do. The toolchain image's CROSS_BINDIR (/usr/lib/llvm-N/bin) ships clang and
+# lld but no llvm-readelf, which left every check here a silent skip; fall back
+# to llvm-readobj, versioned names on PATH, and the host binutils readelf
+# (nextbsd/nextbsd-userland#354).
+find_readelf() {
+    local c
+    for c in "$CROSS_BINDIR/llvm-readelf" "$CROSS_BINDIR/readelf" \
+             "$CROSS_BINDIR/llvm-readobj"; do
+        [ -x "$c" ] && { echo "$c"; return 0; }
+    done
+    for c in llvm-readelf llvm-readelf-19 llvm-readelf-20 llvm-readelf-18 \
+             llvm-readobj readelf; do
+        command -v "$c" 2>/dev/null && return 0
+    done
+    return 1
+}
+READELF="$(find_readelf || true)"
+
 needed_check() {
-    local obj="$1" want="$2"
-    local readelf="$CROSS_BINDIR/readelf"
-    [ -x "$readelf" ] || readelf="${CROSS_BINDIR}/llvm-readelf"
-    if [ ! -x "$readelf" ]; then
-        note "skip DT_NEEDED check ($want): no cross readelf in CROSS_BINDIR  # TODO verify under cross"
-        return 0
+    local obj="$1" want="$2" dyn
+    if [ -z "$READELF" ]; then
+        echo "FAIL: no ELF reader (llvm-readelf/llvm-readobj/readelf) for DT_NEEDED check of $obj"
+        exit 1
     fi
-    "$readelf" -d "$obj" 2>/dev/null | grep -q "NEEDED.*$want" \
-        || { echo "FAIL: $obj missing DT_NEEDED $want"; exit 1; }
+    # Capture first: piping into grep -q under pipefail can SIGPIPE the reader.
+    dyn="$("$READELF" -d "$obj" 2>&1)" \
+        || { echo "FAIL: $READELF -d $obj: $dyn"; exit 1; }
+    printf '%s\n' "$dyn" | grep -q "NEEDED.*$want" \
+        || { echo "FAIL: $obj missing DT_NEEDED $want"; printf '%s\n' "$dyn" | grep NEEDED; exit 1; }
     note "DT_NEEDED ok: $(basename "$obj") -> $want"
 }
 
@@ -178,6 +199,7 @@ echo "    SYSROOT=$SYSROOT"
 echo "    DESTDIR=$DESTDIR"
 echo "    CROSS_BINDIR=$CROSS_BINDIR"
 echo "    CMAKE_TOOLCHAIN=$CMAKE_TOOLCHAIN"
+echo "    READELF=${READELF:-<none>}"
 [ -f "$CMAKE_TOOLCHAIN" ] || { echo "FAIL: missing $CMAKE_TOOLCHAIN"; exit 1; }
 mkdir -p "$MIGROOT"
 
@@ -469,6 +491,10 @@ done
 comp "liblaunch"
 run_buildenv "make -C $SRC/launchd/liblaunch DESTDIR=$DESTDIR PREFIX=/usr MIGOUT=$MIG_OUT SYSROOT=$SYSROOT all install"
 sync_sysroot
+# liblaunch calls Mach and dispatch_* itself, so it must name both; without
+# them any dlopen of a liblaunch consumer (pam_launchd) fails (#354).
+needed_check "$DESTDIR/usr/lib/system/liblaunch.so.1" "libsystem_kernel"
+needed_check "$DESTDIR/usr/lib/system/liblaunch.so.1" "libsystem_dispatch"
 # DROPPED: chroot ldconfig re-prime.
 
 # ---- swift-foundation-icu [CMAKE] -------------------------------------------
@@ -1086,6 +1112,7 @@ test -f "$DESTDIR/usr/lib/pam_launchd.so.6" || { echo "FAIL: /usr/lib/pam_launch
 test ! -e "$DESTDIR/usr/lib/libpam_launchd.a" || { echo "FAIL: pam_launchd must not install a static library"; exit 1; }
 needed_check "$DESTDIR/usr/lib/pam_launchd.so.6" "liblaunch"
 needed_check "$DESTDIR/usr/lib/pam_launchd.so.6" "libpam"
+needed_check "$DESTDIR/usr/lib/pam_launchd.so.6" "libsystem_dispatch"
 echo "==> pam_launchd built"
 
 # =============================================================================
