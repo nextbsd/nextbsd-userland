@@ -41,16 +41,11 @@ CFLAGS+=	-I${SYSROOT}/usr/include	# CoreFoundation/, _foundation_unicode/, dispa
 CFLAGS+=	-I${SYSROOT}/usr/include/edit
 LDADD+=		-L${SYSROOT}/usr/lib/system
 LDFLAGS+=	-Wl,-rpath,/usr/lib/system
-# liblaunch.so has unresolved vproc_mig_* symbols (33 of them, in
-# libvproc.c et al — Apple ships protocol_vproc.defs that MIG-generates
-# the client stubs, but launchd-842 doesn't include it). The launchd
-# daemon's link allows shlib-undef by default; launchctl's link triggers
-# strict --no-allow-shlib-undefined for some reason and errors out.
-# Match launchd's permissive behavior. The undefined symbols would only
-# trip at runtime if launchctl actually exercises a vproc_mig_* code
-# path, which `launchctl version` doesn't. Proper fix is to add a
-# protocol_vproc.defs MIG generation step in launchd's build (separate
-# task, not blocking LAUNCHCTL-BUILD-OK).
+# The vproc_mig_* client stubs that liblaunch's libvproc.c calls are
+# no longer unresolved: liblaunch/Makefile links the MIG-generated
+# jobUser.c into liblaunch.so. --allow-shlib-undefined is kept so
+# launchctl's link matches the launchd daemon's permissive default for
+# undefined symbols in the shared libraries it links against.
 LDFLAGS+=	-Wl,--allow-shlib-undefined
 .endif
 

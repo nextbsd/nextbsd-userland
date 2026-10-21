@@ -3109,6 +3109,10 @@ list_cmd(int argc, char *const argv[])
 				r = 0;
 			}
 			launch_data_free(resp);
+		} else if (launch_data_get_type(resp) == LAUNCH_DATA_ERRNO && launch_data_get_errno(resp) == ESRCH) {
+			launchctl_log(LOG_ERR, "Could not find service \"%s\"", label);
+			r = 1;
+			launch_data_free(resp);
 		} else {
 			launchctl_log(LOG_ERR, "%s %s returned unknown response", getprogname(), argv[0]);
 			r = 1;
@@ -3272,7 +3276,31 @@ static const struct {
 	{ "rss", 	RLIMIT_RSS },
 	{ "memlock",	RLIMIT_MEMLOCK },
 	{ "maxproc",	RLIMIT_NPROC },
-	{ "maxfiles",	RLIMIT_NOFILE }
+	{ "maxfiles",	RLIMIT_NOFILE },
+	/* NextBSD rlimits inherited from FreeBSD. name2num() and num2name()
+	 * search this table by value, so the order here doesn't matter.
+	 */
+#ifdef RLIMIT_SBSIZE
+	{ "sbsize",	RLIMIT_SBSIZE },
+#endif
+#ifdef RLIMIT_VMEM
+	{ "vmem",	RLIMIT_VMEM },
+#endif
+#ifdef RLIMIT_NPTS
+	{ "npts",	RLIMIT_NPTS },
+#endif
+#ifdef RLIMIT_SWAP
+	{ "swap",	RLIMIT_SWAP },
+#endif
+#ifdef RLIMIT_KQUEUES
+	{ "kqueues",	RLIMIT_KQUEUES },
+#endif
+#ifdef RLIMIT_UMTXP
+	{ "umtxp",	RLIMIT_UMTXP },
+#endif
+#ifdef RLIMIT_PIPEBUF
+	{ "pipebuf",	RLIMIT_PIPEBUF },
+#endif
 };
 
 static const size_t limlookupcnt = sizeof limlookup / sizeof limlookup[0];
