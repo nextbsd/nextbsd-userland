@@ -151,7 +151,7 @@ static int _fd(int);
 static int demux_cmd(int argc, char *const argv[]);
 static void submit_job_pass(launch_data_t jobs);
 static void do_mgroup_join(int fd, int family, int socktype, int protocol, const char *mgroup);
-static mach_port_t str2bsport(const char *s);
+static mach_port_t str2bsport(const char *cmd, const char *s);
 static void print_jobs(launch_data_t j, const char *key, void *context);
 static void print_obj(launch_data_t obj, const char *key, void *context);
 static bool str2lim(const char *buf, rlim_t *res);
@@ -3488,7 +3488,11 @@ setup_system_context(void)
 	setenv("__USE_SYSTEM_LAUNCHD", "1", 0);
 
 	/* Put ourselves in the system launchd's bootstrap. */
-	mach_port_t rootbs = str2bsport("/");
+	mach_port_t rootbs = str2bsport(getprogname(), "/");
+	if (rootbs == MACH_PORT_NULL) {
+		return;
+	}
+
 	mach_port_deallocate(mach_task_self(), bootstrap_port);
 	task_set_bootstrap_port(mach_task_self(), rootbs);
 	bootstrap_port = rootbs;
@@ -3625,8 +3629,14 @@ launch_data_array_append(launch_data_t a, launch_data_t o)
 	return launch_data_array_set_index(a, o, offt);
 }
 
+/*
+ * Returns MACH_PORT_NULL on failure, after logging why. Upstream returned 1,
+ * which callers then used as a Mach port name. Note that "0" and "NULL" also
+ * yield MACH_PORT_NULL on purpose; callers that accept those must tell the
+ * two cases apart themselves.
+ */
 mach_port_t
-str2bsport(const char *s)
+str2bsport(const char *cmd, const char *s)
 {
 	bool getrootbs = strcmp(s, "/") == 0;
 	mach_port_t last_bport, bport = bootstrap_port;
@@ -3639,11 +3649,11 @@ str2bsport(const char *s)
 			result = bootstrap_parent(last_bport, &bport);
 
 			if (result == BOOTSTRAP_NOT_PRIVILEGED) {
-				launchctl_log(LOG_ERR, "Permission denied");
-				return 1;
+				launchctl_log(LOG_ERR, "%s: bootstrap_parent() failed: Permission denied", cmd);
+				return MACH_PORT_NULL;
 			} else if (result != BOOTSTRAP_SUCCESS) {
-				launchctl_log(LOG_ERR, "bootstrap_parent() %d", result);
-				return 1;
+				launchctl_log(LOG_ERR, "%s: bootstrap_parent() failed: %d", cmd, result);
+				return MACH_PORT_NULL;
 			}
 		} while (getrootbs && last_bport != bport);
 	} else if (strcmp(s, "0") == 0 || strcmp(s, "NULL") == 0) {
@@ -3654,15 +3664,16 @@ str2bsport(const char *s)
 		result = task_for_pid(mach_task_self(), pid, &task);
 
 		if (result != KERN_SUCCESS) {
-			launchctl_log(LOG_ERR, "task_for_pid() %s", mach_error_string(result));
-			return 1;
+			launchctl_log(LOG_ERR, "%s: task_for_pid(%d) failed: %s", cmd, pid, mach_error_string(result));
+			return MACH_PORT_NULL;
 		}
 
 		result = task_get_bootstrap_port(task, &bport);
+		(void)mach_port_deallocate(mach_task_self(), task);
 
 		if (result != KERN_SUCCESS) {
-			launchctl_log(LOG_ERR, "Couldn't get bootstrap port: %s", mach_error_string(result));
-			return 1;
+			launchctl_log(LOG_ERR, "%s: task_get_bootstrap_port(%d) failed: %s", cmd, pid, mach_error_string(result));
+			return MACH_PORT_NULL;
 		}
 	}
 
@@ -3680,7 +3691,11 @@ bsexec_cmd(int argc, char *const argv[])
 		return 1;
 	}
 
-	bport = str2bsport(argv[1]);
+	bport = str2bsport("bsexec", argv[1]);
+	if (bport == MACH_PORT_NULL && strcmp(argv[1], "0") != 0 && strcmp(argv[1], "NULL") != 0) {
+		/* str2bsport() already said why. */
+		return 1;
+	}
 
 	result = task_set_bootstrap_port(mach_task_self(), bport);
 
@@ -3755,7 +3770,11 @@ bslist_cmd(int argc, char *const argv[])
 
 	if (argc > 1) {
 		if (show_jobs) {
-			bport = str2bsport(argv[1]);
+			bport = str2bsport("bslist", argv[1]);
+			if (bport == MACH_PORT_NULL && strcmp(argv[1], "0") != 0 && strcmp(argv[1], "NULL") != 0) {
+				/* str2bsport() already said why. */
+				return 1;
+			}
 		} else if (strcmp(argv[1], "-j") == 0) {
 			show_jobs = true;
 		}
@@ -3844,7 +3863,12 @@ bstree_cmd(int argc, char * const argv[])
 		fprintf(stdout, "System/\n");
 	}
 
-	return _bstree_cmd(str2bsport("/"), 4, show_jobs);
+	mach_port_t rootbs = str2bsport("bstree", "/");
+	if (rootbs == MACH_PORT_NULL) {
+		return 1;
+	}
+
+	return _bstree_cmd(rootbs, 4, show_jobs);
 }
 
 int
