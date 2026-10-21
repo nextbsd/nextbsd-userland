@@ -7,15 +7,14 @@
  * /Network/Library, /System/Library) looking for LaunchAgents and
  * LaunchDaemons subdirs.
  *
- * Stub returns ONLY /Local/Library and /System/Library (per the
- * project install-layout spike: /Local/Library replaces Apple's
- * /Local/Library on this platform). Skips ~/Library (no per-user agent
- * support yet) and /Network/Library (no NetInfo / OD).
+ * Stub returns ~/Library, /Local/Library and /System/Library, in
+ * Darwin's order (user, local, network, system), for the domains set in
+ * the mask. /Local/Library is NextBSD's local domain. /Network/Library
+ * is skipped (no NetInfo / OD).
  *
- * The enumeration state is just an int counter:
- *   1 -> /Local/Library,  advance to 2
- *   2 -> /System/Library, advance to 3
- *   3 -> end (return 0, WITHOUT writing a path)
+ * The enumeration state is a bitmask of the steps still to produce (see
+ * NSD_STEP_* below); each call emits the first remaining step and clears it.
+ * The call after the last step returns 0 WITHOUT writing a path.
  *
  * The terminating call must not write a path. Apple's callers test the
  * return value before touching the buffer:
@@ -27,8 +26,8 @@
  * /System/Library step is what made `launchctl load -D all` search only
  * /Local/Library and never see the OS daemons.
  *
- * If a future task adds per-user agents, extend the table at the
- * bottom of this header.
+ * ~/Library is returned literally. Apple's launchctl globs the result
+ * with GLOB_TILDE, which expands it to the caller's home directory.
  */
 
 #ifndef _FREEBSD_LAUNCHD_MACH_NSSYSTEMDIRECTORIES_H_
@@ -73,6 +72,7 @@ typedef unsigned int NSSearchPathEnumerationState;
 
 #define NSD_STEP_LOCAL          0x1     /* /Local/Library  */
 #define NSD_STEP_SYSTEM         0x2     /* /System/Library */
+#define NSD_STEP_USER           0x8     /* ~/Library       */
 /*
  * Sentinel meaning "a path was just written, but nothing remains".
  *
@@ -108,13 +108,17 @@ typedef unsigned int NSSearchPathEnumerationState;
  * sshd included -- and took the machine down. Reproduced twice on hardware
  * before the cause was found (#113).
  *
- * Domains we can serve, and the step each maps to:
+ * Domains we can serve, and the step each maps to, in walk order:
+ *   NSUserDomainMask   (1) -> ~/Library
  *   NSLocalDomainMask  (2) -> /Local/Library
  *   NSSystemDomainMask (8) -> /System/Library
  *
- * NSUserDomainMask and NSNetworkDomainMask are not supported (no per-user
- * agents, no OD), and are simply absent from the walk rather than silently
- * substituted.
+ * NSNetworkDomainMask is not supported (no OD), and is simply absent from
+ * the walk rather than silently substituted.
+ *
+ * launchctl load clears NSUserDomainMask unless a session type (-S) was
+ * given, so the system bootstrap (`load -D all`, no -S) never walks
+ * ~/Library, as on Darwin.
  *
  * The returned state encodes which steps remain, so an empty mask yields 0
  * and terminates immediately.
@@ -129,6 +133,8 @@ NSStartSearchPathEnumeration(NSSearchPathDirectory dir,
         if (dir != NSLibraryDirectory && dir != NSAllLibrariesDirectory)
                 return 0;
 
+        if (mask & NSUserDomainMask)
+                st |= NSD_STEP_USER;
         if (mask & NSLocalDomainMask)
                 st |= NSD_STEP_LOCAL;
         if (mask & NSSystemDomainMask)
@@ -156,6 +162,11 @@ NSGetNextSearchPathEnumeration(NSSearchPathEnumerationState state,
 {
         NSSearchPathEnumerationState rest;
 
+        if (state & NSD_STEP_USER) {
+                strlcpy(path, "~/Library", MAXPATHLEN);
+                rest = state & ~NSD_STEP_USER;
+                return rest ? rest : NSD_STEP_DONE;
+        }
         if (state & NSD_STEP_LOCAL) {
                 strlcpy(path, "/Local/Library", MAXPATHLEN);
                 rest = state & ~NSD_STEP_LOCAL;
