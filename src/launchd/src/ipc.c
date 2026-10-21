@@ -505,6 +505,7 @@ adjust_rlimits(launch_data_t in)
 				const char *pstr = "kern.maxprocperuid";
 				int gval = ltmp[i].rlim_max;
 				int pval = ltmp[i].rlim_cur;
+				bool gset = true;
 				switch (i) {
 				case RLIMIT_NOFILE:
 					gmib[1] = KERN_MAXFILES;
@@ -512,11 +513,38 @@ adjust_rlimits(launch_data_t in)
 					gstr = "kern.maxfiles";
 					pstr = "kern.maxfilesperproc";
 					break;
+#ifdef __FreeBSD__
+				case RLIMIT_NPROC: {
+					/*
+					 * On NextBSD kern.maxproc is a boot-time loader
+					 * tunable and is read-only at runtime (inherited from
+					 * FreeBSD), so it cannot be raised here. The
+					 * runtime-writable ceiling is kern.maxprocperuid, and
+					 * setrlimit(RLIMIT_NPROC) clamps both the soft and the
+					 * hard limit to it, so raise it to the hard limit
+					 * rather than the soft one; otherwise the hard limit
+					 * set below would be clamped down to the soft limit.
+					 */
+					static bool maxproc_noticed = false;
+
+					if (!maxproc_noticed) {
+						launchd_syslog(LOG_NOTICE, "sysctl(\"%s\"): read-only at runtime on NextBSD; raising %s only", gstr, pstr);
+						maxproc_noticed = true;
+					}
+					gset = false;
+					if (gval > pval) {
+						pval = gval;
+					}
+					break;
+				}
+#endif
 				default:
 					break;
 				}
 
-				if (gval > 0) {
+				if (!gset) {
+					/* the global ceiling can't be raised at runtime */
+				} else if (gval > 0) {
 					(void)posix_assumes_zero(sysctl(gmib, 2, NULL, NULL, &gval, sizeof(gval)));
 				} else {
 					launchd_syslog(LOG_WARNING, "sysctl(\"%s\"): can't be zero", gstr);
