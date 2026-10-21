@@ -59,4 +59,13 @@ typedef int kern_return_t;
 #define KERN_ABORTED 14
 #endif
 
+/*
+ * KERN_INVALID_HOST — host_priv routines return this when the request
+ * port is not the host_priv port (nextbsd-kernel host_get_special_port,
+ * host_set_special_port). Apple's value is 22.
+ */
+#ifndef KERN_INVALID_HOST
+#define KERN_INVALID_HOST 22
+#endif
+
 #endif /* !_MACH_KERN_RETURN_H_ */

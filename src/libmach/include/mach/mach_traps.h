@@ -124,12 +124,12 @@ kern_return_t mach_port_destruct(mach_port_name_t task,
  */
 
 /*
- * host_get_host_port — return the unprivileged host port. Apple's
+ * host_get_host_port — return the unprivileged host port.
  * mach_host_self() returns the HOST_PRIV port for root processes and
- * the unprivileged host port otherwise; libdispatch
- * (_dispatch_mach_host_port_init) tries to demote via this trap.
- * Stub: succeed with the input port (already unprivileged on our
- * stack).
+ * the unprivileged host port otherwise (as at Apple); libdispatch
+ * (_dispatch_mach_host_port_init) demotes via this. It is
+ * host_get_special_port(host_priv, HOST_LOCAL_NODE, HOST_PORT, ...);
+ * given an unprivileged port it returns KERN_INVALID_ARGUMENT, as XNU.
  */
 kern_return_t host_get_host_port(mach_port_name_t host_priv,
     mach_port_name_t *host_port);
@@ -137,9 +137,9 @@ kern_return_t host_get_host_port(mach_port_name_t host_priv,
 /*
  * host_request_notification — Apple host-notification subscription
  * (calendar change, etc.). libdispatch registers a port to receive
- * HOST_NOTIFY_CALENDAR_CHANGE notifies. Stub: KERN_SUCCESS (no
- * notifications ever delivered). Calendar-change updates can be
- * picked up via clock_gettime/timezone polling if needed.
+ * HOST_NOTIFY_CALENDAR_CHANGE notifies. A MIG RPC: the kernel keeps
+ * a send-once right to notify_port and sends it msgid
+ * HOST_CALENDAR_CHANGED_REPLYID (950) when the wall clock is stepped.
  */
 kern_return_t host_request_notification(mach_port_name_t host,
     int notify_type, mach_port_name_t notify_port);

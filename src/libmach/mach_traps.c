@@ -26,7 +26,7 @@
 #include <mach/message.h>
 
 /*
- * mach_port MIG client (#83).
+ * MIG clients: mach_port (#83); task, host_priv and mach_host (#84, #93).
  *
  * These entry points used to fabricate success -- returning empty results or
  * KERN_SUCCESS without doing anything -- because there was no MIG client to
@@ -34,17 +34,22 @@
  * are why on-demand Mach-service launch was dead (#79): mportset_callback()
  * needs BOTH, and each failed independently.
  *
- * The generated stubs are named _kernelrpc_mach_port_* (UserPrefix in
- * mach_port.defs), so they sit underneath these public entry points rather
+ * The generated stubs are named _kernelrpc_<routine> (UserPrefix in each
+ * kernel .defs), so they sit underneath these public entry points rather
  * than colliding with them -- the libsyscall arrangement.
  *
  * LIBMACH_HAVE_MIG_CLIENT is defined by the Makefile only when MIGOUT
- * supplied mach_portUser.c. Without it a bare `make -C src/libmach` still
- * builds, keeping the previous behaviour, so the header-install path and
- * quick local builds are unaffected.
+ * supplied the generated clients. Without it a bare `make -C src/libmach`
+ * still builds, keeping the previous behaviour, so the header-install path
+ * and quick local builds are unaffected.  The types the task / host_priv /
+ * mach_host headers name come from mig_client_types.h, which the Makefile
+ * force-includes alongside.
  */
 #ifdef LIBMACH_HAVE_MIG_CLIENT
 #include "mach_port_mig.h"
+#include "task_mig.h"
+#include "host_priv_mig.h"
+#include "mach_host_mig.h"
 #endif
 #include <mach/ndr.h>
 #include <mach/task_special_ports.h>
@@ -329,15 +334,29 @@ mach_port_insert_right(mach_port_name_t task, mach_port_name_t name,
 }
 
 /*
- * Task special-port traps. `which` is TASK_BOOTSTRAP_PORT etc. from
- * <mach/task_special_ports.h>. task_get_bootstrap_port /
+ * Task special ports: MIG only (#84 step 6). `which` is TASK_BOOTSTRAP_PORT
+ * etc. from <mach/task_special_ports.h>. task_get_bootstrap_port /
  * task_set_bootstrap_port are macros that pick TASK_BOOTSTRAP_PORT for
  * the `which` arg.
+ *
+ * Apple has no trap for these (task 3409 / 3410 are MIG routines in XNU's
+ * mach_trap_table audit, see #84), so there is no trap-first step. The
+ * MIG path honours `task`: the old NextBSD traps ignored it and acted on
+ * current_task(), so launchd's task_set_special_port(child_task, ...) set
+ * launchd's own slot instead of the child's. The kernel handlers
+ * (kern/ipc_tt.c) are real, including the host-bootstrap fallback for
+ * TASK_BOOTSTRAP_PORT.
+ *
+ * Without LIBMACH_HAVE_MIG_CLIENT (a bare build with no MIGOUT) the
+ * pre-MIG trap path is kept, per the guard's contract above.
  */
 kern_return_t
 task_get_special_port(mach_port_name_t task, int which,
     mach_port_name_t *port)
 {
+#ifdef LIBMACH_HAVE_MIG_CLIENT
+	return (_kernelrpc_task_get_special_port(task, which, port));
+#else
 	static int num = NO_SYSCALL;
 
 	if (num == NO_SYSCALL) {
@@ -346,16 +365,15 @@ task_get_special_port(mach_port_name_t task, int which,
 			return (KERN_RESOURCE_SHORTAGE);
 	}
 	return ((kern_return_t)syscall(num, task, which, port));
+#endif
 }
 
-/*
- * task_set_special_port — dedicated syscall (mach.syscall.
- * task_set_special_port). Each Mach trap now has its own FreeBSD
- * syscall slot, resolved by name; no multiplexer.
- */
 kern_return_t
 task_set_special_port(mach_port_name_t task, int which, mach_port_t port)
 {
+#ifdef LIBMACH_HAVE_MIG_CLIENT
+	return (_kernelrpc_task_set_special_port(task, which, port));
+#else
 	static int num = NO_SYSCALL;
 
 	if (num == NO_SYSCALL) {
@@ -364,20 +382,34 @@ task_set_special_port(mach_port_name_t task, int which, mach_port_t port)
 			return (KERN_RESOURCE_SHORTAGE);
 	}
 	return ((kern_return_t)syscall(num, task, which, port));
+#endif
 }
 
 /*
- * host_set_special_port — set a slot in the host's special-port
- * array. Dedicated syscall (mach.syscall.host_set_special_port).
+ * host_set_special_port — set a slot in the host's special-port array.
+ * MIG only (#84 step 8; host_priv 413, no Apple trap).
  *
  * The bootstrap server calls this once at startup to publish its
  * receive port host-wide; thereafter task_get_special_port(
  * TASK_BOOTSTRAP_PORT) falls back to realhost.special[
  * HOST_BOOTSTRAP_PORT] when the per-task itk_bootstrap slot is null.
+ * launchd and kextd are the other callers; all three run as root.
+ *
+ * The request port must be host_priv. mach_host_self() hands host_priv
+ * to a non-jailed euid-0 Mach task (nextbsd-kernel#285, XNU's rule) and
+ * the unprivileged host port to everyone else, for whom the kernel's
+ * host_priv intran yields HOST_NULL and the handler answers
+ * KERN_INVALID_HOST. Only HOST_BOOTSTRAP_PORT and HOST_KEXTD_PORT are
+ * settable (KERN_INVALID_ARGUMENT otherwise), as with the old trap. That
+ * trap had no privilege check at all; it stays in the kernel only until
+ * published userland stops calling it (#84 Phase C).
  */
 kern_return_t
 host_set_special_port(mach_port_name_t host, int which, mach_port_t port)
 {
+#ifdef LIBMACH_HAVE_MIG_CLIENT
+	return (_kernelrpc_host_set_special_port(host, which, port));
+#else
 	static int num = NO_SYSCALL;
 
 	if (num == NO_SYSCALL) {
@@ -386,6 +418,7 @@ host_set_special_port(mach_port_name_t host, int which, mach_port_t port)
 			return (KERN_RESOURCE_SHORTAGE);
 	}
 	return ((kern_return_t)syscall(num, host, which, port));
+#endif
 }
 
 /*
@@ -431,24 +464,50 @@ mach_timebase_info(mach_timebase_info_t info)
 	return KERN_SUCCESS;
 }
 
+/*
+ * host_info / host_statistics: MIG (mach_host 200 / 216, #93 group 6).
+ *
+ * The kernel implements HOST_BASIC_INFO, HOST_SCHED_INFO and
+ * HOST_PRIORITY_INFO for host_info, and HOST_VM_INFO (all three Apple
+ * count revisions) for host_statistics; other flavors are
+ * KERN_INVALID_ARGUMENT. The structs and counts in <mach/host_info.h>
+ * match the kernel's, which asserts them; the asserts below hold this
+ * side to the same numbers. launchd's memory-pressure sampler
+ * (runtime.c) is the in-tree host_statistics(HOST_VM_INFO) caller.
+ */
+_Static_assert(sizeof(struct host_basic_info) == 48,
+    "host_basic_info must be Apple's 48-byte layout (kernel mach_host.c)");
+_Static_assert(HOST_BASIC_INFO_COUNT == 12, "HOST_BASIC_INFO_COUNT");
+_Static_assert(HOST_SCHED_INFO_COUNT == 2, "HOST_SCHED_INFO_COUNT");
+_Static_assert(HOST_PRIORITY_INFO_COUNT == 8, "HOST_PRIORITY_INFO_COUNT");
+_Static_assert(HOST_VM_INFO_COUNT == 15, "HOST_VM_INFO_COUNT");
+
 kern_return_t
 host_info(host_t host, host_flavor_t flavor,
     host_info_t info, mach_msg_type_number_t *count)
 {
+#ifdef LIBMACH_HAVE_MIG_CLIENT
+	return (_kernelrpc_host_info(host, flavor, info, count));
+#else
 	(void)host; (void)flavor; (void)info;
 	if (count != NULL)
 		*count = 0;
 	return KERN_RESOURCE_SHORTAGE;
+#endif
 }
 
 kern_return_t
 host_statistics(host_t host, host_flavor_t flavor,
     host_info_t info, mach_msg_type_number_t *count)
 {
+#ifdef LIBMACH_HAVE_MIG_CLIENT
+	return (_kernelrpc_host_statistics(host, flavor, info, count));
+#else
 	(void)host; (void)flavor; (void)info;
 	if (count != NULL)
 		*count = 0;
 	return KERN_RESOURCE_SHORTAGE;
+#endif
 }
 
 kern_return_t
@@ -458,12 +517,27 @@ host_reboot(host_priv_t host_priv, int options)
 	return KERN_RESOURCE_SHORTAGE;
 }
 
+/*
+ * task_policy_set / task_policy_get: MIG (task 3420 / 3421, #93 group 3).
+ *
+ * These used to return KERN_SUCCESS (and, for get, a zero count) without
+ * reaching the kernel. The kernel now answers: set accepts the known
+ * flavors (TASK_BASE_QOS_POLICY and the rest of <mach/task_policy.h>) as
+ * a no-op and rejects others with KERN_INVALID_ARGUMENT; get returns the
+ * defaults with *get_default = TRUE and a real count. launchd's
+ * TASK_BASE_QOS_POLICY call (core.c) is the in-tree caller.
+ */
 kern_return_t
 task_policy_set(task_t task, task_policy_flavor_t flavor,
     task_policy_t policy_info, mach_msg_type_number_t count)
 {
+#ifdef LIBMACH_HAVE_MIG_CLIENT
+	return (_kernelrpc_task_policy_set(task, flavor, policy_info,
+	    count));
+#else
 	(void)task; (void)flavor; (void)policy_info; (void)count;
-	return KERN_SUCCESS;
+	return KERN_RESOURCE_SHORTAGE;
+#endif
 }
 
 kern_return_t
@@ -471,32 +545,68 @@ task_policy_get(task_t task, task_policy_flavor_t flavor,
     task_policy_t policy_info, mach_msg_type_number_t *count,
     boolean_t *get_default)
 {
+#ifdef LIBMACH_HAVE_MIG_CLIENT
+	return (_kernelrpc_task_policy_get(task, flavor, policy_info,
+	    count, get_default));
+#else
 	(void)task; (void)flavor; (void)policy_info;
 	if (count != NULL)
 		*count = 0;
 	if (get_default != NULL)
 		*get_default = 0;
-	return KERN_SUCCESS;
+	return KERN_RESOURCE_SHORTAGE;
+#endif
 }
 
+/*
+ * task_set_exception_ports: MIG (task 3413, #93 group 1).
+ *
+ * Used to return KERN_SUCCESS and drop the port. The kernel handler
+ * (kern/ipc_tt.c) stores the right; it masks MACH_EXCEPTION_CODES off the
+ * behavior before validating it, so launchd's
+ * EXCEPTION_STATE_IDENTITY | MACH_EXCEPTION_CODES (core.c) is accepted.
+ * Nothing in the kernel delivers exceptions yet, so the effect is a held
+ * send right, released when replaced.
+ */
 kern_return_t
 task_set_exception_ports(task_t task, exception_mask_t mask,
     mach_port_t new_port, exception_behavior_t behavior,
     thread_state_flavor_t new_flavor)
 {
+#ifdef LIBMACH_HAVE_MIG_CLIENT
+	return (_kernelrpc_task_set_exception_ports(task, mask, new_port,
+	    behavior, new_flavor));
+#else
 	(void)task; (void)mask; (void)new_port;
 	(void)behavior; (void)new_flavor;
-	return KERN_SUCCESS;
+	return KERN_RESOURCE_SHORTAGE;
+#endif
 }
 
+/*
+ * host_set_exception_ports: MIG (host_priv 414, #93 group 2).
+ *
+ * Used to return KERN_SUCCESS and drop the port. The kernel handler
+ * (kern/ipc_tt.c) stores the right, masking MACH_EXCEPTION_CODES off the
+ * behavior as XNU does, so launchd's EXCEPTION_STATE_IDENTITY |
+ * MACH_EXCEPTION_CODES (core.c) is accepted. The request port must be
+ * host_priv, which mach_host_self() gives a non-jailed root task
+ * (nextbsd-kernel#285); launchd is the in-tree caller. As with the task
+ * ports, nothing delivers exceptions yet: the effect is a held send right.
+ */
 kern_return_t
 host_set_exception_ports(host_priv_t host_priv, exception_mask_t mask,
     mach_port_t new_port, exception_behavior_t behavior,
     thread_state_flavor_t new_flavor)
 {
+#ifdef LIBMACH_HAVE_MIG_CLIENT
+	return (_kernelrpc_host_set_exception_ports(host_priv, mask, new_port,
+	    behavior, new_flavor));
+#else
 	(void)host_priv; (void)mask; (void)new_port;
 	(void)behavior; (void)new_flavor;
-	return KERN_SUCCESS;
+	return KERN_RESOURCE_SHORTAGE;
+#endif
 }
 
 kern_return_t
@@ -889,10 +999,43 @@ mig_reply_port_dtor(void *p)
 		    MACH_PORT_RIGHT_RECEIVE, -1);
 }
 
+/*
+ * fork() child: forget the cached reply port.
+ *
+ * A forked child gets a fresh Mach name space (nextbsd-kernel#274), so the
+ * name cached for the forking thread means nothing there -- or, once the
+ * child allocates, names some other right. The first MIG RPC in the child
+ * would send with it as the reply port. That used to be rare; with
+ * task_get_special_port on MIG (#84) it is the first thing liblaunch's
+ * fork-child handler does, and a forked launchd child died with SIGILL
+ * before exec. Clear the slot so the next mig_get_reply_port() allocates
+ * a fresh right. Do not mod_refs the old name: it is not ours in the
+ * child. Apple's _mach_fork_child resets its reply port the same way.
+ *
+ * Registered from the key's pthread_once, which the constructor below
+ * runs at load: libsystem_kernel loads before every library that links
+ * it, so this child handler is registered -- and, POSIX running child
+ * handlers in registration order, runs -- before liblaunch's, asl's and
+ * notify's, all of which may make MIG calls.
+ */
+static void
+mig_reply_port_atfork_child(void)
+{
+	(void)pthread_setspecific(mig_reply_port_key, (void *)MACH_PORT_NULL);
+}
+
 static void
 mig_reply_port_key_init(void)
 {
 	(void)pthread_key_create(&mig_reply_port_key, mig_reply_port_dtor);
+	(void)pthread_atfork(NULL, NULL, mig_reply_port_atfork_child);
+}
+
+__attribute__((constructor))
+static void
+mig_reply_port_ctor(void)
+{
+	(void)pthread_once(&mig_reply_port_once, mig_reply_port_key_init);
 }
 
 mach_port_t
@@ -1359,31 +1502,82 @@ fail:
 }
 
 /*
- * host_get_host_port — drop privileges from a HOST_PRIV port to the
- * unprivileged host port. We don't distinguish; copy the input name.
+ * host_get_special_port: MIG (host_priv 412, #93 group 5).
+ *
+ * The kernel answers HOST_PORT, HOST_PRIV_PORT and the userland-settable
+ * HOST_BOOTSTRAP_PORT / HOST_KEXTD_PORT slots (MACH_PORT_NULL if unset);
+ * any other slot is KERN_INVALID_ARGUMENT. `node` is ignored, as in XNU.
+ * A request port that is not host_priv gets KERN_INVALID_HOST.
+ */
+kern_return_t
+host_get_special_port(mach_port_name_t host_priv, int node, int which,
+    mach_port_t *port)
+{
+#ifdef LIBMACH_HAVE_MIG_CLIENT
+	return (_kernelrpc_host_get_special_port(host_priv, node, which,
+	    port));
+#else
+	(void)host_priv; (void)node; (void)which;
+	if (port != NULL)
+		*port = MACH_PORT_NULL;
+	return KERN_RESOURCE_SHORTAGE;
+#endif
+}
+
+/*
+ * host_get_host_port — demote a host_priv port to the unprivileged host
+ * port. Apple's is a macro over host_get_special_port(HOST_LOCAL_NODE,
+ * HOST_PORT); this is the same call (#93 group 5).
+ *
+ * It used to copy its input name, which was accidentally right while
+ * mach_host_self() only ever returned the unprivileged port. Since
+ * nextbsd-kernel#285 root gets host_priv, and libdispatch
+ * (_dispatch_mach_host_port_init) relies on this to demote it.
+ *
+ * KERN_INVALID_HOST -> KERN_INVALID_ARGUMENT: given the unprivileged port
+ * (every non-root caller), this kernel's host_priv intran yields HOST_NULL
+ * and the handler says KERN_INVALID_HOST. XNU says KERN_INVALID_ARGUMENT
+ * there, and that is the code libdispatch treats as "already
+ * unprivileged, keep it"; anything else it reports as a bug. Translate,
+ * so every non-root libdispatch process does not log one.
  */
 kern_return_t
 host_get_host_port(mach_port_name_t host_priv, mach_port_name_t *host_port)
 {
-	if (host_port != NULL)
-		*host_port = host_priv;
-	return KERN_SUCCESS;
+	kern_return_t kr;
+
+	kr = host_get_special_port(host_priv, HOST_LOCAL_NODE, HOST_PORT,
+	    host_port);
+	if (kr == KERN_INVALID_HOST)
+		kr = KERN_INVALID_ARGUMENT;
+	return (kr);
 }
 
 /*
- * host_request_notification — register a port to receive host
- * notifications (calendar change etc.). Stub: succeed but never
- * deliver. libdispatch's calendar-change subscriber still works at
- * call time; the timer subsystem polls clock_gettime independently.
+ * host_request_notification: MIG (mach_host 217, #93 group 4).
+ *
+ * Used to return KERN_SUCCESS and never deliver. The kernel accepts
+ * HOST_NOTIFY_CALENDAR_CHANGE only (KERN_INVALID_ARGUMENT otherwise),
+ * keeps the send-once right MIG makes from `notify_port`, and when the
+ * wall clock is stepped (settimeofday / clock_settime) sends it a
+ * host_calendar_changed message, msgid HOST_CALENDAR_CHANGED_REPLYID
+ * (950), and clears the registration. libdispatch (event_kevent.c,
+ * HOST_NOTIFY_CALENDAR_SET == HOST_NOTIFY_CALENDAR_CHANGE here) handles
+ * 950 and re-registers.
  */
 kern_return_t
 host_request_notification(mach_port_name_t host, int notify_type,
     mach_port_name_t notify_port)
 {
+#ifdef LIBMACH_HAVE_MIG_CLIENT
+	return (_kernelrpc_host_request_notification(host, notify_type,
+	    notify_port));
+#else
 	(void)host;
 	(void)notify_type;
 	(void)notify_port;
-	return KERN_SUCCESS;
+	return KERN_RESOURCE_SHORTAGE;
+#endif
 }
 
 /*

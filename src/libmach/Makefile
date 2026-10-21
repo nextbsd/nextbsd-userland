@@ -21,8 +21,10 @@ SHLIB_MAJOR=	0
 SRCS=		mach_traps.c \
 		dispatch_kevent.c
 
-# MIGOUT — directory holding the mig-generated mach_portUser.c, produced by
-# build-userland.sh from the kernel's mach_port.defs (nextbsd-kernel#125).
+# MIGOUT — directory holding the mig-generated MIG clients, produced by
+# build-userland.sh from the kernel's .defs: mach_portUser.c
+# (nextbsd-kernel#125), and taskUser.c, host_privUser.c and mach_hostUser.c
+# (#84, #93). All four are generated with UserPrefix _kernelrpc_.
 #
 # Same shape configd and Libnotify use: .PATH plus a BARE filename. An
 # absolute path in SRCS is rejected outright by bsd.dep.mk ("$OBJS absolute
@@ -30,14 +32,28 @@ SRCS=		mach_traps.c \
 # spelled ${MIGOUT}/mach_portUser.c.
 #
 # Optional, so a bare `make -C src/libmach` still works for header installs
-# and quick builds; without it the _kernelrpc_mach_port_* stubs are absent and
-# the entry points in mach_traps.c keep their pre-MIG behaviour (see the
+# and quick builds; without it the _kernelrpc_* stubs are absent and the
+# entry points in mach_traps.c keep their pre-MIG behaviour (see the
 # LIBMACH_HAVE_MIG_CLIENT guard there).
+#
+# mig_client_types.h (private, not installed) supplies the types the task /
+# host_priv / mach_host clients name that the public headers do not; it is
+# force-included so the generated sources need no edits. See its header.
 MIGOUT?=
 .if !empty(MIGOUT)
 .PATH:		${MIGOUT}
-SRCS+=		mach_portUser.c
-CFLAGS+=	-I${MIGOUT} -DLIBMACH_HAVE_MIG_CLIENT=1
+SRCS+=		mach_portUser.c \
+		taskUser.c \
+		host_privUser.c \
+		mach_hostUser.c
+CFLAGS+=	-I${MIGOUT} -DLIBMACH_HAVE_MIG_CLIENT=1 \
+		-include ${.CURDIR}/mig_client_types.h
+# Generated code: migcom walks reply messages with variable-size inline
+# arrays by adding to a pointer_t, which is void * here (std_types.h), and
+# -Wpointer-arith (WARNS >= 3) rejects that.  mach_portUser.c has no such
+# routine; task and host_priv do.
+CWARNFLAGS.taskUser.c+=		-Wno-pointer-arith
+CWARNFLAGS.host_privUser.c+=	-Wno-pointer-arith
 .endif
 
 CFLAGS+=	-I${.CURDIR}/include
