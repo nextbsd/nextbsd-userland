@@ -268,6 +268,18 @@ typedef struct {
 #define MACH_MSGH_BITS_COMPLEX		0x80000000U
 
 /*
+ * Kernel-owned importance bits (xnu-2422 <mach/message.h>, NextBSD
+ * kernel since nextbsd#539 part C). The kernel strips them from a message
+ * that is sent and may set RAISEIMP on a message that is received: the
+ * receiver then holds an importance boost until it drops it. IMPHOLDASRT
+ * marks, in userland only, that the boost has been taken over by
+ * proc_importance_assertion_begin_with_msg().
+ */
+#define MACH_MSGH_BITS_CIRCULAR		0x40000000U	/* internal use only */
+#define MACH_MSGH_BITS_RAISEIMP		0x20000000U	/* importance raise */
+#define MACH_MSGH_BITS_IMPHOLDASRT	0x10000000U	/* assertion held in userland */
+
+/*
  * Descriptor types (msgh_descriptor->type). PORT_DESCRIPTOR carries a
  * port reference; OOL_* carry out-of-line memory (not used yet).
  */
@@ -499,6 +511,18 @@ void mach_msg_destroy(mach_msg_header_t *msg);
  * libvproc.c uses it to service helper-downcall requests.
  */
 mach_msg_return_t mach_msg_server_once(
+    boolean_t (*demux)(mach_msg_header_t *, mach_msg_header_t *),
+    mach_msg_size_t max_size, mach_port_name_t rcv_name,
+    mach_msg_option_t options);
+
+/*
+ * mach_msg_server_importance() — xnu-2422's MIG server loop for adaptive
+ * daemons (nextbsd#539 part G): receive, take over the message's
+ * importance boost (proc_importance_assertion_begin_with_msg()), dispatch
+ * through the demux, send the reply, then drop the boost. Returns only on
+ * a receive error.
+ */
+mach_msg_return_t mach_msg_server_importance(
     boolean_t (*demux)(mach_msg_header_t *, mach_msg_header_t *),
     mach_msg_size_t max_size, mach_port_name_t rcv_name,
     mach_msg_option_t options);

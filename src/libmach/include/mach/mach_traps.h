@@ -63,6 +63,19 @@ kern_return_t task_set_importance_watchports_np(mach_port_name_t *names,
     int count, int proctype);
 
 /*
+ * task_importance_assertion_np() — NextBSD (nextbsd#539 part G). Hold
+ * (action 14, xnu-2422's PROC_POLICY_ACTION_HOLD) or drop (15,
+ * PROC_POLICY_ACTION_DROP) one external importance assertion on the
+ * calling task, as xnu-2422's process_policy(PROC_POLICY_BOOST) does.
+ * Returns 0 or an errno value: EINVAL (unknown action, or the task is
+ * not an importance receiver), EOVERFLOW (nothing held to take another
+ * from, or to drop), ENOSYS if the trap is not registered.
+ * proc_importance_assertion_begin_with_msg() and
+ * proc_importance_assertion_complete() are built on it.
+ */
+int task_importance_assertion_np(int action);
+
+/*
  * task_name_for_pid() — get a send right to pid's task name port
  * (introspection-only: task_info() and identification, never control).
  * Apple declares it here. Backed by the mach.syscall.task_name_for_pid

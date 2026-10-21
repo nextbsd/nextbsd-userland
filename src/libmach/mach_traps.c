@@ -1359,6 +1359,229 @@ task_set_importance_watchports_np(mach_port_name_t *names, int count,
 }
 
 /*
+ * task_importance_assertion_np() — hold or drop one external importance
+ * assertion on the calling task (nextbsd#539 part G).
+ *
+ * Calls the mach.syscall.task_importance_assertion_np trap
+ * (nextbsd-kernel part G), NextBSD's form of xnu-2422's
+ * process_policy(PROC_POLICY_SCOPE_PROCESS, action, PROC_POLICY_BOOST,
+ * PROC_POLICY_IMP_IMPORTANT, ..., getpid()). Returns 0 or an errno value,
+ * as Apple's libproc callers expect. ENOSYS if the trap is not registered
+ * (an older kernel, or mach.ko not loaded); the libproc functions below
+ * treat that as success, so importance handling fails open.
+ */
+int
+task_importance_assertion_np(int action)
+{
+	static int num = SYSCALL_UNRESOLVED;
+	int sc = resolve_syscall_once(&num, "task_importance_assertion_np");
+
+	if (sc == NO_SYSCALL)
+		return (ENOSYS);
+	if (syscall(sc, action) == -1)
+		return (errno);
+	return (0);
+}
+
+/*
+ * proc_importance_assertion_begin_with_msg() and
+ * proc_importance_assertion_complete() — Apple's libproc importance
+ * assertion API (xnu-2422 libsyscall/wrappers/libproc/libproc.c). On
+ * Darwin they live in libsystem_kernel next to mach_msg_server_importance;
+ * NextBSD has no libproc library of its own (<libproc.h> is FreeBSD's
+ * unrelated debugger library), so they live here too. Apple declares them
+ * in <libproc_internal.h>; NextBSD consumers declare them themselves
+ * (launchd's libproc_internal.h shim, libdispatch's internal.h).
+ *
+ * A message received with MACH_MSGH_BITS_RAISEIMP carries one boost that
+ * the kernel has already handed to the receiving task. The first begin on
+ * that message takes over that boost without a kernel call and marks the
+ * message MACH_MSGH_BITS_IMPHOLDASRT; a later begin on the same message
+ * holds one more assertion. Each successful begin is paired with one
+ * complete, which drops one assertion. A message without RAISEIMP gives
+ * EIO, as on Darwin.
+ *
+ * The token is the address of a variable, as in Apple's libproc, so a
+ * debugger prints a useful name.
+ */
+#define	XNU_PROC_POLICY_ACTION_HOLD	14
+#define	XNU_PROC_POLICY_ACTION_DROP	15
+
+int proc_importance_assertion_begin_with_msg(mach_msg_header_t *msg,
+    mach_msg_trailer_t *trailer, uint64_t *assertion_token);
+int proc_importance_assertion_complete(uint64_t assertion_token);
+
+extern uint64_t important_boost_assertion_token;
+extern uint64_t normal_boost_assertion_token;
+extern uint64_t non_boost_assertion_token;
+uint64_t important_boost_assertion_token = 0xfafafafafafafafaULL;
+uint64_t normal_boost_assertion_token    = 0xfbfbfbfbfbfbfbfbULL;
+uint64_t non_boost_assertion_token       = 0xfcfcfcfcfcfcfcfcULL;
+
+int
+proc_importance_assertion_begin_with_msg(mach_msg_header_t *msg,
+    mach_msg_trailer_t *trailer __unused, uint64_t *assertion_token)
+{
+	int rval;
+
+	if (assertion_token == NULL)
+		return (EINVAL);
+	if (msg == NULL || (msg->msgh_bits & MACH_MSGH_BITS_RAISEIMP) == 0)
+		return (EIO);	/* not a boosting message */
+
+	/* Take over the boost the message brought; no kernel call. */
+	if ((msg->msgh_bits & MACH_MSGH_BITS_IMPHOLDASRT) == 0) {
+		msg->msgh_bits |= MACH_MSGH_BITS_IMPHOLDASRT;
+		*assertion_token = (uint64_t)(uintptr_t)
+		    &important_boost_assertion_token;
+		return (0);
+	}
+
+	/* Already taken over: hold an additional assertion. */
+	rval = task_importance_assertion_np(XNU_PROC_POLICY_ACTION_HOLD);
+	if (rval == 0 || rval == ENOSYS) {
+		*assertion_token = (uint64_t)(uintptr_t)
+		    &important_boost_assertion_token;
+		return (0);
+	}
+	return (rval);
+}
+
+int
+proc_importance_assertion_complete(uint64_t assertion_token)
+{
+	int rval;
+
+	if (assertion_token == 0)
+		return (0);
+	if (assertion_token !=
+	    (uint64_t)(uintptr_t)&important_boost_assertion_token)
+		return (EIO);	/* invalid token */
+
+	rval = task_importance_assertion_np(XNU_PROC_POLICY_ACTION_DROP);
+	if (rval == ENOSYS)
+		return (0);
+	return (rval);
+}
+
+/*
+ * mach_msg_server_importance() — xnu-2422's MIG server loop for adaptive
+ * daemons (libsyscall/mach/mach_msg.c): mach_msg_server() with the
+ * message's importance boost taken over before the demux runs and dropped
+ * once the reply is sent. Buffers come from malloc rather than
+ * vm_allocate; the loop is otherwise Apple's. Returns only on a receive
+ * error (or when a buffer cannot be allocated), as Apple's does.
+ */
+mach_msg_return_t
+mach_msg_server_importance(
+    boolean_t (*demux)(mach_msg_header_t *, mach_msg_header_t *),
+    mach_msg_size_t max_size, mach_port_name_t rcv_name,
+    mach_msg_option_t options)
+{
+	mig_reply_error_t *bufRequest = NULL, *bufReply;
+	mach_msg_size_t request_alloc, new_request_alloc, request_size;
+	mach_msg_size_t reply_alloc;
+	mach_msg_return_t mr;
+	uint64_t token = 0;
+	int retval;
+
+	options &= ~(MACH_SEND_MSG | MACH_RCV_MSG);
+
+	reply_alloc = max_size + (mach_msg_size_t)MAX_TRAILER_SIZE;
+	bufReply = calloc(1, reply_alloc);
+	if (bufReply == NULL)
+		return (KERN_RESOURCE_SHORTAGE);
+
+	request_alloc = 0;
+	new_request_alloc = max_size + (mach_msg_size_t)MAX_TRAILER_SIZE;
+	request_size = new_request_alloc;
+
+	for (;;) {
+		if (request_alloc < new_request_alloc) {
+			free(bufRequest);
+			request_alloc = new_request_alloc;
+			bufRequest = calloc(1, request_alloc);
+			if (bufRequest == NULL) {
+				free(bufReply);
+				return (KERN_RESOURCE_SHORTAGE);
+			}
+		}
+
+		mr = mach_msg(&bufRequest->Head, MACH_RCV_MSG | options,
+		    0, request_size, rcv_name, MACH_MSG_TIMEOUT_NONE,
+		    MACH_PORT_NULL);
+
+		if (mr == MACH_MSG_SUCCESS) {
+			/* we have another request message */
+			retval = proc_importance_assertion_begin_with_msg(
+			    &bufRequest->Head, NULL, &token);
+			(void)(*demux)(&bufRequest->Head, &bufReply->Head);
+
+			if (!(bufReply->Head.msgh_bits &
+			    MACH_MSGH_BITS_COMPLEX)) {
+				if (bufReply->RetCode == MIG_NO_REPLY)
+					bufReply->Head.msgh_remote_port =
+					    MACH_PORT_NULL;
+				else if (bufReply->RetCode != KERN_SUCCESS &&
+				    (bufRequest->Head.msgh_bits &
+				    MACH_MSGH_BITS_COMPLEX)) {
+					/* destroy the request, not the reply port */
+					bufRequest->Head.msgh_remote_port =
+					    MACH_PORT_NULL;
+					mach_msg_destroy(&bufRequest->Head);
+				}
+			}
+
+			/*
+			 * Don't block forever on a client that is not
+			 * receiving on its reply port: a send-once right
+			 * cannot block, a send right gets MACH_SEND_TIMEOUT.
+			 */
+			if (bufReply->Head.msgh_remote_port != MACH_PORT_NULL) {
+				mr = mach_msg(&bufReply->Head,
+				    (MACH_MSGH_BITS_REMOTE(
+				    bufReply->Head.msgh_bits) ==
+				    MACH_MSG_TYPE_MOVE_SEND_ONCE) ?
+				    MACH_SEND_MSG | options :
+				    MACH_SEND_MSG | MACH_SEND_TIMEOUT | options,
+				    bufReply->Head.msgh_size, 0,
+				    MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE,
+				    MACH_PORT_NULL);
+
+				if (mr != (mach_msg_return_t)
+				    MACH_SEND_INVALID_DEST &&
+				    mr != (mach_msg_return_t)
+				    MACH_SEND_TIMED_OUT) {
+					if (retval == 0)
+						(void)proc_importance_assertion_complete(
+						    token);
+					continue;
+				}
+				mr = MACH_MSG_SUCCESS;
+			}
+			if (bufReply->Head.msgh_bits & MACH_MSGH_BITS_COMPLEX)
+				mach_msg_destroy(&bufReply->Head);
+			if (retval == 0)
+				(void)proc_importance_assertion_complete(token);
+			continue;
+		}
+
+		if (mr == (mach_msg_return_t)MACH_RCV_TOO_LARGE &&
+		    (options & MACH_RCV_LARGE)) {
+			new_request_alloc = bufRequest->Head.msgh_size +
+			    (mach_msg_size_t)MAX_TRAILER_SIZE;
+			request_size = new_request_alloc;
+			continue;
+		}
+		break;
+	}
+
+	free(bufRequest);
+	free(bufReply);
+	return (mr);
+}
+
+/*
  * task_name_for_pid() — get a send right to pid's task name port
  * (nextbsd-kernel#308).
  *
