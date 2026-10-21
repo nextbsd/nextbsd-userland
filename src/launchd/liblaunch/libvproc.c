@@ -467,10 +467,11 @@ _vprocmgr_switch_to_session(const char *target_session, vproc_flags_t flags __at
 	 * so this call failed every time.
 	 *
 	 * Darwin passes this process's task-name port, which dies with the
-	 * task. NextBSD has no task-name ports yet: libmach's
-	 * task_name_for_pid() is a stub that returns KERN_FAILURE, the
-	 * kernel's sys_task_name_for_pid is ENOSYS and not wired, and
-	 * itk_nself is never created. So when task_name_for_pid() fails, pass
+	 * task. NextBSD has task-name ports too (nextbsd-kernel#308), and
+	 * libmach's task_name_for_pid() calls the mach.syscall.task_name_for_pid
+	 * trap, so that path is taken first. It can still fail, for example
+	 * on an older kernel or with mach.ko not loaded, where libmach fails
+	 * closed with KERN_FAILURE. So when task_name_for_pid() fails, pass
 	 * a send right to a receive right this process holds and never frees.
 	 * The kernel destroys that receive right when the process exits (or
 	 * execs, since port names do not survive exec on NextBSD), so the

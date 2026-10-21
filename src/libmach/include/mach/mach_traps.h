@@ -63,8 +63,12 @@ kern_return_t task_set_importance_watchports_np(mach_port_name_t *names,
     int count, int proctype);
 
 /*
- * task_name_for_pid() — open a task-name port (introspection-only)
- * for a given pid. Stubbed; returns KERN_FAILURE.
+ * task_name_for_pid() — get a send right to pid's task name port
+ * (introspection-only: task_info() and identification, never control).
+ * Apple declares it here. Backed by the mach.syscall.task_name_for_pid
+ * trap; KERN_FAILURE and *t = MACH_PORT_NULL on any failure, including
+ * mach.ko not loaded. target_task must be the caller's own task
+ * (mach_task_self()).
  */
 kern_return_t task_name_for_pid(mach_port_name_t target_task,
     int pid, mach_port_name_t *t);
