@@ -92,6 +92,28 @@ resolve_syscall(const char *name)
 }
 
 /*
+ * resolve_syscall_once — sticky wrapper around resolve_syscall() for the
+ * trap-first / MIG-fallback entry points below (#84).
+ *
+ * `*slot` starts at SYSCALL_UNRESOLVED and is written exactly once with
+ * either the syscall number or NO_SYSCALL. A failed lookup is remembered,
+ * not retried: under the fallback shape a missing trap is not an error but
+ * the MIG path, so re-probing the sysctl on every call would only add a
+ * syscall in front of every RPC. Thread-safety is the same as the
+ * MACH_TRAP_NOARGS cache: the value is derived from a side-effect-free
+ * sysctl, so a racing reader at worst resolves it a second time.
+ */
+#define	SYSCALL_UNRESOLVED	(-2)
+
+static int
+resolve_syscall_once(int *slot, const char *name)
+{
+	if (*slot == SYSCALL_UNRESOLVED)
+		*slot = resolve_syscall(name);
+	return (*slot);
+}
+
+/*
  * Generate one trap entry point. Cache the resolved syscall number
  * in a static; first call does the sysctl lookup, subsequent calls
  * skip it. Thread-safety: the static is written at most once with a
@@ -222,54 +244,88 @@ mach_msg(mach_msg_header_t *msg, mach_msg_option_t option,
 }
 
 /*
- * Port-management traps. Same lazy-resolve pattern as the no-arg traps,
- * but each takes >0 args. All three return kern_return_t (0 = success).
- * On no mach.ko, return KERN_RESOURCE_SHORTAGE (6) — matches Apple's
- * "couldn't allocate" convention.
+ * Port-management entry points: trap first, MIG fallback (#84).
  *
- * `task` is always the caller's task port (use mach_task_self()).
- * The kernel-side wrappers ignore it and use current_task() — included
- * in the userland API for Apple-source-code compatibility.
+ * This is Apple's libsyscall shape (xnu libsyscall/mach/mach_port.c): MIG
+ * is the floor and the trap is an accelerator.
+ *
+ *	rv = _kernelrpc_mach_port_allocate_trap(task, right, name);
+ *	if (rv == MACH_SEND_INVALID_DEST)
+ *		rv = _kernelrpc_mach_port_allocate(task, right, name);
+ *
+ * Here the trap is a dynamically registered syscall resolved by name, so
+ * "no trap" has two spellings: resolve_syscall() found no mach.syscall.<name>
+ * (the lookup is sticky, see resolve_syscall_once), or the trap answered
+ * MACH_SEND_INVALID_DEST. Either one falls through to the generated
+ * _kernelrpc_mach_port_* client. Any other trap result, success or error,
+ * is the answer.
+ *
+ * Without LIBMACH_HAVE_MIG_CLIENT (a bare build with no MIGOUT) there is
+ * nothing to fall back to, and a missing trap returns KERN_RESOURCE_SHORTAGE
+ * as it always has.
+ *
+ * `task` is passed through to the trap for Apple-source compatibility; the
+ * kernel trap ignores it and acts on current_task(). The MIG path honours it.
  */
 kern_return_t
 mach_port_allocate(mach_port_name_t task, mach_port_right_t right,
     mach_port_name_t *name)
 {
-	static int num = NO_SYSCALL;
+	static int num = SYSCALL_UNRESOLVED;
+	int sc = resolve_syscall_once(&num, "mach_port_allocate");
 
-	if (num == NO_SYSCALL) {
-		num = resolve_syscall("mach_port_allocate");
-		if (num == NO_SYSCALL)
-			return (KERN_RESOURCE_SHORTAGE);
+	if (sc != NO_SYSCALL) {
+		kern_return_t rv = (kern_return_t)syscall(sc, task, right,
+		    name);
+
+		if (rv != MACH_SEND_INVALID_DEST)
+			return (rv);
 	}
-	return ((kern_return_t)syscall(num, task, right, name));
+#ifdef LIBMACH_HAVE_MIG_CLIENT
+	return (_kernelrpc_mach_port_allocate(task, right, name));
+#else
+	return (KERN_RESOURCE_SHORTAGE);
+#endif
 }
 
 kern_return_t
 mach_port_deallocate(mach_port_name_t task, mach_port_name_t name)
 {
-	static int num = NO_SYSCALL;
+	static int num = SYSCALL_UNRESOLVED;
+	int sc = resolve_syscall_once(&num, "mach_port_deallocate");
 
-	if (num == NO_SYSCALL) {
-		num = resolve_syscall("mach_port_deallocate");
-		if (num == NO_SYSCALL)
-			return (KERN_RESOURCE_SHORTAGE);
+	if (sc != NO_SYSCALL) {
+		kern_return_t rv = (kern_return_t)syscall(sc, task, name);
+
+		if (rv != MACH_SEND_INVALID_DEST)
+			return (rv);
 	}
-	return ((kern_return_t)syscall(num, task, name));
+#ifdef LIBMACH_HAVE_MIG_CLIENT
+	return (_kernelrpc_mach_port_deallocate(task, name));
+#else
+	return (KERN_RESOURCE_SHORTAGE);
+#endif
 }
 
 kern_return_t
 mach_port_insert_right(mach_port_name_t task, mach_port_name_t name,
     mach_port_t poly, mach_msg_type_name_t polyPoly)
 {
-	static int num = NO_SYSCALL;
+	static int num = SYSCALL_UNRESOLVED;
+	int sc = resolve_syscall_once(&num, "mach_port_insert_right");
 
-	if (num == NO_SYSCALL) {
-		num = resolve_syscall("mach_port_insert_right");
-		if (num == NO_SYSCALL)
-			return (KERN_RESOURCE_SHORTAGE);
+	if (sc != NO_SYSCALL) {
+		kern_return_t rv = (kern_return_t)syscall(sc, task, name,
+		    poly, polyPoly);
+
+		if (rv != MACH_SEND_INVALID_DEST)
+			return (rv);
 	}
-	return ((kern_return_t)syscall(num, task, name, poly, polyPoly));
+#ifdef LIBMACH_HAVE_MIG_CLIENT
+	return (_kernelrpc_mach_port_insert_right(task, name, poly, polyPoly));
+#else
+	return (KERN_RESOURCE_SHORTAGE);
+#endif
 }
 
 /*
@@ -524,36 +580,53 @@ mach_port_mod_refs(mach_port_name_t task, mach_port_name_t name,
  * Every launchd-spawned daemon hung in launch_msg(CHECKIN) because the
  * kqueue→handle_kqueue Mach send arrived on a port the main thread
  * wasn't listening on.
+ *
+ * Trap first, MIG fallback, as for mach_port_allocate above (#84).
  */
 kern_return_t
 mach_port_move_member(mach_port_name_t task, mach_port_name_t member,
     mach_port_name_t after)
 {
-	static int num = NO_SYSCALL;
+	static int num = SYSCALL_UNRESOLVED;
+	int sc = resolve_syscall_once(&num, "mach_port_move_member");
 
-	if (num == NO_SYSCALL) {
-		num = resolve_syscall("mach_port_move_member");
-		if (num == NO_SYSCALL)
-			return (KERN_RESOURCE_SHORTAGE);
+	if (sc != NO_SYSCALL) {
+		kern_return_t rv = (kern_return_t)syscall(sc, task, member,
+		    after);
+
+		if (rv != MACH_SEND_INVALID_DEST)
+			return (rv);
 	}
-	return ((kern_return_t)syscall(num, task, member, after));
+#ifdef LIBMACH_HAVE_MIG_CLIENT
+	return (_kernelrpc_mach_port_move_member(task, member, after));
+#else
+	return (KERN_RESOURCE_SHORTAGE);
+#endif
 }
 
 /*
  * mach_port_request_notification — arm a Mach notification (dead-name,
  * no-senders, send-possible) on a port.
  *
- * The nextbsd kernel does not (yet) register a mach_port_request_notification
- * trap, so there is nothing to issue: when the syscall is absent we no-op and
- * return KERN_SUCCESS. Returning an error is NOT viable — launchd wraps this
- * call in os_assumes_zero inside jobmgr_init (launchd_mport_notify_req,
- * core.c), so any non-success return makes PID 1 abort and the kernel panics
- * ("Going nowhere without my init!"). The cost of the no-op is that
- * libdispatch's Mach backend never receives dead-name notifications, so an
- * EVFILT_MACHPORT registration whose remote dies is never EV_DELETE'd and its
- * wrap port set leaks; eliminating that leak requires the kernel trap. This
- * resolves the syscall once and auto-upgrades to the real trap if a future
- * kernel provides it, otherwise stays a boot-safe no-op.
+ * Three tiers (#84): the trap if the kernel registers one; otherwise (or on
+ * MACH_SEND_INVALID_DEST) the _kernelrpc_mach_port_request_notification MIG
+ * client, as for mach_port_allocate above; and only if MIG also fails, a
+ * no-op that returns KERN_SUCCESS.
+ *
+ * Why the no-op survives as the last tier: launchd's callers do not tolerate
+ * a failure here. os_assumes_zero in this tree logs and returns
+ * (src/launchd/freebsd-shims/os/assumes.h) -- it does not abort PID 1 -- but
+ * the call sites act on the error:
+ *
+ *   - job_setup_machport (core.c) takes out_bad, so every job would lose
+ *     its Mach port;
+ *   - sub-jobmgr creation takes out_bad;
+ *   - the !pid1_magic branch of jobmgr_init wraps it in os_assert_zero,
+ *     which does abort the per-user launchd.
+ *
+ * So a broken notification server costs missing dead-name notifications
+ * rather than every job's Mach port. Propagating the error is the right end
+ * state once those call sites are softened; that is not this change.
  */
 kern_return_t
 mach_port_request_notification(mach_port_name_t task,
@@ -561,13 +634,8 @@ mach_port_request_notification(mach_port_name_t task,
     mach_port_mscount_t sync, mach_port_t notify,
     mach_msg_type_name_t notifyPoly, mach_port_t *previous)
 {
-	static int num = NO_SYSCALL;
-	static int resolved = 0;
-
-	if (!resolved) {
-		num = resolve_syscall("mach_port_request_notification");
-		resolved = 1;
-	}
+	static int num = SYSCALL_UNRESOLVED;
+	int sc = resolve_syscall_once(&num, "mach_port_request_notification");
 	/*
 	 * Pass SIX args, dropping `task`: FreeBSD's libc syscall() only reliably
 	 * passes 6 args through the amd64 kernel ABI (the kernel's own comment at
@@ -578,11 +646,21 @@ mach_port_request_notification(mach_port_name_t task,
 	 * that tree. The kernel-side arg struct is therefore
 	 * {name, msgid, sync, notify, notifyPoly, previous}. (nextbsd#347/#353)
 	 */
-	if (num != NO_SYSCALL)
-		return ((kern_return_t)syscall(num, name, msgid, sync,
-		    notify, notifyPoly, previous));
+	if (sc != NO_SYSCALL) {
+		kern_return_t rv = (kern_return_t)syscall(sc, name, msgid,
+		    sync, notify, notifyPoly, previous);
 
-	/* No kernel trap: boot-safe no-op (launchd requires KERN_SUCCESS). */
+		if (rv != MACH_SEND_INVALID_DEST)
+			return (rv);
+	}
+#ifdef LIBMACH_HAVE_MIG_CLIENT
+	/* The MIG routine carries `task`, so it goes back in here. */
+	if (_kernelrpc_mach_port_request_notification(task, name, msgid, sync,
+	    notify, notifyPoly, previous) == KERN_SUCCESS)
+		return (KERN_SUCCESS);
+#endif
+
+	/* No trap and no working MIG server: boot-safe no-op (see above). */
 	(void)task; (void)name; (void)msgid; (void)sync;
 	(void)notify; (void)notifyPoly;
 	if (previous != NULL)
