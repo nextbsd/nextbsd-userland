@@ -8,11 +8,16 @@
  * FreeBSD's base <spawn.h> has standard POSIX_SPAWN_SET* flags but
  * none of the Apple extensions. This header (the single source of
  * truth — <System/sys/spawn_internal.h> and <spawn_private.h> just
- * re-include it) supplies the missing constants and stubs the _np
- * setters to success: on FreeBSD the corresponding kernel knobs do
- * not exist, so the attributes are silently dropped and posix_spawn()
- * runs with standard POSIX semantics. The job-exec path is not
- * exercised by the Phase I1c no-IPC CLI smoke anyway.
+ * re-include it) supplies the missing constants and stubs most _np
+ * setters to success: NextBSD has no kernel knob behind them, so those
+ * attributes are dropped and posix_spawn() runs with standard POSIX
+ * semantics.
+ *
+ * The process type and the importance watch ports are real (nextbsd#539
+ * part E): their setters record them in a side table keyed by the
+ * posix_spawnattr_t, and launchd's NextBSD SETEXEC emulation in
+ * job_start_child() hands them to the kernel right before execve(2)
+ * through _posix_spawnattr_apply_importance_np().
  */
 #ifndef _FREEBSD_SHIM_SYSTEM_SYS_SPAWN_H_
 #define _FREEBSD_SHIM_SYSTEM_SYS_SPAWN_H_
@@ -20,7 +25,10 @@
 #include <sys/types.h>
 #include <stdint.h>
 #include <spawn.h>		/* posix_spawnattr_t (FreeBSD base) */
+#include <stdlib.h>		/* malloc, free */
+#include <errno.h>
 #include <mach/machine.h>	/* cpu_type_t */
+#include <mach/mach_traps.h>	/* task_set_importance_watchports_np */
 
 /*
  * Apple posix_spawn flags. Values are placed above FreeBSD's base
@@ -73,26 +81,108 @@
 #define THROUGHPUT_QOS_LAUNCH_DEFAULT_TIER	THROUGHPUT_QOS_TIER_3
 #endif
 
-/* Apple process-type bands passed to posix_spawnattr_setprocesstype_np(). */
-#define POSIX_SPAWN_PROC_TYPE_APP_DEFAULT		0x00000001
-#define POSIX_SPAWN_PROC_TYPE_APP_TAL			0x00000002
-#define POSIX_SPAWN_PROC_TYPE_DAEMON_STANDARD		0x00000100
-#define POSIX_SPAWN_PROC_TYPE_DAEMON_INTERACTIVE	0x00000200
-#define POSIX_SPAWN_PROC_TYPE_DAEMON_BACKGROUND		0x00000300
-#define POSIX_SPAWN_PROC_TYPE_DAEMON_ADAPTIVE		0x00000400
+/*
+ * Apple process-type bands passed to posix_spawnattr_setprocesstype_np(),
+ * at their xnu-2422 (OS X 10.9) values from bsd/sys/spawn_internal.h:
+ * the NextBSD kernel's task_set_importance_watchports_np trap takes them
+ * as xnu-2422's posix_spawn does.
+ */
+#define POSIX_SPAWN_PROC_TYPE_MASK			0x00000F00
+#define POSIX_SPAWN_PROC_TYPE_APP_DEFAULT		0x00000100
+#define POSIX_SPAWN_PROC_TYPE_APP_TAL			0x00000200
+#define POSIX_SPAWN_PROC_TYPE_DAEMON_STANDARD		0x00000300
+#define POSIX_SPAWN_PROC_TYPE_DAEMON_INTERACTIVE	0x00000400
+#define POSIX_SPAWN_PROC_TYPE_DAEMON_BACKGROUND		0x00000500
+#define POSIX_SPAWN_PROC_TYPE_DAEMON_ADAPTIVE		0x00000600
 
 /*
- * Apple posix_spawnattr_*_np() setters. No FreeBSD equivalent — stub
- * to success so the (best-effort, job_assumes_zero-wrapped) callers
- * see "attribute accepted" and posix_spawn() proceeds normally.
+ * Side table for the attributes NextBSD acts on (nextbsd#539 part E).
+ *
+ * posix_spawnattr_t, inherited from FreeBSD, is an opaque pointer to a
+ * struct libc owns, so the Apple-only fields cannot live in it. They are
+ * kept here instead, keyed by that pointer, from the _np setter until
+ * posix_spawnattr_destroy() (wrapped below) or the exec. launchd sets up
+ * one attr per job, in the forked child, so the table is small; it is
+ * per translation unit (only core.c uses it) and not thread-safe, as
+ * launchd's child is single-threaded at this point.
  */
+#define _NEXTBSD_SPAWNATTR_SLOTS	8
+
+struct _nextbsd_spawnattr_extra {
+	posix_spawnattr_t	key;		/* NULL: slot free */
+	int			proctype;	/* POSIX_SPAWN_PROC_TYPE_*, 0 unset */
+	int			nports;
+	mach_port_name_t	*ports;		/* names; the rights stay in the space */
+};
+
+static __inline struct _nextbsd_spawnattr_extra *
+_nextbsd_spawnattr_extra(const posix_spawnattr_t *attr, int create)
+{
+	static struct _nextbsd_spawnattr_extra table[_NEXTBSD_SPAWNATTR_SLOTS];
+	struct _nextbsd_spawnattr_extra *slot = NULL;
+	int i;
+
+	if (attr == NULL || *attr == NULL)
+		return NULL;
+	for (i = 0; i < _NEXTBSD_SPAWNATTR_SLOTS; i++) {
+		if (table[i].key == *attr)
+			return &table[i];
+		if (slot == NULL && table[i].key == NULL)
+			slot = &table[i];
+	}
+	if (!create || slot == NULL)
+		return NULL;
+	slot->key = *attr;
+	slot->proctype = 0;
+	slot->nports = 0;
+	slot->ports = NULL;
+	return slot;
+}
+
+static __inline void
+_nextbsd_spawnattr_extra_free(const posix_spawnattr_t *attr)
+{
+	struct _nextbsd_spawnattr_extra *x = _nextbsd_spawnattr_extra(attr, 0);
+
+	if (x == NULL)
+		return;
+	free(x->ports);
+	x->ports = NULL;
+	x->nports = 0;
+	x->proctype = 0;
+	x->key = NULL;
+}
+
+/*
+ * posix_spawnattr_destroy() also drops the attr's side-table entry. A
+ * function-like macro: it reaches every call, and leaves the function's
+ * own declaration in <spawn.h> (already included above) alone.
+ */
+static __inline int
+_nextbsd_posix_spawnattr_destroy(posix_spawnattr_t *attr)
+{
+	_nextbsd_spawnattr_extra_free(attr);
+	return (posix_spawnattr_destroy)(attr);
+}
+#define posix_spawnattr_destroy(attr)	_nextbsd_posix_spawnattr_destroy(attr)
+
 static __inline int
 posix_spawnattr_setprocesstype_np(posix_spawnattr_t *attr, uint64_t type)
 {
-	(void)attr;
-	(void)type;
+	struct _nextbsd_spawnattr_extra *x;
+
+	x = _nextbsd_spawnattr_extra(attr, 1);
+	if (x == NULL)
+		return (attr == NULL || *attr == NULL) ? EINVAL : ENOMEM;
+	x->proctype = (int)(type & POSIX_SPAWN_PROC_TYPE_MASK);
 	return 0;
 }
+
+/*
+ * Apple posix_spawnattr_*_np() setters with nothing behind them on
+ * NextBSD — stub to success so the (best-effort, job_assumes_zero-wrapped)
+ * callers see "attribute accepted" and posix_spawn() proceeds normally.
+ */
 
 static __inline int
 posix_spawnattr_setbinpref_np(posix_spawnattr_t *attr, size_t count,
@@ -117,14 +207,56 @@ posix_spawnattr_setmacpolicyinfo_np(posix_spawnattr_t *attr,
 	return 0;
 }
 
+/*
+ * Record the importance watch ports, as xnu-2422 appends a
+ * PSPA_IMP_WATCHPORTS port action for each. Only the names are kept: the
+ * caller keeps its send rights until the exec (launchd does), and the
+ * kernel copies them in when _posix_spawnattr_apply_importance_np() runs.
+ * Adds to any ports set before, as xnu-2422 does.
+ */
 static __inline int
 posix_spawnattr_set_importancewatch_port_np(posix_spawnattr_t *attr,
     int count, mach_port_t portarray[])
 {
-	(void)attr;
-	(void)count;
-	(void)portarray;
+	struct _nextbsd_spawnattr_extra *x;
+	mach_port_name_t *ports;
+	int i;
+
+	if (count < 0 || (count > 0 && portarray == NULL))
+		return EINVAL;
+	if (count == 0)
+		return 0;
+	x = _nextbsd_spawnattr_extra(attr, 1);
+	if (x == NULL)
+		return (attr == NULL || *attr == NULL) ? EINVAL : ENOMEM;
+	ports = realloc(x->ports, (size_t)(x->nports + count) * sizeof(*ports));
+	if (ports == NULL)
+		return ENOMEM;
+	for (i = 0; i < count; i++)
+		ports[x->nports + i] = (mach_port_name_t)portarray[i];
+	x->ports = ports;
+	x->nports += count;
 	return 0;
+}
+
+/*
+ * NextBSD: hand the attr's process type and importance watch ports to
+ * the kernel for the coming execve(2), the part of xnu-2422's
+ * posix_spawn(POSIX_SPAWN_SETEXEC) that launchd's SETEXEC emulation
+ * otherwise loses. Call it last, right before execve(2): the kernel
+ * applies both once the new image is loaded. Fails open: if the kernel
+ * has no such trap, or refuses the call, the exec simply goes ahead
+ * without them. Returns the kern_return_t, for logging only.
+ */
+static __inline kern_return_t
+_posix_spawnattr_apply_importance_np(const posix_spawnattr_t *attr)
+{
+	struct _nextbsd_spawnattr_extra *x = _nextbsd_spawnattr_extra(attr, 0);
+
+	if (x == NULL || (x->proctype == 0 && x->nports == 0))
+		return KERN_SUCCESS;
+	return task_set_importance_watchports_np(x->ports, x->nports,
+	    x->proctype);
 }
 
 static __inline int
