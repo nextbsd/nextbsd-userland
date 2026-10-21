@@ -7254,7 +7254,27 @@ jobmgr_new(jobmgr_t jm, mach_port_t requestorport, mach_port_t transfer_port, bo
 		// cut off the Libc cache, we don't want to deadlock against ourself
 		inherited_bootstrap_port = bootstrap_port;
 		bootstrap_port = MACH_PORT_NULL;
+#ifdef __FreeBSD__
+		/*
+		 * NextBSD: the kernel's mach_port_request_notification() takes
+		 * MACH_NOTIFY_DEAD_NAME only on a receive right (it looks the
+		 * name up with ipc_port_translate_receive()). For the send right
+		 * held here, to PID 1's bootstrap port, it returns
+		 * KERN_INVALID_RIGHT. Under os_assert_zero() that abort()ed
+		 * every per-user launchd before it finished starting, so PID 1
+		 * recorded the job as killed by SIGABRT.
+		 *
+		 * The notification only tells this launchd that PID 1 has gone
+		 * away. On NextBSD the kernel panics when PID 1 exits, so there
+		 * is nothing to do without it: log the failure and carry on.
+		 */
+		kern_return_t dnkr = launchd_mport_notify_req(inherited_bootstrap_port, MACH_NOTIFY_DEAD_NAME);
+		if (dnkr != KERN_SUCCESS) {
+			jobmgr_log(jmr, LOG_DEBUG, "Could not request a dead-name notification for PID 1's bootstrap port: 0x%x", dnkr);
+		}
+#else
 		os_assert_zero(launchd_mport_notify_req(inherited_bootstrap_port, MACH_NOTIFY_DEAD_NAME));
+#endif
 
 		// We set this explicitly as we start each child
 		os_assert_zero(launchd_set_bport(MACH_PORT_NULL));
