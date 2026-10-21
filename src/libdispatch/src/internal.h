@@ -807,6 +807,23 @@ extern bool _dispatch_memory_warn;
 #ifndef DISPATCH_USE_IMPORTANCE_ASSERTION
 #define DISPATCH_USE_IMPORTANCE_ASSERTION 1
 #endif
+#elif HAVE_MACH && defined(__FreeBSD__)
+/*
+ * NextBSD (nextbsd#539 part G): there is no <libproc_internal.h>, and
+ * <libproc.h> is FreeBSD's unrelated debugger library, so the check above
+ * never fires. libsystem_kernel (src/libmach) provides the two libproc
+ * importance calls, as libsyscall does on Darwin. This turns on the
+ * pre-voucher importance handling in dispatch_mig_server(): take over a
+ * request's MACH_MSGH_BITS_RAISEIMP boost before the demux and drop it
+ * after the reply, as libdispatch did on OS X 10.9. The voucher path below
+ * still forces it off when VOUCHER_USE_MACH_VOUCHER is set.
+ */
+int proc_importance_assertion_begin_with_msg(mach_msg_header_t *msg,
+		mach_msg_trailer_t *trailer, uint64_t *assertion_token);
+int proc_importance_assertion_complete(uint64_t assertion_token);
+#ifndef DISPATCH_USE_IMPORTANCE_ASSERTION
+#define DISPATCH_USE_IMPORTANCE_ASSERTION 1
+#endif
 #endif // HAVE_LIBPROC_INTERNAL_H
 
 #if HAVE_SYS_GUARDED_H
