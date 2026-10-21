@@ -7376,9 +7376,14 @@ jobmgr_init_session(jobmgr_t jm, const char *session_type, bool sflag)
 			bootstrapper->stdoutpath = strdup(_PATH_CONSOLE);
 			bootstrapper->stderrpath = strdup(_PATH_CONSOLE);
 
+#ifndef __FreeBSD__
+			// NextBSD's devfs ttys (inherited from FreeBSD) only support
+			// EVFILT_READ/EVFILT_WRITE (EVFILT_VNODE fails with EINVAL), and
+			// getty/login revoke their own ttys on NextBSD.
 			if (launchd_console) {
 				(void)jobmgr_assumes_zero_p(jm, kevent_mod((uintptr_t)fileno(launchd_console), EVFILT_VNODE, EV_ADD | EV_ONESHOT, NOTE_REVOKE, 0, jm));
 			}
+#endif
 		}
 	}
 
