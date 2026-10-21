@@ -1,18 +1,17 @@
 /*
  * FreeBSD shim for macOS <sys/kern_event.h>.
  *
- * launchd.c's monitor_networking_state() opens a PF_SYSTEM /
+ * launchd.c's Darwin monitor_networking_state() opens a PF_SYSTEM /
  * SYSPROTO_EVENT socket and arms a SIOCSKEVFILT filter to receive
- * Apple's kernel network-state events (interface up/down). FreeBSD
- * has no PF_SYSTEM domain; the native equivalent is a PF_ROUTE
- * listener, which is a separate porting task.
+ * Apple's kernel network-state events (interface up/down). NextBSD's
+ * kernel has no PF_SYSTEM domain (yet), so on NextBSD launchd.c listens
+ * on a PF_ROUTE socket instead (RTM_IFINFO / RTM_NEWADDR / RTM_DELADDR)
+ * and none of the PF_SYSTEM code path is compiled.
  *
- * For Phase I1c we only need launchd to compile, link, and exec, so
- * this shim supplies the types and constants and lets
- * socket(PF_SYSTEM, ...) fail at runtime. monitor_networking_state()
- * already handles pfs == -1 by returning early — the daemon still
- * runs, just without live network-state notifications
- * (get_network_state() continues to poll getifaddrs()).
+ * This shim still supplies the types and constants so that the header
+ * include and any remaining Darwin-only references compile. PF_SYSTEM
+ * is not a real NextBSD domain; socket(PF_SYSTEM, ...) would fail with
+ * EAFNOSUPPORT.
  */
 #ifndef _FREEBSD_SHIM_SYS_KERN_EVENT_H_
 #define _FREEBSD_SHIM_SYS_KERN_EVENT_H_
