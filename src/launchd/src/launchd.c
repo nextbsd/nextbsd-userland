@@ -281,7 +281,17 @@ main(int argc, char *const *argv)
 		launchd_log_push();
 
 		auditinfo_addr_t auinfo;
+#ifdef __FreeBSD__
+		/*
+		 * NextBSD: getaudit_addr() is root-only (inherited from FreeBSD),
+		 * so it fails with EPERM in any per-user launchd that is not
+		 * running as root. That is expected, so don't log it; the session
+		 * ID then stays AU_DEFAUDITSID.
+		 */
+		if (getaudit_addr(&auinfo, sizeof(auinfo)) == 0) {
+#else
 		if (posix_assumes_zero(getaudit_addr(&auinfo, sizeof(auinfo))) != -1) {
+#endif
 			launchd_audit_session = auinfo.ai_asid;
 			launchd_syslog(LOG_DEBUG, "Our audit session ID is %i", launchd_audit_session);
 		}
