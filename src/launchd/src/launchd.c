@@ -41,6 +41,10 @@
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <net/if.h>
+#ifdef __FreeBSD__
+#include <net/route.h>
+#include <stddef.h>
+#endif
 #include <netinet/in.h>
 #include <netinet/in_var.h>
 #include <netinet6/nd6.h>
@@ -830,6 +834,28 @@ get_network_state(void)
 void
 monitor_networking_state(void)
 {
+#ifdef __FreeBSD__
+	/*
+	 * NextBSD's kernel has no PF_SYSTEM kernel-event domain (yet);
+	 * listen on a routing socket instead: RTM_IFINFO reports interface
+	 * state changes, RTM_NEWADDR/RTM_DELADDR report address changes.
+	 * NextBSD (like FreeBSD) has no ROUTE_MSGFILTER socket option, so
+	 * every routing message is delivered and pfsystem_callback() drops
+	 * the others.
+	 * The socket is non-blocking so pfsystem_callback() can never
+	 * stall PID 1.
+	 */
+	int pfs = _fd(socket(PF_ROUTE, SOCK_RAW | SOCK_NONBLOCK, AF_UNSPEC));
+
+	network_up = get_network_state();
+
+	if (pfs == -1) {
+		launchd_syslog(LOG_DEBUG, "Could not open routing socket for network monitoring: %m");
+		return;
+	}
+
+	(void)posix_assumes_zero(kevent_mod(pfs, EVFILT_READ, EV_ADD, 0, 0, &kqpfsystem_callback));
+#else
 	int pfs = _fd(socket(PF_SYSTEM, SOCK_RAW, SYSPROTO_EVENT));
 	struct kev_request kev_req;
 
@@ -850,15 +876,43 @@ monitor_networking_state(void)
 	}
 
 	(void)posix_assumes_zero(kevent_mod(pfs, EVFILT_READ, EV_ADD, 0, 0, &kqpfsystem_callback));
+#endif
 }
 
 void
 pfsystem_callback(void *obj __attribute__((unused)), struct kevent *kev)
 {
 	bool new_networking_state;
+#ifdef __FreeBSD__
+	union {
+		struct rt_msghdr rtm;
+		char buf[2048];
+	} msg;
+	ssize_t n;
+
+	/*
+	 * One routing message per read(2). The socket is non-blocking and
+	 * EVFILT_READ is level-triggered, so any queued messages fire the
+	 * kevent again.
+	 */
+	n = read((int)kev->ident, &msg, sizeof(msg));
+	if (n < (ssize_t)(offsetof(struct rt_msghdr, rtm_type) + sizeof(msg.rtm.rtm_type))) {
+		return;
+	}
+
+	switch (msg.rtm.rtm_type) {
+	case RTM_IFINFO:
+	case RTM_NEWADDR:
+	case RTM_DELADDR:
+		break;
+	default:
+		return;
+	}
+#else
 	char buf[1024];
 
 	(void)posix_assumes_zero(read((int)kev->ident, &buf, sizeof(buf)));
+#endif
 
 	new_networking_state = get_network_state();
 
