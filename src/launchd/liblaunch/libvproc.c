@@ -457,8 +457,51 @@ _vprocmgr_switch_to_session(const char *target_session, vproc_flags_t flags __at
 	kern_return_t kr = KERN_FAILURE;
 
 	mach_port_t tnp = MACH_PORT_NULL;
+#ifdef __FreeBSD__
+	/*
+	 * NextBSD: launchd ties the new session's lifetime to the requestor
+	 * port. It arms a dead-name notification on it (jobmgr_new) and shuts
+	 * the session down when it fires (jobmgr_delete_anything_with_port).
+	 * A MACH_PORT_NULL requestor makes jobmgr_new refuse the session
+	 * ("Mach sub-bootstrap create request requires a requester port"),
+	 * so this call failed every time.
+	 *
+	 * Darwin passes this process's task-name port, which dies with the
+	 * task. NextBSD has no task-name ports yet: libmach's
+	 * task_name_for_pid() is a stub that returns KERN_FAILURE, the
+	 * kernel's sys_task_name_for_pid is ENOSYS and not wired, and
+	 * itk_nself is never created. So when task_name_for_pid() fails, pass
+	 * a send right to a receive right this process holds and never frees.
+	 * The kernel destroys that receive right when the process exits (or
+	 * execs, since port names do not survive exec on NextBSD), so the
+	 * dead-name notification arrives then. The port is never a task port,
+	 * so the (per-user) launchd gets no control over this process.
+	 */
+	mach_port_t lifetime_port = MACH_PORT_NULL;
+	if (task_name_for_pid(mach_task_self(), getpid(), &tnp) != KERN_SUCCESS || tnp == MACH_PORT_NULL) {
+		tnp = MACH_PORT_NULL;
+		if (mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &lifetime_port) != KERN_SUCCESS) {
+			lifetime_port = MACH_PORT_NULL;
+		} else if (mach_port_insert_right(mach_task_self(), lifetime_port, lifetime_port, MACH_MSG_TYPE_MAKE_SEND) != KERN_SUCCESS) {
+			(void)mach_port_mod_refs(mach_task_self(), lifetime_port, MACH_PORT_RIGHT_RECEIVE, -1);
+			lifetime_port = MACH_PORT_NULL;
+		} else {
+			tnp = lifetime_port;
+		}
+	}
+	kr = vproc_mig_switch_to_session(bootstrap_port, tnp, (char *)target_session, _audit_session_self(), &new_bsport);
+	if (lifetime_port != MACH_PORT_NULL) {
+		/* launchd holds its own copy of the send right now (or failed). */
+		(void)mach_port_mod_refs(mach_task_self(), lifetime_port, MACH_PORT_RIGHT_SEND, -1);
+		if (kr != KERN_SUCCESS) {
+			(void)mach_port_mod_refs(mach_task_self(), lifetime_port, MACH_PORT_RIGHT_RECEIVE, -1);
+		}
+	}
+	if (kr != KERN_SUCCESS) {
+#else
 	task_name_for_pid(mach_task_self(), getpid(), &tnp);
 	if ((kr = vproc_mig_switch_to_session(bootstrap_port, tnp, (char *)target_session, _audit_session_self(), &new_bsport)) != KERN_SUCCESS) {
+#endif
 		_vproc_log(LOG_NOTICE, "_vprocmgr_switch_to_session(): kr = 0x%x", kr);
 		return (vproc_err_t)_vprocmgr_switch_to_session;
 	}

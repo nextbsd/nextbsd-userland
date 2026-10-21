@@ -42,14 +42,24 @@
  */
 #include <security/openpam.h>
 /*
- * NextBSD: a client stub for launchd's get_root_bootstrap routine that waits
- * at most a bounded time for the reply (MIG WaitTime). Generated at build time
- * from pam_launchd_probe.defs; see pam_launchd_probe() below.
+ * NextBSD: client stubs for launchd's get_root_bootstrap and look_up2
+ * routines that wait at most a bounded time for the reply (MIG WaitTime).
+ * Generated at build time from pam_launchd_probe.defs; see
+ * pam_launchd_probe() below.
  */
 #include "pam_launchd_probe.h"
 
-/* How long the liveness probe waits for the per-user launchd, in ms. */
+/* How long each probe call waits for its reply, in ms. */
 #define PAM_LAUNCHD_PROBE_TIMEOUT_MS 3000
+
+/*
+ * A Mach service that only PID 1 provides and that is always there once the
+ * system is up: notifyd's (System/Library/LaunchDaemons/com.apple.notifyd.plist,
+ * LimitLoadToSessionType System, RunAtLoad, KeepAlive). The per-user launchd
+ * has no such service, so a lookup of it through the per-user port must be
+ * forwarded to PID 1.
+ */
+#define PAM_LAUNCHD_PROBE_SERVICE "com.apple.system.notification_center"
 #endif
 
 #define SESSION_TYPE_OPT "launchd_session_type"
@@ -91,23 +101,34 @@ get_root_bootstrap_port(void)
 
 #ifdef __FreeBSD__
 /*
- * NextBSD: check that the per-user launchd behind puc is alive and answering
- * before this process (and every child it spawns, e.g. the login shell) is
- * moved onto it. PID 1 hands out a per-user port even when the per-user
- * launchd has not started or checked in, and once bootstrap_port points at a
- * port nobody services, every later bootstrap lookup in the session blocks
- * forever. Ask the per-user launchd itself for its root bootstrap (a routine
- * it answers locally, without forwarding to PID 1) and wait at most
- * PAM_LAUNCHD_PROBE_TIMEOUT_MS for the reply. On a timeout the MIG stub
- * destroys the reply port, so a late answer cannot be mistaken for the reply
- * to a later RPC on this thread.
+ * NextBSD: check that the per-user launchd behind puc is alive and answering,
+ * and that it forwards to PID 1, before this process (and every child it
+ * spawns, e.g. the login shell) is moved onto it. PID 1 hands out a per-user
+ * port even when the per-user launchd has not started or checked in, and once
+ * bootstrap_port points at a port nobody services, every later bootstrap
+ * lookup in the session blocks forever. Two calls, each waiting at most
+ * PAM_LAUNCHD_PROBE_TIMEOUT_MS for its reply:
  *
- * Returns 1 if the per-user launchd answered, 0 if not.
+ *  1. get_root_bootstrap, which the per-user launchd answers itself: is it
+ *     alive?
+ *  2. look_up2 of PAM_LAUNCHD_PROBE_SERVICE, which only PID 1 has: the
+ *     per-user launchd must forward it to PID 1 (job_mig_look_up2 ->
+ *     vproc_mig_look_up2_forward, MIG_NO_REPLY) and PID 1 replies to us
+ *     directly. Every lookup in the session of a system service takes this
+ *     path, and it has never run on NextBSD before per-user sessions.
+ *
+ * On a timeout the MIG stub destroys the reply port, so a late answer cannot
+ * be mistaken for the reply to a later RPC on this thread.
+ *
+ * Returns 1 if both calls succeeded, 0 if not.
  */
 static int
 pam_launchd_probe(mach_port_t puc, uid_t uid)
 {
 	mach_port_t rbs = MACH_PORT_NULL;
+	mach_port_t sp = MACH_PORT_NULL;
+	audit_token_t au_tok;
+	uuid_t instance_id;
 	kern_return_t kr;
 
 	kr = pam_launchd_probe_get_root_bootstrap(puc,
@@ -121,6 +142,19 @@ pam_launchd_probe(mach_port_t puc, uid_t uid)
 	if (rbs != MACH_PORT_NULL) {
 		mach_port_deallocate(mach_task_self(), rbs);
 	}
+
+	memset(&au_tok, 0, sizeof(au_tok));
+	memset(&instance_id, 0, sizeof(instance_id));
+	kr = pam_launchd_probe_look_up2(puc, PAM_LAUNCHD_PROBE_SERVICE, &sp,
+	    &au_tok, 0, instance_id, 0, PAM_LAUNCHD_PROBE_TIMEOUT_MS);
+	if (kr != KERN_SUCCESS || sp == MACH_PORT_NULL) {
+		openpam_log(PAM_LOG_ERROR, "The per-user launchd for UID %u did "
+		    "not resolve %s through PID 1 within %d ms (0x%x); staying in "
+		    "the root bootstrap.", uid, PAM_LAUNCHD_PROBE_SERVICE,
+		    PAM_LAUNCHD_PROBE_TIMEOUT_MS, kr);
+		return 0;
+	}
+	mach_port_deallocate(mach_task_self(), sp);
 	return 1;
 }
 

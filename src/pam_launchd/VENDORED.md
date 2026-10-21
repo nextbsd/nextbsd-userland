@@ -31,7 +31,7 @@ nextbsd-overlays and add it in a later PR.
   `libsystem_kernel` from earlier steps.
 - `pam_launchd_probe.defs` is new. `build-userland.sh` runs the host mig on
   it to generate the client stub `pam_launchd_probeUser.c` and
-  `pam_launchd_probe.h` used by the liveness probe below.
+  `pam_launchd_probe.h` used by the probe below.
 
 ## NextBSD changes
 
@@ -41,14 +41,15 @@ All in `pam_launchd.c`, each marked with a `NextBSD:` comment.
 |---|---|---|
 | Every failure returns `PAM_IGNORE` | `#ifdef __FreeBSD__` | Apple returned `PAM_SESSION_ERR` when the session switch or `_vproc_post_fork_ping` failed. On NextBSD a broken per-user session must degrade to today's behaviour (the root bootstrap), never block a login. On these paths the module also puts the process back on the root bootstrap before returning. |
 | `MACH_PORT_NULL` per-user port is a failure | `#ifdef __FreeBSD__` | launchd-842's `job_mig_lookup_per_user_context` returns success with a null port if it could not create the per-user launchd. Apple would set a null bootstrap port. |
-| Bounded liveness probe | `#ifdef __FreeBSD__`, plus `pam_launchd_probe.defs` | Before switching, the module asks the per-user launchd for its root bootstrap (`get_root_bootstrap`, a routine it answers itself without forwarding to PID 1) with a MIG `WaitTime` of 3000 ms. If it does not answer, the process stays on the root bootstrap and the module returns `PAM_IGNORE`. Without this, a per-user launchd that never checked in would leave every later bootstrap lookup in the session blocked forever. On a timeout, the MIG stub destroys the reply port, so a late reply cannot be mistaken for the reply to the next RPC. |
+| Bounded liveness and forwarding probe | `#ifdef __FreeBSD__`, plus `pam_launchd_probe.defs` | Before switching, the module makes two calls through the per-user port, each with a MIG `WaitTime` of 3000 ms. First it asks the per-user launchd for its root bootstrap (`get_root_bootstrap`, a routine it answers itself). Then it looks up `com.apple.system.notification_center` (`look_up2`), notifyd's service, which only PID 1 has. The per-user launchd must forward that lookup to PID 1 (`vproc_mig_look_up2_forward`, `MIG_NO_REPLY`), and PID 1 replies to the module directly. The returned send right is released. If either call fails or times out, the process stays on the root bootstrap and the module returns `PAM_IGNORE`. Without this, a per-user launchd that never checked in, or one that cannot forward, would leave bootstrap lookups in the session blocked or failing. On a timeout, the MIG stub destroys the reply port, so a late reply cannot be mistaken for the reply to the next RPC. |
 | `NOT_PRIVILEGED` branch reachable | unconditional | Apple tested `BOOTSTRAP_NOT_PRIVILEGED` after `!= BOOTSTRAP_SUCCESS`, which already catches it. The tests are swapped. The return value is the same (`PAM_IGNORE`); only the log message changes. |
 | `#include <security/openpam.h>`, `PAM_MODULE_ENTRY` | `#ifdef __FreeBSD__` | OpenPAM declares `openpam_get_option`/`openpam_log` there. Every inherited FreeBSD module carries the module entry. |
 
-`pam_launchd_probe.defs` is a client-side copy of one routine from
-`src/launchd/src/job.defs` (subsystem `job 400`, routine index 36, request
-id 436), with a `WaitTime` argument added. If `get_root_bootstrap` moves in
-`job.defs`, move it in the probe too.
+`pam_launchd_probe.defs` holds client-side copies of two routines from
+`src/launchd/src/job.defs` (subsystem `job 400`): `look_up2` (routine index
+4, request id 404) and `get_root_bootstrap` (routine index 36, request id
+436), each with a `WaitTime` argument added. If either moves or changes in
+`job.defs`, change it in the probe too.
 
 `pam_launchd.8` gains a NEXTBSD section (marked with a comment) and a FILES
 section.
@@ -59,4 +60,12 @@ section.
   (`src/launchd/liblaunch/libvproc.c`), so that call always succeeds today.
 - The default session type is `Background`, for which Apple skips
   `_vprocmgr_switch_to_session`. Only a non-default `launchd_session_type`
-  makes the RPC.
+  makes the RPC. `launchd_session_type=StandardIO` is opt-in; see
+  `pam_launchd.8`.
+- `_vprocmgr_switch_to_session` (liblaunch, `libvproc.c`) passes launchd a
+  requestor port whose death ends the new session. Darwin uses the task-name
+  port. NextBSD has none yet (libmach's `task_name_for_pid` is a stub, the
+  kernel's `sys_task_name_for_pid` is `ENOSYS` and unwired, and `itk_nself`
+  is never created), and a null requestor made launchd refuse every switch.
+  On NextBSD liblaunch now falls back to a receive right the process holds
+  for its lifetime (`#ifdef __FreeBSD__` there).
