@@ -51,7 +51,27 @@ Move this session to the launchd session type specified.
 .It Ev launchd_session_type=SESSION_TYPE
 Move this session to the launchd session type specified.
 .El
+.\" NextBSD: the section below documents the NextBSD changes (VENDORED.md).
+.Sh NEXTBSD
+The module only acts when run as root.
+Before it moves the session, it checks that the user's per-user
+.Xr launchd 8
+answers a request within 3 seconds.
+Any failure, including a missing or unresponsive per-user launchd,
+leaves the session on the root bootstrap and returns
+.Dv PAM_IGNORE ,
+so a broken per-user launchd never blocks a login.
+.Pp
+No
+.Pa /etc/pam.d
+policy file uses this module yet.
+.Sh FILES
+.Bl -tag -width indent
+.It Pa /usr/lib/pam_launchd.so.6
+the module
+.El
 .Sh SEE ALSO
-.Xr launchd 8 ,
+.Xr launchctl 1 ,
 .Xr pam.conf 5 ,
+.Xr launchd 8 ,
 .Xr pam 8

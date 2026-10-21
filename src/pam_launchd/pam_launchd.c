@@ -35,6 +35,22 @@
 #include <bootstrap_priv.h>
 #include <pwd.h>
 #include <sys/syslimits.h>
+#ifdef __FreeBSD__
+/*
+ * NextBSD: OpenPAM declares openpam_get_option() and openpam_log() here;
+ * Apple's <security/pam_modules.h> pulled them in itself.
+ */
+#include <security/openpam.h>
+/*
+ * NextBSD: a client stub for launchd's get_root_bootstrap routine that waits
+ * at most a bounded time for the reply (MIG WaitTime). Generated at build time
+ * from pam_launchd_probe.defs; see pam_launchd_probe() below.
+ */
+#include "pam_launchd_probe.h"
+
+/* How long the liveness probe waits for the per-user launchd, in ms. */
+#define PAM_LAUNCHD_PROBE_TIMEOUT_MS 3000
+#endif
 
 #define SESSION_TYPE_OPT "launchd_session_type"
 #define DEFAULT_SESSION_TYPE VPROCMGR_SESSION_BACKGROUND
@@ -73,6 +89,61 @@ get_root_bootstrap_port(void)
 	return parent_port;
 }
 
+#ifdef __FreeBSD__
+/*
+ * NextBSD: check that the per-user launchd behind puc is alive and answering
+ * before this process (and every child it spawns, e.g. the login shell) is
+ * moved onto it. PID 1 hands out a per-user port even when the per-user
+ * launchd has not started or checked in, and once bootstrap_port points at a
+ * port nobody services, every later bootstrap lookup in the session blocks
+ * forever. Ask the per-user launchd itself for its root bootstrap (a routine
+ * it answers locally, without forwarding to PID 1) and wait at most
+ * PAM_LAUNCHD_PROBE_TIMEOUT_MS for the reply. On a timeout the MIG stub
+ * destroys the reply port, so a late answer cannot be mistaken for the reply
+ * to a later RPC on this thread.
+ *
+ * Returns 1 if the per-user launchd answered, 0 if not.
+ */
+static int
+pam_launchd_probe(mach_port_t puc, uid_t uid)
+{
+	mach_port_t rbs = MACH_PORT_NULL;
+	kern_return_t kr;
+
+	kr = pam_launchd_probe_get_root_bootstrap(puc,
+	    PAM_LAUNCHD_PROBE_TIMEOUT_MS, &rbs);
+	if (kr != KERN_SUCCESS) {
+		openpam_log(PAM_LOG_ERROR, "The per-user launchd for UID %u did "
+		    "not answer within %d ms (0x%x); staying in the root bootstrap.",
+		    uid, PAM_LAUNCHD_PROBE_TIMEOUT_MS, kr);
+		return 0;
+	}
+	if (rbs != MACH_PORT_NULL) {
+		mach_port_deallocate(mach_task_self(), rbs);
+	}
+	return 1;
+}
+
+/*
+ * NextBSD: put this process back on the root bootstrap port root_bs (whose
+ * send right the caller holds and hands over) and drop the right on whatever
+ * bootstrap_port is now. Used when a step after the switch to the per-user
+ * bootstrap fails, so the session carries on exactly as it would without
+ * this module.
+ */
+static void
+pam_launchd_restore_root_bootstrap(mach_port_t root_bs)
+{
+	mach_port_t cur = bootstrap_port;
+
+	task_set_bootstrap_port(mach_task_self(), root_bs);
+	bootstrap_port = root_bs;
+	if (cur != MACH_PORT_NULL && cur != root_bs) {
+		mach_port_deallocate(mach_task_self(), cur);
+	}
+}
+#endif /* __FreeBSD__ */
+
 PAM_EXTERN int
 pam_sm_open_session(pam_handle_t *pamh, int flags, int argc, const char **argv)
 {
@@ -83,6 +154,9 @@ pam_sm_open_session(pam_handle_t *pamh, int flags, int argc, const char **argv)
 	struct passwd *pwd;
 	struct passwd pwdbuf;
 	uid_t uid, suid;
+#ifdef __FreeBSD__
+	mach_port_t root_bs;
+#endif
 
 	/* Deterine the launchd session type. */
 	if (NULL == (default_session_type = openpam_get_option(pamh, SESSION_TYPE_OPT))) {
@@ -127,17 +201,42 @@ pam_sm_open_session(pam_handle_t *pamh, int flags, int argc, const char **argv)
 	mach_port_t puc = MACH_PORT_NULL;
 	kern_return_t kr = bootstrap_look_up_per_user(bootstrap_port, NULL, uid, &puc);
 	setreuid(suid, 0);
-	if (BOOTSTRAP_SUCCESS != kr) {
-		openpam_log(PAM_LOG_ERROR, "Could not look up per-user bootstrap for UID %u.", uid);
-		return PAM_IGNORE;
-	} else if (BOOTSTRAP_NOT_PRIVILEGED == kr) {
+	/*
+	 * NextBSD: test BOOTSTRAP_NOT_PRIVILEGED first. Apple tested it after
+	 * "!= BOOTSTRAP_SUCCESS", which already catches it, so its own message
+	 * could never be logged.
+	 */
+	if (BOOTSTRAP_NOT_PRIVILEGED == kr) {
 		openpam_log(PAM_LOG_ERROR, "Permission denied to look up per-user bootstrap for UID %u.", uid);
 		/* If this happens, bootstrap_port is probably already set appropriately anyway. */
 		return PAM_IGNORE;
+	} else if (BOOTSTRAP_SUCCESS != kr) {
+		openpam_log(PAM_LOG_ERROR, "Could not look up per-user bootstrap for UID %u.", uid);
+		return PAM_IGNORE;
 	}
+#ifdef __FreeBSD__
+	/* NextBSD: a successful reply carrying no port is a failure too. */
+	if (MACH_PORT_NULL == puc) {
+		openpam_log(PAM_LOG_ERROR, "The per-user bootstrap for UID %u is MACH_PORT_NULL.", uid);
+		return PAM_IGNORE;
+	}
+	/* NextBSD: only move onto a per-user launchd that answers in time. */
+	if (!pam_launchd_probe(puc, uid)) {
+		mach_port_deallocate(mach_task_self(), puc);
+		return PAM_IGNORE;
+	}
+#endif
 
 	/* Set our bootstrap port to be that of the Background session of the per-user launchd. */
+#ifdef __FreeBSD__
+	/*
+	 * NextBSD: keep the send right on the root bootstrap rather than
+	 * dropping it, so a failure below can put this process back on it.
+	 */
+	root_bs = bootstrap_port;
+#else
 	mach_port_mod_refs(mach_task_self(), bootstrap_port, MACH_PORT_RIGHT_SEND, -1);
+#endif
 	task_set_bootstrap_port(mach_task_self(), puc);
 	bootstrap_port = puc;
 	
@@ -146,14 +245,36 @@ pam_sm_open_session(pam_handle_t *pamh, int flags, int argc, const char **argv)
 		vproc_err_t verr = NULL;
 		if (NULL != (verr = _vprocmgr_switch_to_session(session_type, 0))) {
 			openpam_log(PAM_LOG_ERROR, "Unable to switch to %u's %s session (0x%p).", uid, session_type, verr);
+#ifdef __FreeBSD__
+			/*
+			 * NextBSD: never block a login. Go back to the root
+			 * bootstrap and let the session continue without the
+			 * per-user launchd.
+			 */
+			pam_launchd_restore_root_bootstrap(root_bs);
+			return PAM_IGNORE;
+#else
 			return PAM_SESSION_ERR;
+#endif
 		}
 	}
 	if (NULL != _vproc_post_fork_ping()) {
 		openpam_log(PAM_LOG_ERROR, "Calling _vproc_post_fork_ping failed.");
+#ifdef __FreeBSD__
+		/* NextBSD: as above, fall back rather than fail the session. */
+		pam_launchd_restore_root_bootstrap(root_bs);
+		return PAM_IGNORE;
+#else
 		return PAM_SESSION_ERR;
+#endif
 	}
-	
+
+#ifdef __FreeBSD__
+	/* NextBSD: the switch held; drop the root bootstrap right kept above. */
+	if (root_bs != MACH_PORT_NULL) {
+		mach_port_deallocate(mach_task_self(), root_bs);
+	}
+#endif
 	return PAM_SUCCESS;
 }
 
@@ -162,3 +283,8 @@ pam_sm_close_session(pam_handle_t *pamh, int flags, int argc, const char **argv)
 {
 	return PAM_SUCCESS;
 }
+
+#ifdef __FreeBSD__
+/* NextBSD: OpenPAM's module entry, as every inherited FreeBSD module has. */
+PAM_MODULE_ENTRY("pam_launchd");
+#endif
