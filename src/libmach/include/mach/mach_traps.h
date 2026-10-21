@@ -41,6 +41,15 @@ kern_return_t pid_for_task(mach_port_name_t task, int *pid);
 mach_port_name_t task_self_trap(void);
 
 /*
+ * task_for_pid() — get a send right to pid's task port. Apple declares
+ * it here. Backed by the mach.syscall.task_for_pid trap; KERN_FAILURE
+ * and *t = MACH_PORT_NULL on any failure, including mach.ko not loaded.
+ * target_tport must be the caller's own task (mach_task_self()).
+ */
+kern_return_t task_for_pid(mach_port_name_t target_tport, int pid,
+    mach_port_name_t *t);
+
+/*
  * task_name_for_pid() — open a task-name port (introspection-only)
  * for a given pid. Stubbed; returns KERN_FAILURE.
  */
