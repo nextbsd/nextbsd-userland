@@ -4803,7 +4803,6 @@ job_start_child(job_t j)
 	        j->jetsam_priority, j->jetsam_memlimit));
 #endif
 
-#ifndef __FreeBSD__
 	mach_port_array_t sports = NULL;
 	mach_msg_type_number_t sports_cnt = 0;
 	kern_return_t kr = vproc_mig_get_listener_port_rights(bootstrap_port, &sports, &sports_cnt);
@@ -4824,20 +4823,6 @@ job_start_child(job_t j)
 	} else if (kr != BOOTSTRAP_UNKNOWN_SERVICE) {
 		(void)job_assumes_zero(j, kr);
 	}
-#else
-	/*
-	 * NextBSD: skip the pre-exec listener-port-rights RPC. Its only
-	 * consumer, posix_spawnattr_set_importancewatch_port_np, is a no-op
-	 * shim (freebsd-shims/System/sys/spawn.h), so the reply is unused.
-	 * Until liblaunch refreshed bootstrap_port in fork() children
-	 * (userland#330), PID 1's children had bootstrap_port ==
-	 * MACH_PORT_NULL here and this call failed immediately; with a live
-	 * bootstrap_port it is a synchronous round trip to launchd from the
-	 * forked child, which stalled boot. Same precedent as the
-	 * _vproc_post_fork_ping no-op in libvproc.c.
-	 */
-	kern_return_t kr;
-#endif
 
 #if TARGET_OS_EMBEDDED
 	if (!j->app || j->system_app) {
