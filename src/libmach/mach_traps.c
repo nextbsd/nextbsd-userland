@@ -454,6 +454,10 @@ mach_continuous_time(void)
 	return mach_absolute_time();
 }
 
+/*
+ * Deliberate userland implementation, not a stub: mach_absolute_time() is
+ * CLOCK_MONOTONIC nanoseconds, so 1/1 is the exact ratio.
+ */
 kern_return_t
 mach_timebase_info(mach_timebase_info_t info)
 {
@@ -1338,7 +1342,7 @@ mach_port_get_context(mach_port_name_t task, mach_port_name_t name,
  * thread_switch() — yield + optional short wait. See mach_traps.h for
  * the design note. Reuses sched_yield(); SWITCH_OPTION_WAIT adds a
  * nanosleep before the yield. option_time is in milliseconds (Apple's
- * convention).
+ * convention). Deliberate userland implementation, not a stub.
  */
 kern_return_t
 thread_switch(mach_port_name_t thread_name, int option, uint32_t option_time)
@@ -1684,6 +1688,7 @@ mach_sem_find_locked(mach_port_name_t name)
 	return (NULL);
 }
 
+/* Deliberate userland implementation (POSIX sem_t registry above), not a stub. */
 kern_return_t
 semaphore_create(mach_port_name_t task, semaphore_t *sem, int policy,
     int value)
@@ -1713,6 +1718,7 @@ semaphore_create(mach_port_name_t task, semaphore_t *sem, int policy,
 	return (KERN_RESOURCE_SHORTAGE);
 }
 
+/* Deliberate userland implementation (POSIX sem_t registry above), not a stub. */
 kern_return_t
 semaphore_destroy(mach_port_name_t task, semaphore_t sem)
 {
@@ -1731,6 +1737,7 @@ semaphore_destroy(mach_port_name_t task, semaphore_t sem)
 	return (KERN_SUCCESS);
 }
 
+/* Deliberate userland implementation (POSIX sem_t registry above), not a stub. */
 kern_return_t
 semaphore_signal(semaphore_t sem)
 {
@@ -1749,6 +1756,7 @@ semaphore_signal(semaphore_t sem)
 	return (KERN_SUCCESS);
 }
 
+/* Deliberate userland implementation (POSIX sem_t registry above), not a stub. */
 kern_return_t
 semaphore_wait(semaphore_t sem)
 {
@@ -1770,6 +1778,7 @@ semaphore_wait(semaphore_t sem)
 	return (KERN_SUCCESS);
 }
 
+/* Deliberate userland implementation (POSIX sem_t registry above), not a stub. */
 kern_return_t
 semaphore_timedwait(semaphore_t sem, mach_timespec_t wait_time)
 {
