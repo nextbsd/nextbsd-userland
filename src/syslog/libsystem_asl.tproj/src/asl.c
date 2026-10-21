@@ -176,6 +176,22 @@ _asl_fork_child()
 }
 
 /*
+ * NextBSD: there is no Libsystem to call _asl_fork_child from its
+ * _libSystem_atfork_child chain, so register it ourselves. A forked
+ * child gets a fresh Mach name space (nextbsd-kernel#274), so the
+ * cached server_port and notify tokens are stale there. liblaunch's
+ * constructor (a link dependency) has registered its bootstrap_port
+ * refresh first; the reset above does not look the server up eagerly,
+ * so that order is not load-bearing.
+ */
+__attribute__((constructor))
+static void
+_asl_atfork_init(void)
+{
+	(void)pthread_atfork(NULL, NULL, _asl_fork_child);
+}
+
+/*
  * asl_remote_notify_name: returns the notification key for remote-control filter
  * changes for this process.
  */

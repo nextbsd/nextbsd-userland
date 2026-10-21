@@ -83,4 +83,9 @@ LIBDIR=		${PREFIX}/lib/system
 
 PREFIX?=	/usr
 
+# FreeBSD base libs: releng/15.1 src.libnames.mk requires LIBADD, not LDADD+=-lfoo.
+# pthread: libbootstrap.c's constructor registers a pthread_atfork child
+# handler; link libthr so it binds there rather than to libc's stub.
+LIBADD+=	pthread
+
 .include <bsd.lib.mk>

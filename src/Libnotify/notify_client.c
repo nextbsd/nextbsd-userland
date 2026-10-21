@@ -1331,6 +1331,25 @@ _notify_fork_child(void)
 }
 
 /*
+ * NextBSD: there is no Libsystem to call _notify_fork_child from its
+ * _libSystem_atfork_child chain, so register it ourselves. A forked
+ * child gets a fresh Mach name space (nextbsd-kernel#274), so the
+ * cached notify_server_port and registrations are stale there.
+ * liblaunch's constructor (a link dependency) has registered its
+ * bootstrap_port refresh first; the reset does not look the server up
+ * eagerly, so that order is not load-bearing. (This tree's libdispatch
+ * build does not define DISPATCH_USE_PTHREAD_ATFORK, so
+ * _dispatch_is_fork_of_multithreaded_parent() stays false here and the
+ * notify_server_port check alone decides whether to disable notify.)
+ */
+__attribute__((constructor))
+static void
+_notify_atfork_init(void)
+{
+	(void)pthread_atfork(NULL, NULL, _notify_fork_child);
+}
+
+/*
  * Create the registration structure associated with a client's token.
  * Will create a name_node_t structure for the name if one does not exist.
  * Note that this routine is NOT used to create the "base" for non-polled

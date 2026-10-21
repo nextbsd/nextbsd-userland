@@ -94,16 +94,45 @@ bootstrap_init(void)
 	}
 }
 
+/*
+ * fork() child handler. A forked child gets a fresh Mach name space
+ * (nextbsd-kernel#274): the parent's bootstrap_port name means nothing
+ * there, so re-read it from the child's own task. mach.ko's fork
+ * eventhandler (kern/task.c mach_task_fork_bsport) has already copied
+ * the parent's itk_bootstrap into the child task, so this returns a
+ * valid send right. Equivalent to Apple's libSystem
+ * _libSystem_atfork_child -> _mach_fork_child -> mach_init_doit.
+ *
+ * Do not mach_port_deallocate the old value: it is not a valid name in
+ * the child. task_get_special_port is a single syscall (no MIG, no
+ * reply port, no locks), so this is safe in the child of a
+ * multi-threaded parent.
+ */
+static void
+liblaunch_bootstrap_atfork_child(void)
+{
+	bootstrap_port = MACH_PORT_NULL;
+	bootstrap_init();
+}
+
 /* Run bootstrap_init at .so load time. Equivalent to dyld's behavior
  * on Apple: bootstrap_port is populated before any user code runs.
  * Pairs with mach.ko's fork eventhandler (kern/task.c
  * mach_task_fork_bsport) which puts the parent's itk_bootstrap into
- * the child task at fork time. */
+ * the child task at fork time.
+ *
+ * Also register the fork() child handler above. POSIX runs child
+ * handlers in registration order; liblaunch is a link dependency of
+ * libsystem_asl and libnotify, so this constructor (and registration)
+ * runs before theirs and bootstrap_port is already fresh when their
+ * fork-child resets run. Neither of those resets looks its server up
+ * eagerly, so the order is not load-bearing. */
 __attribute__((constructor))
 static void
 liblaunch_bootstrap_ctor(void)
 {
 	bootstrap_init();
+	(void)pthread_atfork(NULL, NULL, liblaunch_bootstrap_atfork_child);
 }
 
 kern_return_t
