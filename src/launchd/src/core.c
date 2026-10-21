@@ -5331,6 +5331,43 @@ job_postfork_become_user(job_t j)
 	setenv("USER", loginname, 0);
 	setenv("LOGNAME", loginname, 0);
 }
+#ifdef __FreeBSD__
+
+/*
+ * NextBSD: give a per-user launchd its own audit session. On Darwin, PID 1
+ * creates the session in jobmgr_lookup_per_user_context_internal() and the
+ * child joins it via the session port returned by post_fork_ping. NextBSD
+ * has neither session ports nor AU_ASSIGN_ASID allocation, and
+ * _vproc_post_fork_ping() is a no-op, so the forked child sets the session
+ * itself, after fork and before job_postfork_become_user() drops root
+ * (setaudit_addr() is root-only on NextBSD). Following the NextBSD login(1)
+ * convention, the session ID is the PID of the session leader: this
+ * process, which becomes the per-user launchd at exec. auid, termid and mask
+ * match what Darwin's per-user launchd session gets.
+ */
+static void
+job_postfork_set_per_user_audit(job_t j)
+{
+	auditinfo_addr_t auinfo = {
+		.ai_termid = {
+			.at_type = AU_IPv4
+		},
+		.ai_auid = j->mach_uid,
+		.ai_asid = getpid(),
+	};
+
+	if (setaudit_addr(&auinfo, sizeof(auinfo)) == 0) {
+		job_log(j, LOG_DEBUG, "Created new security session for per-user launchd: %u", auinfo.ai_asid);
+	} else if (errno == ENOSYS) {
+		// Kernel built without audit support: there is no session to set.
+		job_log(j, LOG_DEBUG, "Audit not supported; per-user launchd has no audit session.");
+	} else {
+		// Same outcome as Darwin: no per-user launchd without its session.
+		job_log_error(j, LOG_ERR, "Could not set audit session for per-user launchd");
+		_exit(EXIT_FAILURE);
+	}
+}
+#endif
 
 void
 job_setup_attributes(job_t j)
@@ -5375,6 +5412,12 @@ job_setup_attributes(job_t j)
 		(void)job_assumes_zero_p(j, chroot(j->rootdir));
 		(void)job_assumes_zero_p(j, chdir("."));
 	}
+#ifdef __FreeBSD__
+
+	if (unlikely(j->per_user)) {
+		job_postfork_set_per_user_audit(j);
+	}
+#endif
 
 	job_postfork_become_user(j);
 
@@ -9091,6 +9134,26 @@ jobmgr_lookup_per_user_context_internal(job_t j, uid_t which_user, mach_port_t *
 		ji = job_new(root_jobmgr, lbuf, "/sbin/launchd", NULL);
 
 		if (ji != NULL) {
+#ifdef __FreeBSD__
+			/*
+			 * NextBSD: do not touch PID 1's audit state here. On Darwin,
+			 * setaudit_addr(AU_ASSIGN_ASID) creates a fresh session that
+			 * PID 1 leaves again with audit_session_join(), and the child
+			 * joins it through ji->asport. On NextBSD (audit inherited
+			 * from FreeBSD) the kernel has no AU_ASSIGN_ASID allocation
+			 * (it stores asid -1) and no session ports: audit_session_self()
+			 * returns MACH_PORT_NULL and audit_session_join() is a stub. The
+			 * Darwin sequence would leave PID 1, and every daemon it starts
+			 * after this point, carrying this user's auid.
+			 *
+			 * Instead, the per-user launchd sets its own audit state in the
+			 * forked child while it is still root; see
+			 * job_postfork_set_per_user_audit(). ji->asport stays
+			 * MACH_PORT_NULL and ji->asid stays AU_DEFAUDITSID, because the
+			 * session ID (the child's PID) is not known until the job is
+			 * spawned.
+			 */
+#else
 			auditinfo_addr_t auinfo = {
 				.ai_termid = { 
 					.at_type = AU_IPv4
@@ -9113,6 +9176,7 @@ jobmgr_lookup_per_user_context_internal(job_t j, uid_t which_user, mach_port_t *
 				job_remove(ji);
 				return NULL;
 			}
+#endif
 
 			ji->mach_uid = which_user;
 			ji->per_user = true;
@@ -9178,6 +9242,20 @@ job_mig_lookup_per_user_context(job_t j, uid_t which_user, mach_port_t *up_cont)
 	*up_cont = MACH_PORT_NULL;
 
 	jpu = jobmgr_lookup_per_user_context_internal(j, which_user, up_cont);
+#ifdef __FreeBSD__
+
+	/*
+	 * NextBSD: if the per-user launchd job could not be created, the port
+	 * is still MACH_PORT_NULL. Returning success would hand the caller a
+	 * null bootstrap port, which libbootstrap/libvproc then use as if it
+	 * were valid. Every caller checks for a non-zero result, so fail the
+	 * lookup instead.
+	 */
+	if (*up_cont == MACH_PORT_NULL) {
+		job_log(j, LOG_ERR, "Could not create per-user launchd for UID: %u", which_user);
+		return BOOTSTRAP_NO_MEMORY;
+	}
+#endif
 
 	return 0;
 }
