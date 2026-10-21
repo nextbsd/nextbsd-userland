@@ -1300,6 +1300,37 @@ task_self_trap(void)
 	return mach_task_self();
 }
 
+/*
+ * task_for_pid() — get a send right to pid's task port (nextbsd#359).
+ *
+ * Calls the mach.syscall.task_for_pid trap (nextbsd-kernel#298). As in
+ * XNU this is a trap only; there is no MIG routine to fall back to. The
+ * kernel returns the kern_return_t, writes *t on every path
+ * (MACH_PORT_NULL on failure) and decides who may ask: pid 0, a
+ * target_tport that is not the caller's own task, no such process or a
+ * ptrace(2)-style permission denial all give KERN_FAILURE.
+ *
+ * If the trap is not registered (mach.ko not loaded) this fails closed
+ * with KERN_FAILURE and *t = MACH_PORT_NULL, the same answer as a
+ * denied caller.
+ */
+kern_return_t
+task_for_pid(mach_port_name_t target_tport, int pid, mach_port_name_t *t)
+{
+	static int num = SYSCALL_UNRESOLVED;
+	int sc = resolve_syscall_once(&num, "task_for_pid");
+	kern_return_t rv;
+
+	if (t != NULL)
+		*t = MACH_PORT_NULL;
+	if (sc == NO_SYSCALL)
+		return (KERN_FAILURE);
+	rv = (kern_return_t)syscall(sc, target_tport, pid, t);
+	if (rv == -1)		/* the syscall itself failed: errno, not kr */
+		return (KERN_FAILURE);
+	return (rv);
+}
+
 kern_return_t
 task_name_for_pid(mach_port_name_t target_task, int pid,
     mach_port_name_t *t)
