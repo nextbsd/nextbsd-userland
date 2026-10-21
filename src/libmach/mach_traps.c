@@ -999,10 +999,43 @@ mig_reply_port_dtor(void *p)
 		    MACH_PORT_RIGHT_RECEIVE, -1);
 }
 
+/*
+ * fork() child: forget the cached reply port.
+ *
+ * A forked child gets a fresh Mach name space (nextbsd-kernel#274), so the
+ * name cached for the forking thread means nothing there -- or, once the
+ * child allocates, names some other right. The first MIG RPC in the child
+ * would send with it as the reply port. That used to be rare; with
+ * task_get_special_port on MIG (#84) it is the first thing liblaunch's
+ * fork-child handler does, and a forked launchd child died with SIGILL
+ * before exec. Clear the slot so the next mig_get_reply_port() allocates
+ * a fresh right. Do not mod_refs the old name: it is not ours in the
+ * child. Apple's _mach_fork_child resets its reply port the same way.
+ *
+ * Registered from the key's pthread_once, which the constructor below
+ * runs at load: libsystem_kernel loads before every library that links
+ * it, so this child handler is registered -- and, POSIX running child
+ * handlers in registration order, runs -- before liblaunch's, asl's and
+ * notify's, all of which may make MIG calls.
+ */
+static void
+mig_reply_port_atfork_child(void)
+{
+	(void)pthread_setspecific(mig_reply_port_key, (void *)MACH_PORT_NULL);
+}
+
 static void
 mig_reply_port_key_init(void)
 {
 	(void)pthread_key_create(&mig_reply_port_key, mig_reply_port_dtor);
+	(void)pthread_atfork(NULL, NULL, mig_reply_port_atfork_child);
+}
+
+__attribute__((constructor))
+static void
+mig_reply_port_ctor(void)
+{
+	(void)pthread_once(&mig_reply_port_once, mig_reply_port_key_init);
 }
 
 mach_port_t

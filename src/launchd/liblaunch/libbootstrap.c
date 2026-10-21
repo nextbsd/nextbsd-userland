@@ -104,9 +104,11 @@ bootstrap_init(void)
  * _libSystem_atfork_child -> _mach_fork_child -> mach_init_doit.
  *
  * Do not mach_port_deallocate the old value: it is not a valid name in
- * the child. task_get_special_port is a single syscall (no MIG, no
- * reply port, no locks), so this is safe in the child of a
- * multi-threaded parent.
+ * the child. task_get_special_port is a MIG RPC (nextbsd-userland#84);
+ * libmach's own fork-child handler, registered before this one, has
+ * already dropped the parent's cached reply-port name, so the RPC takes
+ * a fresh reply port (one mach_reply_port trap, no locks). That keeps it
+ * safe in the child of a multi-threaded parent.
  */
 static void
 liblaunch_bootstrap_atfork_child(void)
