@@ -46,8 +46,19 @@ extern "C" {
 #define HOST_MAX_SPECIAL_KERNEL_PORT	16
 #define HOST_MAX_SPECIAL_PORT		31
 
+/* The only node; host_get_special_port()'s `node` argument. */
+#define HOST_LOCAL_NODE			-1
+
 kern_return_t host_set_special_port(mach_port_name_t host,
     int which, mach_port_t port);
+
+/*
+ * host_get_special_port() — read one host special port (host_priv 412).
+ * The kernel serves HOST_PORT, HOST_PRIV_PORT, HOST_BOOTSTRAP_PORT and
+ * HOST_KEXTD_PORT; `host_priv` must be the host_priv port.
+ */
+kern_return_t host_get_special_port(mach_port_name_t host_priv,
+    int node, int which, mach_port_t *port);
 
 /*
  * host_set_UNDServer() — set the User Notification Daemon port.

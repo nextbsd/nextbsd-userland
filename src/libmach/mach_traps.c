@@ -583,14 +583,30 @@ task_set_exception_ports(task_t task, exception_mask_t mask,
 #endif
 }
 
+/*
+ * host_set_exception_ports: MIG (host_priv 414, #93 group 2).
+ *
+ * Used to return KERN_SUCCESS and drop the port. The kernel handler
+ * (kern/ipc_tt.c) stores the right, masking MACH_EXCEPTION_CODES off the
+ * behavior as XNU does, so launchd's EXCEPTION_STATE_IDENTITY |
+ * MACH_EXCEPTION_CODES (core.c) is accepted. The request port must be
+ * host_priv, which mach_host_self() gives a non-jailed root task
+ * (nextbsd-kernel#285); launchd is the in-tree caller. As with the task
+ * ports, nothing delivers exceptions yet: the effect is a held send right.
+ */
 kern_return_t
 host_set_exception_ports(host_priv_t host_priv, exception_mask_t mask,
     mach_port_t new_port, exception_behavior_t behavior,
     thread_state_flavor_t new_flavor)
 {
+#ifdef LIBMACH_HAVE_MIG_CLIENT
+	return (_kernelrpc_host_set_exception_ports(host_priv, mask, new_port,
+	    behavior, new_flavor));
+#else
 	(void)host_priv; (void)mask; (void)new_port;
 	(void)behavior; (void)new_flavor;
-	return KERN_SUCCESS;
+	return KERN_RESOURCE_SHORTAGE;
+#endif
 }
 
 kern_return_t
@@ -1453,31 +1469,82 @@ fail:
 }
 
 /*
- * host_get_host_port — drop privileges from a HOST_PRIV port to the
- * unprivileged host port. We don't distinguish; copy the input name.
+ * host_get_special_port: MIG (host_priv 412, #93 group 5).
+ *
+ * The kernel answers HOST_PORT, HOST_PRIV_PORT and the userland-settable
+ * HOST_BOOTSTRAP_PORT / HOST_KEXTD_PORT slots (MACH_PORT_NULL if unset);
+ * any other slot is KERN_INVALID_ARGUMENT. `node` is ignored, as in XNU.
+ * A request port that is not host_priv gets KERN_INVALID_HOST.
+ */
+kern_return_t
+host_get_special_port(mach_port_name_t host_priv, int node, int which,
+    mach_port_t *port)
+{
+#ifdef LIBMACH_HAVE_MIG_CLIENT
+	return (_kernelrpc_host_get_special_port(host_priv, node, which,
+	    port));
+#else
+	(void)host_priv; (void)node; (void)which;
+	if (port != NULL)
+		*port = MACH_PORT_NULL;
+	return KERN_RESOURCE_SHORTAGE;
+#endif
+}
+
+/*
+ * host_get_host_port — demote a host_priv port to the unprivileged host
+ * port. Apple's is a macro over host_get_special_port(HOST_LOCAL_NODE,
+ * HOST_PORT); this is the same call (#93 group 5).
+ *
+ * It used to copy its input name, which was accidentally right while
+ * mach_host_self() only ever returned the unprivileged port. Since
+ * nextbsd-kernel#285 root gets host_priv, and libdispatch
+ * (_dispatch_mach_host_port_init) relies on this to demote it.
+ *
+ * KERN_INVALID_HOST -> KERN_INVALID_ARGUMENT: given the unprivileged port
+ * (every non-root caller), this kernel's host_priv intran yields HOST_NULL
+ * and the handler says KERN_INVALID_HOST. XNU says KERN_INVALID_ARGUMENT
+ * there, and that is the code libdispatch treats as "already
+ * unprivileged, keep it"; anything else it reports as a bug. Translate,
+ * so every non-root libdispatch process does not log one.
  */
 kern_return_t
 host_get_host_port(mach_port_name_t host_priv, mach_port_name_t *host_port)
 {
-	if (host_port != NULL)
-		*host_port = host_priv;
-	return KERN_SUCCESS;
+	kern_return_t kr;
+
+	kr = host_get_special_port(host_priv, HOST_LOCAL_NODE, HOST_PORT,
+	    host_port);
+	if (kr == KERN_INVALID_HOST)
+		kr = KERN_INVALID_ARGUMENT;
+	return (kr);
 }
 
 /*
- * host_request_notification — register a port to receive host
- * notifications (calendar change etc.). Stub: succeed but never
- * deliver. libdispatch's calendar-change subscriber still works at
- * call time; the timer subsystem polls clock_gettime independently.
+ * host_request_notification: MIG (mach_host 217, #93 group 4).
+ *
+ * Used to return KERN_SUCCESS and never deliver. The kernel accepts
+ * HOST_NOTIFY_CALENDAR_CHANGE only (KERN_INVALID_ARGUMENT otherwise),
+ * keeps the send-once right MIG makes from `notify_port`, and when the
+ * wall clock is stepped (settimeofday / clock_settime) sends it a
+ * host_calendar_changed message, msgid HOST_CALENDAR_CHANGED_REPLYID
+ * (950), and clears the registration. libdispatch (event_kevent.c,
+ * HOST_NOTIFY_CALENDAR_SET == HOST_NOTIFY_CALENDAR_CHANGE here) handles
+ * 950 and re-registers.
  */
 kern_return_t
 host_request_notification(mach_port_name_t host, int notify_type,
     mach_port_name_t notify_port)
 {
+#ifdef LIBMACH_HAVE_MIG_CLIENT
+	return (_kernelrpc_host_request_notification(host, notify_type,
+	    notify_port));
+#else
 	(void)host;
 	(void)notify_type;
 	(void)notify_port;
-	return KERN_SUCCESS;
+	return KERN_RESOURCE_SHORTAGE;
+#endif
 }
 
 /*
