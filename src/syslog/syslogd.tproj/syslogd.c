@@ -81,14 +81,7 @@ struct global_s global;
 int klog_in_init(void);
 int klog_in_reset(void);
 int klog_in_close(void);
-/*
- * FreeBSD port: klog_in / udp_in ingest via a DISPATCH_SOURCE_TYPE_READ
- * source whose dispatch_resume() deadlocks in mach_msg_send() under this
- * port's libdispatch (task #41).  Disabled until libdispatch's HAVE_MACH
- * source-registration path works; bsd_in (UNIX-socket input, pthread
- * based) is unaffected and remains the live local-syslog ingest path.
- */
-static int activate_klog_in = 0;
+static int activate_klog_in = 1;
 
 /* bsd_in: FreeBSD-only UNIX-socket input (Phase J3). */
 int bsd_in_init(void);
@@ -101,8 +94,7 @@ static int activate_bsd_in = 1;
 int udp_in_init(void);
 int udp_in_reset(void);
 int udp_in_close(void);
-/* Disabled -- see activate_klog_in note above (task #41). */
-static int activate_udp_in = 0;
+static int activate_udp_in = 1;
 
 /* Output Modules */
 int bsd_out_init(void);
