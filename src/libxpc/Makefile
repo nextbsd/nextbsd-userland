@@ -11,9 +11,12 @@
 # layout — /usr/lib/system/libxpc.so. Headers at /usr/include/xpc/.
 #
 # Vendored from ravynOS, which itself imported from NextBSD. Local subr_
-# nvlist.c + subr_nvpair.c carry their own copies of FreeBSD libnv (the
-# only consumer of libnv in this stack), so we don't need to link -lnv;
-# the symbols are statically rolled in.
+# nvlist.c + subr_nvpair.c are libxpc's own private fork of FreeBSD libnv,
+# used only inside libxpc (xpc_dictionary.c / xpc_misc.c serialization). Its
+# wire format differs from base libnv (extra nvlh_type header byte, no
+# nvph_nitems), so it is NOT interchangeable with base libnv or the kernel's
+# nvlist(9). Other NextBSD consumers (libIOKit) link base libnv (-lnv,
+# <sys/nv.h>) instead; see the visibility note at the bottom of this file.
 #
 # Build:   cd src/libxpc && make
 # Install: make DESTDIR=/path/to/rootfs install
@@ -98,6 +101,16 @@ LIBADD+=	sbuf pthread
 # provides them.
 LDADD+=		-Wl,--allow-shlib-undefined
 LDADD+=		-Wl,-rpath,${PREFIX}/lib/system
+
+# Keep the private nvlist copy private: build subr_nvlist.c / subr_nvpair.c
+# with hidden visibility so libxpc.so does not export nvlist_* / nvpair_*.
+# Those names are also exported by base libnv, so if libxpc exported them a
+# process loading both libraries (libxpc, plus libIOKit -> base libnv)
+# could bind libIOKit's nvlist_unpack() to libxpc's incompatible copy, and
+# libxpc's own calls could bind to base libnv. Hidden symbols bind locally
+# inside libxpc.so, so each library always uses its own nvlist code.
+CFLAGS.subr_nvlist.c+=	-fvisibility=hidden
+CFLAGS.subr_nvpair.c+=	-fvisibility=hidden
 
 PREFIX?=	/usr
 

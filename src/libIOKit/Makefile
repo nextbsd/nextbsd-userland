@@ -52,11 +52,9 @@ CFLAGS+=	-I${.CURDIR}
 
 # liblaunch + launchd/freebsd-shims supply Apple shim headers
 # (AvailabilityMacros.h etc.) pulled transitively by the CoreFoundation
-# public headers. -I libxpc gives IOKitMatching.c the `nv.h` nvlist API
-# used to decode the /dev/ioregistry IOREGIOCPROPS property bag.
+# public headers.
 CFLAGS+=	-I${.CURDIR}/../launchd/liblaunch
 CFLAGS+=	-I${.CURDIR}/../launchd/freebsd-shims
-CFLAGS+=	-I${.CURDIR}/../libxpc
 
 SYSROOT?=
 .if !empty(SYSROOT)
@@ -71,15 +69,13 @@ LIBDIR=		${PREFIX}/lib/system
 
 # -lCoreFoundation: the CFDictionary / CFString / CFNumber object
 # model behind the iter-2 property and matching surface (the public
-# header pulls CoreFoundation too). -lxpc: the nvlist API
-# (nvlist_unpack / next / get_*) IOKitMatching.c uses to decode the
-# /dev/ioregistry IOREGIOCPROPS property bag. -lsystem_dispatch +
+# header pulls CoreFoundation too). -lsystem_dispatch +
 # -lsystem_blocks: the iter-4 IONotificationPortSetDispatchQueue +
 # dispatch_async_f path (the public header pulls <dispatch/dispatch.h>
 # too). -lsystem_kernel: mach_msg + the Mach port syscalls behind
 # the IONotificationPort receive loop. -lpthread: pthread_once for the
 # lazy /dev/ioregistry fd + the IONotificationPort receive thread.
-LDADD+=		-lCoreFoundation -lxpc
+LDADD+=		-lCoreFoundation
 LDADD+=		-lsystem_dispatch -l:libsystem_blocks.so
 LDADD+=		-lsystem_kernel -llaunch
 LDADD+=		-Wl,--allow-shlib-undefined
@@ -88,5 +84,9 @@ LDADD+=		-Wl,-rpath,${PREFIX}/lib/system
 PREFIX?=	/usr
 
 # FreeBSD base libs: releng/15.1 src.libnames.mk requires LIBADD, not LDADD+=-lfoo.
-LIBADD+=	pthread
+# nv: base FreeBSD libnv (<sys/nv.h>), the same nvlist code the kernel uses to
+# pack the /dev/ioregistry IOREGIOCPROPS property bag (iokit_registry.c), so
+# the wire format matches. IOKitMatching.c decodes the bag with it. libxpc's
+# private nvlist copy has a different wire format and is not used here.
+LIBADD+=	pthread nv
 .include <bsd.lib.mk>

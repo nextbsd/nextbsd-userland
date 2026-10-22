@@ -15,7 +15,7 @@
 
 #include "ioregistry.h"		/* vendored K1 ABI; canonical in nextbsd-kernel */
 
-#include "nv.h"			/* libxpc nvlist API (IOREGIOCPROPS property bag) */
+#include <sys/nv.h>		/* base libnv: same wire format the kernel packs */
 
 #include <CoreFoundation/CoreFoundation.h>
 
@@ -174,7 +174,9 @@ IORegistryEntryCreateCFProperties(io_registry_entry_t entry,
 			return (*properties != NULL ? KERN_SUCCESS
 			    : kIOReturnError);
 		}
-		nv = nvlist_unpack(buf, len);
+		/* Base libnv, matching the kernel's nvlist_pack(). The kernel
+		 * creates the bag with nvlist_create(0), so unpack with 0. */
+		nv = nvlist_unpack(buf, len, 0);
 		free(buf);
 		if (nv == NULL)
 			return (kIOReturnError);
