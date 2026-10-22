@@ -1,6 +1,6 @@
 /* os/alloc_once_private.h — FreeBSD shim. Apple's slot-indexed
  * once-init allocation. Used for libsystem-wide singletons. Map to
- * pthread_once + heap allocation. */
+ * a mutex-guarded slot table + heap allocation. */
 #ifndef _FREEBSD_SHIM_OS_ALLOC_ONCE_PRIVATE_H_
 #define _FREEBSD_SHIM_OS_ALLOC_ONCE_PRIVATE_H_
 
@@ -8,14 +8,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Apple defines os_alloc_token_* enum slots; pick high numbers we
- * don't conflict with. Real impl on Apple uses a fixed table; we
- * just allocate-on-demand per slot. */
+/* Apple defines os_alloc_token_* enum slots. Like Apple's, ours index
+ * a fixed per-process table and allocate a slot on first use. */
 typedef int os_alloc_token_t;
 
-/* Apple's predefined slot keys. We just pick numbers; the slot table
- * is per-process and we malloc on demand instead of using a real
- * table, so collisions don't matter. */
+/* Apple's predefined slot keys. We just pick numbers; each must be
+ * unique and no greater than OS_ALLOC_ONCE_KEY_MAX, which indexes the
+ * slot table in os_alloc_once.c. */
 #define OS_ALLOC_ONCE_KEY_LIBSYSTEM_NOTIFY	1
 #define OS_ALLOC_ONCE_KEY_LIBXPC		2
 #define OS_ALLOC_ONCE_KEY_LIBDISPATCH		3
@@ -26,16 +25,18 @@ typedef int os_alloc_token_t;
 #define OS_ALLOC_ONCE_KEY_LIBSYSTEM_TRACE	8
 #define OS_ALLOC_ONCE_KEY_MAX			32
 
-/* Generic once-allocator. Apple's version takes a slot index and a
- * size; returns the (zero-initialized) pointer, allocating once
- * per slot. Our stub uses a malloc'd block on first call. */
-static inline void *
-os_alloc_once(os_alloc_token_t token, size_t sz, void (*init)(void *))
-{
-	(void)token;
-	void *p = calloc(1, sz);
-	if (p && init) init(p);
-	return p;
-}
+/*
+ * Generic once-allocator, as on Apple: one zero-filled block per slot,
+ * init() run exactly once, and every later call for that slot returns
+ * the same pointer for the life of the process.
+ *
+ * Declared here and defined in freebsd-shims/os_alloc_once.c, so
+ * libnotify has a single slot table. The old static inline ignored the
+ * token and called calloc()+init() on every call (nextbsd-userland#188),
+ * and even a correct static inline would give each translation unit its
+ * own table. Hidden, so the table stays private to libnotify.so.
+ */
+__attribute__((visibility("hidden")))
+void *os_alloc_once(os_alloc_token_t token, size_t sz, void (*init)(void *));
 
 #endif
