@@ -18,13 +18,6 @@ __BEGIN_DECLS
  */
 int launchd_early_sethostname(char *out, size_t outsz);
 
-/*
- * Open /dev/klog and leak the fd so the kernel routes log() / printf()
- * to TOLOG only and skips TOCONS. Returns the fd on success
- * (intentionally leaked, do not close), -1 on open failure.
- */
-int launchd_early_open_klog(void);
-
 __END_DECLS
 
 #endif /* _LAUNCHD_EARLY_H_ */
