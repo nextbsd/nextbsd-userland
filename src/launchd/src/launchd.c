@@ -197,8 +197,14 @@ main(int argc, char *const *argv)
 	if (pid1_magic) {
 		pid1_magic_init();
 
+		/* NextBSD (nextbsd/nextbsd#540): only a verbose boot logs to
+		 * /dev/console, as the message below says. On Darwin the console
+		 * is always open but hidden behind the boot screen; NextBSD has no
+		 * boot screen, so a normal boot keeps it closed and launchd's
+		 * messages reach syslog only (the log drain, #541).
+		 */
 		int cfd = -1;
-		if ((cfd = open(_PATH_CONSOLE, O_WRONLY | O_NOCTTY)) != -1) {
+		if (launchd_verbose_boot && (cfd = open(_PATH_CONSOLE, O_WRONLY | O_NOCTTY)) != -1) {
 			_fd(cfd);
 			if (!(launchd_console = fdopen(cfd, "w"))) {
 				(void)close(cfd);
