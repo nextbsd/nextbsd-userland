@@ -46,6 +46,7 @@ SRCS=		libnotify.c \
 		notify_client.c \
 		table.c \
 		freebsd-shims/os_collections.c \
+		freebsd-shims/os_alloc_once.c \
 		freebsd-shims/fileport_stub.c \
 		freebsd-shims/libnotify_selfcontain.c
 
