@@ -2954,25 +2954,7 @@ print_jobs(launch_data_t j, const char *key, void *context __attribute__((unused
 		label = "(unknown)";
 
 	if (pido) {
-		/*
-		 * Print the last exit status alongside the PID, as Apple does.
-		 * A running job on macOS shows e.g. "978  0  com.apple.progressd";
-		 * we printed "978  -  ..." because this hardcoded "-" instead of
-		 * reading LAUNCH_JOBKEY_LASTEXITSTATUS, which job_export() always
-		 * supplies (core.c) regardless of whether the job is running.
-		 */
-		int wstatus = (stato != NULL) ?
-		    (int)launch_data_get_integer(stato) : 0;
-		if (WIFSIGNALED(wstatus)) {
-			fprintf(stdout, "%lld\t-%d\t%s\n",
-			    launch_data_get_integer(pido), WTERMSIG(wstatus),
-			    label);
-		} else {
-			fprintf(stdout, "%lld\t%d\t%s\n",
-			    launch_data_get_integer(pido),
-			    WIFEXITED(wstatus) ? WEXITSTATUS(wstatus) : 0,
-			    label);
-		}
+		fprintf(stdout, "%lld\t-\t%s\n", launch_data_get_integer(pido), label);
 	} else if (stato) {
 		int wstatus = (int)launch_data_get_integer(stato);
 		if (WIFEXITED(wstatus)) {
