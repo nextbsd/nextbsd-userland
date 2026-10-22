@@ -54,6 +54,7 @@
 #include <quarantine.h>
 #endif
 #include "daemon.h"
+#include <vproc_priv.h>
 
 #define SERVICE_NAME "com.apple.system.logger"
 #define SERVER_STATUS_ERROR -1
@@ -828,6 +829,26 @@ main(int argc, const char *argv[])
 		});
 	}
 	_PJ_BC("after dispatch database_server (skipped if no server_port)");
+
+#if !TARGET_OS_SIMULATOR
+	asldebug("starting launchd input channel\n");
+	/*
+	 * Start launchd service
+	 * This pins a thread in _vprocmgr_log_drain.  Eventually we will either
+	 * remove the whole stderr/stdout -> ASL mechanism entirely, or come up 
+	 * with a communication channel that we can trigger with a dispatch source.
+	 *
+	 * NextBSD (#541): restored from syslog-217.1.4; the modern syslogd we
+	 * vendor dropped it, so launchd's log queue was never drained. Started
+	 * after database_server so the #78 ordering above is unchanged. Apple
+	 * loops forever; a drain that fails (e.g. not run by launchd) would
+	 * then spin, so stop draining on error instead.
+	 */
+	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+		while (_vprocmgr_log_drain(NULL, NULL, launchd_callback) == NULL);
+		asldebug("launchd log drain failed; launchd input channel stopped\n");
+	});
+#endif
 
 
 #if !TARGET_OS_SIMULATOR
