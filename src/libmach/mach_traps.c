@@ -657,10 +657,35 @@ mach_port_get_attributes(mach_port_name_t task, mach_port_name_t name,
 #endif
 }
 
+/*
+ * mach_port_mod_refs: trap first, MIG fallback, as for mach_port_allocate
+ * above (#84) and as Apple's libsyscall does.
+ *
+ * The trap matters beyond speed. mig_dealloc_reply_port() destroys a MIG
+ * reply port with this call, and the MIG path needs a reply port of its
+ * own; the trap does not, so with it the reply-port error path cannot
+ * re-enter MIG at all. The kernel has the handler
+ * (sys__kernelrpc_mach_port_mod_refs_trap) but does not wire it to a
+ * mach.syscall.mach_port_mod_refs slot yet, so today this resolves to
+ * NO_SYSCALL and takes the MIG path; once the kernel wires it, this picks
+ * it up with no further userland change. Until then
+ * mig_dealloc_reply_port() keeps the MIG path from recursing on its own
+ * (see mig_reply_port_destroy below).
+ */
 kern_return_t
 mach_port_mod_refs(mach_port_name_t task, mach_port_name_t name,
     mach_port_right_t right, mach_port_delta_t delta)
 {
+	static int num = SYSCALL_UNRESOLVED;
+	int sc = resolve_syscall_once(&num, "mach_port_mod_refs");
+
+	if (sc != NO_SYSCALL) {
+		kern_return_t rv = (kern_return_t)syscall(sc, task, name,
+		    right, delta);
+
+		if (rv != MACH_SEND_INVALID_DEST)
+			return (rv);
+	}
 #ifdef LIBMACH_HAVE_MIG_CLIENT
 	/*
 	 * Real reference counting, finally (#83, 7/7).
@@ -997,13 +1022,39 @@ pid_for_task(mach_port_name_t task, int *pid)
 static pthread_key_t	mig_reply_port_key;
 static pthread_once_t	mig_reply_port_once = PTHREAD_ONCE_INIT;
 
+/*
+ * Set while this thread is inside mig_reply_port_destroy(). See there.
+ */
+static __thread int	mig_reply_port_destroying;
+
+/*
+ * Destroy a reply port's receive right without ever recursing.
+ *
+ * Until the kernel wires the mod_refs trap, mach_port_mod_refs() is itself
+ * a MIG RPC, and a failing MIG RPC calls mig_dealloc_reply_port(), which
+ * lands back here. Callers clear the thread's cached reply port first, so
+ * the nested RPC runs on a fresh reply port rather than the one being
+ * destroyed. If that nested RPC fails too, its own mig_dealloc_reply_port()
+ * finds the guard set and returns: its fresh port is leaked rather than
+ * recursed on. One leaked receive right on a double failure is a far
+ * better outcome than the unbounded recursion (and stack-overflow SIGSEGV)
+ * this replaces.
+ */
+static void
+mig_reply_port_destroy(mach_port_t port)
+{
+	if (port == MACH_PORT_NULL || mig_reply_port_destroying)
+		return;
+	mig_reply_port_destroying = 1;
+	(void)mach_port_mod_refs(mach_task_self(), port,
+	    MACH_PORT_RIGHT_RECEIVE, -1);
+	mig_reply_port_destroying = 0;
+}
+
 static void
 mig_reply_port_dtor(void *p)
 {
-	mach_port_t port = (mach_port_t)(uintptr_t)p;
-	if (port != MACH_PORT_NULL)
-		(void)mach_port_mod_refs(mach_task_self(), port,
-		    MACH_PORT_RIGHT_RECEIVE, -1);
+	mig_reply_port_destroy((mach_port_t)(uintptr_t)p);
 }
 
 /*
@@ -1029,6 +1080,7 @@ static void
 mig_reply_port_atfork_child(void)
 {
 	(void)pthread_setspecific(mig_reply_port_key, (void *)MACH_PORT_NULL);
+	mig_reply_port_destroying = 0;
 }
 
 static void
@@ -1061,26 +1113,45 @@ mig_get_reply_port(void)
 	return port;
 }
 
+/*
+ * Called by MIG stubs after a send that did not consume the reply port
+ * (MACH_SEND_INVALID_{DATA,DEST,HEADER}): the port is still good, so it
+ * stays cached in TSD for the next RPC on this thread. A no-op, as in
+ * Apple's libsyscall.
+ */
 void
 mig_put_reply_port(mach_port_t port)
 {
-	/* Reply port stays cached in TSD for the next RPC on this thread. */
 	(void)port;
 }
 
+/*
+ * Called by MIG stubs on every other error, including a WaitTime timeout
+ * (MACH_RCV_TIMED_OUT): the port may yet receive the late reply, so it is
+ * destroyed and the next mig_get_reply_port() allocates a fresh one.
+ *
+ * Order matters, as in Apple's libsyscall (mig_reply_port.c): forget the
+ * cached port BEFORE destroying it. This used to destroy first, while the
+ * port was still cached, and mach_port_mod_refs() is a MIG RPC here -- so
+ * it went out on the very reply port it was destroying, failed, and its
+ * error path called mig_dealloc_reply_port() on the same port again, until
+ * the stack overflowed (sshd-session cores via pam_launchd's probe timeout,
+ * ~112,000 frames of mig_dealloc_reply_port -> mach_port_mod_refs ->
+ * _kernelrpc_mach_port_mod_refs). mig_reply_port_destroy() also refuses to
+ * re-enter, so a failure of the destroy RPC itself cannot recurse either.
+ */
 void
 mig_dealloc_reply_port(mach_port_t port)
 {
-	/*
-	 * Error path: the cached reply port may be in a bad state, so
-	 * destroy the receive right and clear the cache; the next
-	 * mig_get_reply_port() allocates a fresh one.
-	 */
+	mach_port_t cached;
+
 	(void)pthread_once(&mig_reply_port_once, mig_reply_port_key_init);
-	if (port != MACH_PORT_NULL)
-		(void)mach_port_mod_refs(mach_task_self(), port,
-		    MACH_PORT_RIGHT_RECEIVE, -1);
-	(void)pthread_setspecific(mig_reply_port_key, (void *)MACH_PORT_NULL);
+	cached = (mach_port_t)(uintptr_t)pthread_getspecific(
+	    mig_reply_port_key);
+	if (cached != MACH_PORT_NULL && cached == port)
+		(void)pthread_setspecific(mig_reply_port_key,
+		    (void *)MACH_PORT_NULL);
+	mig_reply_port_destroy(port);
 }
 
 /*
