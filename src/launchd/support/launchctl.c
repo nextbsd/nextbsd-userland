@@ -81,6 +81,9 @@
 #if HAVE_SYSTEMSTATS
 #include <systemstats/systemstats.h>
 #endif
+#ifdef __FreeBSD__
+#include <nextbsd_verbose_boot.h>
+#endif
 
 #if HAVE_LIBAUDITD
 #include <bsm/auditd_lib.h>
@@ -4866,6 +4869,12 @@ do_file_init(void)
 	if (r == 0 && (strnstr(bootargs, "-v", len) != NULL || strnstr(bootargs, "-s", len))) {
 		_launchctl_verbose_boot = true;
 	}
+#ifdef __FreeBSD__
+	/* NextBSD has no kern.bootargs; boot -v / -s set the flag instead. */
+	if (nextbsd_verbose_boot()) {
+		_launchctl_verbose_boot = true;
+	}
+#endif
 
 	if (stat("/var/db/.launchd_shutdown_debugging", &sb) == 0 && _launchctl_verbose_boot) {
 		_launchctl_startup_debugging = true;

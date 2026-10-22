@@ -7388,8 +7388,12 @@ jobmgr_init_session(jobmgr_t jm, const char *session_type, bool sflag)
 		bootstrapper->is_bootstrapper = true;
 		if (jobmgr_assumes(jm, pid1_magic)) {
 			// Have our system bootstrapper print out to the console.
-			bootstrapper->stdoutpath = strdup(_PATH_CONSOLE);
-			bootstrapper->stderrpath = strdup(_PATH_CONSOLE);
+			/* NextBSD (nextbsd/nextbsd#540): only on a verbose boot. Otherwise
+			 * launchctl and every boot tool it runs would write to the
+			 * screen before the login prompt.
+			 */
+			bootstrapper->stdoutpath = strdup(launchd_verbose_boot ? _PATH_CONSOLE : _PATH_DEVNULL);
+			bootstrapper->stderrpath = strdup(launchd_verbose_boot ? _PATH_CONSOLE : _PATH_DEVNULL);
 
 			if (launchd_console) {
 				(void)jobmgr_assumes_zero_p(jm, kevent_mod((uintptr_t)fileno(launchd_console), EVFILT_VNODE, EV_ADD | EV_ONESHOT, NOTE_REVOKE, 0, jm));

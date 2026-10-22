@@ -84,6 +84,9 @@ extern boolean_t xpc_domain_server(void *request, void *reply);
 #include "job_reply.h"
 
 #include <xpc/launchd.h>
+#ifdef __FreeBSD__
+#include <nextbsd_verbose_boot.h>
+#endif
 
 static mach_port_t ipc_port_set;
 static mach_port_t demand_port_set;
@@ -1556,6 +1559,12 @@ do_file_init(void)
 			launchd_no_jetsam_perm_check = true;
 		}
 	}
+#ifdef __FreeBSD__
+	/* NextBSD has no kern.bootargs; boot -v / -s set the flag instead. */
+	if (pid1_magic && nextbsd_verbose_boot()) {
+		launchd_verbose_boot = true;
+	}
+#endif
 
 	len = sizeof(buff) - 1;
 #if TARGET_OS_EMBEDDED
