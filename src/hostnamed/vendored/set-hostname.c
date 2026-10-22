@@ -101,32 +101,18 @@ set_hostname(CFStringRef hostname)
 		new_name[sizeof(new_name)-1] = '\0';
 		if (strcmp(old_name, new_name) != 0) {
 			if (sethostname(new_name, (int)strlen(new_name)) == 0) {
+				uint32_t	status;
+
 				my_log(LOG_NOTICE,
 				       "setting hostname to \"%s\"",
 				       new_name);
 
-				/* freebsd-launchd-mach carry: skip
-				 * notify_post — our /usr/lib/system/libnotify
-				 * lazily resolves mig_get_special_reply_port
-				 * (XNU-only, see task39-path-b-state) and
-				 * aborts the daemon on first call. Same
-				 * libnotify SPI hole that gates the
-				 * notify_register_dispatch skip in
-				 * load_hostname. Without this carry, every
-				 * set_hostname() call (which is every
-				 * winning-tier decision: ROUND 2 SCPrefs,
-				 * ROUND 3 DHCP, ROUND 4 PTR, the synth
-				 * fallback) trips the lazy resolution and
-				 * kills the daemon; launchd KeepAlive
-				 * restarts it but the new instance re-runs
-				 * the same decision and crashes the same
-				 * way — a tight crash loop that the test
-				 * rounds race against. Subscribers that
-				 * watch "com.apple.system.hostname"
-				 * (mDNSResponder #62) react via the SCDS
-				 * Setup:/System change anyway. Status field
-				 * suppressed because dead code without the
-				 * call. */
+				status = notify_post(HOSTNAME_NOTIFY_KEY);
+				if (status != NOTIFY_STATUS_OK) {
+					my_log(LOG_ERR,
+					       "notify_post(" HOSTNAME_NOTIFY_KEY ") failed: error=%u",
+					       status);
+				}
 			} else {
 				my_log(LOG_ERR,
 				       "sethostname(%s, %lu) failed: %s",
@@ -641,17 +627,9 @@ load_hostname(dispatch_queue_t queue)
 	/* remember this for scheduling reachability callbacks */
 	S_queue = queue;
 
-	/* freebsd-launchd-mach carry: bisect xlogs (temporary) for the
-	 * iter-3c bring-up of vendored set-hostname.c. Daemon exits
-	 * during load_hostname; pinpointing the step. Will revert. */
-	fprintf(stderr, "vendored/load_hostname: pre-SCDynamicStoreCreate\n");
-	fflush(stderr);
-
 	/* register for notifications */
 	store = SCDynamicStoreCreate(NULL, CFSTR("set-hostname"),
 				     update_hostname, NULL);
-	fprintf(stderr, "vendored/load_hostname: post-SCDynamicStoreCreate (store=%p)\n", (void*)store);
-	fflush(stderr);
 	if (store == NULL) {
 		my_log(LOG_ERR,
 		       "SCDynamicStoreCreate() failed: %s",
@@ -661,7 +639,6 @@ load_hostname(dispatch_queue_t queue)
 	keys     = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
 	patterns = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
 
-	fprintf(stderr, "vendored/load_hostname: pre-KeyCreateNetworkServiceEntity\n"); fflush(stderr);
 	/* per-service DHCP option (may contain hostname option) */
 	key = SCDynamicStoreKeyCreateNetworkServiceEntity(NULL,
 							  kSCDynamicStoreDomainState,
@@ -670,21 +647,17 @@ load_hostname(dispatch_queue_t queue)
 	CFArrayAppendValue(patterns, key);
 	CFRelease(key);
 
-	fprintf(stderr, "vendored/load_hostname: pre-KeyCreateComputerName\n"); fflush(stderr);
 	/* BSD hostname */
 	key = SCDynamicStoreKeyCreateComputerName(NULL);
 	CFArrayAppendValue(keys, key);
 	CFRelease(key);
 
-	fprintf(stderr, "vendored/load_hostname: pre-KeyCreateHostNames\n"); fflush(stderr);
 	/* multicast DNS hostname */
 	key = SCDynamicStoreKeyCreateHostNames(NULL);
 	CFArrayAppendValue(keys, key);
 	CFRelease(key);
 
-	fprintf(stderr, "vendored/load_hostname: pre-SetNotificationKeys\n"); fflush(stderr);
 	ok = SCDynamicStoreSetNotificationKeys(store, keys, patterns);
-	fprintf(stderr, "vendored/load_hostname: post-SetNotificationKeys ok=%d\n", ok); fflush(stderr);
 	CFRelease(keys);
 	CFRelease(patterns);
 	if (!ok) {
@@ -693,28 +666,26 @@ load_hostname(dispatch_queue_t queue)
 		       SCErrorString(SCError()));
 		goto error;
 	}
-	fprintf(stderr, "vendored/load_hostname: pre-SetDispatchQueue\n"); fflush(stderr);
 	if (!SCDynamicStoreSetDispatchQueue(store, queue)) {
 		my_log(LOG_ERR,
 		       "SCDynamicStoreSetDispatchQueue() failed: %s",
 		       SCErrorString(SCError()));
 		goto error;
 	}
-	fprintf(stderr, "vendored/load_hostname: post-SetDispatchQueue\n"); fflush(stderr);
 
-	/* freebsd-launchd-mach carry (bring-up): the
-	 * notify_register_dispatch call kills the daemon during iter-3c
-	 * bring-up — likely a libnotify+dispatch_queue interaction bug.
-	 * SKIP it for now; SCDS subscriptions above still drive the
-	 * decision engine on every state change. The notify(3) token is
-	 * an OPTIMIZATION layer ("react quickly to network-config events")
-	 * not the primary trigger. Re-enable once the libnotify issue
-	 * is diagnosed (TODO follow-up). */
-	(void)notify_handler;
-	(void)notify_token;
-	(void)status;
-	fprintf(stderr, "vendored/load_hostname: skipped notify_register_dispatch (bring-up workaround)\n"); fflush(stderr);
-	fprintf(stderr, "vendored/load_hostname: returning normally\n"); fflush(stderr);
+	/* watch for primary service/interface and DNS configuration changes */
+	notify_handler = ^(int token){
+#pragma unused(token)
+		update_hostname(store, NULL, NULL);
+	};
+	status = notify_register_dispatch(_SC_NOTIFY_NETWORK_CHANGE,
+					  &notify_token,
+					  queue,
+					  notify_handler);
+	if (status != NOTIFY_STATUS_OK) {
+		my_log(LOG_ERR, "notify_register_dispatch() failed: %u", status);
+		goto error;
+	}
 
 	return;
 
