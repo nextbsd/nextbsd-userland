@@ -118,11 +118,17 @@ dhcp_pick_interface(char *ifname_out, size_t ifname_sz)
 	return (found ? 0 : -1);
 }
 
+/*
+ * One getifaddrs pass for ifname's AF_LINK address. Returns 0 with mac
+ * filled, else -1 with errno saying why: the getifaddrs errno, ENXIO for
+ * no AF_LINK record, EADDRNOTAVAIL for a record whose sdl_alen is not 6
+ * (*alen_out holds it).
+ */
 static int
-get_interface_mac(const char *ifname, uint8_t mac[6])
+read_interface_mac(const char *ifname, uint8_t mac[6], int *alen_out)
 {
 	struct ifaddrs *ifa, *p;
-	int ok = -1;
+	int ok = -1, err = ENXIO;
 
 	if (getifaddrs(&ifa) != 0)
 		return (-1);
@@ -135,14 +141,66 @@ get_interface_mac(const char *ifname, uint8_t mac[6])
 		if (strcmp(p->ifa_name, ifname) != 0)
 			continue;
 		dl = (const struct sockaddr_dl *)(void *)p->ifa_addr;
-		if (dl->sdl_alen != 6)
+		*alen_out = dl->sdl_alen;
+		if (dl->sdl_alen != 6) {
+			err = EADDRNOTAVAIL;
 			break;
+		}
 		(void)memcpy(mac, LLADDR(dl), 6);
 		ok = 0;
 		break;
 	}
 	freeifaddrs(ifa);
+	if (ok != 0)
+		errno = err;
 	return (ok);
+}
+
+/*
+ * The interface's Ethernet address, retried for up to ~2 s (#408). The
+ * kernel's if_attach() makes the ifnet visible, and posts
+ * KEV_DL_IF_ATTACHED, before ether_ifattach() fills in the lladdr, so a
+ * worker started on configd's Link{Active} can look in that window. The
+ * reason is logged when it first fails and if it never clears; errno is
+ * left as read_interface_mac() set it for the caller's own log line.
+ */
+#define	MAC_RETRY_MS		100
+#define	MAC_RETRY_TRIES		20
+
+static int
+get_interface_mac(const char *ifname, uint8_t mac[6])
+{
+	struct timespec ts = { 0, MAC_RETRY_MS * 1000000L };
+	const char *more;
+	int alen = 0, err = 0, i;
+
+	for (i = 0; i < MAC_RETRY_TRIES; i++) {
+		if (read_interface_mac(ifname, mac, &alen) == 0) {
+			if (i > 0)
+				xlog("get_interface_mac(%s): lladdr visible "
+				    "after %d ms", ifname, i * MAC_RETRY_MS);
+			return (0);
+		}
+		err = errno;
+		more = (i == 0 && !got_term) ? ", retrying" : "";
+		if (i == 0 || i == MAC_RETRY_TRIES - 1 || got_term) {
+			if (err == ENXIO)
+				xlog("get_interface_mac(%s): no AF_LINK "
+				    "record%s", ifname, more);
+			else if (err == EADDRNOTAVAIL)
+				xlog("get_interface_mac(%s): sdl_alen %d "
+				    "!= 6%s", ifname, alen, more);
+			else
+				xlog("get_interface_mac(%s): getifaddrs: "
+				    "%s%s", ifname, strerror(err), more);
+		}
+		if (got_term)
+			break;
+		if (i < MAC_RETRY_TRIES - 1)
+			(void)nanosleep(&ts, NULL);
+	}
+	errno = err;
+	return (-1);
 }
 
 static int
