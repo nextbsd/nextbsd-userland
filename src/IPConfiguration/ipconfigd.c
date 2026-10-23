@@ -780,15 +780,18 @@ dhcp_run_on_interface(const char *ifname, uint32_t lease_cap_secs,
 	struct dhcp_lease lease;
 
 	xlog("selected interface for DHCPv4: %s", ifname);
-	if (dhcp_lease_acquire(ifname, &lease) != 0) {
-		/* dhcp_lease_acquire logged IPCFG-BOUND-FAIL on its own line */
+	if (dhcp_lease_acquire(ifname, &lease, stop) != 0) {
+		/*
+		 * dhcp_lease_acquire logged IPCFG-BOUND-FAIL on its own line,
+		 * or gave up early because `stop` was set (#410).
+		 */
 		return;
 	}
 
 	/*
-	 * The DISCOVER ladder can burn ~28s. If the link dropped or the
-	 * daemon is going down in that window, do not install a lease we
-	 * are about to have to rip back out.
+	 * dhcp_lease_acquire gives up on `stop`, but a stop can still land
+	 * between the ACK and here. Do not install a lease we are about to
+	 * have to rip back out.
 	 */
 	if (got_term || (stop != NULL && *stop)) {
 		xlog("%s: link/daemon went away during DHCP — discarding lease",
@@ -1215,10 +1218,10 @@ ipconfigd_get_method(const char *ifname, struct ipconfig_method_info *out)
  *
  * The worker's own teardown already deconfigures, unpublishes, clears
  * bound_state and re-elects the primary, but it only runs once the worker
- * notices `stop`: an in-flight exchange first has to finish its retransmit
- * ladder. Clearing the binding and re-electing here as well means the
- * primary moves off a vanished interface now rather than whenever its worker
- * gets round to it. Both sides are idempotent, so the double clear is
+ * notices `stop` — within about a second, whether it is bound or still in
+ * its DHCP exchange (#410). Clearing the binding and re-electing here as
+ * well means the primary moves off a vanished interface now rather than
+ * whenever its worker gets round to it. Both sides are idempotent, so the double clear is
  * harmless.
  */
 static void

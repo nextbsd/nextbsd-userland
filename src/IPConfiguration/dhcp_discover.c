@@ -538,18 +538,21 @@ parse_dhcp_reply(const uint8_t *frame, size_t frame_len,
 /*
  * Wait up to `deadline` (CLOCK_MONOTONIC absolute) for a DHCP
  * reply matching want_xid + want_msgtype. Returns 1 on match, 0
- * on timeout, -1 on shutdown signal or fatal read error.
+ * on timeout, -1 on shutdown signal, stop request or fatal read
+ * error.
  *
  * The BPF descriptor has a 1s BIOCSRTIMEOUT so the wait wakes
- * every second to re-check got_term + the deadline.
+ * every second to re-check got_term, `*stop` (NULL: none) and the
+ * deadline.
  */
 static int
 recv_dhcp_reply(int bpf_fd, uint32_t want_xid, uint8_t want_msgtype,
-    struct timespec *deadline, struct dhcp_lease *lease)
+    struct timespec *deadline, struct dhcp_lease *lease,
+    volatile sig_atomic_t *stop)
 {
 	uint8_t rxbuf[4096];
 
-	while (!got_term) {
+	while (!got_term && !(stop != NULL && *stop)) {
 		struct timespec now;
 		ssize_t n;
 		uint8_t *p, *end;
@@ -642,7 +645,8 @@ deadline_in(struct timespec *out, int seconds)
 }
 
 int
-dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out)
+dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
+    volatile sig_atomic_t *stop)
 {
 	uint8_t mac[6];
 	uint8_t frame[1024];
@@ -687,7 +691,7 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out)
 	for (try = 0; try < DHCP_MAX_RETRIES; try++) {
 		int r;
 
-		if (got_term)
+		if (got_term || (stop != NULL && *stop))
 			goto shutdown;
 		frame_len = build_dhcp_msg(frame, mac, xid,
 		    DHCP_MTYPE_DISCOVER, NULL, NULL, NULL);
@@ -701,7 +705,7 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out)
 
 		deadline_in(&deadline, retry_seconds[try]);
 		r = recv_dhcp_reply(bpf_fd, xid, DHCP_MTYPE_OFFER,
-		    &deadline, &offer);
+		    &deadline, &offer, stop);
 		if (r == 1)
 			break;
 		if (r < 0)
@@ -761,7 +765,7 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out)
 	for (try = 0; try < DHCP_MAX_RETRIES; try++) {
 		int r;
 
-		if (got_term)
+		if (got_term || (stop != NULL && *stop))
 			goto shutdown;
 		frame_len = build_dhcp_msg(frame, mac, xid,
 		    DHCP_MTYPE_REQUEST, &offer.addr, &offer.server, NULL);
@@ -775,7 +779,7 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out)
 
 		deadline_in(&deadline, retry_seconds[try]);
 		r = recv_dhcp_reply(bpf_fd, xid, DHCP_MTYPE_ACK,
-		    &deadline, lease_out);
+		    &deadline, lease_out, stop);
 		if (r == 1) {
 			(void)close(bpf_fd);
 			return (0);
@@ -790,10 +794,15 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out)
 	return (-1);
 
 shutdown:
+	(void)close(bpf_fd);
+	if (!got_term && stop != NULL && *stop) {
+		/* Not a failure: the service was stopped (#410). */
+		xlog("%s: DHCP exchange stopped", ifname);
+		return (-1);
+	}
 	xlog("DHCP exchange interrupted by signal (got_term=%d)",
 	    (int)got_term);
 	xlog("IPCFG-BOUND-FAIL");
-	(void)close(bpf_fd);
 	return (-1);
 }
 
@@ -878,7 +887,7 @@ dhcp_renew(const char *ifname, const struct dhcp_lease *existing,
 
 		deadline_in(&deadline, retry_seconds[try]);
 		r = recv_dhcp_reply(bpf_fd, xid, DHCP_MTYPE_ACK,
-		    &deadline, new_lease);
+		    &deadline, new_lease, NULL);
 		if (r == 1) {
 			(void)close(bpf_fd);
 			return (0);
