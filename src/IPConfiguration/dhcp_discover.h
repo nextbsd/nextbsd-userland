@@ -39,8 +39,15 @@ extern volatile sig_atomic_t got_term;
  *
  * Logs IPCFG-BOUND-FAIL on its own line and returns non-zero on
  * any error / timeout.
+ *
+ * `*stop` (may be NULL) is the worker's per-interface stop request:
+ * it is checked alongside got_term between sends and on every BPF
+ * read wakeup, so a stopped service gives up within about a second
+ * instead of finishing the retransmit ladder (#410). A stop returns
+ * non-zero without the IPCFG-BOUND-FAIL marker.
  */
-int	dhcp_lease_acquire(const char *ifname, struct dhcp_lease *out);
+int	dhcp_lease_acquire(const char *ifname, struct dhcp_lease *out,
+	    volatile sig_atomic_t *stop);
 
 /*
  * Renew a bound lease — send a DHCPREQUEST in BOUND/RENEWING form
