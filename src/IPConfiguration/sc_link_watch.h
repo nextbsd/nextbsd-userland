@@ -84,9 +84,10 @@ int link_active_in_store(const char *ifname);
 /*
  * Wait for duplicate-address detection on `addr` (a struct in6_addr just
  * installed on `ifname`) to finish, as Darwin's rtadv.c waits before it
- * publishes (#407). Watches State:/Network/Interface/<if>/IPv6, which
+ * publishes (#407). Reads State:/Network/Interface/<if>/IPv6, which
  * configd republishes when the kernel's DAD-completion event changes the
- * address's flags, and returns once that entry lists `addr` without
+ * address's flags, again on each change the link watch sees (and at least
+ * every 250 ms), and returns once that entry lists `addr` without
  * IN6_IFF_TENTATIVE:
  *
  *   SC_V6_DAD_OK          DAD passed
