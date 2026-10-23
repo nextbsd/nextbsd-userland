@@ -26,12 +26,17 @@
  * Invoked (on a libdispatch worker thread) for every change to a watched
  * interface's Link entity, AND for each one found by the initial scan.
  * `ifname` is the BSD interface name; `active` is non-zero when the link
- * is up (Active:true), zero when it is present but down. `lease_cap_secs`
- * is forwarded verbatim from sc_link_watch_start. The callback decides
- * what to do (e.g. admin-up the interface when down so its link can
- * negotiate; DHCP when up, skipping if already bound) and may block in
- * the DHCP + lease loop. lo0 is filtered by the watcher.
+ * is up (Active:true), zero when it is present but down, and
+ * SC_LINK_GONE when the Link key has been removed — configd drops it when
+ * the interface departs, which on Darwin is what ends the service.
+ * `lease_cap_secs` is forwarded verbatim from sc_link_watch_start. The
+ * callback decides what to do (e.g. admin-up the interface when down so
+ * its link can negotiate; DHCP when up, skipping if already bound; tear
+ * the interface's worker down when gone) and may block in the DHCP +
+ * lease loop. lo0 is filtered by the watcher.
  */
+#define	SC_LINK_GONE	(-1)
+
 typedef void (*sc_link_watch_cb)(const char *ifname, int active,
 	    uint32_t lease_cap_secs);
 
