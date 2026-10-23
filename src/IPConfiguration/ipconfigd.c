@@ -1307,6 +1307,7 @@ static void
 on_link_event(const char *ifname, int active, uint32_t lease_cap_secs)
 {
 	struct ipconfig_method_info method;
+	struct dhcp_worker *w;
 	int i;
 
 	/* loopback never carries a DHCP service; the watcher filters lo0 too. */
@@ -1340,6 +1341,48 @@ on_link_event(const char *ifname, int active, uint32_t lease_cap_secs)
 				resolv_conf_sync();
 			}
 			return;
+		}
+
+		/*
+		 * Lost the link mid-exchange: a worker still in DISCOVER /
+		 * REQUEST would otherwise retry into a dead link and hold the
+		 * slot, swallowing the next link-up (#415). Apple sends an
+		 * unbound client back to INIT on link-down; we stop the worker
+		 * and mark it to restart, so its exit runs service_start(),
+		 * which starts a fresh exchange if the link is back by then.
+		 *
+		 * Not on a stale Active:0 (#250): a late NIC's leading Active:0
+		 * can be delivered after an Active:1 already started the
+		 * worker. Debounce against the store value, which is
+		 * authoritative, and leave the worker alone if it shows Active.
+		 */
+		pthread_mutex_lock(&g_workers_lock);
+		w = worker_find_locked(ifname);
+		pthread_mutex_unlock(&g_workers_lock);
+		if (w != NULL) {
+			for (i = 0; i < 2; i++) {
+				struct timespec ts = { .tv_sec = 0,
+				    .tv_nsec = 500 * 1000 * 1000 };	/* 500ms */
+
+				if (link_active_in_store(ifname))
+					return;
+				(void)nanosleep(&ts, NULL);
+			}
+			if (link_active_in_store(ifname))
+				return;
+			pthread_mutex_lock(&g_workers_lock);
+			w = worker_find_locked(ifname);
+			if (w != NULL) {
+				w->stop = 1;
+				w->conflict = false;	/* exit, not retry */
+				w->restart = true;
+			}
+			pthread_mutex_unlock(&g_workers_lock);
+			if (w != NULL) {
+				xlog("link-down(%s) — not bound; unwinding its "
+				    "in-progress worker", ifname);
+				return;
+			}
 		}
 
 		/* Configured to be left alone (#58): not even admin-up. */
