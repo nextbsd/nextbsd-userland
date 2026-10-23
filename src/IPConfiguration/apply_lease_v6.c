@@ -6,12 +6,15 @@
  *      || mac[0..3] || ff || fe || mac[3..6], with the universal/local
  *      bit (mac[0] bit 1) inverted.
  *   2. SIOCAIFADDR_IN6 with the prefix + lifetimes from the RA's PIO.
- *      The kernel runs DAD on it; a duplicate arrives later as configd's
+ *      The kernel runs DAD on it. ipconfigd.c waits for DAD to finish
+ *      (#407) — bounded by v6_dad_budget_ms() — before it goes on; a
+ *      duplicate arrives as configd's
  *      State:/Network/Interface/<if>/IPv6DuplicatedAddress/<ip>/<hw>
  *      notification, and ipconfigd.c withdraws the address then (#349).
- *   3. RTM_ADD default IPv6 route via the RA's source link-local. The
- *      gateway sockaddr_in6 carries sin6_scope_id = ifindex so the
- *      kernel knows which interface the LL belongs to.
+ *   3. Once DAD has passed, RTM_ADD default IPv6 route via the RA's
+ *      source link-local (install_v6_default_route). The gateway
+ *      sockaddr_in6 carries sin6_scope_id = ifindex so the kernel knows
+ *      which interface the LL belongs to.
  *
  * Deferred for later iters: lifetime renewal, RDNSS, multiple
  * prefixes, RFC 7217 stable privacy addresses (iter 7a uses
@@ -24,6 +27,7 @@
 #include <sys/types.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/sysctl.h>
 
 #include <net/if.h>
 #include <net/if_dl.h>
@@ -415,22 +419,50 @@ apply_ra_lease(const char *ifname, const struct ra_info *info,
 		return (-1);
 
 	/*
-	 * No wait for DAD here. The kernel reports a duplicate with
-	 * KEV_INET6_NEW_USER_ADDR, which configd posts as the
-	 * IPv6DuplicatedAddress notification; ipconfigd.c then takes the
-	 * address, ::/0 and the IPv6 publish back, whenever DAD (or a
-	 * later defender) turns it up.
+	 * The address is still tentative. ::/0 waits for DAD, as Darwin's
+	 * rtadv.c holds everything until the address is no longer
+	 * tentative: ipconfigd.c installs it once DAD has passed (#407).
 	 */
 	*out_addr = slaac;
-
-	/*
-	 * Route install is best-effort. If it fails (e.g. EEXIST from a
-	 * stale ::/0 default) we still report success — the address is
-	 * up and reachable on-link.
-	 */
-	if (install_v6_default_route(&info->router_lladdr,
-	    info->router_scope_id) != 0)
-		xlog("default ::/0 route install failed (non-fatal)");
-
 	return (0);
+}
+
+/*
+ * How long DAD on `ifname` can take: dad_count NS probes RetransTimer
+ * apart, plus the up-to-MAX_RTR_SOLICITATION_DELAY random delay the
+ * kernel may put in front of the first probe, plus slack — #342's
+ * bound. Only a backstop for a missed DAD-completion event.
+ */
+#ifndef MAX_RTR_SOLICITATION_DELAY
+#define MAX_RTR_SOLICITATION_DELAY	1	/* RFC 4861 §10, seconds */
+#endif
+#define DAD_SLACK_MS	500
+
+unsigned
+v6_dad_budget_ms(const char *ifname)
+{
+	struct in6_ndireq ndi;
+	unsigned retrans_ms;
+	int sock, dad_count;
+	size_t len;
+
+	dad_count = 1;
+	len = sizeof(dad_count);
+	if (sysctlbyname("net.inet6.ip6.dad_count", &dad_count, &len,
+	    NULL, 0) != 0 || dad_count < 0)
+		dad_count = 1;
+
+	retrans_ms = 1000;	/* RFC 4861 RETRANS_TIMER */
+	sock = socket(AF_INET6, SOCK_DGRAM, 0);
+	if (sock >= 0) {
+		(void)memset(&ndi, 0, sizeof(ndi));
+		(void)strlcpy(ndi.ifname, ifname, sizeof(ndi.ifname));
+		if (ioctl(sock, SIOCGIFINFO_IN6, &ndi) == 0 &&
+		    ndi.ndi.retrans != 0)
+			retrans_ms = ndi.ndi.retrans;
+		(void)close(sock);
+	}
+
+	return (MAX_RTR_SOLICITATION_DELAY * 1000 +
+	    (unsigned)dad_count * retrans_ms + DAD_SLACK_MS);
 }

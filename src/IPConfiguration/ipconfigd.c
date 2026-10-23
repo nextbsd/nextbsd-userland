@@ -99,6 +99,11 @@
  *     address). This replaces #342's SIOCGIFAFLAG_IN6 poll — the kernel's
  *     own DAD event drives it, so a defender that appears after DAD is
  *     caught too.
+ *
+ * Nor is a SLAAC address published while it is still tentative (#407):
+ * ::/0 and State:/Network/Service/<UUID>/IPv6 wait until configd's
+ * State:/Network/Interface/<if>/IPv6 shows DAD has passed, with #342's
+ * DAD interval as the bound in case that change never comes.
  */
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -682,14 +687,36 @@ service_run_bound(const char *ifname, struct dhcp_lease *lease, bool dhcp,
 	rar = ra_acquire(ifname, 15000, &ra);
 	if (rar == 0) {
 		struct in6_addr v6;
+		char a6[INET6_ADDRSTRLEN];
 
 		/*
-		 * DAD runs in the kernel after the install; a duplicate comes
-		 * back as the IPv6DuplicatedAddress notification (#349),
-		 * which v6_commit() honours if it beat us here.
+		 * DAD runs in the kernel after the install. Hold ::/0 and the
+		 * publish until it has passed (#407), as rtadv.c does; a
+		 * duplicate also comes back as the IPv6DuplicatedAddress
+		 * notification (#349), which v6_commit() honours if it beat
+		 * us here — after a timed-out wait, say.
 		 */
 		v6_pending(ifname);
-		if (apply_ra_lease(ifname, &ra, &v6) == 0) {
+		if (apply_ra_lease(ifname, &ra, &v6) != 0) {
+			v6_commit(ifname, NULL, NULL, NULL);
+			xlog("IPCFG-RA-MISS: apply_ra_lease failed");
+		} else if (sc_v6_dad_wait(ifname, &v6,
+		    v6_dad_budget_ms(ifname)) == SC_V6_DAD_DUPLICATED) {
+			v6_commit(ifname, NULL, NULL, NULL);
+			(void)inet_ntop(AF_INET6, &v6, a6, sizeof(a6));
+			xlog("%s: DAD failed: %s is a duplicate — removing it",
+			    ifname, a6);
+			(void)remove_v6_address(ifname, &v6);
+			xlog("IPCFG-RA-MISS: SLAAC address is a duplicate");
+		} else {
+			/*
+			 * Route install is best-effort. If it fails we still
+			 * publish — the address is up and reachable on-link.
+			 */
+			if (install_v6_default_route(&ra.router_lladdr,
+			    ra.router_scope_id) != 0)
+				xlog("default ::/0 route install failed "
+				    "(non-fatal)");
 			if (pub != NULL)
 				(void)sc_publish_ipv6(pub, ifname, &v6,
 				    ra.prefix_len, &ra.router_lladdr);
@@ -700,9 +727,6 @@ service_run_bound(const char *ifname, struct dhcp_lease *lease, bool dhcp,
 			 */
 			rtr = ra_router_start(ifname, &ra, &v6);
 			v6_commit(ifname, &v6, &ra, rtr);
-		} else {
-			v6_commit(ifname, NULL, NULL, NULL);
-			xlog("IPCFG-RA-MISS: apply_ra_lease failed");
 		}
 	} else if (rar == 1) {
 		xlog("IPCFG-RA-MISS: no RA in 15s "

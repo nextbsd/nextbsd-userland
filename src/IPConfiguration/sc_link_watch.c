@@ -68,6 +68,11 @@
  * handle_iface_key(): its entity-agnostic parse would read them as a
  * Link/AirPort change for <if>.
  *
+ * DAD completion (#407). sc_v6_dad_wait() opens a short-lived session of
+ * its own on State:/Network/Interface/<if>/IPv6 for the worker thread
+ * that installed a SLAAC address, so the address is published only once
+ * configd shows it no longer tentative.
+ *
  * Single CF translation unit, like sc_publish.c — the rest of the
  * daemon stays plain C.
  */
@@ -77,16 +82,20 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <dispatch/dispatch.h>
 
+#include <sys/types.h>
 #include <sys/socket.h>		/* AF_INET, AF_INET6 */
 
 #include <net/if.h>		/* IFNAMSIZ */
 #include <netinet/in.h>
+#include <netinet6/in6_var.h>	/* IN6_IFF_TENTATIVE, IN6_IFF_DUPLICATED */
 #include <arpa/inet.h>		/* inet_pton */
 
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 static sc_link_watch_cb	g_cb;
 static sc_addr_conflict_cb	g_conflict_cb;
@@ -618,4 +627,172 @@ sc_link_watch_start(sc_link_watch_cb cb, sc_addr_conflict_cb conflict_cb,
 	 * the watch must stay live until exit; there is no stop path.
 	 */
 	return (0);
+}
+
+/*
+ * DAD completion (#407).
+ *
+ * The flags of `addr` in State:/Network/Interface/<if>/IPv6 (configd's
+ * ev_ipv6 shape: parallel Addresses / Flags arrays), or -1 while the
+ * entry does not list it yet.
+ */
+static int
+v6_addr_flags(SCDynamicStoreRef store, CFStringRef key,
+    const struct in6_addr *addr)
+{
+	CFDictionaryRef dict;
+	CFArrayRef addrs, flags;
+	CFIndex i, n;
+	int result = -1;
+
+	dict = SCDynamicStoreCopyValue(store, key);
+	if (dict == NULL)
+		return (-1);
+	if (CFGetTypeID(dict) != CFDictionaryGetTypeID()) {
+		CFRelease(dict);
+		return (-1);
+	}
+	addrs = CFDictionaryGetValue(dict, CFSTR("Addresses"));
+	flags = CFDictionaryGetValue(dict, CFSTR("Flags"));
+	if (addrs == NULL || flags == NULL ||
+	    CFGetTypeID(addrs) != CFArrayGetTypeID() ||
+	    CFGetTypeID(flags) != CFArrayGetTypeID()) {
+		CFRelease(dict);
+		return (-1);
+	}
+	n = CFArrayGetCount(addrs);
+	if (CFArrayGetCount(flags) < n)
+		n = CFArrayGetCount(flags);
+	for (i = 0; i < n && result < 0; i++) {
+		CFStringRef s = CFArrayGetValueAtIndex(addrs, i);
+		CFNumberRef f = CFArrayGetValueAtIndex(flags, i);
+		char buf[INET6_ADDRSTRLEN];
+		struct in6_addr a;
+		int v;
+
+		if (s == NULL || CFGetTypeID(s) != CFStringGetTypeID() ||
+		    f == NULL || CFGetTypeID(f) != CFNumberGetTypeID())
+			continue;
+		if (!CFStringGetCString(s, buf, sizeof(buf),
+		    kCFStringEncodingUTF8) ||
+		    inet_pton(AF_INET6, buf, &a) != 1 ||
+		    memcmp(&a, addr, sizeof(a)) != 0)
+			continue;
+		if (CFNumberGetValue(f, kCFNumberIntType, &v))
+			result = v;
+	}
+	CFRelease(dict);
+	return (result);
+}
+
+/* Change callout: wake the waiting worker thread. */
+static void
+dad_changed(SCDynamicStoreRef store, CFArrayRef changedKeys, void *info)
+{
+	(void)store;
+	(void)changedKeys;
+	dispatch_semaphore_signal((dispatch_semaphore_t)info);
+}
+
+static void
+dad_drain(void *arg)
+{
+	(void)arg;
+}
+
+/*
+ * The value is re-read at least this often even without a wakeup: a
+ * change notification can be raced away (see link_active_in_store), the
+ * stored value cannot.
+ */
+#define	DAD_RECHECK_MS	250
+
+int
+sc_v6_dad_wait(const char *ifname, const void *addr, unsigned timeout_ms)
+{
+	SCDynamicStoreContext ctx;
+	SCDynamicStoreRef store;
+	dispatch_semaphore_t sem;
+	dispatch_queue_t queue = NULL;
+	struct timespec now, end;
+	CFStringRef key;
+	CFArrayRef keys;
+	const void *kvals[1];
+	int flags, rc = SC_V6_DAD_TIMEOUT;
+	long left_ms;
+
+	(void)clock_gettime(CLOCK_MONOTONIC, &end);
+	end.tv_sec += timeout_ms / 1000;
+	end.tv_nsec += (long)(timeout_ms % 1000) * 1000000L;
+	if (end.tv_nsec >= 1000000000L) {
+		end.tv_sec++;
+		end.tv_nsec -= 1000000000L;
+	}
+
+	sem = dispatch_semaphore_create(0);
+	(void)memset(&ctx, 0, sizeof(ctx));
+	ctx.info = sem;
+	store = SCDynamicStoreCreate(NULL, CFSTR("ipconfigd-dad"),
+	    dad_changed, &ctx);
+	key = CFStringCreateWithFormat(NULL, NULL,
+	    CFSTR("State:/Network/Interface/%s/IPv6"), ifname);
+	if (store == NULL || key == NULL) {
+		/* No configd: the bound alone holds the publish back. */
+		xlog("%s: DAD wait: no configd session; waiting %ums",
+		    ifname, timeout_ms);
+		(void)usleep(timeout_ms * 1000);
+		goto out;
+	}
+
+	/* Register before the first read so no change falls between. */
+	kvals[0] = key;
+	keys = CFArrayCreate(NULL, kvals, 1, &kCFTypeArrayCallBacks);
+	if (keys != NULL && SCDynamicStoreSetNotificationKeys(store, keys,
+	    NULL)) {
+		queue = dispatch_queue_create("com.apple.ipconfigd.dad", NULL);
+		if (!SCDynamicStoreSetDispatchQueue(store, queue)) {
+			dispatch_release(queue);
+			queue = NULL;
+		}
+	}
+	if (keys != NULL)
+		CFRelease(keys);
+
+	for (;;) {
+		flags = v6_addr_flags(store, key, addr);
+		if (flags >= 0 && (flags & IN6_IFF_DUPLICATED) != 0) {
+			rc = SC_V6_DAD_DUPLICATED;
+			break;
+		}
+		if (flags >= 0 && (flags & IN6_IFF_TENTATIVE) == 0) {
+			rc = SC_V6_DAD_OK;
+			break;
+		}
+		(void)clock_gettime(CLOCK_MONOTONIC, &now);
+		left_ms = (long)(end.tv_sec - now.tv_sec) * 1000L +
+		    (end.tv_nsec - now.tv_nsec) / 1000000L;
+		if (left_ms <= 0) {
+			xlog("%s: DAD still tentative after %ums; proceeding",
+			    ifname, timeout_ms);
+			break;
+		}
+		if (left_ms > DAD_RECHECK_MS)
+			left_ms = DAD_RECHECK_MS;
+		(void)dispatch_semaphore_wait(sem, dispatch_time(
+		    DISPATCH_TIME_NOW, left_ms * (long)NSEC_PER_MSEC));
+	}
+
+	if (queue != NULL) {
+		(void)SCDynamicStoreSetDispatchQueue(store, NULL);
+		/* Let a callout already queued finish before `sem` goes. */
+		dispatch_sync_f(queue, NULL, dad_drain);
+		dispatch_release(queue);
+	}
+out:
+	if (key != NULL)
+		CFRelease(key);
+	if (store != NULL)
+		CFRelease(store);
+	dispatch_release(sem);
+	return (rc);
 }

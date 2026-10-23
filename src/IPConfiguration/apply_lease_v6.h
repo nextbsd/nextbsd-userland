@@ -3,9 +3,10 @@
  * derived from a Router Advertisement.
  *
  * Iter 7a scope: one address, one default route, best-effort. No
- * lifetime tracking. Duplicate-address detection is the kernel's; a
- * duplicate is acted on when configd's IPv6DuplicatedAddress
- * notification for it arrives (ipconfigd.c, #349).
+ * lifetime tracking. Duplicate-address detection is the kernel's;
+ * ipconfigd.c waits for it to finish before the route and the publish
+ * (#407), and acts on a duplicate when configd's IPv6DuplicatedAddress
+ * notification for it arrives (#349).
  */
 #ifndef APPLY_LEASE_V6_H
 #define APPLY_LEASE_V6_H
@@ -25,19 +26,24 @@ int bring_v6_up(const char *ifname);
 
 /*
  * Build the SLAAC unicast address from `info`'s prefix + an EUI-64
- * derived from `ifname`'s MAC, install it via SIOCAIFADDR_IN6 and add
- * a default route via info->router_lladdr. Returns 0 on success
- * (address installed; route is best-effort and logged separately).
- * The address may still be tentative: DAD runs in the kernel, and a
- * duplicate is reported afterwards by the IPv6DuplicatedAddress
- * notification.
+ * derived from `ifname`'s MAC and install it via SIOCAIFADDR_IN6.
+ * Returns 0 on success. The address is still tentative: DAD runs in
+ * the kernel, and the caller waits for it before adding the default
+ * route via info->router_lladdr (install_v6_default_route) and
+ * publishing.
  *
  * `out_addr` receives the computed SLAAC address for the caller's
- * SCDynamicStore publish; it is populated even if route install
- * fails downstream.
+ * DAD wait and SCDynamicStore publish.
  */
 int apply_ra_lease(const char *ifname, const struct ra_info *info,
     struct in6_addr *out_addr);
+
+/*
+ * Upper bound, in milliseconds, on how long DAD for a new address on
+ * `ifname` can take: the up-to-1s initial delay plus
+ * net.inet6.ip6.dad_count probes RetransTimer apart, plus 500 ms.
+ */
+unsigned v6_dad_budget_ms(const char *ifname);
 
 /*
  * Remove `addr` from `ifname` (SIOCDIFADDR_IN6) — a SLAAC address DAD
