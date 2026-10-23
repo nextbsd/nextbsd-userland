@@ -36,12 +36,6 @@
 #define	kIPCfgEntIPv4		CFSTR("IPv4")
 #define	kIPCfgEntIPv6		CFSTR("IPv6")
 #define	kIPCfgConfigMethod	CFSTR("ConfigMethod")
-#define	kIPCfgMethodDHCP	CFSTR("DHCP")
-#define	kIPCfgMethodManual	CFSTR("Manual")
-#define	kIPCfgMethodINFORM	CFSTR("INFORM")
-#define	kIPCfgMethodBOOTP	CFSTR("BOOTP")
-#define	kIPCfgMethodLinkLocal	CFSTR("LinkLocal")
-#define	kIPCfgMethodFailover	CFSTR("Failover")
 
 /* Apple's <mach/vm_statistics.h> value; libmach's headers lack it. */
 #ifndef VM_FLAGS_ANYWHERE
@@ -218,11 +212,9 @@ _ipconfig_get_option(mach_port_t server, InterfaceName name, int option_code,
 
 /*
  * `ipconfig set <if> <method>`. Root only, as on Apple. The method
- * dictionary is Apple's, so the client is unchanged when the other
- * methods arrive: DHCP and NONE are served today; MANUAL, INFORM and
- * BOOTP need ipconfigd's static service type (#58) and LinkLocal,
- * Failover and the IPv6 methods have no service behind them yet, so
- * they answer operation_not_supported.
+ * dictionary is Apple's: DHCP, MANUAL and NONE are served (#58);
+ * INFORM, BOOTP, LinkLocal, Failover and the IPv6 methods have no
+ * service behind them yet, so they answer operation_not_supported.
  */
 kern_return_t
 _ipconfig_set(mach_port_t server, InterfaceName name, xmlData_t method_data,
@@ -233,7 +225,8 @@ _ipconfig_set(mach_port_t server, InterfaceName name, xmlData_t method_data,
 	CFDataRef data;
 	CFPropertyListRef plist = NULL;
 	CFDictionaryRef dict;
-	CFTypeRef v4, v6, method;
+	CFTypeRef v4, v6;
+	struct ipconfig_method_info info;
 	uint32_t euid = (uint32_t)-1;
 
 	(void)server;
@@ -248,7 +241,9 @@ _ipconfig_set(mach_port_t server, InterfaceName name, xmlData_t method_data,
 
 	/* No method data is NONE (Apple's ipconfig_method_none_e). */
 	if (method_dataCnt == 0) {
-		*status = ipconfigd_set_none(ifname);
+		(void)memset(&info, 0, sizeof(info));
+		info.method = ipconfig_method_none_e;
+		*status = ipconfigd_set_method(ifname, &info);
 		goto done;
 	}
 
@@ -281,20 +276,18 @@ _ipconfig_set(mach_port_t server, InterfaceName name, xmlData_t method_data,
 		*status = ipconfig_status_operation_not_supported_e;
 		goto done;
 	}
-	method = CFDictionaryGetValue(dict, kIPCfgConfigMethod);
-	if (method == NULL || CFGetTypeID(method) != CFStringGetTypeID()) {
+	/*
+	 * Apple's ipconfig_method_info_from_dict(), then set_if() (#58).
+	 * An unknown ConfigMethod, or Manual without an address, is an
+	 * invalid parameter; INFORM, BOOTP, LinkLocal and Failover parse
+	 * but have no service behind them, and ipconfigd_set_method()
+	 * answers operation_not_supported for those.
+	 */
+	if (!ipconfig_method_info_from_dict(
+	    (const struct __CFDictionary *)dict, NULL, &info))
 		*status = ipconfig_status_invalid_parameter_e;
-	} else if (CFEqual(method, kIPCfgMethodDHCP)) {
-		*status = ipconfigd_set_dhcp(ifname);
-	} else if (CFEqual(method, kIPCfgMethodManual) ||
-	    CFEqual(method, kIPCfgMethodINFORM) ||
-	    CFEqual(method, kIPCfgMethodBOOTP) ||
-	    CFEqual(method, kIPCfgMethodLinkLocal) ||
-	    CFEqual(method, kIPCfgMethodFailover)) {
-		*status = ipconfig_status_operation_not_supported_e;
-	} else {
-		*status = ipconfig_status_invalid_parameter_e;
-	}
+	else
+		*status = ipconfigd_set_method(ifname, &info);
 
 done:
 	if (plist != NULL)
@@ -344,11 +337,12 @@ dict_set_addr(CFMutableDictionaryRef d, CFStringRef key, struct in_addr a,
 }
 
 /*
- * The IPv4 DHCP service summary — the subset of Apple's
- * ServiceCopySummary() keys we have state for.
+ * The IPv4 service summary — the subset of Apple's ServiceCopySummary()
+ * keys we have state for, for a service running method `m`. Only DHCP
+ * has the DHCP sub-dictionary.
  */
 static CFDictionaryRef
-dhcp_service_summary(const char *ifname)
+service_summary(const char *ifname, ipconfig_method_t m)
 {
 	CFMutableDictionaryRef svc, dhcp;
 	struct dhcp_lease lease;
@@ -358,7 +352,7 @@ dhcp_service_summary(const char *ifname)
 	    &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 	if (svc == NULL)
 		return (NULL);
-	CFDictionarySetValue(svc, kIPCfgConfigMethod, kIPCfgMethodDHCP);
+	dict_set_cstr(svc, kIPCfgConfigMethod, ipconfig_method_string(m));
 	bound = bound_state_get_lease(ifname, &lease);
 	CFDictionarySetValue(svc, CFSTR("IsPublished"),
 	    bound ? kCFBooleanTrue : kCFBooleanFalse);
@@ -368,7 +362,8 @@ dhcp_service_summary(const char *ifname)
 		if (lease.router.s_addr != INADDR_ANY)
 			dict_set_addr(svc, CFSTR("Router"), lease.router,
 			    false);
-		dhcp = CFDictionaryCreateMutable(NULL, 0,
+		dhcp = (m != ipconfig_method_dhcp_e) ? NULL :
+		    CFDictionaryCreateMutable(NULL, 0,
 		    &kCFTypeDictionaryKeyCallBacks,
 		    &kCFTypeDictionaryValueCallBacks);
 		if (dhcp != NULL) {
@@ -396,6 +391,8 @@ _ipconfig_get_summary(mach_port_t server, InterfaceName name,
 	CFDictionaryRef svc;
 	CFArrayRef services;
 	CFDataRef data;
+	struct ipconfig_method_info info;
+	bool running;
 
 	(void)server;
 	(void)audit_token;	/* Apple gates only the private Wi-Fi keys */
@@ -415,8 +412,10 @@ _ipconfig_get_summary(mach_port_t server, InterfaceName name,
 		*status = ipconfig_status_allocation_failed_e;
 		return (KERN_SUCCESS);
 	}
-	if (ipconfigd_dhcp_active(ifname) || bound_state_is_bound(ifname)) {
-		svc = dhcp_service_summary(ifname);
+	running = ipconfigd_get_method(ifname, &info);
+	if (running || bound_state_is_bound(ifname)) {
+		svc = service_summary(ifname,
+		    running ? info.method : ipconfig_method_dhcp_e);
 		if (svc != NULL) {
 			services = CFArrayCreate(NULL, (const void **)&svc, 1,
 			    &kCFTypeArrayCallBacks);

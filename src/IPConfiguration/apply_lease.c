@@ -155,6 +155,14 @@ default_route(const struct dhcp_lease *lease, int rtm_type)
 	int sock;
 	ssize_t n;
 
+	/*
+	 * No router — a Manual service configured without one (#58), or a
+	 * lease without option 3 — means no default route to add or take
+	 * back.
+	 */
+	if (lease->router.s_addr == INADDR_ANY)
+		return (0);
+
 	(void)memset(&msg, 0, sizeof(msg));
 	msg.hdr.rtm_msglen = sizeof(msg);
 	msg.hdr.rtm_version = RTM_VERSION;

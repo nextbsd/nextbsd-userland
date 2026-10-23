@@ -70,6 +70,16 @@
  *        mDNSResponder and hostnamed read that key. Primary is now the
  *        highest-ranked bound interface (wired > wireless), re-elected
  *        on every bind and teardown; /etc/resolv.conf follows it.
+ *
+ * configuration methods (#58) — every linked interface used to be DHCP'd
+ * unconditionally, so a hand-configured static address was overwritten
+ * by the next link event. Each interface's service now runs the IPv4
+ * ConfigMethod of the network service that names it in SCPreferences
+ * (ipconfig_prefs.c), or the method `ipconfig set` gave it: DHCP, Manual
+ * (static address, mask, router, DNS — installed and published through
+ * the same path as a lease), or NONE (left entirely alone). An interface
+ * nothing configures stays on DHCP, so an unconfigured machine behaves
+ * exactly as before.
  */
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -94,8 +104,11 @@
 
 #include "apply_lease.h"
 #include "apply_lease_v6.h"
+#include "arp_probe.h"
 #include "bound_state.h"
 #include "dhcp_discover.h"
+#include "ipconfig_method.h"
+#include "ipconfig_prefs.h"
 #include "ipconfigd.h"
 #include "lease_loop.h"
 #include "mach_service.h"
@@ -143,20 +156,26 @@ struct dhcp_worker {
 	volatile sig_atomic_t	stop;		/* link went down: unwind */
 	uint32_t		lease_cap_secs;
 	bool			ready;		/* bound or given up: startup */
+	struct ipconfig_method_info method;	/* what this worker runs (#58) */
+	bool			restart;	/* method changed: rerun on exit */
 };
 
 static pthread_mutex_t	g_workers_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct dhcp_worker g_workers[BOUND_MAX_IF];
 
 /*
- * Interfaces held by `ipconfig set <if> NONE` (#59): dhcp_worker_start()
- * refuses them, so a link flap does not quietly re-DHCP an interface the
- * administrator switched off. In memory only, like Apple's `ipconfig
- * set`. Guarded by g_workers_lock.
+ * `ipconfig set` methods (#58/#59), which win over SCPreferences until
+ * the next `set` or an ipconfigd restart — in memory only, like Apple's.
+ * A NONE here is what holds an interface the administrator switched
+ * off, so a link flap does not quietly re-DHCP it. Guarded by
+ * g_workers_lock.
  */
-static char		g_held[BOUND_MAX_IF][IFNAMSIZ];
+static struct {
+	char				ifname[IFNAMSIZ];
+	struct ipconfig_method_info	info;
+} g_set_methods[BOUND_MAX_IF];
 
-/* main()'s IPCONFIGD_FAST_LEASE cap, for workers started by `ipconfig set`. */
+/* main()'s IPCONFIGD_FAST_LEASE cap, for workers not started by a link event. */
 static uint32_t		g_lease_cap_secs;
 
 /* Plugin:IPConfiguration published (one-shot); guarded by g_workers_lock. */
@@ -308,19 +327,6 @@ startup_mark_ready(const char *ifname)
 	startup_check();
 }
 
-/* Caller holds g_workers_lock. Index of `ifname` in g_held, or -1. */
-static int
-held_locked(const char *ifname)
-{
-	int i;
-
-	for (i = 0; i < BOUND_MAX_IF; i++) {
-		if (g_held[i][0] != '\0' && strcmp(g_held[i], ifname) == 0)
-			return (i);
-	}
-	return (-1);
-}
-
 /*
  * Read IPCONFIGD_FAST_LEASE from the environment. The env var caps
  * the effective lease time used for T1 / T2 timer math (the value
@@ -349,23 +355,25 @@ read_lease_cap_env(void)
 }
 
 /*
- * dhcp_run_on_interface — full DHCPv4 INIT → BOUND → publish → RA →
- * lease loop on `ifname`, then teardown. Runs on that interface's own
- * worker thread.
+ * service_run_bound — everything after an IPv4 configuration is installed
+ * on `ifname`: record it, publish it, elect the primary, bring up IPv6
+ * (RA/SLAAC), park, then tear it all down. Shared by the DHCP and Manual
+ * services (#58), which differ only in how they get `lease` and in
+ * whether parking means a renewal loop. Runs on the interface's worker
+ * thread.
  *
- * Returns when the lease is lost, the link goes down (*stop), or the
- * daemon is shutting down (got_term). Every one of those paths falls
- * through to the single teardown block at the bottom — there are no
- * early returns once the interface is bound, which is what the old code
- * did on a publish failure (it left the lease applied and the interface
- * in bound_state, but never entered the lease loop, so the lease silently
- * expired and was never renewed).
+ * Returns when the lease is lost, the link goes down or the method
+ * changes (*stop), or the daemon is shutting down (got_term). Every one
+ * of those paths falls through to the single teardown block at the
+ * bottom — there are no early returns once the interface is bound, which
+ * is what the old code did on a publish failure (it left the lease
+ * applied and the interface in bound_state, but never entered the lease
+ * loop, so the lease silently expired and was never renewed).
  */
 static void
-dhcp_run_on_interface(const char *ifname, uint32_t lease_cap_secs,
-    volatile sig_atomic_t *stop)
+service_run_bound(const char *ifname, struct dhcp_lease *lease, bool dhcp,
+    uint32_t lease_cap_secs, volatile sig_atomic_t *stop)
 {
-	struct dhcp_lease lease;
 	struct sc_publish *pub = NULL;
 	char a[INET_ADDRSTRLEN], m[INET_ADDRSTRLEN];
 	char r[INET_ADDRSTRLEN], s[INET_ADDRSTRLEN];
@@ -373,58 +381,44 @@ dhcp_run_on_interface(const char *ifname, uint32_t lease_cap_secs,
 	struct ra_router *rtr = NULL;
 	int rar;
 
-	xlog("selected interface for DHCPv4: %s", ifname);
-	if (dhcp_lease_acquire(ifname, &lease) != 0) {
-		/* dhcp_lease_acquire logged IPCFG-BOUND-FAIL on its own line */
-		return;
-	}
-
-	/*
-	 * The DISCOVER ladder can burn ~28s. If the link dropped or the
-	 * daemon is going down in that window, do not install a lease we
-	 * are about to have to rip back out.
-	 */
-	if (got_term || (stop != NULL && *stop)) {
-		xlog("%s: link/daemon went away during DHCP — discarding lease",
-		    ifname);
-		return;
-	}
-
-	if (apply_lease(ifname, &lease) != 0) {
-		xlog("apply_lease(%s) failed", ifname);
-		xlog("IPCFG-BOUND-FAIL");
-		return;
-	}
-
-	(void)inet_ntop(AF_INET, &lease.addr, a, sizeof(a));
-	(void)inet_ntop(AF_INET, &lease.netmask, m, sizeof(m));
-	(void)inet_ntop(AF_INET, &lease.router, r, sizeof(r));
-	(void)inet_ntop(AF_INET, &lease.server, s, sizeof(s));
-	xlog("bound: iface=%s addr=%s netmask=%s router=%s "
-	    "server=%s lease=%us",
-	    ifname, a, m, r, s, (unsigned)lease.lease_time);
+	(void)inet_ntop(AF_INET, &lease->addr, a, sizeof(a));
+	(void)inet_ntop(AF_INET, &lease->netmask, m, sizeof(m));
+	(void)inet_ntop(AF_INET, &lease->router, r, sizeof(r));
+	(void)inet_ntop(AF_INET, &lease->server, s, sizeof(s));
+	if (dhcp)
+		xlog("bound: iface=%s addr=%s netmask=%s router=%s "
+		    "server=%s lease=%us",
+		    ifname, a, m, r, s, (unsigned)lease->lease_time);
+	else
+		xlog("configured: iface=%s method=Manual addr=%s netmask=%s "
+		    "router=%s", ifname, a, m, r);
 	/*
 	 * Make the lease visible to the Mach service worker before the
 	 * BOUND marker fires — so any client racing IPCFG-RPC-OK against
 	 * IPCFG-BOUND-OK sees the address it expects.
 	 */
-	bound_state_set(ifname, &lease);
-	xlog("IPCFG-BOUND-OK");
+	bound_state_set(ifname, lease);
+	if (dhcp)
+		xlog("IPCFG-BOUND-OK");
 
 	/*
 	 * Publish to configd. Failure is non-fatal: the daemon stays up and
 	 * the lease is already applied at the kernel level; observers just
 	 * won't see the binding. We still enter the lease loop, because a
 	 * lease nobody published is a lease that still has to be renewed.
+	 * A Manual service publishes the same IPv4 / DNS shape, so
+	 * mDNSResponder and hostnamed see a primary service either way; it
+	 * has no /DHCP entity.
 	 */
 	pub = sc_publish_open("ipconfigd");
 	if (pub == NULL) {
 		xlog("IPCFG-STORE-FAIL: no configd session");
-	} else if (sc_publish_ipv4(pub, ifname, &lease) != 0) {
+	} else if (sc_publish_ipv4(pub, ifname, lease) != 0) {
 		xlog("IPCFG-STORE-FAIL: set State:/.../IPv4");
 	} else {
 		xlog("IPCFG-STORE-OK");
-
+	}
+	if (pub != NULL && dhcp) {
 		/*
 		 * Issue #88: publish State:/Network/Service/<UUID>/DHCP
 		 * carrying InterfaceName + LeaseStartTime, and Option_12 (host
@@ -434,13 +428,13 @@ dhcp_run_on_interface(const char *ifname, uint32_t lease_cap_secs,
 		 * it. Failure is non-fatal — the IPv4 publish already
 		 * succeeded.
 		 */
-		if (sc_publish_dhcp(pub, ifname, &lease) != 0) {
+		if (sc_publish_dhcp(pub, ifname, lease) != 0) {
 			xlog("IPCFG-DHCP-FAIL: set State:/.../DHCP");
 		} else {
 			xlog("IPCFG-DHCP-OK: published /DHCP "
 			    "(Option_12 %s)",
-			    lease.host_name_len > 0
-			        ? lease.host_name : "absent");
+			    lease->host_name_len > 0
+			        ? lease->host_name : "absent");
 		}
 	}
 
@@ -495,8 +489,16 @@ dhcp_run_on_interface(const char *ifname, uint32_t lease_cap_secs,
 		xlog("IPCFG-RA-MISS: ra_acquire fatal");
 	}
 
-	/* Parks here for the life of the lease. */
-	(void)lease_loop_run(ifname, &lease, pub, lease_cap_secs, stop);
+	/*
+	 * Parks here for the life of the lease. A Manual configuration has
+	 * nothing to renew; it holds until the link drops, its method
+	 * changes, or the daemon exits.
+	 */
+	if (dhcp)
+		(void)lease_loop_run(ifname, lease, pub, lease_cap_secs, stop);
+	else
+		while (!got_term && !(stop != NULL && *stop))
+			(void)sleep(1);
 
 	/*
 	 * Stop the router tracker before anything below removes the IPv6
@@ -527,8 +529,10 @@ dhcp_run_on_interface(const char *ifname, uint32_t lease_cap_secs,
 		xlog("%s: daemon shutting down — leaving the lease installed",
 		    ifname);
 	} else {
-		xlog("%s: lease lost or link down — deconfiguring", ifname);
-		(void)deconfigure_lease(ifname, &lease);
+		xlog("%s: %s — deconfiguring", ifname, dhcp
+		    ? "lease lost, link down or method changed"
+		    : "link down or method changed");
+		(void)deconfigure_lease(ifname, lease);
 		if (pub != NULL)
 			(void)sc_publish_remove(pub, ifname);
 		bound_state_clear(ifname);
@@ -542,30 +546,124 @@ dhcp_run_on_interface(const char *ifname, uint32_t lease_cap_secs,
 }
 
 /*
+ * dhcp_run_on_interface — DHCPv4 INIT → BOUND on `ifname`, then
+ * service_run_bound().
+ */
+static void
+dhcp_run_on_interface(const char *ifname, uint32_t lease_cap_secs,
+    volatile sig_atomic_t *stop)
+{
+	struct dhcp_lease lease;
+
+	xlog("selected interface for DHCPv4: %s", ifname);
+	if (dhcp_lease_acquire(ifname, &lease) != 0) {
+		/* dhcp_lease_acquire logged IPCFG-BOUND-FAIL on its own line */
+		return;
+	}
+
+	/*
+	 * The DISCOVER ladder can burn ~28s. If the link dropped or the
+	 * daemon is going down in that window, do not install a lease we
+	 * are about to have to rip back out.
+	 */
+	if (got_term || (stop != NULL && *stop)) {
+		xlog("%s: link/daemon went away during DHCP — discarding lease",
+		    ifname);
+		return;
+	}
+
+	if (apply_lease(ifname, &lease) != 0) {
+		xlog("apply_lease(%s) failed", ifname);
+		xlog("IPCFG-BOUND-FAIL");
+		return;
+	}
+	service_run_bound(ifname, &lease, true, lease_cap_secs, stop);
+}
+
+/*
+ * manual_run_on_interface — the Manual service (#58): install the
+ * configured address, mask, router and DNS through the same apply /
+ * publish path a DHCP lease takes, then service_run_bound().
+ *
+ * Like Apple's manual service it probes for an address conflict first
+ * (RFC 5227); on a conflict it does not configure the address, and the
+ * next link-up or method change tries again.
+ */
+static void
+manual_run_on_interface(const char *ifname,
+    const struct ipconfig_method_info *info, volatile sig_atomic_t *stop)
+{
+	struct dhcp_lease lease;
+	char a[INET_ADDRSTRLEN];
+	unsigned i;
+
+	(void)memset(&lease, 0, sizeof(lease));
+	lease.addr = info->addr;
+	lease.netmask = info->mask;
+	lease.router = info->router;
+	for (i = 0; i < info->dns_count && i < DHCP_LEASE_MAX_DNS; i++)
+		lease.dns[i] = info->dns[i];
+	lease.dns_count = i;
+
+	(void)inet_ntop(AF_INET, &lease.addr, a, sizeof(a));
+	xlog("selected interface for Manual: %s (%s)", ifname, a);
+	if (arp_probe(ifname, lease.addr) == 1) {
+		xlog("%s: %s is in use by another host — not configuring it",
+		    ifname, a);
+		return;
+	}
+	if (got_term || (stop != NULL && *stop))
+		return;
+
+	if (apply_lease(ifname, &lease) != 0) {
+		xlog("apply_lease(%s) failed for Manual %s", ifname, a);
+		return;
+	}
+	service_run_bound(ifname, &lease, false, 0, stop);
+}
+
+/*
  * Worker thread body — one per interface that has linked up. Runs the
  * whole DHCP + lease + teardown lifecycle, then releases its slot so a
  * later link event on the same interface can start a fresh one. That
  * release is the other half of the re-arm: the slot, not a global flag,
  * is now what says "a run is in flight on this interface".
  */
+static void	service_start(const char *ifname);
+
 static void *
 dhcp_worker_main(void *arg)
 {
 	struct dhcp_worker *w = arg;
 	char ifname[IFNAMSIZ];
+	struct ipconfig_method_info method;
+	bool restart;
 
 	(void)strlcpy(ifname, w->ifname, sizeof(ifname));
-	dhcp_run_on_interface(ifname, w->lease_cap_secs, &w->stop);
+	method = w->method;
+	if (method.method == ipconfig_method_manual_e)
+		manual_run_on_interface(ifname, &method, &w->stop);
+	else
+		dhcp_run_on_interface(ifname, w->lease_cap_secs, &w->stop);
 
 	pthread_mutex_lock(&g_workers_lock);
+	restart = w->restart;
 	w->active = false;
 	w->stop = 0;
+	w->restart = false;
 	w->ifname[0] = '\0';
 	pthread_mutex_unlock(&g_workers_lock);
 
-	xlog("%s: DHCP worker exited", ifname);
+	xlog("%s: %s worker exited", ifname,
+	    ipconfig_method_string(method.method));
 	/* A worker that gave up without binding is "ready" too (Apple). */
 	startup_check();
+	/*
+	 * Unwound because the interface's method changed (#58): the old
+	 * configuration is gone, so start whatever replaced it.
+	 */
+	if (restart && !got_term)
+		service_start(ifname);
 	return (NULL);
 }
 
@@ -597,21 +695,52 @@ dhcp_worker_stop(const char *ifname)
 }
 
 /*
- * Start a DHCP worker for `ifname` unless one is already running for it.
- * Returns true if a worker was spawned.
+ * The IPv4 method `ifname` should run (#58): an `ipconfig set` method
+ * first, then its network service in SCPreferences, and DHCP when
+ * nothing configures it — which is what keeps an unconfigured machine
+ * exactly as it was.
+ */
+static void
+method_lookup(const char *ifname, struct ipconfig_method_info *out)
+{
+	int i;
+
+	pthread_mutex_lock(&g_workers_lock);
+	for (i = 0; i < BOUND_MAX_IF; i++) {
+		if (g_set_methods[i].ifname[0] != '\0' &&
+		    strcmp(g_set_methods[i].ifname, ifname) == 0) {
+			*out = g_set_methods[i].info;
+			pthread_mutex_unlock(&g_workers_lock);
+			return;
+		}
+	}
+	pthread_mutex_unlock(&g_workers_lock);
+
+	if (ipconfig_prefs_lookup(ifname, out))
+		return;
+	(void)memset(out, 0, sizeof(*out));
+	out->method = ipconfig_method_dhcp_e;
+}
+
+/*
+ * Start a worker running `ifname`'s configured method unless one is
+ * already running for it, or the method is one ipconfigd does not serve
+ * (NONE included) — those interfaces are left alone. Returns true if a
+ * worker was spawned.
  */
 static bool
 dhcp_worker_start(const char *ifname, uint32_t lease_cap_secs)
 {
 	struct dhcp_worker *w = NULL;
+	struct ipconfig_method_info method;
 	pthread_attr_t attr;
 	int i, rc;
 
+	method_lookup(ifname, &method);
+	if (!ipconfig_method_is_served(method.method))
+		return (false);
+
 	pthread_mutex_lock(&g_workers_lock);
-	if (held_locked(ifname) >= 0) {
-		pthread_mutex_unlock(&g_workers_lock);
-		return (false);		/* `ipconfig set <if> NONE` */
-	}
 	for (i = 0; i < BOUND_MAX_IF; i++) {
 		if (g_workers[i].active &&
 		    strcmp(g_workers[i].ifname, ifname) == 0) {
@@ -634,6 +763,8 @@ dhcp_worker_start(const char *ifname, uint32_t lease_cap_secs)
 	w->active = true;
 	w->stop = 0;
 	w->ready = false;
+	w->restart = false;
+	w->method = method;
 	w->lease_cap_secs = lease_cap_secs;
 	(void)strlcpy(w->ifname, ifname, sizeof(w->ifname));
 	pthread_mutex_unlock(&g_workers_lock);
@@ -656,6 +787,151 @@ dhcp_worker_start(const char *ifname, uint32_t lease_cap_secs)
 		return (false);
 	}
 	return (true);
+}
+
+/*
+ * Start `ifname`'s configured service outside a link event — after its
+ * method changed. Admin-up as for any interface, and start the worker
+ * now if the link is already up; otherwise the link watch starts it on
+ * link-active, as usual.
+ */
+static void
+service_start(const char *ifname)
+{
+	struct ipconfig_method_info method;
+
+	method_lookup(ifname, &method);
+	if (!ipconfig_method_is_served(method.method)) {
+		xlog("%s: ConfigMethod %s — leaving it alone", ifname,
+		    ipconfig_method_string(method.method));
+		return;
+	}
+	if (iface_bring_up(ifname) != 0) {
+		xlog("%s: could not bring up: %s", ifname, strerror(errno));
+		return;
+	}
+	if (link_active_in_store(ifname) &&
+	    dhcp_worker_start(ifname, g_lease_cap_secs))
+		xlog("%s: started %s worker", ifname,
+		    ipconfig_method_string(method.method));
+}
+
+/*
+ * `ifname`'s method may have changed — a preferences commit, or
+ * `ipconfig set`. If a worker is running something else, unwind it; its
+ * teardown deconfigures what it installed and its exit starts the new
+ * service (the restart flag), so the old and new configurations never
+ * overlap. With nothing running, start the new service directly.
+ */
+static void
+service_reconfigure(const char *ifname)
+{
+	struct ipconfig_method_info method;
+	bool unwinding = false;
+	int i;
+
+	method_lookup(ifname, &method);
+	pthread_mutex_lock(&g_workers_lock);
+	for (i = 0; i < BOUND_MAX_IF; i++) {
+		struct dhcp_worker *w = &g_workers[i];
+
+		if (!w->active || strcmp(w->ifname, ifname) != 0)
+			continue;
+		if (!w->stop && memcmp(&w->method, &method,
+		    sizeof(method)) == 0) {
+			pthread_mutex_unlock(&g_workers_lock);
+			return;		/* already running this */
+		}
+		w->stop = 1;
+		w->restart = true;
+		unwinding = true;
+		break;
+	}
+	pthread_mutex_unlock(&g_workers_lock);
+
+	if (unwinding) {
+		xlog("%s: ConfigMethod now %s — unwinding the running service",
+		    ifname, ipconfig_method_string(method.method));
+		return;
+	}
+	service_start(ifname);
+}
+
+/* SCPreferences commit changed `ifname`'s service (ipconfig_prefs.c). */
+static void
+on_prefs_changed(const char *ifname)
+{
+	if (strncmp(ifname, "lo", 2) == 0)
+		return;
+	service_reconfigure(ifname);
+}
+
+static ipconfig_status_t set_check_ifname(const char *ifname);
+
+/*
+ * `ipconfig set` (#59) — see ipconfigd.h. Called on the Mach service
+ * thread; never blocks on a worker: unwinding one only sets its stop
+ * flag, and its own thread does the teardown, exactly as for a
+ * link-down.
+ */
+ipconfig_status_t
+ipconfigd_set_method(const char *ifname,
+    const struct ipconfig_method_info *info)
+{
+	ipconfig_status_t status;
+	int i, slot = -1;
+
+	status = set_check_ifname(ifname);
+	if (status != ipconfig_status_success_e)
+		return (status);
+	if (!ipconfig_method_is_served(info->method) &&
+	    info->method != ipconfig_method_none_e)
+		return (ipconfig_status_operation_not_supported_e);
+	if (info->method == ipconfig_method_manual_e &&
+	    info->addr.s_addr == INADDR_ANY)
+		return (ipconfig_status_invalid_parameter_e);
+
+	pthread_mutex_lock(&g_workers_lock);
+	for (i = 0; i < BOUND_MAX_IF; i++) {
+		if (g_set_methods[i].ifname[0] == '\0') {
+			if (slot < 0)
+				slot = i;
+		} else if (strcmp(g_set_methods[i].ifname, ifname) == 0) {
+			slot = i;
+			break;
+		}
+	}
+	if (slot >= 0) {
+		(void)strlcpy(g_set_methods[slot].ifname, ifname,
+		    sizeof(g_set_methods[slot].ifname));
+		g_set_methods[slot].info = *info;
+	}
+	pthread_mutex_unlock(&g_workers_lock);
+	if (slot < 0)
+		return (ipconfig_status_resource_unavailable_e);
+
+	xlog("set(%s) %s", ifname, ipconfig_method_string(info->method));
+	service_reconfigure(ifname);
+	return (ipconfig_status_success_e);
+}
+
+bool
+ipconfigd_get_method(const char *ifname, struct ipconfig_method_info *out)
+{
+	bool hit = false;
+	int i;
+
+	pthread_mutex_lock(&g_workers_lock);
+	for (i = 0; i < BOUND_MAX_IF; i++) {
+		if (g_workers[i].active && !g_workers[i].stop &&
+		    strcmp(g_workers[i].ifname, ifname) == 0) {
+			*out = g_workers[i].method;
+			hit = true;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&g_workers_lock);
+	return (hit);
 }
 
 /*
@@ -702,12 +978,7 @@ on_link_departed(const char *ifname)
 	resolv_conf_sync();
 }
 
-/*
- * `ipconfig set` hooks (#59) — see ipconfigd.h. Called on the Mach
- * service thread. Neither blocks on a worker: NONE only sets the
- * worker's stop flag, and its own thread does the teardown, exactly as
- * for a link-down.
- */
+/* `ipconfig set` (#59): the interface names a set may act on. */
 static ipconfig_status_t
 set_check_ifname(const char *ifname)
 {
@@ -716,93 +987,6 @@ set_check_ifname(const char *ifname)
 	if (strncmp(ifname, "lo", 2) == 0)
 		return (ipconfig_status_invalid_operation_e);
 	return (ipconfig_status_success_e);
-}
-
-ipconfig_status_t
-ipconfigd_set_dhcp(const char *ifname)
-{
-	ipconfig_status_t status;
-	bool stopping = false;
-	int i;
-
-	status = set_check_ifname(ifname);
-	if (status != ipconfig_status_success_e)
-		return (status);
-
-	pthread_mutex_lock(&g_workers_lock);
-	i = held_locked(ifname);
-	if (i >= 0)
-		g_held[i][0] = '\0';
-	for (i = 0; i < BOUND_MAX_IF; i++) {
-		if (g_workers[i].active && g_workers[i].stop &&
-		    strcmp(g_workers[i].ifname, ifname) == 0)
-			stopping = true;
-	}
-	pthread_mutex_unlock(&g_workers_lock);
-
-	/*
-	 * A NONE that is still unwinding owns the slot, so a worker cannot
-	 * be started over it yet; say so rather than silently not starting.
-	 */
-	if (stopping)
-		return (ipconfig_status_resource_unavailable_e);
-
-	xlog("set(%s) DHCP", ifname);
-	if (iface_bring_up(ifname) != 0)
-		xlog("set(%s) DHCP — could not bring up: %s", ifname,
-		    strerror(errno));
-	else if (link_active_in_store(ifname) &&
-	    dhcp_worker_start(ifname, g_lease_cap_secs))
-		xlog("set(%s) DHCP — started DHCP worker", ifname);
-	return (ipconfig_status_success_e);
-}
-
-ipconfig_status_t
-ipconfigd_set_none(const char *ifname)
-{
-	ipconfig_status_t status;
-	int i;
-
-	status = set_check_ifname(ifname);
-	if (status != ipconfig_status_success_e)
-		return (status);
-
-	pthread_mutex_lock(&g_workers_lock);
-	if (held_locked(ifname) < 0) {
-		for (i = 0; i < BOUND_MAX_IF; i++) {
-			if (g_held[i][0] == '\0') {
-				(void)strlcpy(g_held[i], ifname,
-				    sizeof(g_held[i]));
-				break;
-			}
-		}
-		if (i == BOUND_MAX_IF)
-			status = ipconfig_status_resource_unavailable_e;
-	}
-	pthread_mutex_unlock(&g_workers_lock);
-	if (status != ipconfig_status_success_e)
-		return (status);
-
-	xlog("set(%s) NONE", ifname);
-	if (dhcp_worker_stop(ifname))
-		xlog("set(%s) NONE — unwinding its DHCP worker", ifname);
-	return (ipconfig_status_success_e);
-}
-
-bool
-ipconfigd_dhcp_active(const char *ifname)
-{
-	bool hit = false;
-	int i;
-
-	pthread_mutex_lock(&g_workers_lock);
-	for (i = 0; i < BOUND_MAX_IF; i++) {
-		if (g_workers[i].active && !g_workers[i].stop &&
-		    strcmp(g_workers[i].ifname, ifname) == 0)
-			hit = true;
-	}
-	pthread_mutex_unlock(&g_workers_lock);
-	return (hit);
 }
 
 /*
@@ -837,10 +1021,17 @@ ipconfigd_dhcp_active(const char *ifname)
  *     the first interface to link up was the only one that could ever bind
  *     (#38) — em0 would win the race and wlan0 was ignored for the daemon's
  *     lifetime, no matter how correct the WLAN gate was.
+ *
+ * The two non-teardown cases apply only to an interface whose method
+ * ipconfigd serves (#58). One configured NONE — or with a method we do not
+ * serve — is neither admin-upped nor DHCP'd: this is what lets an
+ * administrator configure an interface by hand without the daemon fighting
+ * them. Link UP starts the interface's configured service, DHCP or Manual.
  */
 static void
 on_link_event(const char *ifname, int active, uint32_t lease_cap_secs)
 {
+	struct ipconfig_method_info method;
 	int i;
 
 	/* loopback never carries a DHCP service; the watcher filters lo0 too. */
@@ -875,6 +1066,11 @@ on_link_event(const char *ifname, int active, uint32_t lease_cap_secs)
 			}
 			return;
 		}
+
+		/* Configured to be left alone (#58): not even admin-up. */
+		method_lookup(ifname, &method);
+		if (!ipconfig_method_is_served(method.method))
+			return;
 
 		/* Present but link down — admin-up so the link can negotiate
 		 * (the late-arriving-NIC onboarding path, #219).
@@ -922,8 +1118,11 @@ on_link_event(const char *ifname, int active, uint32_t lease_cap_secs)
 	 * racing a real event). Other interfaces are unaffected — that is the
 	 * whole point of #38.
 	 */
-	if (dhcp_worker_start(ifname, lease_cap_secs))
-		xlog("link-active(%s) — started DHCP worker", ifname);
+	if (dhcp_worker_start(ifname, lease_cap_secs)) {
+		method_lookup(ifname, &method);
+		xlog("link-active(%s) — started %s worker", ifname,
+		    ipconfig_method_string(method.method));
+	}
 }
 
 int
@@ -995,8 +1194,21 @@ main(int argc, char **argv)
 	 * -DHCP-OK fire from there. A failed run does NOT exit ipconfigd;
 	 * the Mach service stays registered and the watch re-arms.
 	 */
+	/*
+	 * Per-interface methods (#58), loaded before anything acts on an
+	 * interface. No network preferences — the default — leaves the
+	 * table empty and every interface on DHCP.
+	 */
+	(void)ipconfig_prefs_start(on_prefs_changed);
+
 	if (dhcp_pick_interface(ifname, sizeof(ifname)) == 0) {
-		if (iface_bring_up(ifname) == 0)
+		struct ipconfig_method_info method;
+
+		method_lookup(ifname, &method);
+		if (!ipconfig_method_is_served(method.method))
+			xlog("%s is configured %s; leaving it alone", ifname,
+			    ipconfig_method_string(method.method));
+		else if (iface_bring_up(ifname) == 0)
 			xlog("brought %s up; awaiting link-active to DHCP",
 			    ifname);
 		else
