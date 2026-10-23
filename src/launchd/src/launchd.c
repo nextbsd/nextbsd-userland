@@ -96,6 +96,13 @@ extern char **environ;
 static void pfsystem_callback(void *, struct kevent *);
 
 static kq_callback kqpfsystem_callback = pfsystem_callback;
+#ifdef __FreeBSD__
+static void pfroute_callback(void *, struct kevent *);
+
+static kq_callback kqpfroute_callback = pfroute_callback;
+
+static void monitor_routing_socket(void);
+#endif
 
 static void pid1_magic_init(void);
 
@@ -842,33 +849,28 @@ monitor_networking_state(void)
 {
 #ifdef __FreeBSD__
 	/*
-	 * NextBSD's kernel has no PF_SYSTEM kernel-event domain (yet);
-	 * listen on a routing socket instead: RTM_IFINFO reports interface
-	 * state changes, RTM_NEWADDR/RTM_DELADDR report address changes.
-	 * NextBSD (like FreeBSD) has no ROUTE_MSGFILTER socket option, so
-	 * every routing message is delivered and pfsystem_callback() drops
-	 * the others.
 	 * The socket is non-blocking so pfsystem_callback() can never
 	 * stall PID 1.
 	 */
-	int pfs = _fd(socket(PF_ROUTE, SOCK_RAW | SOCK_NONBLOCK, AF_UNSPEC));
-
-	network_up = get_network_state();
-
-	if (pfs == -1) {
-		launchd_syslog(LOG_DEBUG, "Could not open routing socket for network monitoring: %m");
-		return;
-	}
-
-	(void)posix_assumes_zero(kevent_mod(pfs, EVFILT_READ, EV_ADD, 0, 0, &kqpfsystem_callback));
+	int pfs = _fd(socket(PF_SYSTEM, SOCK_RAW | SOCK_NONBLOCK, SYSPROTO_EVENT));
 #else
 	int pfs = _fd(socket(PF_SYSTEM, SOCK_RAW, SYSPROTO_EVENT));
+#endif
 	struct kev_request kev_req;
 
 	network_up = get_network_state();
 
 	if (pfs == -1) {
+#ifdef __FreeBSD__
+		/*
+		 * A NextBSD kernel without the PF_SYSTEM kernel-event domain
+		 * (EAFNOSUPPORT): fall back to a routing socket, quietly.
+		 */
+		launchd_syslog(LOG_DEBUG, "Could not open kernel event socket for network monitoring, using routing socket: %m");
+		monitor_routing_socket();
+#else
 		(void)os_assumes_zero(errno);
+#endif
 		return;
 	}
 
@@ -882,7 +884,6 @@ monitor_networking_state(void)
 	}
 
 	(void)posix_assumes_zero(kevent_mod(pfs, EVFILT_READ, EV_ADD, 0, 0, &kqpfsystem_callback));
-#endif
 }
 
 void
@@ -890,6 +891,62 @@ pfsystem_callback(void *obj __attribute__((unused)), struct kevent *kev)
 {
 	bool new_networking_state;
 #ifdef __FreeBSD__
+	char buf[1024];
+	ssize_t n;
+
+	/*
+	 * One event per read(2): the socket is atomic, so an event larger
+	 * than buf is truncated and the rest dropped, and EVFILT_READ is
+	 * level-triggered, so any queued events fire the kevent again. The
+	 * payload is not inspected, so skip only reads too short to be an
+	 * event (including EAGAIN on the non-blocking socket).
+	 */
+	n = read((int)kev->ident, &buf, sizeof(buf));
+	if (n < (ssize_t)KEV_MSG_HEADER_SIZE) {
+		return;
+	}
+#else
+	char buf[1024];
+
+	(void)posix_assumes_zero(read((int)kev->ident, &buf, sizeof(buf)));
+#endif
+
+	new_networking_state = get_network_state();
+
+	if (new_networking_state != network_up) {
+		network_up = new_networking_state;
+		jobmgr_dispatch_all_semaphores(root_jobmgr);
+	}
+}
+
+#ifdef __FreeBSD__
+static void
+monitor_routing_socket(void)
+{
+	/*
+	 * Fallback for a kernel without PF_SYSTEM: listen on a routing
+	 * socket instead. RTM_IFINFO reports interface state changes,
+	 * RTM_NEWADDR/RTM_DELADDR report address changes.
+	 * NextBSD (like FreeBSD) has no ROUTE_MSGFILTER socket option, so
+	 * every routing message is delivered and pfroute_callback() drops
+	 * the others.
+	 * The socket is non-blocking so pfroute_callback() can never
+	 * stall PID 1.
+	 */
+	int pfs = _fd(socket(PF_ROUTE, SOCK_RAW | SOCK_NONBLOCK, AF_UNSPEC));
+
+	if (pfs == -1) {
+		launchd_syslog(LOG_DEBUG, "Could not open routing socket for network monitoring: %m");
+		return;
+	}
+
+	(void)posix_assumes_zero(kevent_mod(pfs, EVFILT_READ, EV_ADD, 0, 0, &kqpfroute_callback));
+}
+
+static void
+pfroute_callback(void *obj __attribute__((unused)), struct kevent *kev)
+{
+	bool new_networking_state;
 	union {
 		struct rt_msghdr rtm;
 		char buf[2048];
@@ -914,11 +971,6 @@ pfsystem_callback(void *obj __attribute__((unused)), struct kevent *kev)
 	default:
 		return;
 	}
-#else
-	char buf[1024];
-
-	(void)posix_assumes_zero(read((int)kev->ident, &buf, sizeof(buf)));
-#endif
 
 	new_networking_state = get_network_state();
 
@@ -927,3 +979,4 @@ pfsystem_callback(void *obj __attribute__((unused)), struct kevent *kev)
 		jobmgr_dispatch_all_semaphores(root_jobmgr);
 	}
 }
+#endif
