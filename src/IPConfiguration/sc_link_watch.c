@@ -257,13 +257,18 @@ evaluate_interface(SCDynamicStoreRef store, const char *ifname)
 	int link_up, ready;
 
 	/*
-	 * Link absent entirely: nothing to do. This happens when an AirPort key
-	 * shows up for a VAP whose Link key configd has not published yet.
-	 * There is no race to lose — the Link key's own arrival will call us
+	 * Link absent entirely. Either the interface departed — configd removes
+	 * the Link key when it goes, and on Darwin removing the key ends the
+	 * service — or an AirPort key showed up for a VAP whose Link key configd
+	 * has not published yet. The callback cannot tell those apart and does
+	 * not need to: tearing down an interface with no worker and no binding
+	 * is a no-op, and in the VAP case the Link key's own arrival calls us
 	 * straight back.
 	 */
-	if (iface_entity_bool(store, ifname, "Link", "Active", -1) == -1)
+	if (iface_entity_bool(store, ifname, "Link", "Active", -1) == -1) {
+		schedule_link_event(ifname, SC_LINK_GONE);
 		return;
+	}
 
 	link_up = iface_entity_bool(store, ifname, "Link", "Active", 0);
 	if (!link_up) {

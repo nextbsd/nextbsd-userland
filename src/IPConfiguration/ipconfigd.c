@@ -551,13 +551,62 @@ dhcp_worker_start(const char *ifname, uint32_t lease_cap_secs)
 }
 
 /*
+ * The interface departed: configd removed State:/Network/Interface/<if>/Link.
+ * On Darwin removing that key ends the service (ipconfigd's
+ * kSCPropNetLinkDetaching handling); here it means whatever worker owns the
+ * interface — bound, or still in its DHCP exchange — must unwind, and the
+ * interface must stop counting as bound.
+ *
+ * The worker's own teardown already deconfigures, unpublishes, clears
+ * bound_state and re-elects the primary, but it only runs once the worker
+ * notices `stop`: an in-flight exchange first has to finish its retransmit
+ * ladder. Clearing the binding and re-electing here as well means the
+ * primary moves off a vanished interface now rather than whenever its worker
+ * gets round to it. Both sides are idempotent, so the double clear is
+ * harmless.
+ */
+static void
+on_link_departed(const char *ifname)
+{
+	struct sc_publish *pub;
+	bool had_worker, was_bound;
+
+	had_worker = dhcp_worker_stop(ifname);
+	was_bound = bound_state_is_bound(ifname);
+	/*
+	 * Nothing to tear down. Also the path for an AirPort key that arrived
+	 * before its VAP's Link key, which the watcher reports the same way.
+	 */
+	if (!had_worker && !was_bound)
+		return;
+
+	xlog("link-gone(%s) — interface departed; %s", ifname,
+	    had_worker ? "unwinding its DHCP worker" : "no worker");
+	if (!was_bound)
+		return;
+
+	bound_state_clear(ifname);
+	pub = sc_publish_open("ipconfigd");
+	if (pub != NULL) {
+		(void)sc_publish_update_primary(pub);
+		sc_publish_close(pub);
+	}
+	resolv_conf_sync();
+}
+
+/*
  * link-watch callback — invoked on a libdispatch worker thread for every
  * change to an interface's Link entity (State:/Network/Interface/<if>/Link),
  * published by KernelEventMonitor from PF_ROUTE. `active` reflects the current
  * link state. This is the Apple-shaped trigger that replaced the hwregd attach
  * subscription.
  *
- * Three cases:
+ * Four cases:
+ *   - Link key GONE (SC_LINK_GONE): the interface departed. Unwind its worker,
+ *     clear its binding and re-elect the primary — see on_link_departed().
+ *     Before this the watcher simply ignored the missing key, so a bound or
+ *     in-flight worker kept its address and route on an interface that no
+ *     longer existed (#341).
  *   - link DOWN on an interface we are BOUND on: the link we hold a lease over
  *     just went away (unplugged, or walked out of WLAN range). Signal that
  *     interface's worker to unwind; it deconfigures the address and default
@@ -586,6 +635,11 @@ on_link_event(const char *ifname, int active, uint32_t lease_cap_secs)
 	/* loopback never carries a DHCP service; the watcher filters lo0 too. */
 	if (strncmp(ifname, "lo", 2) == 0)
 		return;
+
+	if (active == SC_LINK_GONE) {
+		on_link_departed(ifname);
+		return;
+	}
 
 	if (!active) {
 		/*
