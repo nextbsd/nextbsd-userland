@@ -1,34 +1,44 @@
 /*
  * test_libdispatch_mach — end-to-end DISPATCH_SOURCE_TYPE_MACH_RECV
- * round-trip on top of the real polling-thread backend in
- * src/libdispatch/src/event/event_mach_freebsd.c.
+ * round-trip on top of libdispatch's kqueue backend
+ * (src/libdispatch/src/event/event_kevent.c). The source's
+ * EVFILT_MACHPORT registration goes through libmach's kevent_qos()
+ * bridge (src/libmach/dispatch_kevent.c), which moves the port into a
+ * wrap port set and watches it with the kernel's native filt_machport
+ * knote in notify mode: the knote reports "a message is queued" and
+ * does not receive it.
  *
  * Flow:
  *   1. mach_reply_port() → get a receive-right port via libsystem_kernel.
  *   2. dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, port, 0, q)
- *      → real backend allocates a polling pthread that peeks the port
- *        with mach_msg(MACH_RCV_MSG|MACH_RCV_LARGE|MACH_RCV_TIMEOUT,
- *        rcv_size=0) every ~100ms. Must return non-NULL (stub used to
- *        return NULL — that path is the failure case now).
+ *      → must return non-NULL.
  *   3. dispatch_source_set_event_handler — handler calls
  *        mach_msg(MACH_RCV_MSG, ...) to consume the message and
  *        dispatch_semaphore_signal to release main.
- *   4. dispatch_activate(src) — arms the source.
+ *   4. dispatch_activate(src) — arms the source (EV_ADD|EV_DISPATCH).
  *   5. mach_msg(MACH_SEND_MSG) — send a self-message using
  *      MACH_MSG_TYPE_MAKE_SEND_ONCE on our own receive right.
  *   6. dispatch_semaphore_wait with 5s timeout — handler fires, signals.
  *   7. dispatch_source_cancel + dispatch_release.
  *
+ * Darwin semantics, which the handler's 0 ms receive depends on: a
+ * MACH_RECV source fires only while its port holds a message, and with
+ * EV_DISPATCH it fires once per arm — libdispatch re-arms it after the
+ * handler has run. A fire with nothing to receive is a backend bug
+ * (#420: the notify-mode knote was level-triggered without EV_DISPATCH,
+ * so the handler could run a second time on the port it had just
+ * emptied).
+ *
  * Exit codes:
  *   0 — handler fired, message consumed, clean teardown.
  *   1 — mach_reply_port returned NULL (mach.ko not loaded or syscall
  *       missing — earlier smoke marker would already have failed).
- *   2 — dispatch_source_create returned NULL (real backend allocation
- *       failed — pthread_create error, calloc, or invalid handle).
+ *   2 — dispatch_source_create returned NULL.
  *   3 — mach_msg send failed.
- *   4 — semaphore timed out — polling thread didn't notice the message,
- *       or merge_data didn't reach the handler. The interesting failure.
- *   5 — handler's receive returned an unexpected status.
+ *   4 — semaphore timed out — the EVFILT_MACHPORT knote never fired,
+ *       or the event never reached the handler.
+ *   5 — handler's receive returned an unexpected status (the source
+ *       fired with no message to receive, or the wrong message).
  *
  * Marker contract with run.sh: prints "LIBDISPATCH-MACH-OK" on success
  * to match the CI expect grammar (tests/boot-test.sh:186). The stub
@@ -98,9 +108,7 @@ main(void)
 	}
 	printf("got port = 0x%x\n", g_port);
 
-	/* 2. Create the dispatch source. Real backend (not stub) returns
-	 *    non-NULL — that's the headline assertion this whole test
-	 *    exists to verify. */
+	/* 2. Create the dispatch source. */
 	dispatch_queue_t q = dispatch_get_global_queue(
 	    DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
 	dispatch_source_t src = dispatch_source_create(
@@ -108,8 +116,6 @@ main(void)
 	    (uintptr_t)g_port, 0, q);
 	if (src == NULL) {
 		printf("FAIL: dispatch_source_create returned NULL\n");
-		printf("(if real backend is active, this should never happen;\n");
-		printf(" check pthread_create / calloc failure paths)\n");
 		return 2;
 	}
 	printf("dispatch_source_create OK: src=%p\n", (void *)src);
@@ -143,14 +149,13 @@ main(void)
 	}
 	printf("self-message sent\n");
 
-	/* 6. Wait for the handler to wake us. Polling thread runs every
-	 *    100ms — we should wake within a few cycles. 5s ceiling
-	 *    forgives a slow CI VM but still flags a hung backend. */
+	/* 6. Wait for the handler to wake us. 5s ceiling forgives a slow
+	 *    CI VM but still flags a hung backend. */
 	long timed_out = dispatch_semaphore_wait(g_sem,
 	    dispatch_time(DISPATCH_TIME_NOW, TEST_TIMEOUT_NS));
 	if (timed_out != 0) {
 		printf("FAIL: semaphore timed out after 5s — handler never fired.\n");
-		printf("(polling thread didn't see the message, or merge_data "
+		printf("(the EVFILT_MACHPORT knote didn't fire, or the event "
 		    "didn't reach the handler)\n");
 		return 4;
 	}
@@ -166,10 +171,8 @@ main(void)
 		return 5;
 	}
 
-	/* 7. Tear down. dispatch_source_cancel signals testcancel → polling
-	 *    thread exits → dispatch_release releases the source. We don't
-	 *    explicitly wait for the polling thread; libdispatch's source
-	 *    dispose runs after the polling thread's _dispatch_release. */
+	/* 7. Tear down. dispatch_source_cancel deletes the knote;
+	 *    dispatch_release releases the source. */
 	dispatch_source_cancel(src);
 	dispatch_release(src);
 	dispatch_release(g_sem);

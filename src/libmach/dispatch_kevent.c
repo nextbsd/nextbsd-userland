@@ -15,6 +15,8 @@
  * The filter is registered in notify mode (fflags = 0): filt_machport
  * signals readiness without consuming, and the wrapper drains the pset
  * via mach_msg into the per-registration backlog, exactly as before.
+ * A plain MACH_RECV source's knote also carries the caller's EV_DISPATCH,
+ * so it fires once per arm as on Darwin (see machport_native_flags()).
  *
  * Concurrency. A single global mutex protects the registration list.
  * The list is expected to stay small (a handful of dispatch_mach_t
@@ -374,6 +376,43 @@ reg_destroy(struct mach_kev_reg *r)
 }
 
 /*
+ * Flags for the native readiness knote on the wrap pset.
+ *
+ * Message mode (MACH_RCV_MSG in fflags, a dispatch_mach_t channel): plain
+ * EV_ADD, level-triggered -- see the EV_CLEAR note at the Phase 3 skip in
+ * kevent_qos(). The wrapper drains the pset on every fire, so the
+ * knote goes quiet by itself.
+ *
+ * Notify mode (a DISPATCH_SOURCE_TYPE_MACH_RECV source): the caller's
+ * EV_DISPATCH / EV_ENABLE / EV_DISABLE go through to the kernel. Nothing
+ * here receives the message -- the source's handler does -- so a
+ * level-triggered knote without EV_DISPATCH stays active from the moment
+ * the message lands until the handler's mach_msg() takes it, and every
+ * kevent poll in that window fires the source again. libdispatch merges
+ * each of those into ds_pending_data whether or not it believes the unote
+ * is armed, so one that lands after the handler has latched its data runs
+ * the handler a second time against a port it has just emptied: the
+ * MACH_RCV_TIMED_OUT in test_libdispatch_mach (#420). It needs a
+ * preemption in exactly that window, which is why it shows up on the
+ * single-CPU arm64 CI guest and only occasionally.
+ *
+ * On Darwin the kernel disables an EV_DISPATCH knote when it delivers it
+ * and libdispatch re-arms it with EV_ENABLE once the handler has run, so a
+ * MACH_RECV source fires once per arm and only while a message is queued.
+ * FreeBSD's kqueue implements EV_DISPATCH the same way (kqueue_scan sets
+ * KN_DISABLED; an EV_ENABLE re-runs filt_machport before re-queueing), so
+ * passing the bits through gives exactly that.
+ */
+static uint16_t
+machport_native_flags(const struct kevent_qos_s *src)
+{
+	if (src->fflags & MACH_RCV_MSG)
+		return (EV_ADD);
+	return ((uint16_t)(EV_ADD |
+	    (src->flags & (EV_DISPATCH | EV_ENABLE | EV_DISABLE))));
+}
+
+/*
  * Translate one user-supplied MACHPORT changelist entry into the
  * EVFILT_READ entry we submit to __sys_kevent. EV_ADD allocates a
  * registration (or updates an existing one); EV_DELETE looks one up
@@ -428,11 +467,12 @@ machport_change_translate(int kq, const struct kevent_qos_s *src,
 		r->data = src->data;
 		/* Native EVFILT_MACHPORT on the wrap pset, notify mode
 		 * (fflags = 0, no MACH_RCV_MSG): filt_machport signals
-		 * readiness without consuming; we drain via mach_msg on fire. */
+		 * readiness without consuming; we drain via mach_msg on fire.
+		 * For a MACH_RECV source this is also the EV_ENABLE re-arm. */
 		/* LEVEL-triggered, deliberately: see the EV_CLEAR note at
 		 * the Phase 3 skip in mach_kevent_qos(). */
 		EV_SET(out, (uintptr_t)r->wrap_pset, EVFILT_MACHPORT_NATIVE,
-		    EV_ADD, 0, 0, r);
+		    machport_native_flags(src), 0, 0, r);
 		pthread_mutex_unlock(&g_reg_mtx);
 		return (0);
 	}
@@ -448,8 +488,7 @@ machport_change_translate(int kq, const struct kevent_qos_s *src,
 	pthread_mutex_unlock(&g_reg_mtx);
 	/* LEVEL-triggered: see the EV_CLEAR note at the Phase 3 skip. */
 	EV_SET(out, (uintptr_t)r->wrap_pset, EVFILT_MACHPORT_NATIVE,
-	    EV_ADD,
-	    0, 0, r);
+	    machport_native_flags(src), 0, 0, r);
 	return (0);
 }
 
@@ -621,6 +660,39 @@ backlog_drain_locked(struct mach_kev_reg *r)
 	else
 		r->backlog_head = bm;
 	r->backlog_tail = bm;
+}
+
+/*
+ * Undo the kernel's EV_DISPATCH disable for a readiness event Phase 3 is
+ * not going to hand over: one skipped on an ERROR_EVENTS call, or one
+ * past the end of the caller's eventlist.
+ *
+ * kqueue_scan() sets KN_DISABLED on an EV_DISPATCH knote as it hands the
+ * event over, so for a notify-mode registration (machport_native_flags())
+ * skipping the event would leave the knote disabled while libdispatch
+ * still believes the unote is armed -- the source would never fire again.
+ * Re-enable it instead: kqueue_register() re-runs filt_machport, and if
+ * the message is still queued the knote is re-queued, waking whichever
+ * thread is blocked in kevent, so the next ordinary poll delivers it.
+ * EV_KEEPUDATA leaves udata alone; ENOENT (the registration was torn down
+ * meanwhile) is harmless. Message-mode knotes are never disabled.
+ */
+static void
+machport_reenable_undelivered(int kq, const struct kevent *ev)
+{
+	static const struct timespec zero_ts = { 0, 0 };
+	struct mach_kev_reg *r;
+	struct kevent en;
+
+	pthread_mutex_lock(&g_reg_mtx);
+	r = reg_find_by_wrap_pset_locked((mach_port_name_t)ev->ident);
+	if (r != NULL && r->kq == kq && !(r->fflags & MACH_RCV_MSG) &&
+	    (r->flags & EV_DISPATCH)) {
+		EV_SET(&en, ev->ident, EVFILT_MACHPORT_NATIVE,
+		    EV_ENABLE | EV_KEEPUDATA, 0, 0, NULL);
+		(void)__sys_kevent(kq, &en, 1, NULL, 0, &zero_ts);
+	}
+	pthread_mutex_unlock(&g_reg_mtx);
 }
 
 /*
@@ -968,8 +1040,17 @@ kevent_qos(int kq, const struct kevent_qos_s *changelist, int nchanges,
 	 * the pset into the backlog and pop as many as fit.
 	 */
 	n = rc;
-	for (i = 0; i < n && filled < nevents; i++) {
+	for (i = 0; i < n; i++) {
 		struct mach_kev_reg *r = NULL;
+
+		/* Out of eventlist room: the rest are dropped, as before, but a
+		 * notify-mode knote must be re-enabled to be seen again. */
+		if (filled >= nevents) {
+			if (scratch_ev[i].filter == EVFILT_MACHPORT_NATIVE)
+				machport_reenable_undelivered(kq,
+				    &scratch_ev[i]);
+			continue;
+		}
 
 		/*
 		 * On a KEVENT_FLAG_ERROR_EVENTS call, emit receipts ONLY --
@@ -1031,10 +1112,18 @@ kevent_qos(int kq, const struct kevent_qos_s *changelist, int nchanges,
 		 * poll does deliver it. It cannot spin: ERROR_EVENTS calls are
 		 * KEVENT_FLAG_IMMEDIATE and return at once anyway, and ordinary
 		 * polls drain in Phase 3 below.
+		 *
+		 * A notify-mode knote is EV_DISPATCH (#420), which the kernel
+		 * has just disabled by handing this event over; re-enable it so
+		 * the skip stays lossless.
 		 */
 		if ((flags & KEVENT_FLAG_ERROR_EVENTS) &&
-		    !(scratch_ev[i].flags & EV_ERROR))
+		    !(scratch_ev[i].flags & EV_ERROR)) {
+			if (scratch_ev[i].filter == EVFILT_MACHPORT_NATIVE)
+				machport_reenable_undelivered(kq,
+				    &scratch_ev[i]);
 			continue;
+		}
 
 		/*
 		 * A native EVFILT_MACHPORT event is OURS. Its udata is the
