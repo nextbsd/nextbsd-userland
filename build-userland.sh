@@ -912,6 +912,17 @@ echo "==> hostnamed built"
 # DROPPED: hostnametest/hostnameprefset/hostnamedhcpset/hostnamedmdnsset
 #          (all host-exec CI fixtures — moved to the boot test).
 
+# ---- scutil -----------------------------------------------------------------
+# Apple's scutil(8) (configd scutil.tproj), trimmed to what libSystemConfiguration
+# backs: the interactive SCDynamicStore session, -w, --prefs, --get/--set for the
+# three host names, --error. bsd.prog.mk; links SC/CF + base libedit.
+comp "scutil(8)"
+mkdir -p "$DESTDIR/usr/sbin"
+run_buildenv "make -C $SRC/scutil DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/sbin/scutil" || { echo "FAIL: /usr/sbin/scutil not installed"; exit 1; }
+needed_check "$DESTDIR/usr/sbin/scutil" "libSystemConfiguration"
+echo "==> scutil built"
+
 # ---- cpdup + nextbsd-installer (the on-target installer) --------------------
 # The FTXUI TUI installer clones the running system onto the target disk with
 # cpdup. Both are vendored under src/ but were not previously built; wired in

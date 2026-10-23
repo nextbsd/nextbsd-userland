@@ -20,7 +20,7 @@ that the `nextbsd` ISO assembler ingests.
 |------|-----------|
 | 0 — host tool | `migcom` + `mig` (arch-neutral MIG codegen, built for the runner) |
 | 1 — foundation libs | `libmach`→`libsystem_kernel` → `libdispatch` *(cmake)* → `libxpc` → `liblaunch` → `swift-foundation-icu` *(cmake)* → `libCoreFoundation` |
-| 2 — daemons/services | `launchd`+`launchctl` → `configd` → `libSystemConfiguration` → `libIOKit`+`ioreg`+`caffeinate` → `kext_tools` → `Libnotify`+`notifyd` → syslog/asl stack → `IPConfiguration` → `mDNSResponder` → `DiskArbitration` → `hostnamed` |
+| 2 — daemons/services | `launchd`+`launchctl` → `configd` → `libSystemConfiguration` → `libIOKit`+`ioreg`+`caffeinate` → `kext_tools` → `Libnotify`+`notifyd` → syslog/asl stack → `IPConfiguration` → `mDNSResponder` → `DiskArbitration` → `hostnamed` → `scutil` |
 
 **Out (by design):**
 
@@ -222,10 +222,12 @@ every Ethernet machine in existence.
 
 ### Debugging
 
-There is **no `scutil`** in this port, so `wlan` *is* the introspection tool.
+`wlan` is the introspection tool for wland's own state; `scutil` shows what it
+published to the dynamic store.
 
 ```sh
 launchctl list | grep wland      # is it running?
+echo 'show State:/Network/Interface/wlan0/AirPort' | scutil   # what did it publish?
 tail -f /var/log/wland.stderr    # what is it doing?
 sysctl net.wlan.devices          # did the driver attach at all?
 ifconfig wlan0                   # did the VAP get cloned?

@@ -26,9 +26,9 @@
  * PreferencesMonitor / hostnamed's prefs_monitor equivalent.
  *
  * freebsd-launchd-mach port: mirrors the contract of Apple's
- * SystemConfiguration.fproj/SCDHostName.c. Trimmed — Apple's file
- * also has Set-side variants (SCPreferencesSetLocalHostName, etc.)
- * that we will add when iter 4 (Bonjour conflict-rename) needs them.
+ * SystemConfiguration.fproj/SCDHostName.c. The Set-side variants
+ * (SCPreferencesSetComputerName / SetHostName / SetLocalHostName) live
+ * in SCDHostName.c.
  */
 
 #include <SystemConfiguration/SCDynamicStore.h>

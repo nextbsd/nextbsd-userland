@@ -31,6 +31,7 @@ provenance; it does not relicense anything.
 | `mDNSResponder` (+ libdns_sd) | apple-oss-distributions/mDNSResponder | Apache-2.0 |
 | `DiskArbitration` | apple-oss-distributions/DiskArbitration | APSL-2.0 |
 | `hostnamed` | NextBSD (Apple-shape) | APSL-2.0 *(component header)* |
+| `scutil` | apple-oss-distributions/configd (`scutil.tproj`) | APSL-2.0 |
 | `caffeinate` | apple-oss-distributions/PowerManagement | APSL-2.0 |
 | `pam_launchd` | apple-oss-distributions/pam_modules (`pam_modules-126`) | APSL-2.0 |
 | `nss_directory_services` | Joseph Maloney; adapted from his Gershwin DirectoryServices NSS module (gershwin-desktop/gershwin-components) for NextBSD | BSD-2-Clause |
