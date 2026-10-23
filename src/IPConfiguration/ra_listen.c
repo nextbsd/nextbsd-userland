@@ -21,8 +21,9 @@
  * flags set; copy out its prefix + lifetimes + the RA's source
  * link-local address (the router for default-route purposes).
  *
- * One-shot for iter 7a — no lease loop, no expiry tracking. The
- * post-iter productionisation backlog tracks the recurring listener.
+ * ra_acquire is one-shot. The recurring listener that tracks router
+ * lifetime after that first RA lives in ra_router.c and reuses
+ * open_icmp6 / recv_one through ra_open / ra_recv.
  */
 #include "ra_listen.h"
 
@@ -245,11 +246,12 @@ parse_options(const uint8_t *opts, size_t len, struct ra_info *out)
  * Single recvmsg, validate hop-limit + ifindex, parse RA. Returns
  *   1  — RA received and PIO extracted (out populated, including
  *        router_lladdr from the source address).
- *   0  — recv timed out (caller decides whether to keep waiting).
+ *   2  — valid RA with no eligible PIO; only the router fields of
+ *        `out` (router_lladdr, router_scope_id, router_lifetime) are
+ *        meaningful. ra_acquire keeps listening; the router tracker
+ *        still uses it to refresh the router's lifetime.
+ *   0  — recv timed out or the packet was rejected.
  *  -1  — fatal (shutdown or unrecoverable error).
- *
- * Note: an RA with no eligible PIO is treated as "no result" (returns
- * 0) — the caller's deadline loop will keep listening for another.
  */
 static int
 recv_one(int sock, unsigned want_ifindex, struct ra_info *out)
@@ -338,6 +340,7 @@ recv_one(int sock, unsigned want_ifindex, struct ra_info *out)
 	(void)memset(out, 0, sizeof(*out));
 	out->router_lladdr = from.sin6_addr;
 	out->router_scope_id = want_ifindex;
+	out->router_lifetime = ntohs(ra->nd_ra_router_lifetime);
 
 	{
 		const uint8_t *opts = buf + sizeof(struct nd_router_advert);
@@ -346,11 +349,11 @@ recv_one(int sock, unsigned want_ifindex, struct ra_info *out)
 
 		if (r == 1)
 			return (1);
-		if (r < 0)
+		if (r < 0) {
 			xlog("RA option chain malformed; ignoring");
-		else
-			xlog("RA with no eligible PIO (on-link+auto); waiting");
-		return (0);
+			return (0);
+		}
+		return (2);
 	}
 }
 
@@ -410,10 +413,11 @@ ra_acquire(const char *ifname, unsigned timeout_ms, struct ra_info *out)
 			(void)inet_ntop(AF_INET6, &out->router_lladdr, rbuf,
 			    sizeof(rbuf));
 			xlog("RA: prefix=%s/%u router=%s%%%s "
-			    "valid=%us preferred=%us",
+			    "valid=%us preferred=%us router-lifetime=%us",
 			    pbuf, (unsigned)out->prefix_len, rbuf, ifname,
 			    (unsigned)out->valid_lifetime,
-			    (unsigned)out->preferred_lifetime);
+			    (unsigned)out->preferred_lifetime,
+			    (unsigned)out->router_lifetime);
 			(void)close(sock);
 			return (0);
 		}
@@ -421,8 +425,26 @@ ra_acquire(const char *ifname, unsigned timeout_ms, struct ra_info *out)
 			(void)close(sock);
 			return (-1);
 		}
-		/* r == 0: keep listening */
+		if (r == 2)
+			xlog("RA with no eligible PIO (on-link+auto); waiting");
+		/* r == 0 or 2: keep listening */
 	}
 	(void)close(sock);
 	return (-1);
+}
+
+int
+ra_open(const char *ifname)
+{
+	return (open_icmp6(ifname));
+}
+
+int
+ra_recv(int sock, unsigned ifindex, struct ra_info *out)
+{
+	int r;
+
+	/* recv_one zeroes `out`, so a PIO-less RA leaves prefix_len 0. */
+	r = recv_one(sock, ifindex, out);
+	return (r > 0 ? 1 : r);
 }

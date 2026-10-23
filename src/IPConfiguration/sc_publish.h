@@ -47,6 +47,8 @@ int	sc_publish_ipv4(struct sc_publish *p, const char *ifname,
  * Mirrors Apple's IPv6 dict shape: Addresses (array of strings),
  * PrefixLength (array of numbers), Router (link-local address with
  * %ifname zone), InterfaceName, Flags=0 (SLAAC). Returns 0 on success.
+ * `router_lladdr` may be NULL when there is no default router (its
+ * lifetime expired); Router is then left out of the dict.
  *
  * Single-address publish only; iter 7a doesn't track multiple PIOs.
  */

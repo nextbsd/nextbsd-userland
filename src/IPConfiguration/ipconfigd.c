@@ -99,6 +99,7 @@
 #include "lease_loop.h"
 #include "mach_service.h"
 #include "ra_listen.h"
+#include "ra_router.h"
 #include "sc_link_watch.h"
 #include "sc_publish.h"
 
@@ -286,6 +287,7 @@ dhcp_run_on_interface(const char *ifname, uint32_t lease_cap_secs,
 	char a[INET_ADDRSTRLEN], m[INET_ADDRSTRLEN];
 	char r[INET_ADDRSTRLEN], s[INET_ADDRSTRLEN];
 	struct ra_info ra;
+	struct ra_router *rtr = NULL;
 	int rar;
 
 	xlog("selected interface for DHCPv4: %s", ifname);
@@ -392,6 +394,11 @@ dhcp_run_on_interface(const char *ifname, uint32_t lease_cap_secs,
 				(void)sc_publish_ipv6(pub, ifname, &v6,
 				    ra.prefix_len, &ra.router_lladdr);
 			xlog("IPCFG-RA-OK");
+			/*
+			 * Keep hearing RAs so ::/0 follows the router's
+			 * lifetime instead of outliving it (#350).
+			 */
+			rtr = ra_router_start(ifname, &ra, &v6);
 		} else {
 			xlog("IPCFG-RA-MISS: apply_ra_lease failed");
 		}
@@ -404,6 +411,14 @@ dhcp_run_on_interface(const char *ifname, uint32_t lease_cap_secs,
 
 	/* Parks here for the life of the lease. */
 	(void)lease_loop_run(ifname, &lease, pub, lease_cap_secs, stop);
+
+	/*
+	 * Stop the router tracker before anything below removes the IPv6
+	 * key, so it cannot republish behind the teardown. Same SIGTERM
+	 * rule as the IPv4 lease: keep ::/0 across a restart, otherwise
+	 * take it back.
+	 */
+	ra_router_stop(rtr, !got_term);
 
 	/*
 	 * Teardown (#37, #39).

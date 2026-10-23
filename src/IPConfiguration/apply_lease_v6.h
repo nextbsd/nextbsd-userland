@@ -35,4 +35,15 @@ int bring_v6_up(const char *ifname);
 int apply_ra_lease(const char *ifname, const struct ra_info *info,
     struct in6_addr *out_addr);
 
+/*
+ * Add / delete the ::/0 default route via the link-local `gateway`
+ * on `ifindex`. Adding a route that already exists and deleting one
+ * that is already gone both return 0. ra_router.c uses these to keep
+ * ::/0 in step with the advertising router's lifetime.
+ */
+int install_v6_default_route(const struct in6_addr *gateway,
+    unsigned ifindex);
+int remove_v6_default_route(const struct in6_addr *gateway,
+    unsigned ifindex);
+
 #endif /* APPLY_LEASE_V6_H */
