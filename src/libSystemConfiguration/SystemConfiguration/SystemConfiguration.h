@@ -17,8 +17,9 @@
  * SystemConfiguration.h — umbrella header for the SystemConfiguration
  * client framework (freebsd-launchd-mach port).
  *
- * Exposes the SCDynamicStore, SCPreferences, SCNetworkConfiguration,
- * and SCNetworkReachability APIs, plus the SCSchemaDefinitions
+ * Exposes the SCDynamicStore, SCPreferences (with the SetSpecific name
+ * setters), SCNetworkConfiguration, and SCNetworkReachability APIs,
+ * plus the SCSchemaDefinitions
  * constants. The remaining network APIs (Connection, ...) are later
  * iterations.
  */
@@ -28,6 +29,7 @@
 
 #include <SystemConfiguration/SCDynamicStore.h>
 #include <SystemConfiguration/SCPreferences.h>
+#include <SystemConfiguration/SCPreferencesSetSpecific.h>
 #include <SystemConfiguration/SCNetworkConfiguration.h>
 #include <SystemConfiguration/SCNetworkReachability.h>
 #include <SystemConfiguration/SCSchemaDefinitions.h>

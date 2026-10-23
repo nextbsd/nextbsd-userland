@@ -24,7 +24,7 @@ SRCS=		SCD.c SCDynamicStore.c SCNotify.c SCDMultiple.c SCPreferences.c
 SRCS+=		SCNetworkConfigurationInternal.c SCNetworkInterface.c
 SRCS+=		SCNetworkProtocol.c SCNetworkService.c SCNetworkSet.c
 SRCS+=		SCVLANInterface.c SCBondInterface.c SCBridgeInterface.c
-SRCS+=		SCDynamicStoreKeys.c SCDName.c SCPName.c
+SRCS+=		SCDynamicStoreKeys.c SCDName.c SCPName.c SCDHostName.c
 SRCS+=		SCNetworkReachability.c
 
 # configUser.c — MIG-generated config.defs client stubs (same file
@@ -85,6 +85,9 @@ INCS=		SystemConfiguration/SCDynamicStore.h \
 		SystemConfiguration/SCNetworkConfiguration.h \
 		SystemConfiguration/SCNetworkReachability.h \
 		SystemConfiguration/SCPreferences.h \
+		SystemConfiguration/SCPreferencesGetSpecificPrivate.h \
+		SystemConfiguration/SCPreferencesSetSpecific.h \
+		SystemConfiguration/SCPreferencesSetSpecificPrivate.h \
 		SystemConfiguration/SCPrivate.h \
 		SystemConfiguration/SCSchemaDefinitions.h \
 		SystemConfiguration/SystemConfiguration.h

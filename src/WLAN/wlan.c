@@ -15,11 +15,11 @@
  *
  * It is TWO things at once, and both are load-bearing.
  *
- * 1. It is the debugging tool. THERE IS NO scutil IN THIS PORT. The only mention
- *    anywhere in the tree is an `.Xr scutil 8` cross-reference in configd's man
- *    page, pointing at a binary that does not exist. So there is no way at all to
- *    inspect the dynamic store ad hoc — and without this, a broken association is
- *    invisible.
+ * 1. It is the debugging tool. It was written when there was no scutil in this
+ *    port, so no way at all to inspect the dynamic store ad hoc — and without
+ *    this, a broken association was invisible. scutil(8) now shows what wland
+ *    publishes to the store; wland's own state (scan results, supplicant) is
+ *    still only reachable through this CLI.
  *
  * 2. It is the desktop's bridge across the Mach line. NO GERSHWIN PROCESS HAS
  *    EVER SPOKEN MACH — there is not one mach/, bootstrap_look_up, xpc_, or

@@ -1,0 +1,146 @@
+.\"
+.\"     @(#)scutil.8
+.\"
+.\" Vendored from apple-oss-distributions/configd @ configd-1405.120.5
+.\" (scutil.tproj/scutil.8). NextBSD: trimmed to the options this port
+.\" carries; -r, --dns, --proxy, --nc and --renew are not built.
+.\"
+.Dd January 23, 2008
+.Dt SCUTIL 8
+.Os "Mac OS X"
+.Sh NAME
+.Nm scutil
+.Nd Manage system configuration parameters
+.Sh SYNOPSIS
+.Nm
+.Br
+.Nm
+.Fl -prefs Op preference-file
+.Br
+.Nm
+.Fl w Ar dynamic-store-key Op Fl t Ar timeout
+.Br
+.Nm
+.Fl -get Ar pref
+.Br
+.Nm
+.Fl -set Ar pref Op Ar newval
+.Br
+.Nm
+.Fl -error Ar err#
+.\".Br
+.\".Nm
+.\".Fl -net
+.Sh DESCRIPTION
+Invoked with no options,
+.Nm
+provides a command line interface to the
+.Qq dynamic store
+data maintained by
+.Xr configd 8 .
+Interaction with this data (using the SystemConfiguration.framework
+SCDynamicStore APIs) is handled with a set of commands read from
+standard input.
+A list of the available commands is available by entering the
+.Ar help
+directive.
+.Pp
+The
+.Fl -prefs
+option provides a command line interface to the [raw] stored
+preference data.
+Interaction with this data (using the SystemConfiguration.framework
+SCPreferences APIs) is handled with a set of commands read from
+standard input.
+A list of the available commands is availble by entering the
+.Ar help
+directive.
+.Pp
+The
+.Fl w
+option provides a means of checking for (and optionally waiting for the
+creation of or posting of a notification to) a dynamic store key.
+.Pp
+The
+.Fl -get
+and
+.Fl -set
+options provide a means of reporting and updating a select group of
+persistent system preferences.
+.Pp
+The
+.Fl -error
+option reports the descriptive message for a SystemConfiguration
+status code.
+.\".Pp
+.\"Lastly, the
+.\".Fl -net
+.\"option provides a means of managing the system's network configuration.
+.Sh OPTIONS
+.Bl -tag -width xx
+.It Fl w Ar dynamic-store-key Op Fl t Ar timeout
+Check if the specified key exists in the
+.Qq dynamic store
+data maintained by
+.Xr configd 8 .
+If present,
+.Nm
+will return with a zero exit status.
+If not present,
+.Nm
+will wait for the specified time for data to be associated with or a notification
+to be posted using the key.
+A non-zero exit status will be returned if the key was not created/posted
+within the specified time.
+.Pp
+.Nm
+will wait indefinitely if a timeout of 0 seconds is specified.
+The default timeout is 15 seconds.
+.It Fl -get Ar pref
+Retrieves the specified preference.  The current value will be reported on standard output.
+.Pp
+Supported preferences include:
+.Bl -tag -width "LocalHostName" -offset indent
+.It ComputerName
+The user-friendly name for the system.
+.It LocalHostName
+The local (Bonjour) host name.
+.It HostName
+The name associated with
+.Xr hostname 1
+and
+.Xr gethostname 3 .
+.El
+.It Fl -set Ar pref Op Ar newval
+Updates the specified preference with the new value.
+If the new value is not specified on the command line then it will be read from standard input.
+.Pp
+Supported preferences include:
+ComputerName
+LocalHostName
+HostName
+.Pp
+The
+.Fl -set
+option requires super-user access.
+.It Fl -error Ar err#
+Reports the descriptive message for the given SystemConfiguration
+status code.
+.\".It Fl -net
+.\"Provides a command line interface to the
+.\".Qq network configuration .
+.\"Interaction with this data (using the SystemConfiguration.framework
+.\"SCNetworkConfiguration APIs) is handled with a set of commands read
+.\"from standard input.  A list of the available commands is available
+.\"by entering the help directive.
+.\".Pp
+.\"The
+.\".Fl -net
+.\"option requires super-user access.
+.El
+.Sh SEE ALSO
+.Xr configd 8
+.Sh HISTORY
+The
+.Nm
+command appeared in Mac OS X Public Beta.
