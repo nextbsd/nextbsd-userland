@@ -85,6 +85,7 @@ INCS=		SystemConfiguration/SCDynamicStore.h \
 		SystemConfiguration/SCNetworkConfiguration.h \
 		SystemConfiguration/SCNetworkReachability.h \
 		SystemConfiguration/SCPreferences.h \
+		SystemConfiguration/SCPrivate.h \
 		SystemConfiguration/SCSchemaDefinitions.h \
 		SystemConfiguration/SystemConfiguration.h
 INCSDIR=	${PREFIX}/include/SystemConfiguration

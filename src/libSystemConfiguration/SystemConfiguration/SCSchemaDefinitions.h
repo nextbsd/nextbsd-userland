@@ -78,12 +78,30 @@
 #define kSCEntNetLink				CFSTR("Link")
 
 /*
+ * Event entities the KernelEventMonitor publishes as the trailing
+ * component of State:/Network/Interface/<ifname>/<entity> when the
+ * kernel reports an IPv4 ARP collision, an IPv6 duplicate address
+ * (DAD failure) or an expired IPv6 default router. Private schema in
+ * Apple's tree (SCSchemaDefinitionsPrivate.h).
+ */
+#define kSCEntNetIPv4ARPCollision		CFSTR("IPv4ARPCollision")
+#define kSCEntNetIPv6DuplicatedAddress		CFSTR("IPv6DuplicatedAddress")
+#define kSCEntNetIPv6RouterExpired		CFSTR("IPv6RouterExpired")
+
+/*
  * Property names that appear as dictionary keys inside the network-
  * entity dicts published into the SCDynamicStore.
  */
 #define kSCPropNetIPv4Addresses			CFSTR("Addresses")
 #define kSCPropNetIPv4SubnetMasks		CFSTR("SubnetMasks")
 #define kSCPropNetIPv4Router			CFSTR("Router")
+#define kSCPropNetIPv4BroadcastAddresses	CFSTR("BroadcastAddresses")
+#define kSCPropNetIPv6Addresses			CFSTR("Addresses")
+#define kSCPropNetIPv6PrefixLength		CFSTR("PrefixLength")
+#define kSCPropNetIPv6Flags			CFSTR("Flags")
+#define kSCPropNetIPv6ScopeID			CFSTR("ScopeID")
+#define kSCPropNetLinkActive			CFSTR("Active")
+#define kSCPropNetLinkDetaching			CFSTR("Detaching")
 #define kSCPropNetInterfaceDeviceName		CFSTR("DeviceName")
 #define kSCPropNetInterfaceType			CFSTR("Type")
 #define kSCPropNetInterfaceHardware		CFSTR("Hardware")
