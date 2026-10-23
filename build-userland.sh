@@ -789,14 +789,18 @@ test -x "$DESTDIR/usr/sbin/ipconfigd" || { echo "FAIL: /usr/sbin/ipconfigd not i
 comp "ipconfig(8) CLI"
 # build.sh ~2376-2388 bare `cc` link. Same flags (-Wno-macro-redefined,
 # --allow-shlib-undefined) under the cross clang.  TODO verify under cross.
-$CROSS_CC --sysroot="$SYSROOT" \
+# CF + SC (+ dispatch/blocks, which the SC header pulls) for `set` /
+# `getsummary` (property lists) and `waitall` (SCDynamicStore) — the
+# same libraries ipconfigd links.
+$CROSS_CC --sysroot="$SYSROOT" -fblocks \
     -I"$IPCFG_MIG" -I"$SRC/IPConfiguration" \
     -I"$SRC/launchd/liblaunch" -I"$SRC/launchd/freebsd-shims" \
     -I"$SYSROOT/usr/include" -L"$SYSROOT/usr/lib/system" \
     -Wno-macro-redefined -Wl,-rpath,/usr/lib/system -Wl,--allow-shlib-undefined \
     -o "$DESTDIR/usr/sbin/ipconfig" \
     "$SRC/IPConfiguration/ipconfig.c" "$IPCFG_MIG/ipconfigUser.c" \
-    -llaunch -lsystem_kernel
+    -llaunch -lsystem_kernel \
+    -lSystemConfiguration -lCoreFoundation -lsystem_dispatch -l:libsystem_blocks.so
 test -x "$DESTDIR/usr/sbin/ipconfig" || { echo "FAIL: /usr/sbin/ipconfig not built"; exit 1; }
 echo "==> ipconfigd + ipconfig built"
 # DROPPED: ipconfigtest/ipconfigrpctest (host-exec).

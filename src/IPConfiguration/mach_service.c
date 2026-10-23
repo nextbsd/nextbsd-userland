@@ -15,6 +15,7 @@
 #include "ipconfigServer.h"		/* MIG: ipconfig_server() */
 
 #include <mach/mach.h>
+#include <mach/mig_errors.h>		/* mig_reply_error_t */
 #include <servers/bootstrap.h>
 
 #include <errno.h>
@@ -23,9 +24,9 @@
 #include <stdio.h>
 #include <string.h>
 
-/* RPC receive buffer size — Apple's ipconfig.defs has no OOL data
- * in iter 5a (just scalars + a 16-byte if_name), so a 4 KiB buffer
- * is generous. iter 5b/6's xmlDataOut routines may need 8 KiB+. */
+/* RPC receive buffer size. ipconfig.defs' payloads travel
+ * out-of-line, so a message is only a header, descriptors, scalars, a
+ * 16-byte if_name and the audit trailer; 4 KiB is generous. */
 #define IPCFG_RPC_BUFSZ		4096
 
 #define IPCFG_SERVICE_NAME	"com.apple.IPConfiguration"
@@ -71,7 +72,16 @@ mach_service_thread(void *arg)
 		mach_msg_return_t mr;
 
 		(void)memset(&req, 0, sizeof(req));
-		mr = mach_msg(&req.hdr, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+		/*
+		 * Ask for the audit trailer: routines declared with
+		 * ServerAuditToken (ipconfig_set's root check) read the
+		 * caller's credentials from it, and the MIG demux rejects
+		 * them with MIG_TRAILER_ERROR if it is missing. Same
+		 * receive options launchd's and syslogd's servers use.
+		 */
+		mr = mach_msg(&req.hdr, MACH_RCV_MSG | MACH_RCV_TIMEOUT |
+		    MACH_RCV_TRAILER_TYPE(MACH_MSG_TRAILER_FORMAT_0) |
+		    MACH_RCV_TRAILER_ELEMENTS(MACH_RCV_TRAILER_AUDIT),
 		    0, sizeof(req), sp, 500, MACH_PORT_NULL);
 		if (mr == MACH_RCV_TIMED_OUT)
 			continue;
@@ -84,16 +94,35 @@ mach_service_thread(void *arg)
 		(void)memset(&rep, 0, sizeof(rep));
 		if (!ipconfig_server(&req.hdr, &rep.hdr)) {
 			xlog("ignoring message id=%d", req.hdr.msgh_id);
+			/* Unclaimed: its reply right and any OOL are ours. */
+			mach_msg_destroy(&req.hdr);
 			continue;
+		}
+		if (!(rep.hdr.msgh_bits & MACH_MSGH_BITS_COMPLEX) &&
+		    ((mig_reply_error_t *)(void *)&rep.hdr)->RetCode !=
+		    KERN_SUCCESS) {
+			/*
+			 * MIG rejected the request before a routine took
+			 * ownership of it (bad arguments, a missing audit
+			 * trailer): its out-of-line memory is still ours to
+			 * release, as Apple's mach_msg_server() and configd
+			 * do. The reply consumes the reply right, so keep
+			 * that out of the destroy.
+			 */
+			req.hdr.msgh_remote_port = MACH_PORT_NULL;
+			mach_msg_destroy(&req.hdr);
 		}
 		if (rep.hdr.msgh_remote_port != MACH_PORT_NULL) {
 			mr = mach_msg(&rep.hdr,
 			    MACH_SEND_MSG | MACH_SEND_TIMEOUT,
 			    rep.hdr.msgh_size, 0, MACH_PORT_NULL, 200,
 			    MACH_PORT_NULL);
-			if (mr != MACH_MSG_SUCCESS)
+			if (mr != MACH_MSG_SUCCESS) {
 				xlog("reply send failed: 0x%x",
 				    (unsigned)mr);
+				/* Drop the reply's OOL rather than leak it. */
+				mach_msg_destroy(&rep.hdr);
+			}
 		}
 	}
 	return (NULL);
