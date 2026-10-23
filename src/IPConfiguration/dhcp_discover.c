@@ -211,11 +211,15 @@ bring_interface_up(const char *ifname)
 	unsigned before, after = 0;
 
 	sock = socket(AF_INET, SOCK_DGRAM, 0);
-	if (sock < 0)
+	if (sock < 0) {
+		xlog("bring_interface_up(%s): socket: %s", ifname,
+		    strerror(errno));
 		return (-1);
+	}
 	(void)memset(&ifr, 0, sizeof(ifr));
 	(void)strlcpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
 	if (ioctl(sock, SIOCGIFFLAGS, &ifr) != 0) {
+		xlog("SIOCGIFFLAGS(%s) failed: %s", ifname, strerror(errno));
 		(void)close(sock);
 		return (-1);
 	}
@@ -673,8 +677,10 @@ send_dhcp(int bpf_fd, const uint8_t *frame, size_t frame_len)
 			break;
 		(void)usleep(100000);
 	}
-	xlog("write(bpf, %zu) failed after %d tries: %s",
-	    frame_len, try + 1, strerror(errno));
+	/* On SIGTERM the caller reports the shutdown, not a write error. */
+	if (!got_term)
+		xlog("write(bpf, %zu) failed after %d tries: %s",
+		    frame_len, try + 1, strerror(errno));
 	return (-1);
 }
 
@@ -709,12 +715,19 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
 	uint8_t mac[6];
 	uint8_t frame[1024];
 	uint32_t xid;
-	int bpf_fd, try;
+	int bpf_fd = -1, try;
 	size_t frame_len;
 	struct timespec deadline;
 	struct dhcp_lease offer;
 
+	/*
+	 * A failure while the daemon or the worker is being stopped is the
+	 * stop, not a bind failure: every give-up below takes `shutdown`
+	 * then, which never logs IPCFG-BOUND-FAIL (#417).
+	 */
 	if (get_interface_mac(ifname, mac) != 0) {
+		if (got_term || (stop != NULL && *stop))
+			goto shutdown;
 		xlog("get_interface_mac(%s) failed: %s",
 		    ifname, strerror(errno));
 		xlog("IPCFG-BOUND-FAIL");
@@ -724,6 +737,8 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
 	    ifname, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
 	if (bring_interface_up(ifname) != 0) {
+		if (got_term || (stop != NULL && *stop))
+			goto shutdown;
 		xlog("IPCFG-BOUND-FAIL");
 		return (-1);
 	}
@@ -754,6 +769,8 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
 		frame_len = build_dhcp_msg(frame, mac, xid,
 		    DHCP_MTYPE_DISCOVER, NULL, NULL, NULL);
 		if (send_dhcp(bpf_fd, frame, frame_len) != 0) {
+			if (got_term || (stop != NULL && *stop))
+				goto shutdown;
 			xlog("IPCFG-BOUND-FAIL");
 			(void)close(bpf_fd);
 			return (-1);
@@ -828,6 +845,8 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
 		frame_len = build_dhcp_msg(frame, mac, xid,
 		    DHCP_MTYPE_REQUEST, &offer.addr, &offer.server, NULL);
 		if (send_dhcp(bpf_fd, frame, frame_len) != 0) {
+			if (got_term || (stop != NULL && *stop))
+				goto shutdown;
 			xlog("IPCFG-BOUND-FAIL");
 			(void)close(bpf_fd);
 			return (-1);
@@ -852,14 +871,24 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
 	return (-1);
 
 shutdown:
-	(void)close(bpf_fd);
-	if (!got_term && stop != NULL && *stop) {
+	if (bpf_fd >= 0)
+		(void)close(bpf_fd);
+	if (got_term) {
+		/*
+		 * Not a failure: the daemon is exiting (launchctl unload,
+		 * shutdown). Its stderr log outlives it, so a marker here
+		 * would read as a bind failure of the next instance (#417).
+		 */
+		xlog("%s: DHCP exchange interrupted by signal %d", ifname,
+		    (int)got_term);
+		return (-1);
+	}
+	if (stop != NULL && *stop) {
 		/* Not a failure: the service was stopped (#410). */
 		xlog("%s: DHCP exchange stopped", ifname);
 		return (-1);
 	}
-	xlog("DHCP exchange interrupted by signal (got_term=%d)",
-	    (int)got_term);
+	/* recv_dhcp_reply's read(bpf) failed; it logged why. */
 	xlog("IPCFG-BOUND-FAIL");
 	return (-1);
 }
