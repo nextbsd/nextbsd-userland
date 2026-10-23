@@ -14,6 +14,7 @@
 #include "bound_state.h"	/* primary election (#41) */
 
 #include <SystemConfiguration/SCDynamicStore.h>
+#include <SystemConfiguration/SCPrivate.h>	/* _SC_NOTIFY_NETWORK_CHANGE */
 #include <CoreFoundation/CoreFoundation.h>
 
 #include <sys/types.h>
@@ -26,6 +27,7 @@
 
 #include <errno.h>
 #include <ifaddrs.h>
+#include <notify.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -48,6 +50,21 @@ xlog(const char *fmt, ...)
 	va_end(ap);
 	(void)fputc('\n', stderr);
 	(void)fflush(stderr);
+}
+
+/*
+ * Tell notify(3) watchers (syslogd, hostnamed) the network changed, as
+ * Darwin's IPMonitor does on a primary-service change (ip_plugin.c).
+ */
+static void
+post_network_change(void)
+{
+	uint32_t status;
+
+	status = notify_post(_SC_NOTIFY_NETWORK_CHANGE);
+	if (status != NOTIFY_STATUS_OK)
+		xlog("notify_post(" _SC_NOTIFY_NETWORK_CHANGE ") failed: "
+		    "status=%u", status);
 }
 
 /* CFStringCreateWithCString wrapper — avoids -fconstant-cfstrings. */
@@ -467,7 +484,8 @@ sc_publish_ipv6(struct sc_publish *p, const char *ifname,
  * When nothing is bound the key is removed rather than left stale: a
  * consumer that reads PrimaryInterface must not be told em0 is primary
  * when em0 no longer has a lease. mDNSResponder (#62) and hostnamed both
- * read this key.
+ * read this key. Either way the election ends with a network_change
+ * post (#339).
  */
 int
 sc_publish_update_primary(struct sc_publish *p)
@@ -494,6 +512,7 @@ sc_publish_update_primary(struct sc_publish *p)
 			    "State:/Network/Global/IPv4");
 		}
 		CFRelease(gkey);
+		post_network_change();
 		return (0);
 	}
 
@@ -525,6 +544,8 @@ sc_publish_update_primary(struct sc_publish *p)
 	if (gk_svc != NULL) CFRelease(gk_svc);
 	if (gdict != NULL) CFRelease(gdict);
 	CFRelease(gkey);
+	if (rc == 0)
+		post_network_change();
 	return (rc);
 }
 

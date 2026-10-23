@@ -59,6 +59,9 @@ CFLAGS+=	-Wmissing-prototypes -Wpointer-arith
 # pair hwregd / configd use.
 CFLAGS+=	-I${.CURDIR}/../launchd/liblaunch
 CFLAGS+=	-I${.CURDIR}/../launchd/freebsd-shims
+# <notify.h> includes os/base.h from the libnotify shims; hostnamed takes
+# the same -I.
+CFLAGS+=	-I${.CURDIR}/../Libnotify/freebsd-shims
 
 SYSROOT?=
 .if !empty(SYSROOT)
@@ -78,6 +81,9 @@ LDFLAGS+=	-Wl,--allow-shlib-undefined
 LDADD+=		-llaunch -lsystem_kernel
 LDADD+=		-lSystemConfiguration -lCoreFoundation
 LDADD+=		-lsystem_dispatch -l:libsystem_blocks.so
+# -lnotify: notify_post(com.apple.system.config.network_change) after a
+# primary election and a resolv.conf rewrite, as Darwin's IPMonitor does.
+LDADD+=		-lnotify
 
 BINDIR=		/usr/sbin
 
