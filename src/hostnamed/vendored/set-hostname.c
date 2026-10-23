@@ -57,6 +57,18 @@ static dispatch_queue_t		S_queue;
 static struct timeval		ptrQueryStart;
 static SCNetworkReachabilityRef	ptrTarget;
 
+/* NextBSD carry: on Darwin, IPMonitor posts network_change once per
+ * batch of changes. Here configd (Interface IPv4/IPv6 keys) and
+ * ipconfigd (primary election, then the resolv.conf rewrite) each post
+ * on their own, so a DHCP bind arrives as a burst of two or three
+ * posts a few ms apart. Each one would rerun update_hostname(), which
+ * cancels and restarts the PTR query. Coalesce the burst: the first
+ * post arms a one-shot timer on S_queue and later posts within the
+ * window ride on it, so the chain runs once, after resolv.conf is in
+ * place. The SCDynamicStore callback (prefs / DHCP / HostNames) is
+ * not delayed. */
+#define	NETWORK_CHANGE_COALESCE_MS	250
+static Boolean			S_network_change_pending;
 
 #define	HOSTNAME_NOTIFY_KEY	"com.apple.system.hostname"
 
@@ -676,7 +688,18 @@ load_hostname(dispatch_queue_t queue)
 	/* watch for primary service/interface and DNS configuration changes */
 	notify_handler = ^(int token){
 #pragma unused(token)
-		update_hostname(store, NULL, NULL);
+		/* NextBSD carry: coalesce, see NETWORK_CHANGE_COALESCE_MS */
+		if (S_network_change_pending) {
+			return;
+		}
+		S_network_change_pending = TRUE;
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+					     (int64_t)NETWORK_CHANGE_COALESCE_MS * NSEC_PER_MSEC),
+			       queue,
+			       ^{
+			S_network_change_pending = FALSE;
+			update_hostname(store, NULL, NULL);
+		});
 	};
 	status = notify_register_dispatch(_SC_NOTIFY_NETWORK_CHANGE,
 					  &notify_token,
