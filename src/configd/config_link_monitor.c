@@ -67,16 +67,17 @@
 #include <mach/mach.h>
 #include <servers/bootstrap.h>
 
-#include "config_types.h"		/* xmlData, SCD_SERVER, kSCStatusOK */
+#include "config_types.h"		/* xmlData_t, SCD_SERVER, kSCStatusOK */
 #include "config_link_monitor.h"
 
 /* config.defs MIG client stubs (configUser.c). */
-extern kern_return_t configopen(mach_port_t, xmlData, mach_msg_type_number_t,
-    xmlData, mach_msg_type_number_t, mach_port_t *, int *);
-extern kern_return_t configset(mach_port_t, xmlData, mach_msg_type_number_t,
-    xmlData, mach_msg_type_number_t, int, int *, int *);
-extern kern_return_t configremove(mach_port_t, xmlData, mach_msg_type_number_t,
+extern kern_return_t configopen(mach_port_t, xmlData_t,
+    mach_msg_type_number_t, xmlData_t, mach_msg_type_number_t, mach_port_t *,
     int *);
+extern kern_return_t configset(mach_port_t, xmlData_t, mach_msg_type_number_t,
+    xmlData_t, mach_msg_type_number_t, int, int *, int *);
+extern kern_return_t configremove(mach_port_t, xmlData_t,
+    mach_msg_type_number_t, int *);
 
 /* liblaunch global — the bootstrap port configd checked its service in on. */
 extern mach_port_t bootstrap_port;
@@ -162,8 +163,7 @@ publish_link(const char *ifname, int active)
 	val = link_value_xml(active);
 	vallen = (int)strlen(val);
 
-	kr = configset(g_session, (uint8_t *)key,
-	    (mach_msg_type_number_t)keylen, (uint8_t *)(uintptr_t)val,
+	kr = configset(g_session, key, (mach_msg_type_number_t)keylen, val,
 	    (mach_msg_type_number_t)vallen, 0, &newInstance, &status);
 	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
 		lmlog("KEM-LINK-FAIL: configset(%s) kr=0x%x status=%d",
@@ -200,8 +200,8 @@ unpublish_link(const char *ifname)
 	if (keylen <= 0 || (size_t)keylen >= sizeof(key))
 		return;
 
-	kr = configremove(g_session, (uint8_t *)key,
-	    (mach_msg_type_number_t)keylen, &status);
+	kr = configremove(g_session, key, (mach_msg_type_number_t)keylen,
+	    &status);
 	/*
 	 * kSCStatusNoKey is the expected outcome for an interface that never
 	 * had a Link key (it departed before we ever saw it link), so it is not
@@ -285,8 +285,7 @@ static int
 open_session(void)
 {
 	mach_port_t	server = MACH_PORT_NULL;
-	uint8_t		name[] = "KernelEventMonitor";
-	uint8_t		empty[1] = { 0 };
+	const char	name[] = "KernelEventMonitor";
 	int		status = 0;
 	int		tries;
 
@@ -302,7 +301,7 @@ open_session(void)
 			}
 		}
 		kr = configopen(server, name,
-		    (mach_msg_type_number_t)(sizeof(name) - 1), empty, 0,
+		    (mach_msg_type_number_t)(sizeof(name) - 1), NULL, 0,
 		    &g_session, &status);
 		if (kr == KERN_SUCCESS && status == kSCStatusOK &&
 		    g_session != MACH_PORT_NULL)

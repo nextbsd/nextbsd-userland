@@ -24,10 +24,8 @@
 
 /* CFDictionaryApplyFunction context for encode_kvmap() */
 struct kvmap_encode_ctx {
-	uint8_t	*buf;
-	size_t	cap;
-	size_t	off;
-	int	err;
+	CFMutableDataRef	buf;
+	int			err;
 };
 
 /* encode one key (CFString) / value (CFPropertyList) pair into the map */
@@ -59,11 +57,11 @@ kvmap_encode_one(const void *key, const void *value, void *context)
 		return;
 	}
 
-	if (wire_kvmap_put(ctx->buf, ctx->cap, &ctx->off,
-			   CFDataGetBytePtr(keyData),
-			   (size_t)CFDataGetLength(keyData),
-			   CFDataGetBytePtr(valueData),
-			   (size_t)CFDataGetLength(valueData)) != 0) {
+	if (_SCAppendKeyValue(ctx->buf,
+			      CFDataGetBytePtr(keyData),
+			      (size_t)CFDataGetLength(keyData),
+			      CFDataGetBytePtr(valueData),
+			      (size_t)CFDataGetLength(valueData)) != 0) {
 		ctx->err = 1;
 	}
 
@@ -73,15 +71,14 @@ kvmap_encode_one(const void *key, const void *value, void *context)
 
 /*
  * Encode a CFDictionary of CFString -> CFPropertyList into configd's
- * wire key/value-map form. Returns 0 with the byte count in *outLen,
- * or -1 on a bad element / buffer overflow.
+ * wire key/value-map form, appending to `buf`. Returns 0, or -1 on a
+ * bad element.
  */
 static int
-encode_kvmap(CFDictionaryRef dict, uint8_t *buf, size_t cap, size_t *outLen)
+encode_kvmap(CFDictionaryRef dict, CFMutableDataRef buf)
 {
 	struct kvmap_encode_ctx	ctx;
 
-	*outLen = 0;
 	if (dict == NULL) {
 		return 0;
 	}
@@ -90,16 +87,9 @@ encode_kvmap(CFDictionaryRef dict, uint8_t *buf, size_t cap, size_t *outLen)
 	}
 
 	ctx.buf = buf;
-	ctx.cap = cap;
-	ctx.off = 0;
 	ctx.err = 0;
 	CFDictionaryApplyFunction(dict, kvmap_encode_one, &ctx);
-	if (ctx.err) {
-		return -1;
-	}
-
-	*outLen = ctx.off;
-	return 0;
+	return ctx.err ? -1 : 0;
 }
 
 
@@ -112,11 +102,9 @@ SCDynamicStoreCopyMultiple(SCDynamicStoreRef	store,
 			   CFArrayRef		patterns)
 {
 	SCDynamicStorePrivateRef	storePrivate	= (SCDynamicStorePrivateRef)store;
-	uint8_t				keyBuf[CONFIG_DATA_MAX];
-	uint8_t				patternBuf[CONFIG_DATA_MAX];
-	size_t				keyLen		= 0;
-	size_t				patternLen	= 0;
-	xmlDataOut			reply;
+	CFMutableDataRef		keyBuf;
+	CFMutableDataRef		patternBuf;
+	xmlDataOut_t			reply		= NULL;
 	mach_msg_type_number_t		replyLen	= 0;
 	int				sc_status	= kSCStatusFailed;
 	kern_return_t			kr;
@@ -137,18 +125,26 @@ SCDynamicStoreCopyMultiple(SCDynamicStoreRef	store,
 		return NULL;
 	}
 
-	if ((_SCEncodeKeyList(keys, keyBuf, sizeof(keyBuf), &keyLen) != 0) ||
-	    (_SCEncodeKeyList(patterns, patternBuf, sizeof(patternBuf),
-			      &patternLen) != 0)) {
+	keyBuf     = CFDataCreateMutable(NULL, 0);
+	patternBuf = CFDataCreateMutable(NULL, 0);
+	if ((keyBuf == NULL) || (patternBuf == NULL) ||
+	    (_SCEncodeKeyList(keys, keyBuf) != 0) ||
+	    (_SCEncodeKeyList(patterns, patternBuf) != 0)) {
+		if (keyBuf != NULL)	CFRelease(keyBuf);
+		if (patternBuf != NULL)	CFRelease(patternBuf);
 		_SCErrorSet(kSCStatusInvalidArgument);
 		return NULL;
 	}
 
 	kr = configget_m(storePrivate->server,
-			 keyBuf, (mach_msg_type_number_t)keyLen,
-			 patternBuf, (mach_msg_type_number_t)patternLen,
-			 reply, &replyLen,
+			 (xmlData_t)CFDataGetBytePtr(keyBuf),
+			 (mach_msg_type_number_t)CFDataGetLength(keyBuf),
+			 (xmlData_t)CFDataGetBytePtr(patternBuf),
+			 (mach_msg_type_number_t)CFDataGetLength(patternBuf),
+			 &reply, &replyLen,
 			 &sc_status);
+	CFRelease(keyBuf);
+	CFRelease(patternBuf);
 	if (kr != KERN_SUCCESS) {
 		_SCErrorSet(kSCStatusFailed);
 		return NULL;
@@ -162,13 +158,16 @@ SCDynamicStoreCopyMultiple(SCDynamicStoreRef	store,
 					   &kCFTypeDictionaryKeyCallBacks,
 					   &kCFTypeDictionaryValueCallBacks);
 	if (result == NULL) {
+		if (reply != NULL) {
+			(void) vm_deallocate(mach_task_self(), (vm_address_t)reply, replyLen);
+		}
 		_SCErrorSet(kSCStatusFailed);
 		return NULL;
 	}
 
 	/* the reply is a key/value map; each value is an XML-plist blob */
-	cur = reply;
-	end = reply + replyLen;
+	cur = (const uint8_t *)reply;
+	end = cur + replyLen;
 	while (wire_kvmap_next(&cur, end, &keyBytes, &kl, &valueBytes, &vl)) {
 		CFStringRef		key;
 		CFPropertyListRef	value;
@@ -182,6 +181,9 @@ SCDynamicStoreCopyMultiple(SCDynamicStoreRef	store,
 		if (key != NULL)   CFRelease(key);
 		if (value != NULL) CFRelease(value);
 	}
+	if (reply != NULL) {
+		(void) vm_deallocate(mach_task_self(), (vm_address_t)reply, replyLen);
+	}
 
 	_SCErrorSet(kSCStatusOK);
 	return result;
@@ -194,12 +196,9 @@ SCDynamicStoreSetMultiple(SCDynamicStoreRef	store,
 			  CFArrayRef		keysToNotify)
 {
 	SCDynamicStorePrivateRef	storePrivate	= (SCDynamicStorePrivateRef)store;
-	uint8_t				setBuf[CONFIG_DATA_MAX];
-	uint8_t				removeBuf[CONFIG_DATA_MAX];
-	uint8_t				notifyBuf[CONFIG_DATA_MAX];
-	size_t				setLen		= 0;
-	size_t				removeLen	= 0;
-	size_t				notifyLen	= 0;
+	CFMutableDataRef		setBuf;
+	CFMutableDataRef		removeBuf;
+	CFMutableDataRef		notifyBuf;
 	int				sc_status	= kSCStatusFailed;
 	kern_return_t			kr;
 
@@ -212,20 +211,31 @@ SCDynamicStoreSetMultiple(SCDynamicStoreRef	store,
 		return FALSE;
 	}
 
-	if ((encode_kvmap(keysToSet, setBuf, sizeof(setBuf), &setLen) != 0) ||
-	    (_SCEncodeKeyList(keysToRemove, removeBuf, sizeof(removeBuf),
-			      &removeLen) != 0) ||
-	    (_SCEncodeKeyList(keysToNotify, notifyBuf, sizeof(notifyBuf),
-			      &notifyLen) != 0)) {
+	setBuf    = CFDataCreateMutable(NULL, 0);
+	removeBuf = CFDataCreateMutable(NULL, 0);
+	notifyBuf = CFDataCreateMutable(NULL, 0);
+	if ((setBuf == NULL) || (removeBuf == NULL) || (notifyBuf == NULL) ||
+	    (encode_kvmap(keysToSet, setBuf) != 0) ||
+	    (_SCEncodeKeyList(keysToRemove, removeBuf) != 0) ||
+	    (_SCEncodeKeyList(keysToNotify, notifyBuf) != 0)) {
+		if (setBuf != NULL)	CFRelease(setBuf);
+		if (removeBuf != NULL)	CFRelease(removeBuf);
+		if (notifyBuf != NULL)	CFRelease(notifyBuf);
 		_SCErrorSet(kSCStatusInvalidArgument);
 		return FALSE;
 	}
 
 	kr = configset_m(storePrivate->server,
-			 setBuf, (mach_msg_type_number_t)setLen,
-			 removeBuf, (mach_msg_type_number_t)removeLen,
-			 notifyBuf, (mach_msg_type_number_t)notifyLen,
+			 (xmlData_t)CFDataGetBytePtr(setBuf),
+			 (mach_msg_type_number_t)CFDataGetLength(setBuf),
+			 (xmlData_t)CFDataGetBytePtr(removeBuf),
+			 (mach_msg_type_number_t)CFDataGetLength(removeBuf),
+			 (xmlData_t)CFDataGetBytePtr(notifyBuf),
+			 (mach_msg_type_number_t)CFDataGetLength(notifyBuf),
 			 &sc_status);
+	CFRelease(setBuf);
+	CFRelease(removeBuf);
+	CFRelease(notifyBuf);
 	if (kr != KERN_SUCCESS) {
 		_SCErrorSet(kSCStatusFailed);
 		return FALSE;

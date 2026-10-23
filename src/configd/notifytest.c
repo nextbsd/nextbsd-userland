@@ -22,7 +22,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "config.h"		/* MIG user stubs + xmlData; pulls config_types.h */
+#include "config.h"		/* MIG user stubs + xmlData_t; pulls config_types.h */
 #include "config_session.h"	/* CONFIGD_NOTIFY_MSGID — the notify-msg contract */
 
 #define SERVICE		"com.apple.SystemConfiguration.configd"
@@ -35,8 +35,8 @@ open_session(mach_port_t server, const char *name)
 	int		status = -1;
 	kern_return_t	kr;
 
-	kr = configopen(server, (uint8_t *)name,
-	    (mach_msg_type_number_t)strlen(name), (uint8_t *)"", 0,
+	kr = configopen(server, name,
+	    (mach_msg_type_number_t)strlen(name), NULL, 0,
 	    &session, &status);
 	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
 		printf("CONFIGD-NOTIFY-FAIL: configopen(%s) kr=0x%x status=%d\n",
@@ -51,7 +51,7 @@ open_session(mach_port_t server, const char *name)
  * records notifychanges returns; 1 if `key` is among them.
  */
 static int
-change_list_has(const uint8_t *list, size_t len, const char *key)
+change_list_has(const char *list, size_t len, const char *key)
 {
 	size_t klen = strlen(key);
 	size_t off = 0;
@@ -82,7 +82,7 @@ main(void)
 	int			newInstance = 0;
 	const char		*key = "notifytest:watched";
 	const char		*val = "configd iter 4 notification value";
-	xmlDataOut		list;
+	xmlDataOut_t		list = NULL;
 	mach_msg_type_number_t	listCnt = 0;
 	union {
 		mach_msg_header_t	hdr;
@@ -110,7 +110,7 @@ main(void)
 	}
 
 	/* session A watches the key. */
-	kr = notifyadd(sessionA, (uint8_t *)key,
+	kr = notifyadd(sessionA, key,
 	    (mach_msg_type_number_t)strlen(key), 0, &status);
 	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
 		printf("CONFIGD-NOTIFY-FAIL: notifyadd kr=0x%x status=%d\n",
@@ -145,8 +145,8 @@ main(void)
 	}
 
 	/* session B changes the key session A is watching. */
-	kr = configset(sessionB, (uint8_t *)key,
-	    (mach_msg_type_number_t)strlen(key), (uint8_t *)val,
+	kr = configset(sessionB, key,
+	    (mach_msg_type_number_t)strlen(key), val,
 	    (mach_msg_type_number_t)strlen(val), 0, &newInstance, &status);
 	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
 		printf("CONFIGD-NOTIFY-FAIL: configset kr=0x%x status=%d\n",
@@ -171,7 +171,7 @@ main(void)
 	}
 
 	/* notifychanges on session A must report the changed key. */
-	kr = notifychanges(sessionA, list, &listCnt, &status);
+	kr = notifychanges(sessionA, &list, &listCnt, &status);
 	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
 		printf("CONFIGD-NOTIFY-FAIL: notifychanges kr=0x%x status=%d\n",
 		    (unsigned)kr, status);

@@ -854,15 +854,15 @@ mach_port_set_mscount(mach_port_name_t task, mach_port_name_t name,
  * launchd's send rights on the receive rights it hands out with
  * MAKE_SEND) are left alone.
  *
- * OOL *memory* is intentionally NOT freed here, matching the deliberate
- * policy already documented on mig_deallocate()/vm_deallocate() below:
- * on this platform a received OOL pointer can be an interior offset
- * into the kernel-mmap'd message body with a non-base address / wrong
- * size, so free()/munmap() crash. That is a separate, bounded RSS leak
- * — not the Mach-port/fd leak this addresses — and is deferred to the
- * mmap-based mig_allocate rework noted there.
+ * OOL memory is released too, as Apple's mach_msg_destroy does. The
+ * kernel copies received OOL data out to a page-aligned base
+ * (nextbsd#66), so it goes through mach_ool_unmap() below, the same
+ * screen mig_deallocate()/vm_deallocate() use: a page-aligned base is
+ * unmapped and anything else is left alone.
  */
 #include <mach/message.h>
+
+static kern_return_t	mach_ool_unmap(vm_address_t addr, vm_size_t size);
 
 static void
 mach_msg_destroy_port(mach_port_t port, mach_msg_type_name_t type)
@@ -926,7 +926,9 @@ mach_msg_destroy(mach_msg_header_t *msg)
 			break;
 		case MACH_MSG_OOL_DESCRIPTOR:
 		case MACH_MSG_OOL_VOLATILE_DESCRIPTOR:
-			/* OOL memory left in place (see policy note above). */
+			(void)mach_ool_unmap(
+			    (vm_address_t)(uintptr_t)d->out_of_line.address,
+			    (vm_size_t)d->out_of_line.size);
 			p += sizeof(mach_msg_ool_descriptor_t);
 			break;
 		case MACH_MSG_OOL_PORTS_DESCRIPTOR: {

@@ -9,7 +9,7 @@
  * `configopen` — configd hands back a per-session Mach port, which is
  * the `server` argument every later config.defs RPC rides on. The
  * get / set / add / remove / list calls serialize CF objects to the
- * inline config.defs byte payloads (see SCD.c) and translate configd's
+ * out-of-line config.defs byte payloads (see SCD.c) and translate configd's
  * kSCStatus reply into SCError() / a Boolean or CFType result.
  *
  * Apple drives this through a per-object dispatch queue and a reconnect
@@ -220,19 +220,14 @@ __SCDynamicStoreAddSession(SCDynamicStorePrivateRef storePrivate)
 		optionsLen   = (mach_msg_type_number_t)CFDataGetLength(optionsData);
 	}
 
-	if ((nameLen > CONFIG_DATA_MAX) || (optionsLen > CONFIG_DATA_MAX)) {
-		sc_status = kSCStatusInvalidArgument;
-		goto done;
-	}
-
 	server = __SCDynamicStoreServerPort(&sc_status);
 	if (server == MACH_PORT_NULL) {
 		goto done;
 	}
 
 	kr = configopen(server,
-			(uint8_t *)nameBytes, nameLen,
-			(uint8_t *)optionsBytes, optionsLen,
+			(xmlData_t)nameBytes, nameLen,
+			(xmlData_t)optionsBytes, optionsLen,
 			&storePrivate->server,
 			&sc_status);
 
@@ -319,11 +314,6 @@ __SCStorePrepare(SCDynamicStoreRef store, CFStringRef key)
 	if (keyData == NULL) {
 		return NULL;
 	}
-	if (CFDataGetLength(keyData) > CONFIG_DATA_MAX) {
-		CFRelease(keyData);
-		_SCErrorSet(kSCStatusInvalidArgument);
-		return NULL;
-	}
 	return keyData;
 }
 
@@ -333,7 +323,7 @@ SCDynamicStoreCopyValue(SCDynamicStoreRef store, CFStringRef key)
 	SCDynamicStorePrivateRef	storePrivate	= (SCDynamicStorePrivateRef)store;
 	CFDataRef			keyData;
 	CFPropertyListRef		value;
-	xmlDataOut			reply;
+	xmlDataOut_t			reply		= NULL;
 	mach_msg_type_number_t		replyLen	= 0;
 	int				newInstance	= 0;
 	int				sc_status	= kSCStatusFailed;
@@ -345,9 +335,9 @@ SCDynamicStoreCopyValue(SCDynamicStoreRef store, CFStringRef key)
 	}
 
 	kr = configget(storePrivate->server,
-		       (uint8_t *)CFDataGetBytePtr(keyData),
+		       (xmlData_t)CFDataGetBytePtr(keyData),
 		       (mach_msg_type_number_t)CFDataGetLength(keyData),
-		       reply, &replyLen,
+		       &reply, &replyLen,
 		       &newInstance, &sc_status);
 	CFRelease(keyData);
 
@@ -361,6 +351,9 @@ SCDynamicStoreCopyValue(SCDynamicStoreRef store, CFStringRef key)
 	}
 
 	value = _SCUnserialize(reply, replyLen);
+	if (reply != NULL) {
+		(void) vm_deallocate(mach_task_self(), (vm_address_t)reply, replyLen);
+	}
 	_SCErrorSet((value != NULL) ? kSCStatusOK : kSCStatusFailed);
 	return value;
 }
@@ -391,25 +384,19 @@ __SCStoreWrite(SCDynamicStoreRef store, CFStringRef key,
 		CFRelease(keyData);
 		return FALSE;
 	}
-	if (CFDataGetLength(valueData) > CONFIG_DATA_MAX) {
-		CFRelease(keyData);
-		CFRelease(valueData);
-		_SCErrorSet(kSCStatusInvalidArgument);
-		return FALSE;
-	}
 
 	if (isAdd) {
 		kr = configadd(storePrivate->server,
-			       (uint8_t *)CFDataGetBytePtr(keyData),
+			       (xmlData_t)CFDataGetBytePtr(keyData),
 			       (mach_msg_type_number_t)CFDataGetLength(keyData),
-			       (uint8_t *)CFDataGetBytePtr(valueData),
+			       (xmlData_t)CFDataGetBytePtr(valueData),
 			       (mach_msg_type_number_t)CFDataGetLength(valueData),
 			       &newInstance, &sc_status);
 	} else {
 		kr = configset(storePrivate->server,
-			       (uint8_t *)CFDataGetBytePtr(keyData),
+			       (xmlData_t)CFDataGetBytePtr(keyData),
 			       (mach_msg_type_number_t)CFDataGetLength(keyData),
-			       (uint8_t *)CFDataGetBytePtr(valueData),
+			       (xmlData_t)CFDataGetBytePtr(valueData),
 			       (mach_msg_type_number_t)CFDataGetLength(valueData),
 			       0, &newInstance, &sc_status);
 	}
@@ -456,7 +443,7 @@ SCDynamicStoreRemoveValue(SCDynamicStoreRef store, CFStringRef key)
 	}
 
 	kr = configremove(storePrivate->server,
-			  (uint8_t *)CFDataGetBytePtr(keyData),
+			  (xmlData_t)CFDataGetBytePtr(keyData),
 			  (mach_msg_type_number_t)CFDataGetLength(keyData),
 			  &sc_status);
 	CFRelease(keyData);
@@ -487,7 +474,7 @@ SCDynamicStoreNotifyValue(SCDynamicStoreRef store, CFStringRef key)
 
 	/* confignotify posts a change for the key without altering it */
 	kr = confignotify(storePrivate->server,
-			  (uint8_t *)CFDataGetBytePtr(keyData),
+			  (xmlData_t)CFDataGetBytePtr(keyData),
 			  (mach_msg_type_number_t)CFDataGetLength(keyData),
 			  &sc_status);
 	CFRelease(keyData);
@@ -509,7 +496,7 @@ SCDynamicStoreCopyKeyList(SCDynamicStoreRef store, CFStringRef pattern)
 	SCDynamicStorePrivateRef	storePrivate	= (SCDynamicStorePrivateRef)store;
 	CFDataRef			patternData;
 	CFMutableArrayRef		keys;
-	xmlDataOut			reply;
+	xmlDataOut_t			reply		= NULL;
 	mach_msg_type_number_t		replyLen	= 0;
 	int				sc_status	= kSCStatusFailed;
 	kern_return_t			kr;
@@ -525,10 +512,10 @@ SCDynamicStoreCopyKeyList(SCDynamicStoreRef store, CFStringRef pattern)
 
 	/* configd treats the argument as an anchored POSIX regex */
 	kr = configlist(storePrivate->server,
-			(uint8_t *)CFDataGetBytePtr(patternData),
+			(xmlData_t)CFDataGetBytePtr(patternData),
 			(mach_msg_type_number_t)CFDataGetLength(patternData),
 			TRUE,
-			reply, &replyLen,
+			&reply, &replyLen,
 			&sc_status);
 	CFRelease(patternData);
 
@@ -548,12 +535,15 @@ SCDynamicStoreCopyKeyList(SCDynamicStoreRef store, CFStringRef pattern)
 	 */
 	keys = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
 	if (keys == NULL) {
+		if (reply != NULL) {
+			(void) vm_deallocate(mach_task_self(), (vm_address_t)reply, replyLen);
+		}
 		_SCErrorSet(kSCStatusFailed);
 		return NULL;
 	}
 
-	cur = reply;
-	end = reply + replyLen;
+	cur = (const uint8_t *)reply;
+	end = cur + replyLen;
 	while (wire_keylist_next(&cur, end, &keyBytes, &keyLen)) {
 		CFStringRef	keyStr;
 
@@ -565,6 +555,9 @@ SCDynamicStoreCopyKeyList(SCDynamicStoreRef store, CFStringRef pattern)
 			CFArrayAppendValue(keys, keyStr);
 			CFRelease(keyStr);
 		}
+	}
+	if (reply != NULL) {
+		(void) vm_deallocate(mach_task_self(), (vm_address_t)reply, replyLen);
 	}
 
 	_SCErrorSet(kSCStatusOK);
