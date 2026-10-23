@@ -33,11 +33,21 @@ struct sc_publish;
 struct sc_publish	*sc_publish_open(const char *session_name);
 
 /*
+ * A service is starting on `ifname`: derive its <UUID> from the MAC now
+ * and keep it for every later publish and remove (#409), so the keys can
+ * still be removed once the interface has departed and its MAC is gone.
+ * A no-op when the MAC can't be read; the UUID is then cached on the
+ * first publish that can read it.
+ */
+void	sc_publish_service_begin(const char *ifname);
+
+/*
  * Publish lease state for `ifname`. Sets two keys:
  *   State:/Network/Service/<UUID>/IPv4
  *   State:/Network/Service/<UUID>/DNS   (only if lease has DNS)
  * The <UUID> is derived deterministically from the interface MAC so
- * the keys are stable across daemon restarts. Returns 0 on success.
+ * the keys are stable across daemon restarts, and cached per interface
+ * (see sc_publish_service_begin()). Returns 0 on success.
  */
 int	sc_publish_ipv4(struct sc_publish *p, const char *ifname,
 	    const struct dhcp_lease *lease);
