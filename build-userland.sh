@@ -359,6 +359,25 @@ for ent in $LIBMACH_MIG_SUBS; do
     echo "==> LIBMACH-MIG-OK: $(wc -l < "$LIBMACH_MIG/$user") lines of $sub client"
 done
 
+# ---- kernel event headers (PF_SYSTEM / SYSPROTO_EVENT) ----------------------
+# <sys/sys_domain.h>, <sys/kern_event.h> and <net/net_kev.h> describe the
+# kernel event socket's wire (nextbsd-kernel#292), so like the .defs above
+# they live in nextbsd-kernel and are taken from the same checkout. Install
+# them into the image and the sysroot; launchd and the configd stack include
+# them from there. Stock FreeBSD has none of these paths.
+for h in sys/sys_domain.h sys/kern_event.h net/net_kev.h; do
+    if [ ! -f "$KERNEL_DEFS/src-overlay/sys/$h" ]; then
+        echo "FAIL: $h not found under KERNEL_DEFS=$KERNEL_DEFS"
+        echo "      Expected a nextbsd-kernel checkout; CI provides one, and a"
+        echo "      local build can point KERNEL_DEFS at its own clone."
+        exit 1
+    fi
+    for root in "$DESTDIR" "$SYSROOT"; do
+        mkdir -p "$root/usr/include/${h%/*}"
+        cp "$KERNEL_DEFS/src-overlay/sys/$h" "$root/usr/include/$h"
+    done
+done
+
 comp "libmach (libsystem_kernel) — installs mach/* headers into sysroot first"
 # bsd.lib.mk does NOT auto-create INCSDIR, hence the pre-creation here.
 # mach_debug/ joins the list for <mach_debug/ipc_info.h>, which the generated
