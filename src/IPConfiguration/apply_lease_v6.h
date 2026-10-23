@@ -3,8 +3,8 @@
  * derived from a Router Advertisement.
  *
  * Iter 7a scope: one address, one default route, best-effort. No
- * lifetime tracking, no DAD wait — kernel DAD runs in the background
- * after SIOCAIFADDR_IN6 and we don't gate on it for the marker.
+ * lifetime tracking. The address is checked for duplicate-address
+ * detection before the route is added.
  */
 #ifndef APPLY_LEASE_V6_H
 #define APPLY_LEASE_V6_H
@@ -24,9 +24,11 @@ int bring_v6_up(const char *ifname);
 
 /*
  * Build the SLAAC unicast address from `info`'s prefix + an EUI-64
- * derived from `ifname`'s MAC, install it via SIOCAIFADDR_IN6, and
- * add a default route via info->router_lladdr. Returns 0 on success
- * (address installed; route is best-effort and logged separately).
+ * derived from `ifname`'s MAC, install it via SIOCAIFADDR_IN6, wait
+ * for DAD, and add a default route via info->router_lladdr. Returns 0
+ * on success (address installed; route is best-effort and logged
+ * separately). Returns -1 if DAD finds the address duplicated; the
+ * address is removed and no route is added.
  *
  * `out_addr` receives the computed SLAAC address for the caller's
  * SCDynamicStore publish; it is populated even if route install
