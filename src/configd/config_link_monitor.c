@@ -53,12 +53,29 @@
  *   State:/Network/Interface/<ifname>/IPv6
  * in the shape Darwin's KernelEventMonitor gives them (ev_ipv4.c / ev_ipv6.c),
  * from getifaddrs plus SIOCGIFAFLAG_IN6. See publish_ip().
+ *
+ * Kernel events (#346): the primary source is now Darwin's own — a PF_SYSTEM
+ * SYSPROTO_EVENT socket filtered to KEV_NETWORK_CLASS, opened and read the way
+ * KernelEventMonitor's eventmon.c does, with the KEV_DL_* / KEV_INET_* /
+ * KEV_INET6_* codes mapped onto the same publish functions as ev_dlil.c /
+ * ev_ipv4.c / ev_ipv6.c map them. See kev_message(). If the kernel has no
+ * PF_SYSTEM (socket() fails), the PF_ROUTE path runs exactly as before;
+ * that fallback is quiet, a line in configd's log only.
+ *
+ * The kernel posts KEV_DL_LINK_ON / LINK_OFF only for a known link state, so
+ * the IFF_UP fallback link_active() applies to LINK_STATE_UNKNOWN interfaces
+ * needs KEV_DL_SIFFLAGS, which older kernels do not post. Until one is seen,
+ * PF_ROUTE stays open beside the event socket for just that case (RTM_IFINFO
+ * on a LINK_STATE_UNKNOWN interface); the first KEV_DL_SIFFLAGS closes it.
  */
 #include <sys/types.h>
 #include <sys/ioctl.h>
+#include <sys/kern_event.h>
 #include <sys/socket.h>
+#include <sys/sys_domain.h>
 
 #include <net/if.h>
+#include <net/net_kev.h>
 #include <net/route.h>
 #include <netinet/in.h>
 #include <netinet6/in6_var.h>
@@ -67,6 +84,7 @@
 
 #include <errno.h>
 #include <ifaddrs.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -745,109 +763,307 @@ open_session(void)
 	return (-1);
 }
 
+/*
+ * One PF_ROUTE message. With `companion` set the kernel-event socket is the
+ * primary source and this only covers what it cannot yet: RTM_IFINFO for a
+ * LINK_STATE_UNKNOWN interface, whose Active follows IFF_UP (see the comment
+ * at the top of the file).
+ */
+static void
+route_message(const char *buf, size_t n, int companion)
+{
+	const struct rt_msghdr		*rtm;
+	const struct if_msghdr		*ifm;
+	const struct if_announcemsghdr	*ifan;
+	char				ifname[IFNAMSIZ];
+
+	if (n < sizeof(struct rt_msghdr))
+		return;
+	rtm = (const struct rt_msghdr *)(const void *)buf;
+	if (rtm->rtm_version != RTM_VERSION)
+		return;
+
+	/*
+	 * Interface arrived or departed (#42). This is how a VAP cloned
+	 * at runtime — `ifconfig wlan0 create wlandev iwlwifi0` — first
+	 * becomes visible in the store, and how a destroyed one stops
+	 * being visible. Note an announce carries no if_data, so on
+	 * arrival we go read the interface's real link state.
+	 */
+	if (rtm->rtm_type == RTM_IFANNOUNCE) {
+		if (companion || n < sizeof(struct if_announcemsghdr))
+			return;
+		ifan = (const struct if_announcemsghdr *)(const void *)buf;
+		(void)strlcpy(ifname, ifan->ifan_name, sizeof(ifname));
+
+		switch (ifan->ifan_what) {
+		case IFAN_ARRIVAL:
+			lmlog("KEM-IFAN: %s arrived", ifname);
+			publish_link_current(ifname);
+			break;
+		case IFAN_DEPARTURE:
+			lmlog("KEM-IFAN: %s departed", ifname);
+			unpublish_link(ifname);
+			unpublish_ip(ifname);
+			break;
+		default:
+			break;
+		}
+		return;
+	}
+
+	/*
+	 * An address was added to or removed from an interface (#338).
+	 * The message names only the interface that changed, so rebuild
+	 * that interface's IPv4 / IPv6 keys from the kernel's current
+	 * list, as Darwin's ev_ipv4.c / ev_ipv6.c do. An interface that
+	 * is already gone fails if_indextoname; its departure announce
+	 * removes the keys.
+	 */
+	if (rtm->rtm_type == RTM_NEWADDR || rtm->rtm_type == RTM_DELADDR) {
+		const struct ifa_msghdr *ifam;
+
+		if (companion || n < sizeof(struct ifa_msghdr))
+			return;
+		ifam = (const struct ifa_msghdr *)(const void *)buf;
+		if (if_indextoname(ifam->ifam_index, ifname) != NULL)
+			publish_ip(ifname);
+		return;
+	}
+
+	if (rtm->rtm_type != RTM_IFINFO)
+		return;
+	if (n < sizeof(struct if_msghdr))
+		return;
+	ifm = (const struct if_msghdr *)(const void *)buf;
+	if (companion && ifm->ifm_data.ifi_link_state != LINK_STATE_UNKNOWN)
+		return;
+	if (if_indextoname(ifm->ifm_index, ifname) == NULL)
+		return;
+
+	publish_link(ifname,
+	    link_active(ifm->ifm_data.ifi_link_state, ifm->ifm_flags));
+}
+
+/*
+ * Open the kernel event socket, filtered to Apple network events — the
+ * socket(PF_SYSTEM, SOCK_RAW, SYSPROTO_EVENT) + SIOCSKEVFILT pair of Darwin's
+ * eventmon.c. -1 when the kernel has no PF_SYSTEM; the caller then falls back
+ * to PF_ROUTE.
+ */
+static int
+kev_open(void)
+{
+	struct kev_request	kr;
+	int			s;
+
+	s = socket(PF_SYSTEM, SOCK_RAW, SYSPROTO_EVENT);
+	if (s < 0)
+		return (-1);
+	(void)memset(&kr, 0, sizeof(kr));
+	kr.vendor_code = KEV_VENDOR_APPLE;
+	kr.kev_class = KEV_NETWORK_CLASS;
+	kr.kev_subclass = KEV_ANY_SUBCLASS;
+	if (ioctl(s, SIOCSKEVFILT, &kr) != 0) {
+		(void)close(s);
+		return (-1);
+	}
+	return (s);
+}
+
+/*
+ * The interface a network event names. Darwin splits the name into a driver
+ * name and a unit ("em" / 0) and eventmon.c joins them with "%s%d". The
+ * kernel passes a name with no trailing digits ("epair0a") whole with unit
+ * 0, so when "<name>0" is not an interface but the bare name is, use that.
+ */
+static int
+kev_ifname(const struct net_event_data *ed, char *ifname, size_t len)
+{
+	char	name[sizeof(ed->if_name) + 1];
+
+	(void)memcpy(name, ed->if_name, sizeof(ed->if_name));
+	name[sizeof(ed->if_name)] = '\0';
+	if (name[0] == '\0')
+		return (-1);
+	(void)snprintf(ifname, len, "%s%u", name, (unsigned)ed->if_unit);
+	if (ed->if_unit == 0 && if_nametoindex(ifname) == 0 &&
+	    if_nametoindex(name) != 0)
+		(void)strlcpy(ifname, name, len);
+	return (0);
+}
+
+/*
+ * One KEV_NETWORK_CLASS event, mapped as Darwin's KernelEventMonitor maps it
+ * (eventmon.c processEvent_Apple_Network, ev_dlil.c). Every payload handled
+ * here starts with a struct net_event_data naming the interface. Returns 1
+ * for KEV_DL_SIFFLAGS, which tells the caller the PF_ROUTE companion is no
+ * longer needed.
+ */
+static int
+kev_message(const struct kern_event_msg *ev)
+{
+	const struct net_event_data	*ed;
+	char				ifname[IFNAMSIZ];
+
+	if (ev->vendor_code != KEV_VENDOR_APPLE ||
+	    ev->kev_class != KEV_NETWORK_CLASS)
+		return (0);
+	if (ev->total_size < KEV_MSG_HEADER_SIZE + sizeof(*ed))
+		return (0);
+	ed = (const struct net_event_data *)(const void *)&ev->event_data[0];
+	if (kev_ifname(ed, ifname, sizeof(ifname)) != 0)
+		return (0);
+
+	switch (ev->kev_subclass) {
+	case KEV_DL_SUBCLASS:
+		switch (ev->event_code) {
+		case KEV_DL_IF_ATTACHED:
+			lmlog("KEM-IFAN: %s arrived", ifname);
+			publish_link_current(ifname);
+			break;
+		case KEV_DL_IF_DETACHED:
+			lmlog("KEM-IFAN: %s departed", ifname);
+			unpublish_link(ifname);
+			unpublish_ip(ifname);
+			break;
+		case KEV_DL_LINK_ON:
+		case KEV_DL_LINK_OFF:
+			/* ev_dlil.c link_update_status: re-read, don't trust
+			 * the event, so a quick flap settles on the truth. */
+			publish_link_current(ifname);
+			break;
+		case KEV_DL_SIFFLAGS:
+			publish_link_current(ifname);
+			return (1);
+		default:
+			/* KEV_DL_SIFMTU and the rest: nothing published
+			 * here carries them. */
+			break;
+		}
+		break;
+	case KEV_INET_SUBCLASS:
+		switch (ev->event_code) {
+		case KEV_INET_NEW_ADDR:
+		case KEV_INET_CHANGED_ADDR:
+		case KEV_INET_ADDR_DELETED:
+		case KEV_INET_SIFDSTADDR:
+		case KEV_INET_SIFBRDADDR:
+		case KEV_INET_SIFNETMASK:
+			publish_ip(ifname);
+			break;
+		default:
+			break;
+		}
+		break;
+	case KEV_INET6_SUBCLASS:
+		switch (ev->event_code) {
+		case KEV_INET6_NEW_USER_ADDR:
+		case KEV_INET6_CHANGED_ADDR:
+		case KEV_INET6_ADDR_DELETED:
+		case KEV_INET6_NEW_LL_ADDR:
+		case KEV_INET6_NEW_RTADV_ADDR:
+			publish_ip(ifname);
+			break;
+		default:
+			break;
+		}
+		break;
+	default:
+		break;
+	}
+	return (0);
+}
+
 static void *
 monitor_thread(void *arg)
 {
-	int rs;
+	struct pollfd	pfd[2];
+	int		es, rs;
 
 	(void)arg;
 
 	if (open_session() != 0)
 		return (NULL);
 
+	es = kev_open();
 	rs = socket(PF_ROUTE, SOCK_RAW, 0);
-	if (rs < 0) {
+	if (es < 0 && rs < 0) {
 		lmlog("KEM-FAIL: socket(PF_ROUTE): %s", strerror(errno));
 		return (NULL);
 	}
+	lmlog("link monitor source: %s", es >= 0 ?
+	    "PF_SYSTEM kernel events" : "PF_ROUTE (no PF_SYSTEM)");
 
-	/* Seed the store before blocking on the route socket. */
+	/* Seed the store before blocking on the event sockets. */
 	publish_all();
 
-	for (;;) {
-		char				buf[2048];
-		struct rt_msghdr		*rtm;
-		struct if_msghdr		*ifm;
-		struct if_announcemsghdr	*ifan;
-		char				ifname[IFNAMSIZ];
-		ssize_t				n;
+	/* poll(2) skips a negative fd, so a closed source just drops out. */
+	pfd[0].fd = es;
+	pfd[0].events = POLLIN;
+	pfd[1].fd = rs;
+	pfd[1].events = POLLIN;
 
-		n = read(rs, buf, sizeof(buf));
-		if (n <= 0) {
-			if (n < 0 && errno == EINTR)
+	while (pfd[0].fd >= 0 || pfd[1].fd >= 0) {
+		union {
+			struct kern_event_msg	ev;
+			char			buf[2048];
+		}		u;
+		size_t		off;
+		ssize_t		n;
+
+		pfd[0].revents = pfd[1].revents = 0;
+		if (poll(pfd, 2, -1) < 0) {
+			if (errno == EINTR)
 				continue;
-			lmlog("KEM-FAIL: read(PF_ROUTE): %s",
-			    n < 0 ? strerror(errno) : "EOF");
+			lmlog("KEM-FAIL: poll: %s", strerror(errno));
 			break;
 		}
-		if ((size_t)n < sizeof(struct rt_msghdr))
-			continue;
-		rtm = (struct rt_msghdr *)(void *)buf;
-		if (rtm->rtm_version != RTM_VERSION)
-			continue;
 
-		/*
-		 * Interface arrived or departed (#42). This is how a VAP cloned
-		 * at runtime — `ifconfig wlan0 create wlandev iwlwifi0` — first
-		 * becomes visible in the store, and how a destroyed one stops
-		 * being visible. Note an announce carries no if_data, so on
-		 * arrival we go read the interface's real link state.
-		 */
-		if (rtm->rtm_type == RTM_IFANNOUNCE) {
-			if ((size_t)n < sizeof(struct if_announcemsghdr))
-				continue;
-			ifan = (struct if_announcemsghdr *)(void *)buf;
-			(void)strlcpy(ifname, ifan->ifan_name, sizeof(ifname));
-
-			switch (ifan->ifan_what) {
-			case IFAN_ARRIVAL:
-				lmlog("KEM-IFAN: %s arrived", ifname);
-				publish_link_current(ifname);
-				break;
-			case IFAN_DEPARTURE:
-				lmlog("KEM-IFAN: %s departed", ifname);
-				unpublish_link(ifname);
-				unpublish_ip(ifname);
-				break;
-			default:
+		if (pfd[0].revents != 0) {
+			n = recv(pfd[0].fd, u.buf, sizeof(u.buf), 0);
+			if (n <= 0 && !(n < 0 && errno == EINTR)) {
+				lmlog("KEM-FAIL: recv(PF_SYSTEM): %s",
+				    n < 0 ? strerror(errno) : "EOF");
 				break;
 			}
-			continue;
+			/* Walk every record in the read, as eventmon.c does. */
+			for (off = 0; n > 0 && off + KEV_MSG_HEADER_SIZE <=
+			    (size_t)n;) {
+				const struct kern_event_msg *ev;
+
+				ev = (const struct kern_event_msg *)
+				    (const void *)(u.buf + off);
+				if (ev->total_size < KEV_MSG_HEADER_SIZE ||
+				    off + ev->total_size > (size_t)n)
+					break;
+				if (kev_message(ev) && pfd[1].fd >= 0) {
+					(void)close(pfd[1].fd);
+					pfd[1].fd = -1;
+				}
+				off += ev->total_size;
+			}
 		}
 
-		/*
-		 * An address was added to or removed from an interface (#338).
-		 * The message names only the interface that changed, so rebuild
-		 * that interface's IPv4 / IPv6 keys from the kernel's current
-		 * list, as Darwin's ev_ipv4.c / ev_ipv6.c do. An interface that
-		 * is already gone fails if_indextoname; its departure announce
-		 * removes the keys.
-		 */
-		if (rtm->rtm_type == RTM_NEWADDR ||
-		    rtm->rtm_type == RTM_DELADDR) {
-			const struct ifa_msghdr *ifam;
-
-			if ((size_t)n < sizeof(struct ifa_msghdr))
+		if (pfd[1].fd >= 0 && pfd[1].revents != 0) {
+			n = read(pfd[1].fd, u.buf, sizeof(u.buf));
+			if (n <= 0) {
+				if (n < 0 && errno == EINTR)
+					continue;
+				lmlog("KEM-FAIL: read(PF_ROUTE): %s",
+				    n < 0 ? strerror(errno) : "EOF");
+				(void)close(pfd[1].fd);
+				pfd[1].fd = -1;
 				continue;
-			ifam = (const struct ifa_msghdr *)(void *)buf;
-			if (if_indextoname(ifam->ifam_index, ifname) != NULL)
-				publish_ip(ifname);
-			continue;
+			}
+			route_message(u.buf, (size_t)n, pfd[0].fd >= 0);
 		}
-
-		if (rtm->rtm_type != RTM_IFINFO)
-			continue;
-		if ((size_t)n < sizeof(struct if_msghdr))
-			continue;
-		ifm = (struct if_msghdr *)(void *)buf;
-		if (if_indextoname(ifm->ifm_index, ifname) == NULL)
-			continue;
-
-		publish_link(ifname,
-		    link_active(ifm->ifm_data.ifi_link_state, ifm->ifm_flags));
 	}
 
-	(void)close(rs);
+	if (pfd[0].fd >= 0)
+		(void)close(pfd[0].fd);
+	if (pfd[1].fd >= 0)
+		(void)close(pfd[1].fd);
 	return (NULL);
 }
 
@@ -861,7 +1077,6 @@ config_link_monitor_start(void)
 		return;
 	}
 	(void)pthread_detach(th);
-	lmlog("link monitor started (PF_ROUTE RTM_IFINFO + RTM_IFANNOUNCE + "
-	    "RTM_NEWADDR/RTM_DELADDR -> State:/Network/Interface/<if>/"
-	    "{Link,IPv4,IPv6}, in-process)");
+	lmlog("link monitor started (kernel events, else PF_ROUTE -> "
+	    "State:/Network/Interface/<if>/{Link,IPv4,IPv6}, in-process)");
 }
