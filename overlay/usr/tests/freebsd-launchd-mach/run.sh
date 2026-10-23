@@ -2324,6 +2324,17 @@ fi
 # test image only, so the knob keeps working exactly where it is wanted and
 # never ships.
 IPCFG_PLIST=/System/Library/LaunchDaemons/com.apple.IPConfiguration.plist
+# Where the boot-time instance's output ends in /var/log/ipconfigd.stderr
+# (#419). launchd opens that file in APPEND mode for every instance, so after
+# the reload below it holds the boot instance's log followed by the reloaded
+# instance's, and a marker the stopped instance wrote (an IPCFG-BOUND-FAIL
+# from a boot-time DHCP failure, a stale IPCFG-ARP-OK) was read as the new
+# instance's result. Set to the stopped instance's line count between
+# `unload` returning and `load`; the gates and the dump below only treat the
+# lines after it as the reloaded instance. Stays 0 when the injection branch
+# is skipped (no reload), which scans the whole file exactly as before.
+IPCFG_LOG=/var/log/ipconfigd.stderr
+ipcfg_pre=0
 if [ -f "$IPCFG_PLIST" ] && ! grep -q IPCONFIGD_FAST_LEASE "$IPCFG_PLIST"; then
     echo "IPCFG-CI: injecting IPCONFIGD_FAST_LEASE=10 for the renewal gate"
     awk 'BEGIN{d=0}
@@ -2363,8 +2374,20 @@ if [ -f "$IPCFG_PLIST" ] && ! grep -q IPCONFIGD_FAST_LEASE "$IPCFG_PLIST"; then
             procstat -kk "$_lc" 2>/dev/null | tail -n +2
         fi
         echo "IPCFG-CI: launchctl $_act done"
+        # unload waits for the boot instance to exit, so nothing more of its
+        # output can land after this point. Don't truncate the file: its log
+        # is what debugs a boot-time DHCP failure.
+        if [ "$_act" = unload ] && [ -f "$IPCFG_LOG" ]; then
+            ipcfg_pre=$(wc -l < "$IPCFG_LOG" | tr -d ' ')
+            ipcfg_pre=${ipcfg_pre:-0}
+        fi
     done
 fi
+# The reloaded instance's part of the log (the whole file when there was no
+# reload). Both gates below read only this.
+ipcfg_new_log() {
+    tail -n "+$((ipcfg_pre + 1))" "$IPCFG_LOG" 2>/dev/null
+}
 # Heartbeat. boot-test.sh runs `set timeout 480` against the CONSOLE, so any
 # stretch of >480s without output kills the VM and truncates the log mid-run --
 # exactly what happened on amd64, where the log ends at the injection message
@@ -2396,18 +2419,20 @@ if [ ! -f /var/log/ipconfigd.stderr ]; then
     ls -l /var/log/ipconfigd* 2>&1 | sed 's/^/    /' || true
 else
     i=0
+    # Reloaded instance's lines only (#419): the stopped instance's
+    # IPCFG-ARP-OK proves nothing about this one, and its IPCFG-BOUND-FAIL
+    # is not this one's failure.
     while [ $i -lt 30 ]; do
-        if grep -qE 'IPCFG-ARP-OK|IPCFG-BOUND-FAIL' \
-            /var/log/ipconfigd.stderr 2>/dev/null; then
+        if ipcfg_new_log | grep -qE 'IPCFG-ARP-OK|IPCFG-BOUND-FAIL'; then
             break
         fi
         sleep 1
         i=$((i + 1))
     done
-    if grep -q 'IPCFG-ARP-OK' /var/log/ipconfigd.stderr 2>/dev/null; then
-        grep -m1 'IPCFG-ARP-OK' /var/log/ipconfigd.stderr
-    elif grep -q 'IPCFG-BOUND-FAIL' /var/log/ipconfigd.stderr 2>/dev/null; then
-        grep -m1 'IPCFG-BOUND-FAIL' /var/log/ipconfigd.stderr
+    if ipcfg_new_log | grep -q 'IPCFG-ARP-OK'; then
+        ipcfg_new_log | grep -m1 'IPCFG-ARP-OK'
+    elif ipcfg_new_log | grep -q 'IPCFG-BOUND-FAIL'; then
+        ipcfg_new_log | grep -m1 'IPCFG-BOUND-FAIL'
     else
         echo "IPCFG-ARP-SKIP: no probe result after ${i}s" \
              "(arp_probe returned <0 and is treated as no-conflict, or DHCP" \
@@ -2440,15 +2465,30 @@ if [ ! -f /var/log/ipconfigd.stderr ]; then
 else
     i=0
     while [ $i -lt 30 ]; do
-        if grep -q 'IPCFG-RENEW-OK\|IPCFG-STORE-FAIL\|IPCFG-BOUND-FAIL' \
-            /var/log/ipconfigd.stderr 2>/dev/null; then
+        if ipcfg_new_log |
+            grep -q 'IPCFG-RENEW-OK\|IPCFG-STORE-FAIL\|IPCFG-BOUND-FAIL'; then
             break
         fi
         sleep 2
         i=$((i+1))
     done
-    echo "--- /var/log/ipconfigd.stderr ---"
-    cat /var/log/ipconfigd.stderr
+    # The dump is where expect sees BOUND/STORE/DHCP/RA/RENEW, so it must
+    # carry the reloaded instance's markers only (#419). The boot instance's
+    # log stays visible for debugging, but defused: every line is prefixed
+    # and each -OK / -FAIL / -SKIP becomes _OK / _FAIL / _SKIP, so neither
+    # the harness's marker regexes (<NAME>-<OK|FAIL|SKIP>, matched anywhere
+    # in the stream) nor nb-tally.sh's counter can read it as a marker.
+    if [ "$ipcfg_pre" -gt 0 ]; then
+        echo "--- /var/log/ipconfigd.stderr: boot instance, before the" \
+             "CI reload (markers defused, not gated) ---"
+        head -n "$ipcfg_pre" /var/log/ipconfigd.stderr |
+            sed -e 's/^/pre-reload| /' -e 's/-OK/_OK/g' \
+                -e 's/-FAIL/_FAIL/g' -e 's/-SKIP/_SKIP/g'
+        echo "--- /var/log/ipconfigd.stderr: reloaded instance ---"
+    else
+        echo "--- /var/log/ipconfigd.stderr ---"
+    fi
+    ipcfg_new_log
     echo "--- end ipconfigd.stderr ---"
     # Also dump the bound state for visibility — ifconfig + the
     # default route + resolv.conf. Best-effort.
