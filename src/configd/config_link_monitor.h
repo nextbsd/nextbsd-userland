@@ -4,7 +4,8 @@
  * Starts a configd-internal thread that reads the PF_ROUTE socket for
  * RTM_IFINFO link-state changes and publishes
  *   State:/Network/Interface/<ifname>/Link = { Active : <bool> }
- * into configd's store (via a configd session, so the write lands on the serve
+ * plus, from RTM_NEWADDR / RTM_DELADDR, the per-interface IPv4 / IPv6 address
+ * keys (#338) into configd's store (via a configd session, so the write lands on the serve
  * thread). Replaces the standalone KernelEventMonitor daemon. Call once from
  * main(), after the service is checked in and the port set is built, before
  * entering configd_serve().
