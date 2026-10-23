@@ -605,6 +605,48 @@ backlog_recv_one_locked(struct mach_kev_reg *r)
 }
 
 /*
+ * Undo the kernel's EV_DISPATCH disable for a readiness event that is not
+ * going to reach the caller: one Phase 3 skips on an ERROR_EVENTS call or
+ * has no eventlist room for, or one backlog_drain_locked() could not queue.
+ *
+ * kqueue_scan() sets KN_DISABLED on an EV_DISPATCH knote as it hands the
+ * event over, so for a notify-mode registration (machport_native_flags())
+ * dropping the event would leave the knote disabled while libdispatch
+ * still believes the unote is armed -- the source would never fire again.
+ * Re-enable it instead: kqueue_register() re-runs filt_machport, and if
+ * the message is still queued the knote is re-queued, waking whichever
+ * thread is blocked in kevent, so the next ordinary poll delivers it.
+ * EV_KEEPUDATA leaves udata alone; ENOENT (the knote was torn down
+ * meanwhile) is harmless. Message-mode knotes are never disabled.
+ *
+ * Caller holds g_reg_mtx.
+ */
+static void
+machport_reenable_locked(struct mach_kev_reg *r)
+{
+	static const struct timespec zero_ts = { 0, 0 };
+	struct kevent en;
+
+	if ((r->fflags & MACH_RCV_MSG) || !(r->flags & EV_DISPATCH))
+		return;
+	EV_SET(&en, (uintptr_t)r->wrap_pset, EVFILT_MACHPORT_NATIVE,
+	    EV_ENABLE | EV_KEEPUDATA, 0, 0, NULL);
+	(void)__sys_kevent(r->kq, &en, 1, NULL, 0, &zero_ts);
+}
+
+static void
+machport_reenable_undelivered(int kq, const struct kevent *ev)
+{
+	struct mach_kev_reg *r;
+
+	pthread_mutex_lock(&g_reg_mtx);
+	r = reg_find_by_wrap_pset_locked((mach_port_name_t)ev->ident);
+	if (r != NULL && r->kq == kq)
+		machport_reenable_locked(r);
+	pthread_mutex_unlock(&g_reg_mtx);
+}
+
+/*
  * Drain the pipe's wakeup bytes, then populate the backlog. Caller
  * holds g_reg_mtx.
  *
@@ -650,8 +692,13 @@ backlog_drain_locked(struct mach_kev_reg *r)
 	if (r->backlog_tail != NULL && r->backlog_tail->hdr == NULL)
 		return;
 	struct mach_kev_msg *bm = calloc(1, sizeof(*bm));
-	if (bm == NULL)
+	if (bm == NULL) {
+		/* The kernel has already disabled the knote for this event;
+		 * dropping it without re-enabling would silence the source
+		 * for good. Re-enabling re-fires it while the message waits. */
+		machport_reenable_locked(r);
 		return;
+	}
 	bm->hdr = NULL;
 	bm->size = 0;
 	bm->kr = MACH_MSG_SUCCESS;
@@ -660,39 +707,6 @@ backlog_drain_locked(struct mach_kev_reg *r)
 	else
 		r->backlog_head = bm;
 	r->backlog_tail = bm;
-}
-
-/*
- * Undo the kernel's EV_DISPATCH disable for a readiness event Phase 3 is
- * not going to hand over: one skipped on an ERROR_EVENTS call, or one
- * past the end of the caller's eventlist.
- *
- * kqueue_scan() sets KN_DISABLED on an EV_DISPATCH knote as it hands the
- * event over, so for a notify-mode registration (machport_native_flags())
- * skipping the event would leave the knote disabled while libdispatch
- * still believes the unote is armed -- the source would never fire again.
- * Re-enable it instead: kqueue_register() re-runs filt_machport, and if
- * the message is still queued the knote is re-queued, waking whichever
- * thread is blocked in kevent, so the next ordinary poll delivers it.
- * EV_KEEPUDATA leaves udata alone; ENOENT (the registration was torn down
- * meanwhile) is harmless. Message-mode knotes are never disabled.
- */
-static void
-machport_reenable_undelivered(int kq, const struct kevent *ev)
-{
-	static const struct timespec zero_ts = { 0, 0 };
-	struct mach_kev_reg *r;
-	struct kevent en;
-
-	pthread_mutex_lock(&g_reg_mtx);
-	r = reg_find_by_wrap_pset_locked((mach_port_name_t)ev->ident);
-	if (r != NULL && r->kq == kq && !(r->fflags & MACH_RCV_MSG) &&
-	    (r->flags & EV_DISPATCH)) {
-		EV_SET(&en, ev->ident, EVFILT_MACHPORT_NATIVE,
-		    EV_ENABLE | EV_KEEPUDATA, 0, 0, NULL);
-		(void)__sys_kevent(kq, &en, 1, NULL, 0, &zero_ts);
-	}
-	pthread_mutex_unlock(&g_reg_mtx);
 }
 
 /*
@@ -716,6 +730,17 @@ backlog_pop_locked(struct mach_kev_reg *r, struct kevent_qos_s *synth)
 	memset(synth, 0, sizeof(*synth));
 	synth->ident = r->ident;
 	synth->filter = EVFILT_MACHPORT;
+	/*
+	 * Echoing the caller's EV_DISPATCH is load-bearing in notify mode:
+	 * machport_native_flags() put the same EV_DISPATCH on the kernel
+	 * knote, which is now disabled until an EV_ENABLE arrives, and that
+	 * EV_ENABLE is libdispatch's re-arm -- which it only issues because
+	 * _dispatch_kevent_merge_ev_flags() saw EV_DISPATCH here and cleared
+	 * DU_STATE_ARMED. Drop it from the mask and a MACH_RECV source fires
+	 * once and then never again. (libdispatch registers every
+	 * EVFILT_MACHPORT source type with EV_DISPATCH; a caller that does
+	 * not gets a plain level-triggered knote and needs no re-arm.)
+	 */
 	synth->flags = r->flags & MACH_KEV_DELIVERY_FLAGS_MASK;
 	synth->fflags = (uint32_t)bm->kr;
 	synth->data = r->data;
