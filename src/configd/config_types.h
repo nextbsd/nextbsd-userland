@@ -35,8 +35,6 @@
 #ifndef _CONFIG_TYPES_H
 #define _CONFIG_TYPES_H
 
-#include <stdint.h>	/* uint8_t — config.defs' config_byte_t element ctype */
-
 /*
  * Keep the MIG IPC functions at plain external linkage.
  */
@@ -70,18 +68,23 @@
 #define kSCStatusNoStoreSession		2001	/* no open store session */
 #define kSCStatusNotifierActive		2003	/* notifier already active */
 
-/* Maximum key / value size — config.defs' array[*:8192] bound. */
+/*
+ * Longest key or pattern configd will match as a POSIX regex: the
+ * pattern-watch and configlist / configget_m paths anchor and
+ * NUL-terminate it in a stack buffer of this size. Payloads on the
+ * wire are out-of-line (config.defs) and have no such bound.
+ */
 #define CONFIG_DATA_MAX			8192
 
 /*
- * config.defs' xmlData / xmlDataOut MIG types. MIG records a `type`
- * declaration's wire layout but emits no C typedef for it — the
- * generated stubs use the name as-is and expect this imported header
- * to define it (cf. hwregd's hwreg_mig_types.h). The bound matches
- * config.defs' array[*:8192]; the payload is carried inline in the
- * message, so the type is the byte array itself, not a pointer.
+ * Input arguments: serialized key's, list delimiters, ...
+ *	(sent as out-of-line data in a message)
  */
-typedef uint8_t xmlData[8192];
-typedef uint8_t xmlDataOut[8192];
+typedef const char * xmlData_t;
+
+/* Output arguments: serialized data, lists, ...
+ *	(sent as out-of-line data in a message)
+ */
+typedef char * xmlDataOut_t;
 
 #endif	/* !_CONFIG_TYPES_H */

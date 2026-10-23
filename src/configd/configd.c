@@ -31,10 +31,12 @@
  *     registration, multi-key fetch and multi-key update.
  * notifyviafd and snapshot remain stubs (see their handlers).
  *
- * config.defs carries the key/value payloads INLINE in bounded arrays
- * — out-of-line Mach data is broken cross-process in this port's
- * kernel (see config.defs) — so a handler's xmlData argument is the
- * byte buffer itself; there is no out-of-line memory to free.
+ * config.defs carries the key/value payloads out-of-line, as Apple's
+ * does: a handler owns each xmlData_t argument and vm_deallocate()s it
+ * before returning, and hands an xmlDataOut_t reply back in a
+ * vm_allocate()d buffer that MIG's `dealloc` releases on send.
+ * configopen receives the client's kernel-stamped audit token, which
+ * the session keeps as the client's identity.
  *
  * `configd --selftest` runs an in-process round trip (a server thread
  * plus the client stubs) — no launchd or bootstrap — as a quick
@@ -44,6 +46,7 @@
 #include <sys/types.h>
 
 #include <mach/mach.h>
+#include <mach/mig_errors.h>		/* mig_reply_error_t */
 #include <mach/notify.h>		/* MACH_NOTIFY_NO_SENDERS */
 #include <servers/bootstrap.h>
 
@@ -66,11 +69,25 @@
 #include "configServer.h"	/* MIG: config_server() demux + _config* protos */
 
 /*
- * Inline message buffer. config.defs carries the xmlData payloads
- * inline in bounded arrays, so a request can be large — configset_m
- * has three. 32 KiB covers the largest config message.
+ * Message buffer. config.defs carries the xmlData payloads
+ * out-of-line, so a request is only a header, descriptors, scalars
+ * and the audit trailer; 32 KiB is generous.
  */
 #define CONFIGD_MSG_BUFSZ		32768
+
+/* Apple's <mach/vm_statistics.h> value; libmach's headers lack it. */
+#ifndef VM_FLAGS_ANYWHERE
+#define VM_FLAGS_ANYWHERE		0x0001
+#endif
+
+/*
+ * Receive options for the serve loop: ask the kernel to append the
+ * sender's audit token, which configopen's ServerAuditToken argument
+ * reads from the trailer (MIG rejects the request without it).
+ */
+#define CONFIGD_RCV_TRAILER						\
+	(MACH_RCV_TRAILER_TYPE(MACH_MSG_TRAILER_FORMAT_0) |		\
+	 MACH_RCV_TRAILER_ELEMENTS(MACH_RCV_TRAILER_AUDIT))
 
 static volatile sig_atomic_t	got_term;
 
@@ -125,33 +142,127 @@ kvmap_has(const uint8_t *buf, size_t len, const void *key, size_t klen)
 }
 
 /*
+ * ool_release — give back an out-of-line request argument. The kernel
+ * copied it out into a fresh mapping in configd, which the handler owns
+ * once it returns KERN_SUCCESS (Apple's configd does the same).
+ */
+static void
+ool_release(xmlData_t data, mach_msg_type_number_t len)
+{
+	if (data != NULL && len != 0)
+		(void)vm_deallocate(mach_task_self(),
+		    (vm_address_t)(uintptr_t)data, len);
+}
+
+/*
+ * A reply payload under construction: a malloc'd buffer that grows as
+ * records are appended, then is copied into the vm_allocate()d memory
+ * the reply carries out-of-line.
+ */
+struct obuf {
+	uint8_t	*buf;
+	size_t	cap;
+	size_t	off;
+};
+
+/* Make room for `need` more bytes. Returns 0, or -1 on overflow / ENOMEM. */
+static int
+obuf_reserve(struct obuf *b, size_t need)
+{
+	size_t	ncap;
+	uint8_t	*nbuf;
+
+	if (need > SIZE_MAX - b->off)
+		return -1;
+	if (b->off + need <= b->cap)
+		return 0;
+	ncap = (b->cap != 0) ? b->cap : 4096;
+	while (ncap < b->off + need) {
+		if (ncap > SIZE_MAX / 2)
+			return -1;
+		ncap *= 2;
+	}
+	nbuf = realloc(b->buf, ncap);
+	if (nbuf == NULL)
+		return -1;
+	b->buf = nbuf;
+	b->cap = ncap;
+	return 0;
+}
+
+static int
+obuf_keylist_put(struct obuf *b, const void *key, size_t klen)
+{
+	if (obuf_reserve(b, sizeof(uint32_t) + klen) != 0)
+		return -1;
+	return wire_keylist_put(b->buf, b->cap, &b->off, key, klen);
+}
+
+static int
+obuf_kvmap_put(struct obuf *b, const void *key, size_t klen,
+    const void *val, size_t vlen)
+{
+	if (obuf_reserve(b, 2 * sizeof(uint32_t) + klen + vlen) != 0)
+		return -1;
+	return wire_kvmap_put(b->buf, b->cap, &b->off, key, klen, val, vlen);
+}
+
+/*
+ * ool_reply — copy `len` bytes at `bytes` into a fresh vm_allocate()d
+ * buffer for an xmlDataOut_t reply argument. config.defs marks those
+ * arguments `dealloc`, so the kernel unmaps the buffer from configd as
+ * the reply is sent. An empty payload goes out as NULL / 0. Returns 0,
+ * or -1 if the buffer could not be allocated.
+ */
+static int
+ool_reply(const void *bytes, size_t len, xmlDataOut_t *out,
+    mach_msg_type_number_t *outCnt)
+{
+	vm_address_t	addr = 0;
+
+	*out = NULL;
+	*outCnt = 0;
+	if (len == 0)
+		return 0;
+	if (len > UINT32_MAX)
+		return -1;
+	if (vm_allocate(mach_task_self(), &addr, len, VM_FLAGS_ANYWHERE) !=
+	    KERN_SUCCESS)
+		return -1;
+	memcpy((void *)addr, bytes, len);
+	*out = (xmlDataOut_t)addr;
+	*outCnt = (mach_msg_type_number_t)len;
+	return 0;
+}
+
+/*
  * MIG routine handlers — config_server() dispatches to these. An
- * xmlData / xmlDataOut argument is an inline byte buffer (config.defs
- * carries the payloads inline); the matching mach_msg_type_number_t
- * carries its length. Out-parameters are given a safe value first so
- * the MIG reply marshalling never ships an uninitialised port or
- * count. The add / multi variants, the regex paths and snapshot are
- * still stubs returning kSCStatusFailed.
+ * xmlData_t argument is out-of-line memory the handler releases with
+ * ool_release() before returning; an xmlDataOut_t reply is built with
+ * ool_reply(). The matching mach_msg_type_number_t carries the length.
+ * Out-parameters are given a safe value first so the MIG reply
+ * marshalling never ships an uninitialised port or count. configadd_s,
+ * notifyviafd and snapshot are still stubs returning kSCStatusFailed.
  */
 
 kern_return_t
-_configopen(mach_port_t server, xmlData name, mach_msg_type_number_t nameCnt,
-    xmlData options, mach_msg_type_number_t optionsCnt,
-    mach_port_t *session, int *status)
+_configopen(mach_port_t server, xmlData_t name,
+    mach_msg_type_number_t nameCnt, xmlData_t options,
+    mach_msg_type_number_t optionsCnt, mach_port_t *session, int *status,
+    audit_token_t audit_token)
 {
 	/*
 	 * Hand the client its own per-session port. session_open()
 	 * allocates the receive right, inserts a MAKE_SEND right (MIG's
 	 * mach_port_move_send_t moves it out in the reply), joins it to
-	 * configd's port set and arms the no-senders notification.
+	 * configd's port set and arms the no-senders notification. The
+	 * session records the client's audit token.
 	 */
 	(void)server;
-	(void)name;
-	(void)nameCnt;
-	(void)options;
-	(void)optionsCnt;
+	ool_release(name, nameCnt);
+	ool_release(options, optionsCnt);
 
-	if (session_open(session) != 0) {
+	if (session_open(session, &audit_token) != 0) {
 		*session = MACH_PORT_NULL;
 		*status = kSCStatusFailed;
 		return KERN_SUCCESS;
@@ -167,15 +278,17 @@ _configopen(mach_port_t server, xmlData name, mach_msg_type_number_t nameCnt,
  * every key). The result is the keylist_append [len][bytes] encoding.
  */
 kern_return_t
-_configlist(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
-    int isRegex, xmlDataOut list, mach_msg_type_number_t *listCnt,
+_configlist(mach_port_t server, xmlData_t key, mach_msg_type_number_t keyCnt,
+    int isRegex, xmlDataOut_t *list, mach_msg_type_number_t *listCnt,
     int *status)
 {
-	size_t	count, i, off = 0;
-	regex_t	re;
-	int	have_re = 0;
+	struct obuf	out = { NULL, 0, 0 };
+	size_t		count, i;
+	regex_t		re;
+	int		have_re = 0;
 
 	(void)server;
+	*list = NULL;
 	*listCnt = 0;
 
 	if (isRegex != 0) {
@@ -184,11 +297,12 @@ _configlist(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
 		if (config_pattern_anchor(key, keyCnt, buf, sizeof(buf)) != 0 ||
 		    regcomp(&re, buf, REG_EXTENDED) != 0) {
 			*status = kSCStatusInvalidArgument;
-			return KERN_SUCCESS;
+			goto done;
 		}
 		have_re = 1;
 	}
 
+	*status = kSCStatusOK;
 	count = store_count();
 	for (i = 0; i < count; i++) {
 		const void	*skey;
@@ -213,21 +327,21 @@ _configlist(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
 			     memcmp(skey, key, keyCnt) == 0);
 		}
 
-		if (match && wire_keylist_put(list, CONFIG_DATA_MAX, &off,
-		    skey, sklen) != 0) {
-			/* the packed list overflowed the inline reply */
-			if (have_re)
-				regfree(&re);
-			*listCnt = 0;
+		if (match && obuf_keylist_put(&out, skey, sklen) != 0) {
 			*status = kSCStatusFailed;
-			return KERN_SUCCESS;
+			break;
 		}
 	}
 
+	if (*status == kSCStatusOK &&
+	    ool_reply(out.buf, out.off, list, listCnt) != 0)
+		*status = kSCStatusFailed;
+
 	if (have_re)
 		regfree(&re);
-	*listCnt = (mach_msg_type_number_t)off;
-	*status = kSCStatusOK;
+done:
+	free(out.buf);
+	ool_release(key, keyCnt);
 	return KERN_SUCCESS;
 }
 
@@ -239,8 +353,8 @@ _configlist(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
  * + change-notification path is _configset's.
  */
 kern_return_t
-_configadd(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
-    xmlData data, mach_msg_type_number_t dataCnt, int *newInstance,
+_configadd(mach_port_t server, xmlData_t key, mach_msg_type_number_t keyCnt,
+    xmlData_t data, mach_msg_type_number_t dataCnt, int *newInstance,
     int *status)
 {
 	const void	*val;
@@ -261,18 +375,21 @@ _configadd(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
 		session_key_changed(key, keyCnt);
 		*status = kSCStatusOK;
 	}
+	ool_release(key, keyCnt);
+	ool_release(data, dataCnt);
 	return KERN_SUCCESS;
 }
 
 kern_return_t
-_configget(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
-    xmlDataOut data, mach_msg_type_number_t *dataCnt, int *newInstance,
+_configget(mach_port_t server, xmlData_t key, mach_msg_type_number_t keyCnt,
+    xmlDataOut_t *data, mach_msg_type_number_t *dataCnt, int *newInstance,
     int *status)
 {
 	const void	*val;
 	size_t		vlen;
 
 	(void)server;
+	*data = NULL;
 	*dataCnt = 0;
 	*newInstance = 0;
 
@@ -280,21 +397,18 @@ _configget(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
 		*status = kSCStatusInvalidArgument;
 	} else if (store_get(key, keyCnt, &val, &vlen) != 0) {
 		*status = kSCStatusNoKey;
-	} else if (vlen > CONFIG_DATA_MAX) {
-		/* a stored value too large for the inline reply array */
+	} else if (ool_reply(val, vlen, data, dataCnt) != 0) {
 		*status = kSCStatusFailed;
 	} else {
-		if (vlen != 0)
-			memcpy(data, val, vlen);
-		*dataCnt = (mach_msg_type_number_t)vlen;
 		*status = kSCStatusOK;
 	}
+	ool_release(key, keyCnt);
 	return KERN_SUCCESS;
 }
 
 kern_return_t
-_configset(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
-    xmlData data, mach_msg_type_number_t dataCnt, int instance,
+_configset(mach_port_t server, xmlData_t key, mach_msg_type_number_t keyCnt,
+    xmlData_t data, mach_msg_type_number_t dataCnt, int instance,
     int *newInstance, int *status)
 {
 	(void)server;
@@ -310,12 +424,14 @@ _configset(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
 		session_key_changed(key, keyCnt);
 		*status = kSCStatusOK;
 	}
+	ool_release(key, keyCnt);
+	ool_release(data, dataCnt);
 	return KERN_SUCCESS;
 }
 
 kern_return_t
-_configremove(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
-    int *status)
+_configremove(mach_port_t server, xmlData_t key,
+    mach_msg_type_number_t keyCnt, int *status)
 {
 	(void)server;
 
@@ -328,15 +444,18 @@ _configremove(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
 		session_key_changed(key, keyCnt);
 		*status = kSCStatusOK;
 	}
+	ool_release(key, keyCnt);
 	return KERN_SUCCESS;
 }
 
 kern_return_t
-_configadd_s(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
-    xmlData data, mach_msg_type_number_t dataCnt, int *newInstance,
-    int *status)
+_configadd_s(mach_port_t server, xmlData_t key,
+    mach_msg_type_number_t keyCnt, xmlData_t data,
+    mach_msg_type_number_t dataCnt, int *newInstance, int *status)
 {
-	(void)server; (void)key; (void)keyCnt; (void)data; (void)dataCnt;
+	(void)server;
+	ool_release(key, keyCnt);
+	ool_release(data, dataCnt);
 	*newInstance = 0;
 	*status = kSCStatusFailed;
 	return KERN_SUCCESS;
@@ -347,8 +466,8 @@ _configadd_s(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
  * notification for a key without touching its value.
  */
 kern_return_t
-_confignotify(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
-    int *status)
+_confignotify(mach_port_t server, xmlData_t key,
+    mach_msg_type_number_t keyCnt, int *status)
 {
 	(void)server;
 
@@ -358,6 +477,7 @@ _confignotify(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
 		session_key_changed(key, keyCnt);
 		*status = kSCStatusOK;
 	}
+	ool_release(key, keyCnt);
 	return KERN_SUCCESS;
 }
 
@@ -369,39 +489,41 @@ _confignotify(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
  * wire_kvmap payload. Each key is emitted at most once.
  */
 kern_return_t
-_configget_m(mach_port_t server, xmlData keys, mach_msg_type_number_t keysCnt,
-    xmlData patterns, mach_msg_type_number_t patternsCnt, xmlDataOut data,
+_configget_m(mach_port_t server, xmlData_t keys,
+    mach_msg_type_number_t keysCnt, xmlData_t patterns,
+    mach_msg_type_number_t patternsCnt, xmlDataOut_t *data,
     mach_msg_type_number_t *dataCnt, int *status)
 {
+	struct obuf	out = { NULL, 0, 0 };
 	const uint8_t	*cur, *end;
 	const void	*item;
-	size_t		ilen, off = 0;
+	size_t		ilen;
 
 	(void)server;
+	*data = NULL;
 	*dataCnt = 0;
+	*status = kSCStatusOK;
 
 	/* Requested explicit keys: emit the value of each that exists. */
-	cur = keys;
-	end = keys + keysCnt;
+	cur = (const uint8_t *)keys;
+	end = cur + keysCnt;
 	while (wire_keylist_next(&cur, end, &item, &ilen)) {
 		const void	*val;
 		size_t		vlen;
 
 		if (store_get(item, ilen, &val, &vlen) != 0)
 			continue;	/* no such key — skip it */
-		if (kvmap_has(data, off, item, ilen))
+		if (kvmap_has(out.buf, out.off, item, ilen))
 			continue;	/* already emitted */
-		if (wire_kvmap_put(data, CONFIG_DATA_MAX, &off, item, ilen,
-		    val, vlen) != 0) {
-			*dataCnt = 0;
-			*status = kSCStatusFailed;	/* reply overflowed */
-			return KERN_SUCCESS;
+		if (obuf_kvmap_put(&out, item, ilen, val, vlen) != 0) {
+			*status = kSCStatusFailed;
+			goto done;
 		}
 	}
 
 	/* Pattern keys: emit the value of every store key that matches. */
-	cur = patterns;
-	end = patterns + patternsCnt;
+	cur = (const uint8_t *)patterns;
+	end = cur + patternsCnt;
 	while (wire_keylist_next(&cur, end, &item, &ilen)) {
 		char	abuf[CONFIG_DATA_MAX + 3];	/* ^ + pattern + $ + NUL */
 		regex_t	re;
@@ -409,9 +531,8 @@ _configget_m(mach_port_t server, xmlData keys, mach_msg_type_number_t keysCnt,
 
 		if (config_pattern_anchor(item, ilen, abuf, sizeof(abuf)) != 0 ||
 		    regcomp(&re, abuf, REG_EXTENDED) != 0) {
-			*dataCnt = 0;
 			*status = kSCStatusInvalidArgument;
-			return KERN_SUCCESS;
+			goto done;
 		}
 
 		count = store_count();
@@ -428,23 +549,25 @@ _configget_m(mach_port_t server, xmlData keys, mach_msg_type_number_t keysCnt,
 			keystr[sklen] = '\0';
 			if (regexec(&re, keystr, 0, NULL, 0) != 0)
 				continue;	/* no match */
-			if (kvmap_has(data, off, skey, sklen))
+			if (kvmap_has(out.buf, out.off, skey, sklen))
 				continue;	/* already emitted */
 			if (store_get(skey, sklen, &val, &vlen) != 0)
 				continue;
-			if (wire_kvmap_put(data, CONFIG_DATA_MAX, &off, skey,
-			    sklen, val, vlen) != 0) {
+			if (obuf_kvmap_put(&out, skey, sklen, val, vlen) != 0) {
 				regfree(&re);
-				*dataCnt = 0;
 				*status = kSCStatusFailed;
-				return KERN_SUCCESS;
+				goto done;
 			}
 		}
 		regfree(&re);
 	}
 
-	*dataCnt = (mach_msg_type_number_t)off;
-	*status = kSCStatusOK;
+	if (ool_reply(out.buf, out.off, data, dataCnt) != 0)
+		*status = kSCStatusFailed;
+done:
+	free(out.buf);
+	ool_release(keys, keysCnt);
+	ool_release(patterns, patternsCnt);
 	return KERN_SUCCESS;
 }
 
@@ -456,46 +579,51 @@ _configget_m(mach_port_t server, xmlData keys, mach_msg_type_number_t keysCnt,
  * payloads). Each set / remove / notify fans out to watching sessions.
  */
 kern_return_t
-_configset_m(mach_port_t server, xmlData data, mach_msg_type_number_t dataCnt,
-    xmlData removeData, mach_msg_type_number_t removeCnt,
-    xmlData notify, mach_msg_type_number_t notifyCnt, int *status)
+_configset_m(mach_port_t server, xmlData_t data,
+    mach_msg_type_number_t dataCnt, xmlData_t removeData,
+    mach_msg_type_number_t removeCnt, xmlData_t notify,
+    mach_msg_type_number_t notifyCnt, int *status)
 {
 	const uint8_t	*cur, *end;
 	const void	*k, *v;
 	size_t		kl, vl;
 
 	(void)server;
+	*status = kSCStatusOK;
 
 	/* Set each key/value pair. */
-	cur = data;
-	end = data + dataCnt;
+	cur = (const uint8_t *)data;
+	end = cur + dataCnt;
 	while (wire_kvmap_next(&cur, end, &k, &kl, &v, &vl)) {
 		if (kl == 0)
 			continue;	/* skip an empty key */
 		if (store_set(k, kl, v, vl) != 0) {
 			*status = kSCStatusFailed;
-			return KERN_SUCCESS;
+			goto done;
 		}
 		session_key_changed(k, kl);
 	}
 
 	/* Remove each key, notifying watchers of the ones that existed. */
-	cur = removeData;
-	end = removeData + removeCnt;
+	cur = (const uint8_t *)removeData;
+	end = cur + removeCnt;
 	while (wire_keylist_next(&cur, end, &k, &kl)) {
 		if (kl != 0 && store_remove(k, kl) == 0)
 			session_key_changed(k, kl);
 	}
 
 	/* Force a change notification for each notify key. */
-	cur = notify;
-	end = notify + notifyCnt;
+	cur = (const uint8_t *)notify;
+	end = cur + notifyCnt;
 	while (wire_keylist_next(&cur, end, &k, &kl)) {
 		if (kl != 0)
 			session_key_changed(k, kl);
 	}
 
-	*status = kSCStatusOK;
+done:
+	ool_release(data, dataCnt);
+	ool_release(removeData, removeCnt);
+	ool_release(notify, notifyCnt);
 	return KERN_SUCCESS;
 }
 
@@ -504,7 +632,7 @@ _configset_m(mach_port_t server, xmlData data, mach_msg_type_number_t dataCnt,
  * isRegex selects an explicit-key watch or a POSIX-regex pattern watch.
  */
 kern_return_t
-_notifyadd(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
+_notifyadd(mach_port_t server, xmlData_t key, mach_msg_type_number_t keyCnt,
     int isRegex, int *status)
 {
 	if (keyCnt == 0)
@@ -513,6 +641,7 @@ _notifyadd(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
 		*status = session_pattern_add(server, key, keyCnt);
 	else
 		*status = session_watch_add(server, key, keyCnt);
+	ool_release(key, keyCnt);
 	return KERN_SUCCESS;
 }
 
@@ -521,8 +650,8 @@ _notifyadd(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
  * session; isRegex picks the explicit-key or the pattern watch list.
  */
 kern_return_t
-_notifyremove(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
-    int isRegex, int *status)
+_notifyremove(mach_port_t server, xmlData_t key,
+    mach_msg_type_number_t keyCnt, int isRegex, int *status)
 {
 	if (keyCnt == 0)
 		*status = kSCStatusInvalidArgument;
@@ -530,6 +659,7 @@ _notifyremove(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
 		*status = session_pattern_remove(server, key, keyCnt);
 	else
 		*status = session_watch_remove(server, key, keyCnt);
+	ool_release(key, keyCnt);
 	return KERN_SUCCESS;
 }
 
@@ -539,11 +669,14 @@ _notifyremove(mach_port_t server, xmlData key, mach_msg_type_number_t keyCnt,
  * encoded as a run of [uint32 little-endian length][key bytes] records.
  */
 kern_return_t
-_notifychanges(mach_port_t server, xmlDataOut list,
+_notifychanges(mach_port_t server, xmlDataOut_t *list,
     mach_msg_type_number_t *listCnt, int *status)
 {
-	ssize_t n;
+	uint8_t	*buf = NULL;
+	size_t	cap = 4096;
+	ssize_t	n;
 
+	*list = NULL;
 	*listCnt = 0;
 
 	if (!session_valid(server)) {
@@ -551,14 +684,29 @@ _notifychanges(mach_port_t server, xmlDataOut list,
 		return KERN_SUCCESS;
 	}
 
-	n = session_drain_changes(server, list, CONFIG_DATA_MAX);
-	if (n < 0) {
-		/* the encoded change list overflowed the inline reply */
-		*status = kSCStatusFailed;
-		return KERN_SUCCESS;
+	/*
+	 * session_drain_changes() leaves the pending list in place when it
+	 * does not fit, so grow the buffer until the whole list does.
+	 */
+	for (;;) {
+		uint8_t *nbuf = realloc(buf, cap);
+
+		if (nbuf == NULL) {
+			n = -1;
+			break;
+		}
+		buf = nbuf;
+		n = session_drain_changes(server, buf, cap);
+		if (n >= 0 || cap > SIZE_MAX / 2)
+			break;
+		cap *= 2;
 	}
-	*listCnt = (mach_msg_type_number_t)n;
-	*status = kSCStatusOK;
+
+	if (n < 0 || ool_reply(buf, (size_t)n, list, listCnt) != 0)
+		*status = kSCStatusFailed;
+	else
+		*status = kSCStatusOK;
+	free(buf);
 	return KERN_SUCCESS;
 }
 
@@ -600,8 +748,9 @@ _notifycancel(mach_port_t server, int *status)
  * wire_keylist payloads).
  */
 kern_return_t
-_notifyset(mach_port_t server, xmlData keys, mach_msg_type_number_t keysCnt,
-    xmlData patterns, mach_msg_type_number_t patternsCnt, int *status)
+_notifyset(mach_port_t server, xmlData_t keys,
+    mach_msg_type_number_t keysCnt, xmlData_t patterns,
+    mach_msg_type_number_t patternsCnt, int *status)
 {
 	const uint8_t	*cur, *end;
 	const void	*item;
@@ -610,33 +759,36 @@ _notifyset(mach_port_t server, xmlData keys, mach_msg_type_number_t keysCnt,
 
 	if (!session_valid(server)) {
 		*status = kSCStatusNoStoreSession;
-		return KERN_SUCCESS;
+		goto done;
 	}
 
 	/* Drop the old watch set, then install the new one. */
 	(void)session_watch_clear(server);
 
-	cur = keys;
-	end = keys + keysCnt;
+	cur = (const uint8_t *)keys;
+	end = cur + keysCnt;
 	while (wire_keylist_next(&cur, end, &item, &ilen)) {
 		rc = session_watch_add(server, item, ilen);
 		if (rc != kSCStatusOK) {
 			*status = rc;
-			return KERN_SUCCESS;
+			goto done;
 		}
 	}
 
-	cur = patterns;
-	end = patterns + patternsCnt;
+	cur = (const uint8_t *)patterns;
+	end = cur + patternsCnt;
 	while (wire_keylist_next(&cur, end, &item, &ilen)) {
 		rc = session_pattern_add(server, item, ilen);
 		if (rc != kSCStatusOK) {
 			*status = rc;
-			return KERN_SUCCESS;
+			goto done;
 		}
 	}
 
 	*status = kSCStatusOK;
+done:
+	ool_release(keys, keysCnt);
+	ool_release(patterns, patternsCnt);
 	return KERN_SUCCESS;
 }
 
@@ -689,9 +841,11 @@ configd_serve(mach_port_t port_set)
 			char buf[CONFIGD_MSG_BUFSZ];
 		} req, rep;
 		mach_msg_return_t mr;
+		int rejected;
 
 		memset(&req, 0, sizeof(req));
-		mr = mach_msg(&req.hdr, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0,
+		mr = mach_msg(&req.hdr,
+		    MACH_RCV_MSG | MACH_RCV_TIMEOUT | CONFIGD_RCV_TRAILER, 0,
 		    sizeof(req), port_set, 1000, MACH_PORT_NULL);
 		if (mr == MACH_RCV_TIMED_OUT)
 			continue;
@@ -721,6 +875,21 @@ configd_serve(mach_port_t port_set)
 			mach_msg_destroy(&req.hdr);
 			continue;
 		}
+		rejected = !(rep.hdr.msgh_bits & MACH_MSGH_BITS_COMPLEX) &&
+		    ((mig_reply_error_t *)(void *)&rep.hdr)->RetCode !=
+		    KERN_SUCCESS;
+		if (rejected) {
+			/*
+			 * MIG rejected the request before a handler took
+			 * ownership of it (bad arguments, a missing audit
+			 * trailer): its out-of-line memory and moved-in
+			 * rights are still ours to release, as Apple's
+			 * mach_msg_server() does. The reply consumes the
+			 * reply right, so keep that out of the destroy.
+			 */
+			req.hdr.msgh_remote_port = MACH_PORT_NULL;
+			mach_msg_destroy(&req.hdr);
+		}
 		if (rep.hdr.msgh_remote_port != MACH_PORT_NULL) {
 			mr = mach_msg(&rep.hdr, MACH_SEND_MSG | MACH_SEND_TIMEOUT,
 			    rep.hdr.msgh_size, 0, MACH_PORT_NULL, 1000,
@@ -734,7 +903,7 @@ configd_serve(mach_port_t port_set)
 				 */
 				mach_msg_destroy(&rep.hdr);
 			}
-		} else {
+		} else if (!rejected) {
 			/*
 			 * MIG produced no reply (simpleroutine, or a routine
 			 * that errored before building one): the request's
@@ -779,30 +948,44 @@ configd_make_port_set(mach_port_t initial, mach_port_t *port_set)
  * launchd or bootstrap in the loop. The client stubs come from the
  * MIG-generated configUser.c.
  */
-extern kern_return_t configopen(mach_port_t, xmlData,
-    mach_msg_type_number_t, xmlData, mach_msg_type_number_t,
+extern kern_return_t configopen(mach_port_t, xmlData_t,
+    mach_msg_type_number_t, xmlData_t, mach_msg_type_number_t,
     mach_port_t *, int *);
-extern kern_return_t configset(mach_port_t, xmlData,
-    mach_msg_type_number_t, xmlData, mach_msg_type_number_t, int,
+extern kern_return_t configset(mach_port_t, xmlData_t,
+    mach_msg_type_number_t, xmlData_t, mach_msg_type_number_t, int,
     int *, int *);
-extern kern_return_t configget(mach_port_t, xmlData,
-    mach_msg_type_number_t, xmlDataOut, mach_msg_type_number_t *,
+extern kern_return_t configget(mach_port_t, xmlData_t,
+    mach_msg_type_number_t, xmlDataOut_t *, mach_msg_type_number_t *,
     int *, int *);
-extern kern_return_t configlist(mach_port_t, xmlData,
-    mach_msg_type_number_t, int, xmlDataOut, mach_msg_type_number_t *,
+extern kern_return_t configlist(mach_port_t, xmlData_t,
+    mach_msg_type_number_t, int, xmlDataOut_t *, mach_msg_type_number_t *,
     int *);
-extern kern_return_t configget_m(mach_port_t, xmlData,
-    mach_msg_type_number_t, xmlData, mach_msg_type_number_t, xmlDataOut,
-    mach_msg_type_number_t *, int *);
-extern kern_return_t configset_m(mach_port_t, xmlData,
-    mach_msg_type_number_t, xmlData, mach_msg_type_number_t, xmlData,
+extern kern_return_t configget_m(mach_port_t, xmlData_t,
+    mach_msg_type_number_t, xmlData_t, mach_msg_type_number_t,
+    xmlDataOut_t *, mach_msg_type_number_t *, int *);
+extern kern_return_t configset_m(mach_port_t, xmlData_t,
+    mach_msg_type_number_t, xmlData_t, mach_msg_type_number_t, xmlData_t,
     mach_msg_type_number_t, int *);
-extern kern_return_t notifyadd(mach_port_t, xmlData,
+extern kern_return_t notifyadd(mach_port_t, xmlData_t,
     mach_msg_type_number_t, int, int *);
 extern kern_return_t notifyviaport(mach_port_t, mach_port_t,
     mach_msg_id_t, int *);
-extern kern_return_t notifychanges(mach_port_t, xmlDataOut,
+extern kern_return_t notifychanges(mach_port_t, xmlDataOut_t *,
     mach_msg_type_number_t *, int *);
+
+/*
+ * selftest_ool_free — release an out-of-line reply the selftest has
+ * finished with, and reset it for the next call.
+ */
+static void
+selftest_ool_free(xmlDataOut_t *data, mach_msg_type_number_t *len)
+{
+	if (*data != NULL && *len != 0)
+		(void)vm_deallocate(mach_task_self(), (vm_address_t)*data,
+		    *len);
+	*data = NULL;
+	*len = 0;
+}
 
 /*
  * selftest_list_has — 1 if the keylist_append-encoded [len][bytes]
@@ -848,16 +1031,13 @@ run_selftest(void)
 	mach_port_t		notify_port = MACH_PORT_NULL;
 	int			status = -1;
 	int			newInstance = 0;
-	/* Non-const uint8_t arrays — xmlData is uint8_t[], and a cast
-	 * from a string literal would trip -Wcast-qual under WARNS. */
-	uint8_t			name[] = "selftest";
-	uint8_t			empty[1] = { 0 };
-	uint8_t			key[] = "selftest:key";
-	uint8_t			pat[] = "selftest:pat[0-9]+";
-	uint8_t			patkey[] = "selftest:pat42";
-	uint8_t			val[] = "configd selftest value blob";
-	uint8_t			val2[] = "configd selftest changed value";
-	xmlDataOut		got;
+	const char		name[] = "selftest";
+	const char		key[] = "selftest:key";
+	const char		pat[] = "selftest:pat[0-9]+";
+	const char		patkey[] = "selftest:pat42";
+	const char		val[] = "configd selftest value blob";
+	const char		val2[] = "configd selftest changed value";
+	xmlDataOut_t		got = NULL;
 	mach_msg_type_number_t	gotCnt = 0;
 	union {
 		mach_msg_header_t	hdr;
@@ -886,7 +1066,7 @@ run_selftest(void)
 	(void)sleep(1);		/* let the server thread reach mach_msg RCV */
 
 	kr = configopen(selftest_port, name,
-	    (mach_msg_type_number_t)(sizeof(name) - 1), empty, 0,
+	    (mach_msg_type_number_t)(sizeof(name) - 1), NULL, 0,
 	    &session, &status);
 	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
 		clog("selftest: configopen kr=0x%x status=%d", (unsigned)kr,
@@ -904,7 +1084,7 @@ run_selftest(void)
 	}
 
 	kr = configget(session, key, (mach_msg_type_number_t)(sizeof(key) - 1),
-	    got, &gotCnt, &newInstance, &status);
+	    &got, &gotCnt, &newInstance, &status);
 	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
 		clog("selftest: configget kr=0x%x status=%d", (unsigned)kr,
 		    status);
@@ -915,6 +1095,7 @@ run_selftest(void)
 		clog("selftest: value MISMATCH (gotCnt=%u)", (unsigned)gotCnt);
 		return 1;
 	}
+	selftest_ool_free(&got, &gotCnt);
 
 	/*
 	 * Change-notification path: watch the key, change it, and
@@ -937,8 +1118,7 @@ run_selftest(void)
 		return 1;
 	}
 
-	gotCnt = 0;
-	kr = notifychanges(session, got, &gotCnt, &status);
+	kr = notifychanges(session, &got, &gotCnt, &status);
 	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
 		clog("selftest: notifychanges kr=0x%x status=%d", (unsigned)kr,
 		    status);
@@ -961,6 +1141,7 @@ run_selftest(void)
 			return 1;
 		}
 	}
+	selftest_ool_free(&got, &gotCnt);
 
 	/*
 	 * Notification-port path: register a Mach notification port,
@@ -1012,13 +1193,13 @@ run_selftest(void)
 	}
 
 	/* Drain the change left pending by the notify-port step. */
-	gotCnt = 0;
-	kr = notifychanges(session, got, &gotCnt, &status);
+	kr = notifychanges(session, &got, &gotCnt, &status);
 	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
 		clog("selftest: notifychanges(drain) kr=0x%x status=%d",
 		    (unsigned)kr, status);
 		return 1;
 	}
+	selftest_ool_free(&got, &gotCnt);
 
 	/*
 	 * Pattern watch: register a POSIX regex, change a key that
@@ -1040,8 +1221,7 @@ run_selftest(void)
 		    (unsigned)kr, status);
 		return 1;
 	}
-	gotCnt = 0;
-	kr = notifychanges(session, got, &gotCnt, &status);
+	kr = notifychanges(session, &got, &gotCnt, &status);
 	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
 		clog("selftest: notifychanges(regex) kr=0x%x status=%d",
 		    (unsigned)kr, status);
@@ -1064,24 +1244,27 @@ run_selftest(void)
 			return 1;
 		}
 	}
+	selftest_ool_free(&got, &gotCnt);
 
 	/*
 	 * configlist: list every store key and confirm both keys this
 	 * selftest stored (the explicit key and the pattern-matched key)
 	 * appear in the result.
 	 */
-	gotCnt = 0;
-	kr = configlist(session, empty, 0, 0, got, &gotCnt, &status);
+	kr = configlist(session, NULL, 0, 0, &got, &gotCnt, &status);
 	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
 		clog("selftest: configlist kr=0x%x status=%d", (unsigned)kr,
 		    status);
 		return 1;
 	}
-	if (!selftest_list_has(got, gotCnt, key, sizeof(key) - 1) ||
-	    !selftest_list_has(got, gotCnt, patkey, sizeof(patkey) - 1)) {
+	if (!selftest_list_has((const uint8_t *)got, gotCnt, key,
+	    sizeof(key) - 1) ||
+	    !selftest_list_has((const uint8_t *)got, gotCnt, patkey,
+	    sizeof(patkey) - 1)) {
 		clog("selftest: configlist is missing a stored key");
 		return 1;
 	}
+	selftest_ool_free(&got, &gotCnt);
 
 	/*
 	 * configset_m / configget_m: set a key through a batch update,
@@ -1089,9 +1272,9 @@ run_selftest(void)
 	 * round-trips through the wire_kvmap encoding.
 	 */
 	{
-		uint8_t		mkey[] = "selftest:multi";
-		uint8_t		mval[] = "configd selftest multi value";
-		uint8_t		reqbuf[256];
+		const char	mkey[] = "selftest:multi";
+		const char	mval[] = "configd selftest multi value";
+		char		reqbuf[256];
 		size_t		reqoff;
 		const uint8_t	*cur, *end;
 		const void	*gk, *gv;
@@ -1099,13 +1282,13 @@ run_selftest(void)
 		int		found = 0;
 
 		reqoff = 0;
-		if (wire_kvmap_put(reqbuf, sizeof(reqbuf), &reqoff, mkey,
+		if (wire_kvmap_put((uint8_t *)reqbuf, sizeof(reqbuf), &reqoff, mkey,
 		    sizeof(mkey) - 1, mval, sizeof(mval) - 1) != 0) {
 			clog("selftest: configset_m payload build failed");
 			return 1;
 		}
 		kr = configset_m(session, reqbuf, (mach_msg_type_number_t)reqoff,
-		    empty, 0, empty, 0, &status);
+		    NULL, 0, NULL, 0, &status);
 		if (kr != KERN_SUCCESS || status != kSCStatusOK) {
 			clog("selftest: configset_m kr=0x%x status=%d",
 			    (unsigned)kr, status);
@@ -1113,14 +1296,13 @@ run_selftest(void)
 		}
 
 		reqoff = 0;
-		if (wire_keylist_put(reqbuf, sizeof(reqbuf), &reqoff, mkey,
+		if (wire_keylist_put((uint8_t *)reqbuf, sizeof(reqbuf), &reqoff, mkey,
 		    sizeof(mkey) - 1) != 0) {
 			clog("selftest: configget_m payload build failed");
 			return 1;
 		}
-		gotCnt = 0;
 		kr = configget_m(session, reqbuf,
-		    (mach_msg_type_number_t)reqoff, empty, 0, got, &gotCnt,
+		    (mach_msg_type_number_t)reqoff, NULL, 0, &got, &gotCnt,
 		    &status);
 		if (kr != KERN_SUCCESS || status != kSCStatusOK) {
 			clog("selftest: configget_m kr=0x%x status=%d",
@@ -1128,8 +1310,8 @@ run_selftest(void)
 			return 1;
 		}
 
-		cur = got;
-		end = got + gotCnt;
+		cur = (const uint8_t *)got;
+		end = cur + gotCnt;
 		while (wire_kvmap_next(&cur, end, &gk, &gkl, &gv, &gvl)) {
 			if (gkl != sizeof(mkey) - 1 ||
 			    memcmp(gk, mkey, gkl) != 0)
@@ -1145,6 +1327,7 @@ run_selftest(void)
 			clog("selftest: configget_m did not return the key");
 			return 1;
 		}
+		selftest_ool_free(&got, &gotCnt);
 	}
 
 	clog("CONFIGD-SELFTEST-OK: in-process config.defs round-trip + "

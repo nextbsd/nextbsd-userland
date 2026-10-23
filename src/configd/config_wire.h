@@ -1,7 +1,7 @@
 /*
  * config_wire.h — the byte encodings configd's batch routines use to
  * carry a list of keys, or a map of key/value pairs, inside a single
- * inline config.defs payload (configd iter 7).
+ * config.defs payload (configd iter 7).
  *
  * Apple's configd serializes a CFArray / CFDictionary into each batch
  * argument; this CF-free port packs them as plain length-prefixed

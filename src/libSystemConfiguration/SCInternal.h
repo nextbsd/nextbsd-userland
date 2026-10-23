@@ -5,7 +5,7 @@
  *
  * Include order matters: "config.h" (the MIG-generated config.defs
  * client header) pulls configd's config_types.h, which #defines the
- * kSCStatus* codes and the xmlData / xmlDataOut wire types. Pulling it
+ * kSCStatus* codes and the xmlData_t / xmlDataOut_t wire types. Pulling it
  * first means the public <SystemConfiguration/SCDynamicStore.h> sees
  * _CONFIG_TYPES_H already defined and skips its own kSCStatus enum, so
  * the two definitions never clash.
@@ -145,16 +145,19 @@ CFPropertyListRef	_SCUnserialize(const void *bytes, CFIndex len);
 
 /*
  * SCD.c — encode a CFArray of CFString keys into configd's wire
- * key-list form ([uint32 LE len][bytes] records). Returns 0 with the
- * byte count in *outLen, or -1 on a bad element / buffer overflow.
- * Shared by the notification watch-set and the multi-get key list.
+ * key-list form ([uint32 LE len][bytes] records), appending to `buf`.
+ * Returns 0, or -1 on a bad element. Shared by the notification
+ * watch-set and the multi-get key list.
  */
-int	_SCEncodeKeyList(CFArrayRef array, uint8_t *buf, size_t cap,
-			 size_t *outLen);
+int	_SCEncodeKeyList(CFArrayRef array, CFMutableDataRef buf);
 
-/* configd's inline config.defs payload bound (config_types.h). */
-#ifndef CONFIG_DATA_MAX
-#define CONFIG_DATA_MAX		8192
-#endif
+/*
+ * SCD.c — append one key record, or one key/value record, in configd's
+ * wire form to `buf`. Return 0, or -1 if the payload would outgrow a
+ * Mach message count.
+ */
+int	_SCAppendKey(CFMutableDataRef buf, const void *key, size_t klen);
+int	_SCAppendKeyValue(CFMutableDataRef buf, const void *key, size_t klen,
+			  const void *val, size_t vlen);
 
 #endif	/* _SC_INTERNAL_H */

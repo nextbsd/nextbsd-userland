@@ -38,10 +38,8 @@ SCDynamicStoreSetNotificationKeys(SCDynamicStoreRef	store,
 				  CFArrayRef		patterns)
 {
 	SCDynamicStorePrivateRef	storePrivate	= (SCDynamicStorePrivateRef)store;
-	uint8_t				keyBuf[CONFIG_DATA_MAX];
-	uint8_t				patternBuf[CONFIG_DATA_MAX];
-	size_t				keyLen		= 0;
-	size_t				patternLen	= 0;
+	CFMutableDataRef		keyBuf;
+	CFMutableDataRef		patternBuf;
 	int				sc_status	= kSCStatusFailed;
 	kern_return_t			kr;
 
@@ -54,16 +52,25 @@ SCDynamicStoreSetNotificationKeys(SCDynamicStoreRef	store,
 		return FALSE;
 	}
 
-	if ((_SCEncodeKeyList(keys, keyBuf, sizeof(keyBuf), &keyLen) != 0) ||
-	    (_SCEncodeKeyList(patterns, patternBuf, sizeof(patternBuf), &patternLen) != 0)) {
+	keyBuf     = CFDataCreateMutable(NULL, 0);
+	patternBuf = CFDataCreateMutable(NULL, 0);
+	if ((keyBuf == NULL) || (patternBuf == NULL) ||
+	    (_SCEncodeKeyList(keys, keyBuf) != 0) ||
+	    (_SCEncodeKeyList(patterns, patternBuf) != 0)) {
+		if (keyBuf != NULL)	CFRelease(keyBuf);
+		if (patternBuf != NULL)	CFRelease(patternBuf);
 		_SCErrorSet(kSCStatusInvalidArgument);
 		return FALSE;
 	}
 
 	kr = notifyset(storePrivate->server,
-		       keyBuf, (mach_msg_type_number_t)keyLen,
-		       patternBuf, (mach_msg_type_number_t)patternLen,
+		       (xmlData_t)CFDataGetBytePtr(keyBuf),
+		       (mach_msg_type_number_t)CFDataGetLength(keyBuf),
+		       (xmlData_t)CFDataGetBytePtr(patternBuf),
+		       (mach_msg_type_number_t)CFDataGetLength(patternBuf),
 		       &sc_status);
+	CFRelease(keyBuf);
+	CFRelease(patternBuf);
 
 	if (kr != KERN_SUCCESS) {
 		_SCErrorSet(kSCStatusFailed);
@@ -80,7 +87,7 @@ CFArrayRef
 SCDynamicStoreCopyNotifiedKeys(SCDynamicStoreRef store)
 {
 	SCDynamicStorePrivateRef	storePrivate	= (SCDynamicStorePrivateRef)store;
-	xmlDataOut			reply;
+	xmlDataOut_t			reply		= NULL;
 	mach_msg_type_number_t		replyLen	= 0;
 	int				sc_status	= kSCStatusFailed;
 	kern_return_t			kr;
@@ -99,7 +106,7 @@ SCDynamicStoreCopyNotifiedKeys(SCDynamicStoreRef store)
 		return NULL;
 	}
 
-	kr = notifychanges(storePrivate->server, reply, &replyLen, &sc_status);
+	kr = notifychanges(storePrivate->server, &reply, &replyLen, &sc_status);
 	if (kr != KERN_SUCCESS) {
 		_SCErrorSet(kSCStatusFailed);
 		return NULL;
@@ -111,12 +118,15 @@ SCDynamicStoreCopyNotifiedKeys(SCDynamicStoreRef store)
 
 	keys = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
 	if (keys == NULL) {
+		if (reply != NULL) {
+			(void) vm_deallocate(mach_task_self(), (vm_address_t)reply, replyLen);
+		}
 		_SCErrorSet(kSCStatusFailed);
 		return NULL;
 	}
 
-	cur = reply;
-	end = reply + replyLen;
+	cur = (const uint8_t *)reply;
+	end = cur + replyLen;
 	while (wire_keylist_next(&cur, end, &keyBytes, &keyLen)) {
 		CFStringRef	keyStr;
 
@@ -128,6 +138,9 @@ SCDynamicStoreCopyNotifiedKeys(SCDynamicStoreRef store)
 			CFArrayAppendValue(keys, keyStr);
 			CFRelease(keyStr);
 		}
+	}
+	if (reply != NULL) {
+		(void) vm_deallocate(mach_task_self(), (vm_address_t)reply, replyLen);
 	}
 
 	_SCErrorSet(kSCStatusOK);

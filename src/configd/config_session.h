@@ -53,9 +53,11 @@ void session_layer_init(mach_port_t port_set);
  * success *port holds a new receive right (already a member of the
  * configd port set, with a no-senders notification armed) and a
  * MACH_MSG_TYPE_MAKE_SEND right has been inserted for the caller to
- * hand to the client. Returns 0, or -1 on failure (nothing leaks).
+ * hand to the client. The session keeps `audit_token`, the client's
+ * kernel-stamped identity from the configopen request, as Apple's
+ * serverSession does. Returns 0, or -1 on failure (nothing leaks).
  */
-int session_open(mach_port_t *port);
+int session_open(mach_port_t *port, const audit_token_t *audit_token);
 
 /*
  * session_close — tear the session bound to `port` down: drop its

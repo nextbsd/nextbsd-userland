@@ -25,7 +25,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "config.h"		/* MIG user stubs + xmlData; pulls config_types.h */
+#include "config.h"		/* MIG user stubs + xmlData_t; pulls config_types.h */
 #include "config_wire.h"	/* wire_keylist_* / wire_kvmap_* batch encodings */
 
 #define SERVICE		"com.apple.SystemConfiguration.configd"
@@ -38,8 +38,8 @@ open_session(mach_port_t server, const char *name)
 	int		status = -1;
 	kern_return_t	kr;
 
-	kr = configopen(server, (uint8_t *)name,
-	    (mach_msg_type_number_t)strlen(name), (uint8_t *)"", 0,
+	kr = configopen(server, name,
+	    (mach_msg_type_number_t)strlen(name), NULL, 0,
 	    &session, &status);
 	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
 		printf("CONFIGD-MULTI-FAIL: configopen(%s) kr=0x%x status=%d\n",
@@ -57,8 +57,8 @@ set_key(mach_port_t session, const char *key, const char *val)
 	int		status = -1;
 	int		newInstance = 0;
 
-	kr = configset(session, (uint8_t *)key,
-	    (mach_msg_type_number_t)strlen(key), (uint8_t *)val,
+	kr = configset(session, key,
+	    (mach_msg_type_number_t)strlen(key), val,
 	    (mach_msg_type_number_t)strlen(val), 0, &newInstance, &status);
 	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
 		printf("CONFIGD-MULTI-FAIL: configset(%s) kr=0x%x status=%d\n",
@@ -75,23 +75,26 @@ get_status(mach_port_t session, const char *key)
 	kern_return_t		kr;
 	int			status = -1;
 	int			newInstance = 0;
-	xmlDataOut		data;
+	xmlDataOut_t		data = NULL;
 	mach_msg_type_number_t	dataCnt = 0;
 
-	kr = configget(session, (uint8_t *)key,
-	    (mach_msg_type_number_t)strlen(key), data, &dataCnt,
+	kr = configget(session, key,
+	    (mach_msg_type_number_t)strlen(key), &data, &dataCnt,
 	    &newInstance, &status);
 	if (kr != KERN_SUCCESS)
 		return -1;
+	if (data != NULL)
+		(void)vm_deallocate(mach_task_self(), (vm_address_t)data,
+		    dataCnt);
 	return status;
 }
 
 /* 1 if the wire_kvmap payload holds `key` with value `val`. */
 static int
-kvmap_check(const uint8_t *buf, size_t len, const char *key, const char *val)
+kvmap_check(const char *buf, size_t len, const char *key, const char *val)
 {
-	const uint8_t	*cur = buf;
-	const uint8_t	*end = buf + len;
+	const uint8_t	*cur = (const uint8_t *)buf;
+	const uint8_t	*end = cur + len;
 	const void	*k, *v;
 	size_t		kl, vl;
 	size_t		klen = strlen(key);
@@ -106,10 +109,10 @@ kvmap_check(const uint8_t *buf, size_t len, const char *key, const char *val)
 
 /* 1 if the wire_keylist payload contains `key`. */
 static int
-keylist_check(const uint8_t *buf, size_t len, const char *key)
+keylist_check(const char *buf, size_t len, const char *key)
 {
-	const uint8_t	*cur = buf;
-	const uint8_t	*end = buf + len;
+	const uint8_t	*cur = (const uint8_t *)buf;
+	const uint8_t	*end = cur + len;
 	const void	*k;
 	size_t		kl;
 	size_t		klen = strlen(key);
@@ -130,7 +133,7 @@ main(void)
 	int			status = -1;
 	uint8_t			req[1024];
 	size_t			off;
-	xmlDataOut		data;
+	xmlDataOut_t		data = NULL;
 	mach_msg_type_number_t	dataCnt = 0;
 
 	kr = bootstrap_look_up(bootstrap_port, SERVICE, &server);
@@ -172,8 +175,9 @@ main(void)
 			    "failed\n");
 			return 1;
 		}
-		kr = configset_m(session, req, (mach_msg_type_number_t)off,
-		    rm, (mach_msg_type_number_t)rmoff, (uint8_t *)"", 0,
+		kr = configset_m(session, (xmlData_t)req,
+		    (mach_msg_type_number_t)off, (xmlData_t)rm,
+		    (mach_msg_type_number_t)rmoff, NULL, 0,
 		    &status);
 	}
 	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
@@ -206,8 +210,8 @@ main(void)
 		return 1;
 	}
 	dataCnt = 0;
-	kr = configget_m(session, req, (mach_msg_type_number_t)off,
-	    (uint8_t *)"", 0, data, &dataCnt, &status);
+	kr = configget_m(session, (xmlData_t)req, (mach_msg_type_number_t)off,
+	    NULL, 0, &data, &dataCnt, &status);
 	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
 		printf("CONFIGD-MULTI-FAIL: configget_m(keys) kr=0x%x "
 		    "status=%d\n", (unsigned)kr, status);
@@ -232,8 +236,8 @@ main(void)
 		return 1;
 	}
 	dataCnt = 0;
-	kr = configget_m(session, (uint8_t *)"", 0, req,
-	    (mach_msg_type_number_t)off, data, &dataCnt, &status);
+	kr = configget_m(session, NULL, 0, (xmlData_t)req,
+	    (mach_msg_type_number_t)off, &data, &dataCnt, &status);
 	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
 		printf("CONFIGD-MULTI-FAIL: configget_m(pattern) kr=0x%x "
 		    "status=%d\n", (unsigned)kr, status);
@@ -266,8 +270,9 @@ main(void)
 			    "failed\n");
 			return 1;
 		}
-		kr = notifyset(session, req, (mach_msg_type_number_t)off,
-		    pat, (mach_msg_type_number_t)patoff, &status);
+		kr = notifyset(session, (xmlData_t)req,
+		    (mach_msg_type_number_t)off, (xmlData_t)pat,
+		    (mach_msg_type_number_t)patoff, &status);
 	}
 	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
 		printf("CONFIGD-MULTI-FAIL: notifyset kr=0x%x status=%d\n",
@@ -281,7 +286,7 @@ main(void)
 		return 1;
 
 	dataCnt = 0;
-	kr = notifychanges(session, data, &dataCnt, &status);
+	kr = notifychanges(session, &data, &dataCnt, &status);
 	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
 		printf("CONFIGD-MULTI-FAIL: notifychanges kr=0x%x status=%d\n",
 		    (unsigned)kr, status);

@@ -42,6 +42,7 @@ struct session {
 	int		in_use;
 	mach_port_t	port;		/* per-session receive right */
 	mach_port_t	notify_port;	/* client notification port, or NULL */
+	audit_token_t	audit_token;	/* client identity, from configopen */
 	struct keyref	*watch;		/* explicit watched keys */
 	size_t		n_watch;
 	size_t		watch_cap;
@@ -201,7 +202,7 @@ session_layer_init(mach_port_t port_set)
 }
 
 int
-session_open(mach_port_t *port)
+session_open(mach_port_t *port, const audit_token_t *audit_token)
 {
 	mach_port_t	sport = MACH_PORT_NULL;
 	mach_port_t	prev = MACH_PORT_NULL;
@@ -263,6 +264,7 @@ session_open(mach_port_t *port)
 	memset(s, 0, sizeof(*s));
 	s->in_use = 1;
 	s->port = sport;
+	s->audit_token = *audit_token;
 	*port = sport;
 	return 0;
 

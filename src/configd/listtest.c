@@ -22,7 +22,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "config.h"		/* MIG user stubs + xmlData; pulls config_types.h */
+#include "config.h"		/* MIG user stubs + xmlData_t; pulls config_types.h */
 
 #define SERVICE		"com.apple.SystemConfiguration.configd"
 
@@ -39,8 +39,8 @@ open_session(mach_port_t server, const char *name)
 	int		status = -1;
 	kern_return_t	kr;
 
-	kr = configopen(server, (uint8_t *)name,
-	    (mach_msg_type_number_t)strlen(name), (uint8_t *)"", 0,
+	kr = configopen(server, name,
+	    (mach_msg_type_number_t)strlen(name), NULL, 0,
 	    &session, &status);
 	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
 		printf("CONFIGD-LIST-FAIL: configopen(%s) kr=0x%x status=%d\n",
@@ -58,8 +58,8 @@ set_key(mach_port_t session, const char *key, const char *val)
 	int		status = -1;
 	int		newInstance = 0;
 
-	kr = configset(session, (uint8_t *)key,
-	    (mach_msg_type_number_t)strlen(key), (uint8_t *)val,
+	kr = configset(session, key,
+	    (mach_msg_type_number_t)strlen(key), val,
 	    (mach_msg_type_number_t)strlen(val), 0, &newInstance, &status);
 	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
 		printf("CONFIGD-LIST-FAIL: configset(%s) kr=0x%x status=%d\n",
@@ -74,7 +74,7 @@ set_key(mach_port_t session, const char *key, const char *val)
  * configlist returns; 1 if `key` is among them.
  */
 static int
-list_has(const uint8_t *list, size_t len, const char *key)
+list_has(const char *list, size_t len, const char *key)
 {
 	size_t klen = strlen(key);
 	size_t off = 0;
@@ -93,16 +93,23 @@ list_has(const uint8_t *list, size_t len, const char *key)
 	return 0;
 }
 
-/* Run a configlist query; returns 0 and fills list/listCnt on success. */
+/*
+ * Run a configlist query; returns 0 and fills list/listCnt on success.
+ * The previous result, if any, is released first.
+ */
 static int
 list_keys(mach_port_t session, const char *key, int isRegex,
-    uint8_t *list, mach_msg_type_number_t *listCnt)
+    xmlDataOut_t *list, mach_msg_type_number_t *listCnt)
 {
 	kern_return_t	kr;
 	int		status = -1;
 
+	if (*list != NULL)
+		(void)vm_deallocate(mach_task_self(), (vm_address_t)*list,
+		    *listCnt);
+	*list = NULL;
 	*listCnt = 0;
-	kr = configlist(session, (uint8_t *)key,
+	kr = configlist(session, key,
 	    (mach_msg_type_number_t)strlen(key), isRegex, list, listCnt,
 	    &status);
 	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
@@ -120,7 +127,7 @@ main(void)
 	mach_port_t		session = MACH_PORT_NULL;
 	kern_return_t		kr;
 	const char		*val = "configd iter 6 list value";
-	xmlDataOut		list;
+	xmlDataOut_t		list = NULL;
 	mach_msg_type_number_t	listCnt = 0;
 
 	kr = bootstrap_look_up(bootstrap_port, SERVICE, &server);
@@ -142,7 +149,7 @@ main(void)
 		return 1;
 
 	/* Prefix query: the three "listtest:" keys, not the outside one. */
-	if (list_keys(session, "listtest:", 0, list, &listCnt) != 0)
+	if (list_keys(session, "listtest:", 0, &list, &listCnt) != 0)
 		return 1;
 	if (!list_has(list, listCnt, KEY_ALPHA) ||
 	    !list_has(list, listCnt, KEY_BETA) ||
@@ -158,7 +165,7 @@ main(void)
 	}
 
 	/* Empty-key query: every key, including the outside one. */
-	if (list_keys(session, "", 0, list, &listCnt) != 0)
+	if (list_keys(session, "", 0, &list, &listCnt) != 0)
 		return 1;
 	if (!list_has(list, listCnt, KEY_ALPHA) ||
 	    !list_has(list, listCnt, KEY_GAMMA) ||
@@ -169,7 +176,7 @@ main(void)
 	}
 
 	/* Regex query: only the keys matching the pattern. */
-	if (list_keys(session, "listtest:(alpha|beta)", 1, list, &listCnt) != 0)
+	if (list_keys(session, "listtest:(alpha|beta)", 1, &list, &listCnt) != 0)
 		return 1;
 	if (!list_has(list, listCnt, KEY_ALPHA) ||
 	    !list_has(list, listCnt, KEY_BETA)) {

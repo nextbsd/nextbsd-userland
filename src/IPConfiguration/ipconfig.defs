@@ -10,16 +10,14 @@
  * appending — never reordering.
  *
  * Changes from Apple's defs:
- *   - the `ServerAuditToken audit_token : audit_token_t` decorator
- *     is dropped — no BSM identity in this port (configd / hwregd
- *     drop it the same way).
  *   - 18 routines that have no real consumer yet are omitted
  *     entirely (iter 5b/6+ adds them when a client materializes —
  *     iter 5a is the demux + worker-thread plumbing, not full ABI).
- *   - xmlData / xmlDataOut / dataOut would be `^ array []` (OOL) on
- *     Apple — broken in this port's kernel (the configd / hwreg.defs
- *     ports document the same issue) — but the two iter-5a routines
- *     don't use OOL data, so the question doesn't arise here.
+ * The two vendored routines are Apple's as-is: neither takes OOL data
+ * nor carries a `ServerAuditToken audit_token : audit_token_t`. A
+ * routine vendored later keeps Apple's `^ array []` xmlData /
+ * xmlDataOut / dataOut types and its audit-token decorator, as
+ * config.defs does.
  *
  * The server demux _ipconfig_server() runs inside ipconfigd's
  * mach_service_thread receive loop. Per-routine implementations are

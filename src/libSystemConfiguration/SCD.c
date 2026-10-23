@@ -20,7 +20,7 @@
  */
 
 #include "SCInternal.h"
-#include "config_wire.h"		/* wire_keylist_put — _SCEncodeKeyList */
+#include "config_wire.h"		/* wire_*_put — _SCAppendKey / _SCAppendKeyValue */
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -167,10 +167,10 @@ _SCUnserialize(const void *bytes, CFIndex len)
 	CFDataRef		xml;
 
 	/*
-	 * The bytes came back inline in a config.defs reply (a caller
-	 * stack buffer) — wrap them without copying; CFPropertyList
-	 * deep-copies whatever it parses, so the buffer can be reused
-	 * the moment this returns.
+	 * The bytes came back out-of-line in a config.defs reply — wrap
+	 * them without copying; CFPropertyList deep-copies whatever it
+	 * parses, so the caller can vm_deallocate() the reply the moment
+	 * this returns.
 	 */
 	xml = CFDataCreateWithBytesNoCopy(NULL, bytes, len, kCFAllocatorNull);
 	if (xml == NULL) {
@@ -195,14 +195,62 @@ _SCUnserialize(const void *bytes, CFIndex len)
 	return obj;
 }
 
+/*
+ * Grow `buf` by `len` bytes and return the offset the new bytes start
+ * at, or -1 if the payload would outgrow a Mach message count.
+ */
+static CFIndex
+__SCGrow(CFMutableDataRef buf, size_t len)
+{
+	CFIndex	off	= CFDataGetLength(buf);
+
+	if (len > (size_t)UINT32_MAX - (size_t)off) {
+		return -1;
+	}
+	CFDataIncreaseLength(buf, (CFIndex)len);
+	return off;
+}
+
 int
-_SCEncodeKeyList(CFArrayRef array, uint8_t *buf, size_t cap, size_t *outLen)
+_SCAppendKey(CFMutableDataRef buf, const void *key, size_t klen)
+{
+	CFIndex	start	= __SCGrow(buf, sizeof(uint32_t) + klen);
+	size_t	off;
+
+	if (start < 0) {
+		return -1;
+	}
+	off = (size_t)start;
+	return wire_keylist_put(CFDataGetMutableBytePtr(buf),
+				(size_t)CFDataGetLength(buf), &off, key, klen);
+}
+
+int
+_SCAppendKeyValue(CFMutableDataRef buf, const void *key, size_t klen,
+		  const void *val, size_t vlen)
+{
+	CFIndex	start;
+	size_t	off;
+
+	if (vlen > SIZE_MAX - 2 * sizeof(uint32_t) - klen) {
+		return -1;
+	}
+	start = __SCGrow(buf, 2 * sizeof(uint32_t) + klen + vlen);
+	if (start < 0) {
+		return -1;
+	}
+	off = (size_t)start;
+	return wire_kvmap_put(CFDataGetMutableBytePtr(buf),
+			      (size_t)CFDataGetLength(buf), &off,
+			      key, klen, val, vlen);
+}
+
+int
+_SCEncodeKeyList(CFArrayRef array, CFMutableDataRef buf)
 {
 	CFIndex	i;
 	CFIndex	n;
-	size_t	off	= 0;
 
-	*outLen = 0;
 	if (array == NULL) {
 		return 0;
 	}
@@ -225,15 +273,13 @@ _SCEncodeKeyList(CFArrayRef array, uint8_t *buf, size_t cap, size_t *outLen)
 		if (keyData == NULL) {
 			return -1;
 		}
-		rc = wire_keylist_put(buf, cap, &off,
-				      CFDataGetBytePtr(keyData),
-				      (size_t)CFDataGetLength(keyData));
+		rc = _SCAppendKey(buf, CFDataGetBytePtr(keyData),
+				  (size_t)CFDataGetLength(keyData));
 		CFRelease(keyData);
 		if (rc != 0) {
 			return -1;
 		}
 	}
 
-	*outLen = off;
 	return 0;
 }
