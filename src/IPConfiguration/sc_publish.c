@@ -563,3 +563,24 @@ sc_publish_close(struct sc_publish *p)
 		CFRelease(p->store);
 	free(p);
 }
+
+/*
+ * Apple's unblock_startup(): the key's value is the key itself. A
+ * plain SetValue, not a session-temporary one, so it stays in the store
+ * after this session closes.
+ */
+int
+sc_publish_startup_ready(void)
+{
+	SCDynamicStoreRef store;
+	CFStringRef key = CFSTR("Plugin:IPConfiguration");
+	Boolean ok;
+
+	store = SCDynamicStoreCreate(NULL, CFSTR("ipconfigd-startup"),
+	    NULL, NULL);
+	if (store == NULL)
+		return (-1);
+	ok = SCDynamicStoreSetValue(store, key, key);
+	CFRelease(store);
+	return (ok ? 0 : -1);
+}

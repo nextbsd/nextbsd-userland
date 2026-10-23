@@ -97,4 +97,12 @@ int	sc_publish_remove(struct sc_publish *p, const char *ifname);
 /* Close the session. Safe to pass NULL. */
 void	sc_publish_close(struct sc_publish *p);
 
+/*
+ * Set Plugin:IPConfiguration, Apple's startup-complete key, which
+ * `ipconfig waitall` watches (#59). Opens and closes its own session —
+ * it is set once per daemon run, from whichever thread settles startup.
+ * Returns 0 on success.
+ */
+int	sc_publish_startup_ready(void);
+
 #endif /* _IPCFG_SC_PUBLISH_H_ */

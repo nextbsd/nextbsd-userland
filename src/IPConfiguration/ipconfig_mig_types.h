@@ -28,11 +28,19 @@ typedef char	InterfaceName[IF_NAMESIZE];
 typedef uint32_t	ip_address_t;
 
 /*
+ * ipconfig.defs' out-of-line payloads, as Apple's ipconfig_types.h
+ * declares them: a serialized property list in (xmlData_t), one out
+ * (xmlDataOut_t), and raw bytes out (dataOut_t).
+ */
+typedef uint8_t *	xmlData_t;
+typedef uint8_t *	xmlDataOut_t;
+typedef uint8_t *	dataOut_t;
+
+/*
  * Apple's enum is a 21-value status code (success / permission-denied /
- * interface-does-not-exist / ...). iter 5a uses three of them;
- * preserve the numeric values + names so a later iter can append
- * without breaking wire compat. The enum is copied from
- * bootp/bootplib/ipconfig_types.h.
+ * interface-does-not-exist / ...). Preserve the numeric values + names
+ * so a later routine can append without breaking wire compat. The enum
+ * is copied from bootp/bootplib/ipconfig_types.h.
  */
 typedef enum {
 	ipconfig_status_success_e			= 0,

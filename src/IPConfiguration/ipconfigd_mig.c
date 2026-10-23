@@ -2,8 +2,9 @@
  * ipconfigd_mig.c — server-side bodies for ipconfig.defs.
  *
  * The MIG-generated demux _ipconfig_server() (in ipconfigServer.c)
- * calls these per routine. Both iter-5a routines are read-only and
- * pull live data from bound_state.{c,h}.
+ * calls these per routine. The read-only routines pull live data from
+ * bound_state.{c,h}; ipconfig_set drives the DHCP workers through the
+ * hooks in ipconfigd.h.
  *
  * Apple's per-routine bodies live inline in IPConfiguration.bproj/
  * ipconfigd.c (10k+ LOC of plugin shell); we keep ours in a small
@@ -12,15 +13,76 @@
 
 #include "bound_state.h"
 #include "ipconfig_mig_types.h"
+#include "ipconfigd.h"
+#include "sc_link_watch.h"		/* link_active_in_store() */
 
 #include <mach/mach.h>
 #include "ipconfigServer.h"		/* MIG-emitted prototypes */
 
+#include <CoreFoundation/CoreFoundation.h>
+
+#include <net/if.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+#include <stdbool.h>
 #include <string.h>
 
 /*
- * iter 5a: scalar out, no input. Returns 0 or 1 depending on
- * whether ipconfigd has any interface BOUND.
+ * The SCSchema strings ipconfig_set's method dictionary and the summary
+ * use. Apple takes them from SCSchemaDefinitions.h; ours carries only
+ * the subset other daemons needed so far, so spell them here.
+ */
+#define	kIPCfgEntIPv4		CFSTR("IPv4")
+#define	kIPCfgEntIPv6		CFSTR("IPv6")
+#define	kIPCfgConfigMethod	CFSTR("ConfigMethod")
+#define	kIPCfgMethodDHCP	CFSTR("DHCP")
+#define	kIPCfgMethodManual	CFSTR("Manual")
+#define	kIPCfgMethodINFORM	CFSTR("INFORM")
+#define	kIPCfgMethodBOOTP	CFSTR("BOOTP")
+#define	kIPCfgMethodLinkLocal	CFSTR("LinkLocal")
+#define	kIPCfgMethodFailover	CFSTR("Failover")
+
+/* Apple's <mach/vm_statistics.h> value; libmach's headers lack it. */
+#ifndef VM_FLAGS_ANYWHERE
+#define	VM_FLAGS_ANYWHERE	0x0001
+#endif
+
+/*
+ * Copy `len` bytes into a fresh vm_allocate()d buffer for an
+ * out-of-line reply argument. ipconfig.defs marks those `dealloc`, so
+ * the kernel unmaps the buffer from ipconfigd as the reply is sent
+ * (configd's ool_reply()). Returns false if it could not be allocated.
+ */
+static bool
+ool_reply(const void *bytes, size_t len, uint8_t **out,
+    mach_msg_type_number_t *outCnt)
+{
+	vm_address_t addr = 0;
+
+	*out = NULL;
+	*outCnt = 0;
+	if (len == 0)
+		return (true);
+	if (vm_allocate(mach_task_self(), &addr, len, VM_FLAGS_ANYWHERE) !=
+	    KERN_SUCCESS)
+		return (false);
+	(void)memcpy((void *)addr, bytes, len);
+	*out = (uint8_t *)addr;
+	*outCnt = (mach_msg_type_number_t)len;
+	return (true);
+}
+
+/* MIG's if_name may fill all 16 bytes: copy out with a forced NUL. */
+static void
+ifname_from_mig(char ifname[IF_NAMESIZE], const InterfaceName name)
+{
+	(void)memset(ifname, 0, IF_NAMESIZE);
+	(void)memcpy(ifname, name, IF_NAMESIZE - 1);
+}
+
+/*
+ * Scalar out, no input: how many interfaces are BOUND.
  */
 kern_return_t
 _ipconfig_if_count(mach_port_t server, int *count)
@@ -31,7 +93,7 @@ _ipconfig_if_count(mach_port_t server, int *count)
 }
 
 /*
- * iter 5a: input if_name + scalar out + status. Returns the BOUND
+ * Input if_name + scalar out + status. Returns the BOUND
  * IPv4 address as a network-order packed uint32 (matches Apple's
  * ip_address_t wire encoding). Unknown / unbound interfaces return
  * ipconfig_status_no_server_e.
@@ -48,8 +110,7 @@ _ipconfig_if_addr(mach_port_t server, InterfaceName name,
 	uint32_t a = 0;
 
 	(void)server;
-	(void)memset(ifname, 0, sizeof(ifname));
-	(void)memcpy(ifname, name, sizeof(ifname) - 1);
+	ifname_from_mig(ifname, name);
 
 	if (bound_state_get_addr(ifname, &a)) {
 		*addr = a;
@@ -58,5 +119,333 @@ _ipconfig_if_addr(mach_port_t server, InterfaceName name,
 		*addr = 0;
 		*status = ipconfig_status_no_server_e;
 	}
+	return (KERN_SUCCESS);
+}
+
+/*
+ * Re-encode option `code` from `lease` in DHCP wire form (RFC 2132):
+ * what Apple's service_get_option() copies out of the saved ACK. We keep
+ * the parsed lease rather than the packet, so only the options
+ * struct dhcp_lease carries can be answered. Returns the byte count, or
+ * 0 if the lease has no such option.
+ */
+static mach_msg_type_number_t
+lease_option(const struct dhcp_lease *lease, int code, uint8_t *out,
+    size_t outsz)
+{
+	uint32_t be;
+	unsigned i;
+
+	switch (code) {
+	case DHCP_OPT_SUBNET_MASK:
+		(void)memcpy(out, &lease->netmask, 4);
+		return (4);
+	case DHCP_OPT_ROUTER:
+		if (lease->router.s_addr == INADDR_ANY)
+			return (0);
+		(void)memcpy(out, &lease->router, 4);
+		return (4);
+	case DHCP_OPT_DNS_SERVER:
+		for (i = 0; i < lease->dns_count && (i + 1) * 4 <= outsz; i++)
+			(void)memcpy(out + i * 4, &lease->dns[i], 4);
+		return (i * 4);
+	case DHCP_OPT_HOST_NAME:
+		if (lease->host_name_len == 0 || lease->host_name_len > outsz)
+			return (0);
+		(void)memcpy(out, lease->host_name, lease->host_name_len);
+		return (lease->host_name_len);
+	case DHCP_OPT_LEASE_TIME:
+		be = htonl(lease->lease_time);
+		(void)memcpy(out, &be, 4);
+		return (4);
+	case DHCP_OPT_SERVER_ID:
+		if (lease->server.s_addr == INADDR_ANY)
+			return (0);
+		(void)memcpy(out, &lease->server, 4);
+		return (4);
+	default:
+		return (0);
+	}
+}
+
+/*
+ * One option from one interface's lease (Apple's get_if_option()). An
+ * empty name means "whichever service is in charge": Apple walks every
+ * interface; we answer from the primary, the only one whose options
+ * (router, DNS) are actually in effect.
+ */
+kern_return_t
+_ipconfig_get_option(mach_port_t server, InterfaceName name, int option_code,
+    dataOut_t *option_data, mach_msg_type_number_t *option_dataCnt,
+    ipconfig_status_t *status)
+{
+	char ifname[IF_NAMESIZE];
+	struct dhcp_lease lease;
+	uint8_t buf[DHCP_LEASE_MAX_HOSTNAME];
+	mach_msg_type_number_t n;
+
+	(void)server;
+	*option_data = NULL;
+	*option_dataCnt = 0;
+	ifname_from_mig(ifname, name);
+
+	if (ifname[0] != '\0') {
+		if (!bound_state_get_lease(ifname, &lease)) {
+			*status = ipconfig_status_interface_does_not_exist_e;
+			return (KERN_SUCCESS);
+		}
+		n = lease_option(&lease, option_code, buf,
+		    sizeof(buf));
+	} else {
+		n = 0;
+		if (bound_state_primary(ifname, sizeof(ifname)) &&
+		    bound_state_get_lease(ifname, &lease))
+			n = lease_option(&lease, option_code, buf,
+			    sizeof(buf));
+		if (n == 0 && bound_state_count() == 0) {
+			*status = ipconfig_status_interface_does_not_exist_e;
+			return (KERN_SUCCESS);
+		}
+	}
+	if (n == 0)
+		*status = ipconfig_status_not_found_e;
+	else if (!ool_reply(buf, n, option_data, option_dataCnt))
+		*status = ipconfig_status_allocation_failed_e;
+	else
+		*status = ipconfig_status_success_e;
+	return (KERN_SUCCESS);
+}
+
+/*
+ * `ipconfig set <if> <method>`. Root only, as on Apple. The method
+ * dictionary is Apple's, so the client is unchanged when the other
+ * methods arrive: DHCP and NONE are served today; MANUAL, INFORM and
+ * BOOTP need ipconfigd's static service type (#58) and LinkLocal,
+ * Failover and the IPv6 methods have no service behind them yet, so
+ * they answer operation_not_supported.
+ */
+kern_return_t
+_ipconfig_set(mach_port_t server, InterfaceName name, xmlData_t method_data,
+    mach_msg_type_number_t method_dataCnt, ipconfig_status_t *status,
+    audit_token_t audit_token)
+{
+	char ifname[IF_NAMESIZE];
+	CFDataRef data;
+	CFPropertyListRef plist = NULL;
+	CFDictionaryRef dict;
+	CFTypeRef v4, v6, method;
+	uint32_t euid = (uint32_t)-1;
+
+	(void)server;
+	ifname_from_mig(ifname, name);
+
+	audit_token_to_au32(audit_token, NULL, &euid, NULL, NULL, NULL, NULL,
+	    NULL, NULL);
+	if (euid != 0) {
+		*status = ipconfig_status_permission_denied_e;
+		goto done;
+	}
+
+	/* No method data is NONE (Apple's ipconfig_method_none_e). */
+	if (method_dataCnt == 0) {
+		*status = ipconfigd_set_none(ifname);
+		goto done;
+	}
+
+	data = CFDataCreateWithBytesNoCopy(NULL, method_data, method_dataCnt,
+	    kCFAllocatorNull);
+	if (data != NULL) {
+		plist = CFPropertyListCreateWithData(NULL, data,
+		    kCFPropertyListImmutable, NULL, NULL);
+		CFRelease(data);
+	}
+	if (plist == NULL || CFGetTypeID(plist) != CFDictionaryGetTypeID()) {
+		*status = ipconfig_status_invalid_parameter_e;
+		goto done;
+	}
+
+	/*
+	 * Apple's method_info_from_xml_data(): an IPv4 sub-dictionary wins,
+	 * then IPv6; an empty one is NONE-V4 / NONE-V6. Otherwise the
+	 * dictionary itself is the IPv4 method.
+	 */
+	dict = plist;
+	v4 = CFDictionaryGetValue(dict, kIPCfgEntIPv4);
+	v6 = CFDictionaryGetValue(dict, kIPCfgEntIPv6);
+	if (v4 != NULL || v6 != NULL) {
+		/*
+		 * NONE-V4, NONE-V6 and the IPv6 methods. One worker runs
+		 * DHCPv4 and SLAAC together here, so neither family can be
+		 * switched on its own yet.
+		 */
+		*status = ipconfig_status_operation_not_supported_e;
+		goto done;
+	}
+	method = CFDictionaryGetValue(dict, kIPCfgConfigMethod);
+	if (method == NULL || CFGetTypeID(method) != CFStringGetTypeID()) {
+		*status = ipconfig_status_invalid_parameter_e;
+	} else if (CFEqual(method, kIPCfgMethodDHCP)) {
+		*status = ipconfigd_set_dhcp(ifname);
+	} else if (CFEqual(method, kIPCfgMethodManual) ||
+	    CFEqual(method, kIPCfgMethodINFORM) ||
+	    CFEqual(method, kIPCfgMethodBOOTP) ||
+	    CFEqual(method, kIPCfgMethodLinkLocal) ||
+	    CFEqual(method, kIPCfgMethodFailover)) {
+		*status = ipconfig_status_operation_not_supported_e;
+	} else {
+		*status = ipconfig_status_invalid_parameter_e;
+	}
+
+done:
+	if (plist != NULL)
+		CFRelease(plist);
+	/* The out-of-line argument is ours once we return KERN_SUCCESS. */
+	if (method_data != NULL && method_dataCnt != 0)
+		(void)vm_deallocate(mach_task_self(),
+		    (vm_address_t)(uintptr_t)method_data, method_dataCnt);
+	return (KERN_SUCCESS);
+}
+
+static void
+dict_set_cstr(CFMutableDictionaryRef d, CFStringRef key, const char *s)
+{
+	CFStringRef v;
+
+	v = CFStringCreateWithCString(NULL, s, kCFStringEncodingUTF8);
+	if (v != NULL) {
+		CFDictionarySetValue(d, key, v);
+		CFRelease(v);
+	}
+}
+
+static void
+dict_set_addr(CFMutableDictionaryRef d, CFStringRef key, struct in_addr a,
+    bool as_array)
+{
+	char buf[INET_ADDRSTRLEN];
+	CFStringRef v;
+	CFArrayRef arr;
+
+	(void)inet_ntop(AF_INET, &a, buf, sizeof(buf));
+	v = CFStringCreateWithCString(NULL, buf, kCFStringEncodingASCII);
+	if (v == NULL)
+		return;
+	if (as_array) {
+		arr = CFArrayCreate(NULL, (const void **)&v, 1,
+		    &kCFTypeArrayCallBacks);
+		if (arr != NULL) {
+			CFDictionarySetValue(d, key, arr);
+			CFRelease(arr);
+		}
+	} else {
+		CFDictionarySetValue(d, key, v);
+	}
+	CFRelease(v);
+}
+
+/*
+ * The IPv4 DHCP service summary — the subset of Apple's
+ * ServiceCopySummary() keys we have state for.
+ */
+static CFDictionaryRef
+dhcp_service_summary(const char *ifname)
+{
+	CFMutableDictionaryRef svc, dhcp;
+	struct dhcp_lease lease;
+	bool bound;
+
+	svc = CFDictionaryCreateMutable(NULL, 0,
+	    &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+	if (svc == NULL)
+		return (NULL);
+	CFDictionarySetValue(svc, kIPCfgConfigMethod, kIPCfgMethodDHCP);
+	bound = bound_state_get_lease(ifname, &lease);
+	CFDictionarySetValue(svc, CFSTR("IsPublished"),
+	    bound ? kCFBooleanTrue : kCFBooleanFalse);
+	if (bound) {
+		dict_set_addr(svc, CFSTR("Addresses"), lease.addr, true);
+		dict_set_addr(svc, CFSTR("SubnetMasks"), lease.netmask, true);
+		if (lease.router.s_addr != INADDR_ANY)
+			dict_set_addr(svc, CFSTR("Router"), lease.router,
+			    false);
+		dhcp = CFDictionaryCreateMutable(NULL, 0,
+		    &kCFTypeDictionaryKeyCallBacks,
+		    &kCFTypeDictionaryValueCallBacks);
+		if (dhcp != NULL) {
+			dict_set_cstr(dhcp, CFSTR("State"), "BOUND");
+			CFDictionarySetValue(svc, CFSTR("DHCP"), dhcp);
+			CFRelease(dhcp);
+		}
+	}
+	return (svc);
+}
+
+/*
+ * `ipconfig getsummary <if>` — Apple's IFStateCopySummary() shape:
+ * an IPv4 array of service summaries, link status and interface type.
+ * Unknown interfaces (and loopback, which ipconfigd never manages)
+ * answer interface_does_not_exist, as Apple's do.
+ */
+kern_return_t
+_ipconfig_get_summary(mach_port_t server, InterfaceName name,
+    xmlDataOut_t *state, mach_msg_type_number_t *stateCnt,
+    ipconfig_status_t *status, audit_token_t audit_token)
+{
+	char ifname[IF_NAMESIZE];
+	CFMutableDictionaryRef summary;
+	CFDictionaryRef svc;
+	CFArrayRef services;
+	CFDataRef data;
+
+	(void)server;
+	(void)audit_token;	/* Apple gates only the private Wi-Fi keys */
+	*state = NULL;
+	*stateCnt = 0;
+	ifname_from_mig(ifname, name);
+
+	if (ifname[0] == '\0' || if_nametoindex(ifname) == 0 ||
+	    iface_rank(ifname) == IFRANK_NEVER) {
+		*status = ipconfig_status_interface_does_not_exist_e;
+		return (KERN_SUCCESS);
+	}
+
+	summary = CFDictionaryCreateMutable(NULL, 0,
+	    &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+	if (summary == NULL) {
+		*status = ipconfig_status_allocation_failed_e;
+		return (KERN_SUCCESS);
+	}
+	if (ipconfigd_dhcp_active(ifname) || bound_state_is_bound(ifname)) {
+		svc = dhcp_service_summary(ifname);
+		if (svc != NULL) {
+			services = CFArrayCreate(NULL, (const void **)&svc, 1,
+			    &kCFTypeArrayCallBacks);
+			if (services != NULL) {
+				CFDictionarySetValue(summary, kIPCfgEntIPv4,
+				    services);
+				CFRelease(services);
+			}
+			CFRelease(svc);
+		}
+	}
+	/* Apple: LinkStatusActive when up; the Link entity's Active if not. */
+	if (link_active_in_store(ifname))
+		CFDictionarySetValue(summary, CFSTR("LinkStatusActive"),
+		    kCFBooleanTrue);
+	else
+		CFDictionarySetValue(summary, CFSTR("Active"), kCFBooleanFalse);
+	dict_set_cstr(summary, CFSTR("InterfaceType"),
+	    iface_rank(ifname) == IFRANK_WIRELESS ? "WiFi" : "Ethernet");
+
+	data = CFPropertyListCreateData(NULL, summary,
+	    kCFPropertyListBinaryFormat_v1_0, 0, NULL);
+	CFRelease(summary);
+	if (data == NULL || !ool_reply(CFDataGetBytePtr(data),
+	    (size_t)CFDataGetLength(data), state, stateCnt))
+		*status = ipconfig_status_allocation_failed_e;
+	else
+		*status = ipconfig_status_success_e;
+	if (data != NULL)
+		CFRelease(data);
 	return (KERN_SUCCESS);
 }

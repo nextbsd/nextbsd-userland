@@ -96,6 +96,7 @@
 #include "apply_lease_v6.h"
 #include "bound_state.h"
 #include "dhcp_discover.h"
+#include "ipconfigd.h"
 #include "lease_loop.h"
 #include "mach_service.h"
 #include "ra_listen.h"
@@ -141,10 +142,25 @@ struct dhcp_worker {
 	pthread_t		tid;
 	volatile sig_atomic_t	stop;		/* link went down: unwind */
 	uint32_t		lease_cap_secs;
+	bool			ready;		/* bound or given up: startup */
 };
 
 static pthread_mutex_t	g_workers_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct dhcp_worker g_workers[BOUND_MAX_IF];
+
+/*
+ * Interfaces held by `ipconfig set <if> NONE` (#59): dhcp_worker_start()
+ * refuses them, so a link flap does not quietly re-DHCP an interface the
+ * administrator switched off. In memory only, like Apple's `ipconfig
+ * set`. Guarded by g_workers_lock.
+ */
+static char		g_held[BOUND_MAX_IF][IFNAMSIZ];
+
+/* main()'s IPCONFIGD_FAST_LEASE cap, for workers started by `ipconfig set`. */
+static uint32_t		g_lease_cap_secs;
+
+/* Plugin:IPConfiguration published (one-shot); guarded by g_workers_lock. */
+static bool		g_startup_done;
 
 static void
 on_signal(int sig)
@@ -236,6 +252,73 @@ enumerate_interfaces(void)
 	freeifaddrs(ifa);
 	xlog("interface scan: %d records (%d AF_LINK)", total, with_link);
 	return (total);
+}
+
+/*
+ * Plugin:IPConfiguration — Apple's "IPConfiguration has finished
+ * starting up" key, which `ipconfig waitall` blocks on (#59). Apple's
+ * all_services_ready() sets it once every configured service is ready,
+ * i.e. has either configured its address or given up. Ours: once no
+ * DHCP worker is still acquiring. One-shot, like Apple's; the key
+ * outlives the session that set it.
+ *
+ * Caller must not hold g_workers_lock.
+ */
+static void
+startup_check(void)
+{
+	bool all_ready = true;
+	int i;
+
+	pthread_mutex_lock(&g_workers_lock);
+	if (g_startup_done) {
+		pthread_mutex_unlock(&g_workers_lock);
+		return;
+	}
+	for (i = 0; i < BOUND_MAX_IF; i++) {
+		if (g_workers[i].active && !g_workers[i].ready)
+			all_ready = false;
+	}
+	if (all_ready)
+		g_startup_done = true;
+	pthread_mutex_unlock(&g_workers_lock);
+
+	if (all_ready) {
+		if (sc_publish_startup_ready() == 0)
+			xlog("startup complete: published Plugin:IPConfiguration");
+		else
+			xlog("startup complete: Plugin:IPConfiguration publish "
+			    "failed");
+	}
+}
+
+/* `ifname`'s worker has configured IPv4; re-check startup. */
+static void
+startup_mark_ready(const char *ifname)
+{
+	int i;
+
+	pthread_mutex_lock(&g_workers_lock);
+	for (i = 0; i < BOUND_MAX_IF; i++) {
+		if (g_workers[i].active &&
+		    strcmp(g_workers[i].ifname, ifname) == 0)
+			g_workers[i].ready = true;
+	}
+	pthread_mutex_unlock(&g_workers_lock);
+	startup_check();
+}
+
+/* Caller holds g_workers_lock. Index of `ifname` in g_held, or -1. */
+static int
+held_locked(const char *ifname)
+{
+	int i;
+
+	for (i = 0; i < BOUND_MAX_IF; i++) {
+		if (g_held[i][0] != '\0' && strcmp(g_held[i], ifname) == 0)
+			return (i);
+	}
+	return (-1);
 }
 
 /*
@@ -371,6 +454,9 @@ dhcp_run_on_interface(const char *ifname, uint32_t lease_cap_secs,
 		(void)sc_publish_update_primary(pub);
 	resolv_conf_sync();
 
+	/* IPv4 is configured: this service no longer holds up `waitall`. */
+	startup_mark_ready(ifname);
+
 	/*
 	 * iter 7a: solicit + listen for one RA, derive a SLAAC address,
 	 * install it + the v6 default route, and publish
@@ -478,6 +564,8 @@ dhcp_worker_main(void *arg)
 	pthread_mutex_unlock(&g_workers_lock);
 
 	xlog("%s: DHCP worker exited", ifname);
+	/* A worker that gave up without binding is "ready" too (Apple). */
+	startup_check();
 	return (NULL);
 }
 
@@ -520,6 +608,10 @@ dhcp_worker_start(const char *ifname, uint32_t lease_cap_secs)
 	int i, rc;
 
 	pthread_mutex_lock(&g_workers_lock);
+	if (held_locked(ifname) >= 0) {
+		pthread_mutex_unlock(&g_workers_lock);
+		return (false);		/* `ipconfig set <if> NONE` */
+	}
 	for (i = 0; i < BOUND_MAX_IF; i++) {
 		if (g_workers[i].active &&
 		    strcmp(g_workers[i].ifname, ifname) == 0) {
@@ -541,6 +633,7 @@ dhcp_worker_start(const char *ifname, uint32_t lease_cap_secs)
 	}
 	w->active = true;
 	w->stop = 0;
+	w->ready = false;
 	w->lease_cap_secs = lease_cap_secs;
 	(void)strlcpy(w->ifname, ifname, sizeof(w->ifname));
 	pthread_mutex_unlock(&g_workers_lock);
@@ -607,6 +700,109 @@ on_link_departed(const char *ifname)
 		sc_publish_close(pub);
 	}
 	resolv_conf_sync();
+}
+
+/*
+ * `ipconfig set` hooks (#59) — see ipconfigd.h. Called on the Mach
+ * service thread. Neither blocks on a worker: NONE only sets the
+ * worker's stop flag, and its own thread does the teardown, exactly as
+ * for a link-down.
+ */
+static ipconfig_status_t
+set_check_ifname(const char *ifname)
+{
+	if (ifname[0] == '\0' || if_nametoindex(ifname) == 0)
+		return (ipconfig_status_interface_does_not_exist_e);
+	if (strncmp(ifname, "lo", 2) == 0)
+		return (ipconfig_status_invalid_operation_e);
+	return (ipconfig_status_success_e);
+}
+
+ipconfig_status_t
+ipconfigd_set_dhcp(const char *ifname)
+{
+	ipconfig_status_t status;
+	bool stopping = false;
+	int i;
+
+	status = set_check_ifname(ifname);
+	if (status != ipconfig_status_success_e)
+		return (status);
+
+	pthread_mutex_lock(&g_workers_lock);
+	i = held_locked(ifname);
+	if (i >= 0)
+		g_held[i][0] = '\0';
+	for (i = 0; i < BOUND_MAX_IF; i++) {
+		if (g_workers[i].active && g_workers[i].stop &&
+		    strcmp(g_workers[i].ifname, ifname) == 0)
+			stopping = true;
+	}
+	pthread_mutex_unlock(&g_workers_lock);
+
+	/*
+	 * A NONE that is still unwinding owns the slot, so a worker cannot
+	 * be started over it yet; say so rather than silently not starting.
+	 */
+	if (stopping)
+		return (ipconfig_status_resource_unavailable_e);
+
+	xlog("set(%s) DHCP", ifname);
+	if (iface_bring_up(ifname) != 0)
+		xlog("set(%s) DHCP — could not bring up: %s", ifname,
+		    strerror(errno));
+	else if (link_active_in_store(ifname) &&
+	    dhcp_worker_start(ifname, g_lease_cap_secs))
+		xlog("set(%s) DHCP — started DHCP worker", ifname);
+	return (ipconfig_status_success_e);
+}
+
+ipconfig_status_t
+ipconfigd_set_none(const char *ifname)
+{
+	ipconfig_status_t status;
+	int i;
+
+	status = set_check_ifname(ifname);
+	if (status != ipconfig_status_success_e)
+		return (status);
+
+	pthread_mutex_lock(&g_workers_lock);
+	if (held_locked(ifname) < 0) {
+		for (i = 0; i < BOUND_MAX_IF; i++) {
+			if (g_held[i][0] == '\0') {
+				(void)strlcpy(g_held[i], ifname,
+				    sizeof(g_held[i]));
+				break;
+			}
+		}
+		if (i == BOUND_MAX_IF)
+			status = ipconfig_status_resource_unavailable_e;
+	}
+	pthread_mutex_unlock(&g_workers_lock);
+	if (status != ipconfig_status_success_e)
+		return (status);
+
+	xlog("set(%s) NONE", ifname);
+	if (dhcp_worker_stop(ifname))
+		xlog("set(%s) NONE — unwinding its DHCP worker", ifname);
+	return (ipconfig_status_success_e);
+}
+
+bool
+ipconfigd_dhcp_active(const char *ifname)
+{
+	bool hit = false;
+	int i;
+
+	pthread_mutex_lock(&g_workers_lock);
+	for (i = 0; i < BOUND_MAX_IF; i++) {
+		if (g_workers[i].active && !g_workers[i].stop &&
+		    strcmp(g_workers[i].ifname, ifname) == 0)
+			hit = true;
+	}
+	pthread_mutex_unlock(&g_workers_lock);
+	return (hit);
 }
 
 /*
@@ -744,6 +940,7 @@ main(int argc, char **argv)
 	    "IPv6 RA/SLAAC + link-state DHCP trigger)");
 
 	lease_cap_secs = read_lease_cap_env();
+	g_lease_cap_secs = lease_cap_secs;
 
 	/*
 	 * sa_flags = 0 — system calls are NOT auto-restarted on
@@ -807,6 +1004,8 @@ main(int argc, char **argv)
 			    "watch", ifname, strerror(errno));
 	} else {
 		xlog("no Ethernet at startup; will DHCP when one links up");
+		/* Nothing to configure: don't hold up `ipconfig waitall`. */
+		startup_check();
 	}
 
 	if (sc_link_watch_start(on_link_event, lease_cap_secs) != 0)
