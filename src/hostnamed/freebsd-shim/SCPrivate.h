@@ -5,8 +5,10 @@
  * real header lives in SystemConfiguration.framework's private
  * include tree; we ship the small surface set-hostname.c uses
  * (_SC_string_to_sockaddr, _SC_cfstring_to_cstring,
- * _SC_CFStringIsValidDNSName) plus the notification-token constant
- * (_SC_NOTIFY_NETWORK_CHANGE).
+ * _SC_CFStringIsValidDNSName). The notify(3) names
+ * (_SC_NOTIFY_NETWORK_CHANGE) come from libSystemConfiguration's
+ * installed <SystemConfiguration/SCPrivate.h>, which the
+ * SystemConfiguration/SCPrivate.h indirect pulls in alongside this.
  */
 
 #ifndef _FREEBSD_LAUNCHD_MACH_SC_PRIVATE_H_
@@ -41,13 +43,5 @@ char *	_SC_cfstring_to_cstring(CFStringRef cfstr, char *buf, CFIndex bufsize,
  * trailing hyphen, total length 1..253, label length 1..63).
  */
 Boolean	_SC_CFStringIsValidDNSName(CFStringRef cfstr);
-
-/*
- * _SC_NOTIFY_NETWORK_CHANGE — the Apple-canonical notify(3) token
- * fired whenever network state changes (configd's PF_ROUTE monitor
- * + interface flags + lease state). set-hostname.c re-runs its
- * decision engine on this token in addition to its SCDS subscriptions.
- */
-#define	_SC_NOTIFY_NETWORK_CHANGE	"com.apple.system.config.network_change"
 
 #endif	/* _FREEBSD_LAUNCHD_MACH_SC_PRIVATE_H_ */

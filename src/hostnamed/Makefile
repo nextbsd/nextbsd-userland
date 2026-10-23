@@ -42,6 +42,16 @@ CFLAGS+=	-O2 -pipe -fblocks
 CFLAGS+=	-Wall -Wextra -Wshadow -Wstrict-prototypes
 CFLAGS+=	-Wmissing-prototypes -Wpointer-arith
 
+# freebsd-shim — supplies ip_plugin.h, SCPrivate.h, SCValidation.h,
+# SCDynamicStoreCopyDHCPInfo.h, netdb_async.h that the vendored Apple
+# set-hostname.c expects to find. Listed FIRST, ahead of SYSROOT, so
+# its <SystemConfiguration/SCPrivate.h> indirect wins over the one
+# libSystemConfiguration installs; the indirect #include_next's the
+# installed header (the _SC_NOTIFY_* names) and layers the SPI subset
+# on top. Also ahead of the launchd-shims path so the shim wins over
+# any launchctl-era stub at the same include path.
+CFLAGS+=	-I${.CURDIR}/freebsd-shim
+
 # SYSROOT include path FIRST so real Apple-source headers (dns_sd.h
 # from libdns_sd, IOKit, ...) shadow the empty stubs that
 # launchd/freebsd-shims carries for launchctl's dead includes — iter 3b
@@ -63,13 +73,6 @@ LDFLAGS+=	-Wl,--allow-shlib-undefined
 CFLAGS+=	-I${.CURDIR}/../launchd/liblaunch
 CFLAGS+=	-I${.CURDIR}/../launchd/freebsd-shims
 CFLAGS+=	-I${.CURDIR}/../Libnotify/freebsd-shims
-
-# freebsd-shim — supplies ip_plugin.h, SCPrivate.h, SCValidation.h,
-# SCDynamicStoreCopyDHCPInfo.h, netdb_async.h that the vendored Apple
-# set-hostname.c expects to find. Listed BEFORE the launchd-shims path
-# so the SCPrivate.h shim wins over any launchctl-era stub at the same
-# include path.
-CFLAGS+=	-I${.CURDIR}/freebsd-shim
 
 .PATH:		${.CURDIR}
 .PATH:		${.CURDIR}/freebsd-shim
