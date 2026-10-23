@@ -48,6 +48,16 @@
 #else // USES_NETLINK
 #include <net/route.h>
 #include <net/if.h>
+// NextBSD: Darwin's kernel event socket (PF_SYSTEM / SYSPROTO_EVENT). When the
+// sysroot has its headers, <sys/sys_domain.h> defines AF_SYSTEM, which turns on
+// the link-event listener below (nextbsd-userland#347).
+#if defined(__has_include)
+#if __has_include(<sys/kern_event.h>) && __has_include(<net/net_kev.h>)
+#include <sys/ioctl.h>
+#include <sys/kern_event.h>
+#include <net/net_kev.h>
+#endif
+#endif
 #endif // USES_NETLINK
 #if defined(TARGET_OS_MAC) && TARGET_OS_MAC
 #include <netinet/in_var.h>
@@ -1802,9 +1812,106 @@ mDNSlocal mDNSu32 ProcessRoutingNotification(int sd, mDNS *m)
 
 #else // USES_NETLINK
 
+#ifdef AF_SYSTEM
+// NextBSD (nextbsd-userland#347): as on Darwin (mDNSMacOSX.c WatchForSysEvents /
+// SysEventCallBack), link changes come from the kernel event socket filtered to
+// KEV_DL_SUBCLASS, and address changes come from configd's
+// State:/Network/Interface/*/{IPv4,IPv6} keys (mDNSConfigStore.c). If the kernel
+// has no PF_SYSTEM, OpenIfNotifySocket falls back to the routing socket below.
+// Set once by OpenIfNotifySocket: mDNStrue when NotifySD is the event socket.
+static mDNSBool gIfNotifySysEvents = mDNSfalse;
+
+mDNSlocal int OpenSysEventSocket(void)
+{
+    struct kev_request kev_req;
+    int s;
+
+    s = socket(PF_SYSTEM, SOCK_RAW, SYSPROTO_EVENT);
+    if (s < 0)
+        return -1;
+    mDNSPlatformMemZero(&kev_req, sizeof kev_req);
+    kev_req.vendor_code  = KEV_VENDOR_APPLE;
+    kev_req.kev_class    = KEV_NETWORK_CLASS;
+    kev_req.kev_subclass = KEV_DL_SUBCLASS;
+    if (ioctl(s, SIOCSKEVFILT, &kev_req) != 0)
+    {
+        close(s);
+        return -1;
+    }
+    return s;
+}
+
+// The interface index a KEV_DL_* event names, or 0 if it is gone (e.g. after
+// KEV_DL_IF_DETACHED). The kernel splits if_xname into a driver name and unit
+// ("em" / 0); a name with no trailing digits ("epair0a") is passed whole with
+// unit 0, so if "<name>0" is not an interface, try the bare name.
+mDNSlocal int SysEventIfIndex(const struct net_event_data *ed)
+{
+    char name[sizeof(ed->if_name) + 1];
+    char ifname[IFNAMSIZ];
+    int index;
+
+    mDNSPlatformMemCopy(name, ed->if_name, sizeof(ed->if_name));
+    name[sizeof(ed->if_name)] = '\0';
+    if (name[0] == '\0')
+        return 0;
+    snprintf(ifname, sizeof ifname, "%s%u", name, (unsigned)ed->if_unit);
+    index = (int)if_nametoindex(ifname);
+    if (index == 0 && ed->if_unit == 0)
+        index = (int)if_nametoindex(name);
+    return index;
+}
+
+// Read one kernel event from sd and return the interface bit it affects, or 0.
+// Like Darwin's SysEventCallBack this takes no mDNS lock: the caller re-walks
+// the interface list from the event loop, as the routing-socket path does.
+mDNSlocal mDNSu32 ProcessSysEventNotification(int sd)
+{
+    union
+    {
+        struct kern_event_msg k;
+        char buff[1024];
+    } msg;
+    const struct net_event_data *ed;
+    ssize_t readCount;
+    int index;
+
+    readCount = recv(sd, &msg, sizeof msg, 0);
+    if (readCount < (ssize_t)KEV_MSG_HEADER_SIZE || msg.k.total_size < KEV_MSG_HEADER_SIZE + sizeof *ed ||
+        (ssize_t)msg.k.total_size > readCount)
+        return 0;
+    if (msg.k.vendor_code != KEV_VENDOR_APPLE || msg.k.kev_class != KEV_NETWORK_CLASS ||
+        msg.k.kev_subclass != KEV_DL_SUBCLASS)
+        return 0;
+
+    switch (msg.k.event_code)
+    {
+    case KEV_DL_LINK_ON:
+    case KEV_DL_LINK_OFF:
+    case KEV_DL_IF_ATTACHED:
+    case KEV_DL_IF_DETACHED:
+    // IFF_UP / IFF_RUNNING changes, which the routing socket reported as RTM_IFINFO.
+    case KEV_DL_SIFFLAGS:
+        break;
+    default:
+        return 0;
+    }
+
+    ed = (const struct net_event_data *)(const void *)&msg.k.event_data[0];
+    index = SysEventIfIndex(ed);
+    // Bit 0 stands for an interface whose index is unknown or >= 32.
+    return (0 < index && index < 32) ? (mDNSu32)1 << index : 1;
+}
+#endif // AF_SYSTEM
+
 // Open a socket that will receive interface change notifications
 mDNSlocal mStatus OpenIfNotifySocket(int *pFD)
 {
+#ifdef AF_SYSTEM
+    *pFD = OpenSysEventSocket();
+    gIfNotifySysEvents = (*pFD >= 0);
+    if (*pFD < 0)
+#endif
     *pFD = socket(AF_ROUTE, SOCK_RAW, 0);
 
     if (*pFD < 0)
@@ -1839,6 +1946,11 @@ mDNSlocal mDNSu32 ProcessRoutingNotification(int sd, mDNS *m)
     mDNSu32 result = 0;
 
     (void)m; // Unused
+
+#ifdef AF_SYSTEM
+    if (gIfNotifySysEvents)
+        return ProcessSysEventNotification(sd);
+#endif
 
     readCount = read(sd, buff, sizeof buff);
     if (readCount < (ssize_t) sizeof(struct ifa_msghdr))
@@ -1902,7 +2014,12 @@ mDNSlocal mStatus WatchForInterfaceChange(mDNS *const m)
     pChgRec->mDNS = m;
     err = OpenIfNotifySocket(&pChgRec->NotifySD);
     if (err == 0)
+    {
         err = mDNSPosixAddFDToEventLoop(pChgRec->NotifySD, InterfaceChangeCallback, pChgRec);
+        // Not registered (e.g. fd >= FD_SETSIZE): don't leak the socket.
+        if (err)
+            close(pChgRec->NotifySD);
+    }
     if (err)
         mDNSPlatformMemFree(pChgRec);
 
