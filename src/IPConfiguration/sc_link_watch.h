@@ -41,14 +41,37 @@ typedef void (*sc_link_watch_cb)(const char *ifname, int active,
 	    uint32_t lease_cap_secs);
 
 /*
+ * Invoked (on a libdispatch worker thread) for each address-conflict
+ * notification configd posts (#348/#349). These keys are notify-only —
+ * configd sends a change for them with SCDynamicStoreNotifyValue but never
+ * stores a value — so everything is carried in the key itself:
+ *
+ *   State:/Network/Interface/<if>/IPv4ARPCollision/<ip>/<hw>
+ *       another host claimed <ip> on <if> from hardware address <hw>;
+ *       `af` is AF_INET and `addr` a struct in_addr.
+ *   State:/Network/Interface/<if>/IPv6DuplicatedAddress/<ip>/<hw>
+ *       DAD found <ip> in use; `af` is AF_INET6 and `addr` a struct
+ *       in6_addr. `hw` is all zero until the kernel records the
+ *       defender's address.
+ *
+ * `hw` / `hw_len` are the colon-hex <hw> component decoded (hw_len 0 when
+ * the key has none). lo0 is filtered.
+ */
+typedef void (*sc_addr_conflict_cb)(const char *ifname, int af,
+	    const void *addr, const uint8_t *hw, int hw_len);
+
+/*
  * Open a configd session, watch State:/Network/Interface/<if>/Link,
  * and arrange `cb` to run when any interface links up. Also performs an
  * immediate scan of existing keys so a link that was already Active
- * before the watch registered still fires. Returns 0 on success, -1 if
- * the session or watch could not be established (non-fatal to the
- * caller — DHCP simply won't be link-triggered).
+ * before the watch registered still fires. `conflict_cb` (may be NULL)
+ * receives the ARP-collision and duplicated-address notifications on the
+ * same session. Returns 0 on success, -1 if the session or watch could
+ * not be established (non-fatal to the caller — DHCP simply won't be
+ * link-triggered).
  */
-int sc_link_watch_start(sc_link_watch_cb cb, uint32_t lease_cap_secs);
+int sc_link_watch_start(sc_link_watch_cb cb, sc_addr_conflict_cb conflict_cb,
+    uint32_t lease_cap_secs);
 
 /*
  * Synchronously read State:/Network/Interface/<if>/Link {Active} from configd.

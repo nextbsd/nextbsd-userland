@@ -3,8 +3,9 @@
  * derived from a Router Advertisement.
  *
  * Iter 7a scope: one address, one default route, best-effort. No
- * lifetime tracking. The address is checked for duplicate-address
- * detection before the route is added.
+ * lifetime tracking. Duplicate-address detection is the kernel's; a
+ * duplicate is acted on when configd's IPv6DuplicatedAddress
+ * notification for it arrives (ipconfigd.c, #349).
  */
 #ifndef APPLY_LEASE_V6_H
 #define APPLY_LEASE_V6_H
@@ -24,11 +25,12 @@ int bring_v6_up(const char *ifname);
 
 /*
  * Build the SLAAC unicast address from `info`'s prefix + an EUI-64
- * derived from `ifname`'s MAC, install it via SIOCAIFADDR_IN6, wait
- * for DAD, and add a default route via info->router_lladdr. Returns 0
- * on success (address installed; route is best-effort and logged
- * separately). Returns -1 if DAD finds the address duplicated; the
- * address is removed and no route is added.
+ * derived from `ifname`'s MAC, install it via SIOCAIFADDR_IN6 and add
+ * a default route via info->router_lladdr. Returns 0 on success
+ * (address installed; route is best-effort and logged separately).
+ * The address may still be tentative: DAD runs in the kernel, and a
+ * duplicate is reported afterwards by the IPv6DuplicatedAddress
+ * notification.
  *
  * `out_addr` receives the computed SLAAC address for the caller's
  * SCDynamicStore publish; it is populated even if route install
@@ -36,6 +38,12 @@ int bring_v6_up(const char *ifname);
  */
 int apply_ra_lease(const char *ifname, const struct ra_info *info,
     struct in6_addr *out_addr);
+
+/*
+ * Remove `addr` from `ifname` (SIOCDIFADDR_IN6) — a SLAAC address DAD
+ * found duplicated. Returns 0 on success.
+ */
+int remove_v6_address(const char *ifname, const struct in6_addr *addr);
 
 /*
  * Add / delete the ::/0 default route via the link-local `gateway`
