@@ -876,6 +876,8 @@ dhcp_worker_main(void *arg)
 
 	(void)strlcpy(ifname, w->ifname, sizeof(ifname));
 	method = w->method;
+	/* Fix the service UUID while the MAC is still readable (#409). */
+	sc_publish_service_begin(ifname);
 	for (;;) {
 		bool conflict;
 		unsigned wait, i;
@@ -1221,8 +1223,10 @@ ipconfigd_get_method(const char *ifname, struct ipconfig_method_info *out)
  * notices `stop` — within about a second, whether it is bound or still in
  * its DHCP exchange (#410). Clearing the binding and re-electing here as
  * well means the primary moves off a vanished interface now rather than
- * whenever its worker gets round to it. Both sides are idempotent, so the double clear is
- * harmless.
+ * whenever its worker gets round to it. The published Service keys go too:
+ * their <UUID> was cached when the service started (#409), so it still
+ * resolves now that the MAC is gone. Both sides are idempotent, so the
+ * double clear is harmless.
  */
 static void
 on_link_departed(const char *ifname)
@@ -1244,8 +1248,10 @@ on_link_departed(const char *ifname)
 	if (!was_bound)
 		return;
 
-	bound_state_clear(ifname);
 	pub = sc_publish_open("ipconfigd");
+	if (pub != NULL)
+		(void)sc_publish_remove(pub, ifname);
+	bound_state_clear(ifname);
 	if (pub != NULL) {
 		(void)sc_publish_update_primary(pub);
 		sc_publish_close(pub);

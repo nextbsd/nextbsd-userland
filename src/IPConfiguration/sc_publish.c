@@ -6,6 +6,8 @@
  * The <UUID> is a deterministic 8-4-4-4-12-hex string derived from
  * the interface MAC — stable across daemon restarts even without
  * SCPreferences persistence, so a watcher's regex match stays put.
+ * It is computed once per service and cached (#409), so the keys can
+ * still be removed after the interface — and its MAC — is gone.
  *
  * Single CF translation unit on purpose: everything else in the
  * daemon stays plain-C / plain-Apple-headers.
@@ -28,6 +30,7 @@
 #include <errno.h>
 #include <ifaddrs.h>
 #include <notify.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -101,6 +104,8 @@ get_mac(const char *ifname, uint8_t mac[6])
 	return (ok);
 }
 
+#define	SVC_UUID_LEN	37	/* 8-4-4-4-12 + NUL */
+
 /*
  * Format an Apple-shaped UUID string from the interface MAC. Apple's
  * IPConfiguration draws UUIDs from SCPreferences (a user-configured
@@ -112,19 +117,98 @@ get_mac(const char *ifname, uint8_t mac[6])
  *                      ^^^^ ^^^^^^^^^^^^
  *                      MAC[0..1] MAC[0..5]
  *
- * Result is heap-allocated; caller releases with CFRelease.
+ * Returns get_mac()'s result; on failure `buf` holds the all-zero MAC.
+ */
+static int
+format_service_uuid(const char *ifname, char buf[SVC_UUID_LEN])
+{
+	uint8_t mac[6] = { 0, 0, 0, 0, 0, 0 };
+	int rc;
+
+	rc = get_mac(ifname, mac);
+	(void)snprintf(buf, SVC_UUID_LEN,
+	    "00000000-0000-0000-%02x%02x-%02x%02x%02x%02x%02x%02x",
+	    mac[0], mac[1],
+	    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+	return (rc);
+}
+
+/*
+ * Per-interface service UUID cache (#409). Apple's IPConfiguration keys a
+ * service by its SCPreferences service ID, held for the life of the
+ * service; re-deriving ours from the live MAC broke removal once the
+ * interface departed — get_mac() failed and every key name came out as
+ * 00000000-...-000000000000, so the real keys stayed in configd. Shared
+ * by every sc_publish session (workers, ra_router, on_link_departed).
+ */
+#define	SVC_UUID_MAX	(2 * BOUND_MAX_IF)
+
+static struct {
+	char	ifname[IF_NAMESIZE];
+	char	uuid[SVC_UUID_LEN];
+} g_svc_uuid[SVC_UUID_MAX];
+static pthread_mutex_t	g_svc_uuid_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Store `uuid` for `ifname`; called with g_svc_uuid_lock held. */
+static void
+svc_uuid_store_locked(const char *ifname, const char *uuid)
+{
+	int i, free_slot = -1;
+
+	for (i = 0; i < SVC_UUID_MAX; i++) {
+		if (g_svc_uuid[i].ifname[0] == '\0') {
+			if (free_slot < 0)
+				free_slot = i;
+			continue;
+		}
+		if (strcmp(g_svc_uuid[i].ifname, ifname) == 0)
+			break;
+	}
+	if (i == SVC_UUID_MAX) {
+		if (free_slot < 0)
+			return;		/* full: callers fall back to the MAC */
+		i = free_slot;
+		(void)strlcpy(g_svc_uuid[i].ifname, ifname,
+		    sizeof(g_svc_uuid[i].ifname));
+	}
+	(void)strlcpy(g_svc_uuid[i].uuid, uuid, sizeof(g_svc_uuid[i].uuid));
+}
+
+void
+sc_publish_service_begin(const char *ifname)
+{
+	char buf[SVC_UUID_LEN];
+
+	/* No MAC: keep whatever an earlier service cached. */
+	if (format_service_uuid(ifname, buf) != 0)
+		return;
+	(void)pthread_mutex_lock(&g_svc_uuid_lock);
+	svc_uuid_store_locked(ifname, buf);
+	(void)pthread_mutex_unlock(&g_svc_uuid_lock);
+}
+
+/*
+ * The service UUID for `ifname`: the cached one, else derived from the MAC
+ * now (and cached, if the MAC was readable). Real 8-4-4-4-12 lowercase hex
+ * either way. Result is heap-allocated; caller releases with CFRelease.
  */
 static CFStringRef
 make_service_uuid(const char *ifname)
 {
-	uint8_t mac[6] = { 0, 0, 0, 0, 0, 0 };
-	char buf[40];
+	char buf[SVC_UUID_LEN];
+	int i;
 
-	(void)get_mac(ifname, mac);
-	(void)snprintf(buf, sizeof(buf),
-	    "00000000-0000-0000-%02x%02x-%02x%02x%02x%02x%02x%02x",
-	    mac[0], mac[1],
-	    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+	(void)pthread_mutex_lock(&g_svc_uuid_lock);
+	for (i = 0; i < SVC_UUID_MAX; i++) {
+		if (g_svc_uuid[i].ifname[0] != '\0' &&
+		    strcmp(g_svc_uuid[i].ifname, ifname) == 0) {
+			(void)strlcpy(buf, g_svc_uuid[i].uuid, sizeof(buf));
+			break;
+		}
+	}
+	if (i == SVC_UUID_MAX && format_service_uuid(ifname, buf) == 0)
+		svc_uuid_store_locked(ifname, buf);
+	(void)pthread_mutex_unlock(&g_svc_uuid_lock);
 	return (mkstr(buf));
 }
 
