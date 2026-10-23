@@ -52,3 +52,27 @@ BSD-2-Clause, in two new files that are not upstream's:
 | `mDNSPosix/nbsd_plist.[ch]` | The small XML plist reader, copied from `src/nss_directory_services/plist.[ch]` (same repo, BSD-2); keep in sync by copying. |
 
 Everything else in PosixDaemon.c is unchanged.
+
+### `mDNSPosix/mDNSPosix.c` — PF_SYSTEM link listener (nextbsd-userland#347)
+
+Darwin's mDNSResponder watches link changes on the kernel event socket
+(`mDNSMacOSX.c` `WatchForSysEvents` / `SysEventCallBack`), not the routing
+socket. When the sysroot's `<sys/kern_event.h>` / `<net/net_kev.h>` are
+present (their `<sys/sys_domain.h>` defines `AF_SYSTEM`), a branch under
+`#ifdef AF_SYSTEM` does the same:
+
+1. `OpenIfNotifySocket()` first opens `socket(PF_SYSTEM, SOCK_RAW,
+   SYSPROTO_EVENT)` with `SIOCSKEVFILT` set to `{KEV_VENDOR_APPLE,
+   KEV_NETWORK_CLASS, KEV_DL_SUBCLASS}`. If either fails it falls back,
+   silently, to upstream's `AF_ROUTE` socket.
+2. `ProcessRoutingNotification()` hands the event socket to
+   `ProcessSysEventNotification()`, which parses one `kern_event_msg` and,
+   for `KEV_DL_LINK_ON` / `LINK_OFF` / `IF_ATTACHED` / `IF_DETACHED` /
+   `SIFFLAGS`, returns the bit for `if_nametoindex(name + unit)` (bit 0 when
+   the interface is already gone). `SIFFLAGS` keeps the `IFF_UP` changes the
+   routing socket reported as `RTM_IFINFO`.
+
+Address changes come from configd's `State:/Network/Interface/*/{IPv4,IPv6}`
+keys through `mDNSConfigStore.c`, as on Darwin. The socket is registered with
+the same select() event loop as before, and `WatchForInterfaceChange()` now
+closes it if registration fails (fd >= FD_SETSIZE) instead of leaking it.
