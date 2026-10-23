@@ -94,6 +94,13 @@ int	sc_publish_update_primary(struct sc_publish *p);
  */
 int	sc_publish_remove(struct sc_publish *p, const char *ifname);
 
+/*
+ * Remove only State:/Network/Service/<UUID>/IPv6 for `ifname` — its SLAAC
+ * address turned out to be a duplicate (#349) while IPv4 stays bound.
+ * Returns 0 on success.
+ */
+int	sc_publish_remove_ipv6(struct sc_publish *p, const char *ifname);
+
 /* Close the session. Safe to pass NULL. */
 void	sc_publish_close(struct sc_publish *p);
 

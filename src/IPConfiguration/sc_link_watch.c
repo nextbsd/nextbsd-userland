@@ -52,6 +52,22 @@
  * still fires. Concurrent/duplicate fires are the callback's problem
  * to dedupe (ipconfigd guards per-interface on its worker table).
  *
+ * Address conflicts (#349). The same session also watches configd's
+ * notify-only conflict keys, as Darwin's ipconfigd watches
+ * IPv4ARPCollision (ipconfigd.c handle_change / arp_collision):
+ *
+ *   State:/Network/Interface/<if>/IPv4ARPCollision/<ip>/<hw>
+ *   State:/Network/Interface/<if>/IPv6DuplicatedAddress/<ip>/<hw>
+ *
+ * configd posts them with SCDynamicStoreNotifyValue and never stores a
+ * value, so there is nothing to read back and nothing for the initial
+ * scan to find: the key IS the event, and is parsed here and handed to
+ * the conflict callback on the global queue. Two identical posts that
+ * land before we drain coalesce into one change, which is harmless — the
+ * second would describe the same conflict. The keys must never reach
+ * handle_iface_key(): its entity-agnostic parse would read them as a
+ * Link/AirPort change for <if>.
+ *
  * Single CF translation unit, like sc_publish.c — the rest of the
  * daemon stays plain C.
  */
@@ -61,7 +77,11 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <dispatch/dispatch.h>
 
+#include <sys/socket.h>		/* AF_INET, AF_INET6 */
+
 #include <net/if.h>		/* IFNAMSIZ */
+#include <netinet/in.h>
+#include <arpa/inet.h>		/* inet_pton */
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -69,6 +89,7 @@
 #include <string.h>
 
 static sc_link_watch_cb	g_cb;
+static sc_addr_conflict_cb	g_conflict_cb;
 static uint32_t		g_lease_cap_secs;
 
 /*
@@ -83,6 +104,18 @@ static uint32_t		g_lease_cap_secs;
  */
 #define LINK_PATTERN	"State:/Network/Interface/[^/]+/Link"
 #define AIRPORT_PATTERN	"State:/Network/Interface/[^/]+/AirPort"
+
+/*
+ * The notify-only conflict keys, as Darwin's ipconfigd builds its
+ * IPv4ARPCollision pattern: the entity key followed by ".*", since the
+ * address and hardware address follow it as further path components.
+ */
+#define ARP_COLLISION_ENTITY	"IPv4ARPCollision"
+#define DUP_ADDRESS_ENTITY	"IPv6DuplicatedAddress"
+#define ARP_COLLISION_PATTERN \
+	"State:/Network/Interface/[^/]+/" ARP_COLLISION_ENTITY "/.*"
+#define DUP_ADDRESS_PATTERN \
+	"State:/Network/Interface/[^/]+/" DUP_ADDRESS_ENTITY "/.*"
 
 static void
 xlog(const char *fmt, ...)
@@ -177,6 +210,127 @@ schedule_link_event(const char *ifname, int active)
 	ev->lease_cap_secs = g_lease_cap_secs;
 	dispatch_async_f(dispatch_get_global_queue(
 	    DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ev, run_link_trampoline);
+}
+
+/* Trampoline payload for a conflict notification — freed by the trampoline. */
+struct conflict_event {
+	char		ifname[IFNAMSIZ];
+	int		af;
+	union {
+		struct in_addr	v4;
+		struct in6_addr	v6;
+	}		addr;
+	uint8_t		hw[16];
+	int		hw_len;
+};
+
+static void
+run_conflict_trampoline(void *arg)
+{
+	struct conflict_event *ev = arg;
+
+	if (g_conflict_cb != NULL)
+		g_conflict_cb(ev->ifname, ev->af, &ev->addr, ev->hw,
+		    ev->hw_len);
+	free(ev);
+}
+
+/*
+ * Decode a colon-hex hardware address ("00:11:22:33:44:55") into `hw`.
+ * Returns the byte count, or -1 if `s` is not one (bootp's
+ * bytesFromColonHexString).
+ */
+static int
+parse_hwaddr(const char *s, uint8_t *hw, size_t cap)
+{
+	size_t n = 0;
+	unsigned long v;
+	char *end;
+
+	while (*s != '\0') {
+		if (n == cap)
+			return (-1);
+		v = strtoul(s, &end, 16);
+		if (end == s || end - s > 2 || v > 0xff)
+			return (-1);
+		hw[n++] = (uint8_t)v;
+		s = end;
+		if (*s == ':')
+			s++;
+		else if (*s != '\0')
+			return (-1);
+	}
+	return ((int)n);
+}
+
+/*
+ * If `keybuf` is one of the conflict keys, parse it, schedule the conflict
+ * callback and return 1; otherwise return 0 and leave it to
+ * handle_iface_key(). Turns
+ *   State:/Network/Interface/<if>/<entity>/<ip>/<hw>
+ * into its parts the way bootp's IPv4ARPCollisionKeyParse does. A
+ * malformed conflict key is still claimed (1), so it is never mistaken
+ * for a Link change.
+ */
+static int
+handle_conflict_key(const char *keybuf)
+{
+	const char *prefix = "State:/Network/Interface/";
+	char buf[256];
+	char *ifname, *entity, *ip, *hw, *p;
+	struct conflict_event *ev;
+	int af, hw_len;
+
+	if (strstr(keybuf, "/" ARP_COLLISION_ENTITY "/") == NULL &&
+	    strstr(keybuf, "/" DUP_ADDRESS_ENTITY "/") == NULL)
+		return (0);
+	if (strncmp(keybuf, prefix, strlen(prefix)) != 0 ||
+	    strlcpy(buf, keybuf + strlen(prefix), sizeof(buf)) >= sizeof(buf))
+		return (1);
+
+	ifname = buf;
+	if ((entity = strchr(ifname, '/')) == NULL)
+		return (1);
+	*entity++ = '\0';
+	if ((ip = strchr(entity, '/')) == NULL)
+		return (1);
+	*ip++ = '\0';
+	hw = NULL;
+	if ((p = strchr(ip, '/')) != NULL) {
+		*p = '\0';
+		hw = p + 1;
+	}
+	if (strcmp(entity, ARP_COLLISION_ENTITY) == 0)
+		af = AF_INET;
+	else if (strcmp(entity, DUP_ADDRESS_ENTITY) == 0)
+		af = AF_INET6;
+	else
+		return (1);
+	if (ifname[0] == '\0' || strlen(ifname) >= IFNAMSIZ ||
+	    strncmp(ifname, "lo", 2) == 0 || g_conflict_cb == NULL)
+		return (1);
+
+	ev = calloc(1, sizeof(*ev));
+	if (ev == NULL)
+		return (1);
+	(void)strlcpy(ev->ifname, ifname, sizeof(ev->ifname));
+	ev->af = af;
+	if (inet_pton(af, ip, &ev->addr) != 1) {
+		xlog("IPCFG-CONFLICT-BADKEY: %s", keybuf);
+		free(ev);
+		return (1);
+	}
+	hw_len = 0;
+	if (hw != NULL &&
+	    (hw_len = parse_hwaddr(hw, ev->hw, sizeof(ev->hw))) < 0) {
+		xlog("IPCFG-CONFLICT-BADKEY: %s", keybuf);
+		free(ev);
+		return (1);
+	}
+	ev->hw_len = hw_len;
+	dispatch_async_f(dispatch_get_global_queue(
+	    DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ev, run_conflict_trampoline);
+	return (1);
 }
 
 /*
@@ -306,7 +460,7 @@ evaluate_interface(SCDynamicStoreRef store, const char *ifname)
 static void
 handle_iface_key(SCDynamicStoreRef store, CFStringRef key)
 {
-	char keybuf[128];
+	char keybuf[256];
 	char ifname[IFNAMSIZ];
 	const char *prefix = "State:/Network/Interface/";
 	const char *p, *slash;
@@ -316,6 +470,8 @@ handle_iface_key(SCDynamicStoreRef store, CFStringRef key)
 	    kCFStringEncodingUTF8))
 		return;
 	if (strncmp(keybuf, prefix, strlen(prefix)) != 0)
+		return;
+	if (handle_conflict_key(keybuf))
 		return;
 	p = keybuf + strlen(prefix);
 	slash = strchr(p, '/');
@@ -346,16 +502,18 @@ link_changed(SCDynamicStoreRef store, CFArrayRef changedKeys, void *info)
 }
 
 int
-sc_link_watch_start(sc_link_watch_cb cb, uint32_t lease_cap_secs)
+sc_link_watch_start(sc_link_watch_cb cb, sc_addr_conflict_cb conflict_cb,
+    uint32_t lease_cap_secs)
 {
 	SCDynamicStoreContext ctx;
 	SCDynamicStoreRef store;
 	dispatch_queue_t queue;
-	CFStringRef name, link_pat, air_pat;
+	CFStringRef name, link_pat, air_pat, arp_pat, dup_pat;
 	CFArrayRef patterns, existing;
-	const void *pvals[2];
+	const void *pvals[4];
 
 	g_cb = cb;
+	g_conflict_cb = conflict_cb;
 	g_lease_cap_secs = lease_cap_secs;
 
 	(void)memset(&ctx, 0, sizeof(ctx));
@@ -390,13 +548,19 @@ sc_link_watch_start(sc_link_watch_cb cb, uint32_t lease_cap_secs)
 	 * Subscribe to BOTH entities. A change to either one re-runs
 	 * evaluate_interface(), which re-reads both — so Link and AirPort can
 	 * arrive in any order, any number of times, and the gate always sees
-	 * current truth.
+	 * current truth. The two conflict patterns ride the same session.
 	 */
 	link_pat = mkstr(LINK_PATTERN);
 	air_pat = mkstr(AIRPORT_PATTERN);
+	arp_pat = mkstr(ARP_COLLISION_PATTERN);
+	dup_pat = mkstr(DUP_ADDRESS_PATTERN);
 	pvals[0] = link_pat;
 	pvals[1] = air_pat;
-	patterns = CFArrayCreate(NULL, pvals, 2, &kCFTypeArrayCallBacks);
+	pvals[2] = arp_pat;
+	pvals[3] = dup_pat;
+	patterns = CFArrayCreate(NULL, pvals, 4, &kCFTypeArrayCallBacks);
+	CFRelease(arp_pat);
+	CFRelease(dup_pat);
 	if (!SCDynamicStoreSetNotificationKeys(store, NULL, patterns)) {
 		xlog("IPCFG-LINK-FAIL: SetNotificationKeys: %s",
 		    SCErrorString(SCError()));
@@ -420,8 +584,9 @@ sc_link_watch_start(sc_link_watch_cb cb, uint32_t lease_cap_secs)
 	}
 	xlog("IPCFG-LINK-WATCH-OK: watching %s and %s (DHCP requires "
 	    "Link{Active} AND AirPort{Authenticated}; AirPort absent means "
-	    "ready, so wired NICs are unaffected)",
-	    LINK_PATTERN, AIRPORT_PATTERN);
+	    "ready, so wired NICs are unaffected), plus %s and %s",
+	    LINK_PATTERN, AIRPORT_PATTERN, ARP_COLLISION_PATTERN,
+	    DUP_ADDRESS_PATTERN);
 
 	/*
 	 * Initial scan: a link that was already Active before the watch

@@ -60,6 +60,15 @@ int	dhcp_renew(const char *ifname,
 	    struct dhcp_lease *new_lease);
 
 /*
+ * Send one DHCPDECLINE for `lease` (requested IP = lease->addr, server
+ * id = lease->server) — the bound address turned out to be in use by
+ * another host (an ARP collision, #349; RFC 2131 §3.1.5, Apple's
+ * dhcp_decline). The caller has already taken the address off the
+ * interface. Returns 0 if the DECLINE was sent.
+ */
+int	dhcp_decline(const char *ifname, const struct dhcp_lease *lease);
+
+/*
  * Pick the first non-loopback Ethernet interface (the QEMU guest's
  * em0 in CI). Writes the name into ifname_out (buffer is at least
  * IFNAMSIZ).  Returns 0 on success.

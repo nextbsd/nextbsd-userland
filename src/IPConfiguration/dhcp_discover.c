@@ -798,6 +798,38 @@ shutdown:
 }
 
 int
+dhcp_decline(const char *ifname, const struct dhcp_lease *lease)
+{
+	uint8_t mac[6];
+	uint8_t frame[1024];
+	uint32_t xid;
+	int bpf_fd, rc;
+	size_t frame_len;
+	struct timespec ts;
+
+	if (get_interface_mac(ifname, mac) != 0)
+		return (-1);
+	bpf_fd = bpf_open(ifname);
+	if (bpf_fd < 0) {
+		xlog("decline: bpf_open(%s) failed: %s", ifname,
+		    strerror(errno));
+		return (-1);
+	}
+	(void)clock_gettime(CLOCK_REALTIME, &ts);
+	xid = (uint32_t)ts.tv_nsec ^ (uint32_t)ts.tv_sec ^
+	    (uint32_t)(mac[5] | (mac[4] << 8));
+	frame_len = build_dhcp_msg(frame, mac, xid, DHCP_MTYPE_DECLINE,
+	    &lease->addr, &lease->server, NULL);
+	rc = send_dhcp(bpf_fd, frame, frame_len);
+	if (rc != 0)
+		xlog("DHCPDECLINE send failed");
+	else
+		xlog("sent DHCPDECLINE (xid=0x%08x)", xid);
+	(void)close(bpf_fd);
+	return (rc);
+}
+
+int
 dhcp_renew(const char *ifname, const struct dhcp_lease *existing,
     struct dhcp_lease *new_lease)
 {

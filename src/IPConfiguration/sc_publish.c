@@ -578,6 +578,20 @@ sc_publish_remove(struct sc_publish *p, const char *ifname)
 	return (ok ? 0 : -1);
 }
 
+int
+sc_publish_remove_ipv6(struct sc_publish *p, const char *ifname)
+{
+	CFStringRef key;
+	Boolean ok;
+
+	if (p == NULL || p->store == NULL)
+		return (-1);
+	key = make_key(ifname, "IPv6");
+	ok = SCDynamicStoreRemoveValue(p->store, key);
+	CFRelease(key);
+	return (ok ? 0 : -1);
+}
+
 void
 sc_publish_close(struct sc_publish *p)
 {

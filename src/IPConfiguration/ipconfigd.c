@@ -80,6 +80,25 @@
  * the same path as a lease), or NONE (left entirely alone). An interface
  * nothing configures stays on DHCP, so an unconfigured machine behaves
  * exactly as before.
+ *
+ * address conflicts (#349) — configd posts the kernel's ARP-collision and
+ * duplicate-address events as notify-only keys, and the link watch hands
+ * them to on_addr_conflict(), as Darwin's ipconfigd routes
+ * IPv4ARPCollision to IFEventID_arp_collision_e:
+ *
+ *   - another host claims our bound IPv4 address: defend it with a
+ *     gratuitous ARP (RFC 5227 §2.4, ServiceDefendIPv4Address) unless the
+ *     address is under DEFEND_IP_ADDRESS_INTERVAL_SECS old or has been
+ *     defended DEFEND_IP_ADDRESS_COUNT times in a row; otherwise give it
+ *     up. A DHCP service deconfigures, sends DHCPDECLINE and starts over
+ *     after the RFC 2131 §3.1.5 ten seconds (dhcp.c); a Manual service
+ *     deconfigures and tries again in MANUAL_CONFLICT_RETRY_INTERVAL_SECS
+ *     (manual.c).
+ *   - DAD finds our SLAAC address in use: take the address, its ::/0 and
+ *     the IPv6 publish back (rtadv.c never publishes a duplicated
+ *     address). This replaces #342's SIOCGIFAFLAG_IN6 poll — the kernel's
+ *     own DAD event drives it, so a defender that appears after DAD is
+ *     caught too.
  */
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -158,7 +177,51 @@ struct dhcp_worker {
 	bool			ready;		/* bound or given up: startup */
 	struct ipconfig_method_info method;	/* what this worker runs (#58) */
 	bool			restart;	/* method changed: rerun on exit */
+
+	/*
+	 * Address conflicts (#349). `conflict` is set with `stop` when an
+	 * ARP collision makes us give the IPv4 address up; the worker then
+	 * declines / waits and runs its method again instead of exiting.
+	 * The rest is ServiceDefendIPv4Address's bookkeeping (Apple's
+	 * ServiceIPv4 ip_assigned_time / ip_conflict_*).
+	 */
+	bool			conflict;
+	time_t			v4_assigned;	/* monotonic secs at bind */
+	time_t			conflict_time;
+	int			conflict_count;
+
+	/*
+	 * The SLAAC address, so a duplicated-address notification can find
+	 * it. PENDING from just before it is installed until it is published
+	 * and tracked — a duplicate reported in that window is only recorded
+	 * (v6_dup), and v6_commit() acts on it — then ACTIVE, when the
+	 * notification withdraws it directly.
+	 */
+	int			v6_state;
+	bool			v6_dup;
+	struct in6_addr		v6_dup_addr;
+	struct in6_addr		v6_addr;
+	struct in6_addr		v6_router;
+	unsigned		v6_ifindex;
+	struct ra_router	*v6_rtr;
 };
+
+#define	V6_NONE		0
+#define	V6_PENDING	1
+#define	V6_ACTIVE	2
+
+/*
+ * Darwin's defaults (bootp ipconfigd.c): defend an address at most
+ * DEFEND_IP_ADDRESS_COUNT times, never in its first
+ * DEFEND_IP_ADDRESS_INTERVAL_SECS, with the count starting over after that
+ * long without a conflict; a Manual address given up is retried after
+ * MANUAL_CONFLICT_RETRY_INTERVAL_SECS. DHCP_DECLINE_WAIT_SECS is RFC 2131
+ * §3.1.5's minimum wait between DHCPDECLINE and a fresh DISCOVER.
+ */
+#define	DEFEND_IP_ADDRESS_INTERVAL_SECS		10
+#define	DEFEND_IP_ADDRESS_COUNT			5
+#define	MANUAL_CONFLICT_RETRY_INTERVAL_SECS	300
+#define	DHCP_DECLINE_WAIT_SECS			10
 
 static pthread_mutex_t	g_workers_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct dhcp_worker g_workers[BOUND_MAX_IF];
@@ -327,6 +390,156 @@ startup_mark_ready(const char *ifname)
 	startup_check();
 }
 
+/* The active worker for `ifname`, or NULL. Caller holds g_workers_lock. */
+static struct dhcp_worker *
+worker_find_locked(const char *ifname)
+{
+	int i;
+
+	for (i = 0; i < BOUND_MAX_IF; i++) {
+		if (g_workers[i].active &&
+		    strcmp(g_workers[i].ifname, ifname) == 0)
+			return (&g_workers[i]);
+	}
+	return (NULL);
+}
+
+static time_t
+monotonic_secs(void)
+{
+	struct timespec ts;
+
+	(void)clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (ts.tv_sec);
+}
+
+/* `ifname` just took its IPv4 address: start the defend clock (#349). */
+static void
+worker_v4_assigned(const char *ifname)
+{
+	struct dhcp_worker *w;
+
+	pthread_mutex_lock(&g_workers_lock);
+	if ((w = worker_find_locked(ifname)) != NULL)
+		w->v4_assigned = monotonic_secs();
+	pthread_mutex_unlock(&g_workers_lock);
+}
+
+/* Did `ifname`'s service just unwind because its address was in use? */
+static bool
+worker_conflicted(const char *ifname)
+{
+	struct dhcp_worker *w;
+	bool conflict = false;
+
+	pthread_mutex_lock(&g_workers_lock);
+	if ((w = worker_find_locked(ifname)) != NULL)
+		conflict = w->conflict;
+	pthread_mutex_unlock(&g_workers_lock);
+	return (conflict);
+}
+
+/*
+ * Take a duplicated SLAAC address back: stop the router tracker with its
+ * ::/0 (or, without one, the ::/0 apply_ra_lease installed), remove the
+ * address and withdraw State:/Network/Service/<UUID>/IPv6 — what #342 did
+ * when its DAD poll saw IN6_IFF_DUPLICATED, and what rtadv.c amounts to by
+ * never publishing a duplicated address. IPv4 is untouched.
+ */
+static void
+v6_withdraw(const char *ifname, const struct in6_addr *addr,
+    const struct in6_addr *router, unsigned ifindex, struct ra_router *rtr)
+{
+	struct sc_publish *pub;
+	char a[INET6_ADDRSTRLEN];
+
+	(void)inet_ntop(AF_INET6, addr, a, sizeof(a));
+	xlog("%s: DAD failed: %s is a duplicate — removing it, its ::/0 and "
+	    "the IPv6 publish", ifname, a);
+	if (rtr != NULL)
+		ra_router_stop(rtr, 1);
+	else
+		(void)remove_v6_default_route(router, ifindex);
+	(void)remove_v6_address(ifname, addr);
+	pub = sc_publish_open("ipconfigd");
+	if (pub != NULL) {
+		(void)sc_publish_remove_ipv6(pub, ifname);
+		sc_publish_close(pub);
+	}
+}
+
+/* `ifname` is about to install a SLAAC address: hold duplicates for it. */
+static void
+v6_pending(const char *ifname)
+{
+	struct dhcp_worker *w;
+
+	pthread_mutex_lock(&g_workers_lock);
+	if ((w = worker_find_locked(ifname)) != NULL) {
+		w->v6_state = V6_PENDING;
+		w->v6_dup = false;
+	}
+	pthread_mutex_unlock(&g_workers_lock);
+}
+
+/*
+ * The SLAAC address `v6` (NULL: none was installed) is published and its
+ * router tracker `rtr` running. Hand both to the worker table so a later
+ * duplicated-address notification can withdraw them — or, if DAD already
+ * reported `v6` duplicated while it was pending, withdraw them now.
+ */
+static void
+v6_commit(const char *ifname, const struct in6_addr *v6,
+    const struct ra_info *ra, struct ra_router *rtr)
+{
+	struct dhcp_worker *w;
+	bool dup = false;
+
+	pthread_mutex_lock(&g_workers_lock);
+	if ((w = worker_find_locked(ifname)) != NULL) {
+		if (v6 == NULL) {
+			w->v6_state = V6_NONE;
+		} else if (w->v6_dup &&
+		    IN6_ARE_ADDR_EQUAL(&w->v6_dup_addr, v6)) {
+			w->v6_state = V6_NONE;
+			dup = true;
+		} else {
+			w->v6_state = V6_ACTIVE;
+			w->v6_addr = *v6;
+			w->v6_router = ra->router_lladdr;
+			w->v6_ifindex = ra->router_scope_id;
+			w->v6_rtr = rtr;
+		}
+		w->v6_dup = false;
+	}
+	pthread_mutex_unlock(&g_workers_lock);
+	if (dup)
+		v6_withdraw(ifname, v6, &ra->router_lladdr,
+		    ra->router_scope_id, rtr);
+}
+
+/*
+ * The service is unwinding: take back its router tracker for teardown.
+ * NULL when there is none, or a duplicated-address notification already
+ * withdrew it.
+ */
+static struct ra_router *
+v6_end(const char *ifname)
+{
+	struct dhcp_worker *w;
+	struct ra_router *rtr = NULL;
+
+	pthread_mutex_lock(&g_workers_lock);
+	if ((w = worker_find_locked(ifname)) != NULL) {
+		if (w->v6_state == V6_ACTIVE)
+			rtr = w->v6_rtr;
+		w->v6_rtr = NULL;
+		w->v6_state = V6_NONE;
+	}
+	pthread_mutex_unlock(&g_workers_lock);
+	return (rtr);
+}
+
 /*
  * Read IPCONFIGD_FAST_LEASE from the environment. The env var caps
  * the effective lease time used for T1 / T2 timer math (the value
@@ -398,6 +611,7 @@ service_run_bound(const char *ifname, struct dhcp_lease *lease, bool dhcp,
 	 * IPCFG-BOUND-OK sees the address it expects.
 	 */
 	bound_state_set(ifname, lease);
+	worker_v4_assigned(ifname);
 	if (dhcp)
 		xlog("IPCFG-BOUND-OK");
 
@@ -469,6 +683,12 @@ service_run_bound(const char *ifname, struct dhcp_lease *lease, bool dhcp,
 	if (rar == 0) {
 		struct in6_addr v6;
 
+		/*
+		 * DAD runs in the kernel after the install; a duplicate comes
+		 * back as the IPv6DuplicatedAddress notification (#349),
+		 * which v6_commit() honours if it beat us here.
+		 */
+		v6_pending(ifname);
 		if (apply_ra_lease(ifname, &ra, &v6) == 0) {
 			if (pub != NULL)
 				(void)sc_publish_ipv6(pub, ifname, &v6,
@@ -479,7 +699,9 @@ service_run_bound(const char *ifname, struct dhcp_lease *lease, bool dhcp,
 			 * lifetime instead of outliving it (#350).
 			 */
 			rtr = ra_router_start(ifname, &ra, &v6);
+			v6_commit(ifname, &v6, &ra, rtr);
 		} else {
+			v6_commit(ifname, NULL, NULL, NULL);
 			xlog("IPCFG-RA-MISS: apply_ra_lease failed");
 		}
 	} else if (rar == 1) {
@@ -504,8 +726,10 @@ service_run_bound(const char *ifname, struct dhcp_lease *lease, bool dhcp,
 	 * Stop the router tracker before anything below removes the IPv6
 	 * key, so it cannot republish behind the teardown. Same SIGTERM
 	 * rule as the IPv4 lease: keep ::/0 across a restart, otherwise
-	 * take it back.
+	 * take it back. The worker table owns the tracker once committed
+	 * (a duplicated address may already have stopped it).
 	 */
+	rtr = v6_end(ifname);
 	ra_router_stop(rtr, !got_term);
 
 	/*
@@ -530,8 +754,8 @@ service_run_bound(const char *ifname, struct dhcp_lease *lease, bool dhcp,
 		    ifname);
 	} else {
 		xlog("%s: %s — deconfiguring", ifname, dhcp
-		    ? "lease lost, link down or method changed"
-		    : "link down or method changed");
+		    ? "lease lost, link down, method changed or address in use"
+		    : "link down, method changed or address in use");
 		(void)deconfigure_lease(ifname, lease);
 		if (pub != NULL)
 			(void)sc_publish_remove(pub, ifname);
@@ -578,6 +802,14 @@ dhcp_run_on_interface(const char *ifname, uint32_t lease_cap_secs,
 		return;
 	}
 	service_run_bound(ifname, &lease, true, lease_cap_secs, stop);
+
+	/*
+	 * Gave the address up to another host (#349): it is off the interface
+	 * now, so tell the server, as dhcp.c's arp_collision path does with
+	 * dhcp_decline(). The worker restarts DHCP after the RFC wait.
+	 */
+	if (!got_term && worker_conflicted(ifname))
+		(void)dhcp_decline(ifname, &lease);
 }
 
 /*
@@ -641,10 +873,41 @@ dhcp_worker_main(void *arg)
 
 	(void)strlcpy(ifname, w->ifname, sizeof(ifname));
 	method = w->method;
-	if (method.method == ipconfig_method_manual_e)
-		manual_run_on_interface(ifname, &method, &w->stop);
-	else
-		dhcp_run_on_interface(ifname, w->lease_cap_secs, &w->stop);
+	for (;;) {
+		bool conflict;
+		unsigned wait, i;
+
+		if (method.method == ipconfig_method_manual_e)
+			manual_run_on_interface(ifname, &method, &w->stop);
+		else
+			dhcp_run_on_interface(ifname, w->lease_cap_secs,
+			    &w->stop);
+
+		/*
+		 * Unwound by an address conflict (#349) rather than a link
+		 * down or method change: take the stop back and run the
+		 * method again once the conflict wait is over — dhcp.c's
+		 * decline-then-INIT, manual.c's retry timer.
+		 */
+		pthread_mutex_lock(&g_workers_lock);
+		conflict = w->conflict;
+		if (conflict) {
+			w->conflict = false;
+			w->stop = 0;
+		}
+		pthread_mutex_unlock(&g_workers_lock);
+		if (!conflict || got_term)
+			break;
+		wait = method.method == ipconfig_method_manual_e
+		    ? MANUAL_CONFLICT_RETRY_INTERVAL_SECS
+		    : DHCP_DECLINE_WAIT_SECS;
+		xlog("%s: address in use — running %s again in %us", ifname,
+		    ipconfig_method_string(method.method), wait);
+		for (i = 0; i < wait && !got_term && !w->stop; i++)
+			(void)sleep(1);
+		if (got_term || w->stop)
+			break;
+	}
 
 	pthread_mutex_lock(&g_workers_lock);
 	restart = w->restart;
@@ -686,6 +949,7 @@ dhcp_worker_stop(const char *ifname)
 		if (g_workers[i].active &&
 		    strcmp(g_workers[i].ifname, ifname) == 0) {
 			g_workers[i].stop = 1;
+			g_workers[i].conflict = false;	/* exit, not retry */
 			found = true;
 			break;
 		}
@@ -764,6 +1028,13 @@ dhcp_worker_start(const char *ifname, uint32_t lease_cap_secs)
 	w->stop = 0;
 	w->ready = false;
 	w->restart = false;
+	w->conflict = false;
+	w->v4_assigned = 0;
+	w->conflict_time = 0;
+	w->conflict_count = 0;
+	w->v6_state = V6_NONE;
+	w->v6_dup = false;
+	w->v6_rtr = NULL;
 	w->method = method;
 	w->lease_cap_secs = lease_cap_secs;
 	(void)strlcpy(w->ifname, ifname, sizeof(w->ifname));
@@ -844,6 +1115,7 @@ service_reconfigure(const char *ifname)
 		}
 		w->stop = 1;
 		w->restart = true;
+		w->conflict = false;	/* the restart replaces any retry */
 		unwinding = true;
 		break;
 	}
@@ -1125,6 +1397,150 @@ on_link_event(const char *ifname, int active, uint32_t lease_cap_secs)
 	}
 }
 
+/* Is `hw` the hardware address of one of our own interfaces? */
+static bool
+is_our_hwaddr(const uint8_t *hw, int hw_len)
+{
+	struct ifaddrs *ifa, *p;
+	bool ours = false;
+
+	if (getifaddrs(&ifa) != 0)
+		return (false);
+	for (p = ifa; p != NULL && !ours; p = p->ifa_next) {
+		const struct sockaddr_dl *dl;
+
+		if (p->ifa_addr == NULL || p->ifa_addr->sa_family != AF_LINK)
+			continue;
+		dl = (const struct sockaddr_dl *)(const void *)p->ifa_addr;
+		ours = dl->sdl_alen == hw_len &&
+		    memcmp(LLADDR(dl), hw, (size_t)hw_len) == 0;
+	}
+	freeifaddrs(ifa);
+	return (ours);
+}
+
+/* IPv6DuplicatedAddress for `addr` on `ifname` (#349). */
+static void
+on_v6_duplicated(const char *ifname, const struct in6_addr *addr)
+{
+	struct dhcp_worker *w;
+	struct ra_router *rtr;
+	struct in6_addr router;
+	unsigned ifindex;
+	char a[INET6_ADDRSTRLEN];
+
+	(void)inet_ntop(AF_INET6, addr, a, sizeof(a));
+	pthread_mutex_lock(&g_workers_lock);
+	w = worker_find_locked(ifname);
+	if (w != NULL && w->v6_state == V6_PENDING) {
+		/* Not published yet: v6_commit() checks this. */
+		w->v6_dup = true;
+		w->v6_dup_addr = *addr;
+		pthread_mutex_unlock(&g_workers_lock);
+		xlog("%s: %s reported duplicated while being installed", ifname,
+		    a);
+		return;
+	}
+	if (w == NULL || w->v6_state != V6_ACTIVE ||
+	    !IN6_ARE_ADDR_EQUAL(&w->v6_addr, addr)) {
+		pthread_mutex_unlock(&g_workers_lock);
+		xlog("%s: %s reported duplicated — not an address we "
+		    "configured; ignoring", ifname, a);
+		return;
+	}
+	rtr = w->v6_rtr;
+	router = w->v6_router;
+	ifindex = w->v6_ifindex;
+	w->v6_rtr = NULL;
+	w->v6_state = V6_NONE;
+	pthread_mutex_unlock(&g_workers_lock);
+	v6_withdraw(ifname, addr, &router, ifindex, rtr);
+}
+
+/*
+ * IPv4ARPCollision: a host at `hw` claims `ip` on `ifname` (#349). Only a
+ * claim on the address this interface's service holds matters. Defend it,
+ * or give it up — the worker's teardown deconfigures, and its retry loop
+ * declines (DHCP) and runs the method again. Darwin: dhcp.c / manual.c
+ * IFEventID_arp_collision_e and ServiceDefendIPv4Address.
+ */
+static void
+on_arp_collision(const char *ifname, struct in_addr ip, const uint8_t *hw,
+    int hw_len)
+{
+	struct dhcp_worker *w;
+	uint32_t bound;
+	time_t now;
+	bool defend = false, manual;
+	int count;
+	char a[INET_ADDRSTRLEN], h[3 * 16];
+	int i;
+
+	/* bootp's arp_collision(): no hardware address, or our own, is no claim. */
+	if (hw_len <= 0 || is_our_hwaddr(hw, hw_len))
+		return;
+	if (!bound_state_get_addr(ifname, &bound) || bound != ip.s_addr)
+		return;
+
+	(void)inet_ntop(AF_INET, &ip, a, sizeof(a));
+	h[0] = '\0';
+	for (i = 0; i < hw_len && i < 16; i++)
+		(void)snprintf(h + 3 * i, sizeof(h) - 3 * (size_t)i, "%s%02x",
+		    i == 0 ? "" : ":", hw[i]);
+
+	now = monotonic_secs();
+	pthread_mutex_lock(&g_workers_lock);
+	w = worker_find_locked(ifname);
+	if (w == NULL || w->stop) {
+		pthread_mutex_unlock(&g_workers_lock);
+		return;
+	}
+	manual = w->method.method == ipconfig_method_manual_e;
+	if (now - w->v4_assigned > DEFEND_IP_ADDRESS_INTERVAL_SECS) {
+		/* A quiet interval means the last defence held: count afresh. */
+		if (w->conflict_count > 0 && now - w->conflict_time >
+		    DEFEND_IP_ADDRESS_INTERVAL_SECS)
+			w->conflict_count = 0;
+		w->conflict_time = now;
+		w->conflict_count++;
+		defend = w->conflict_count <= DEFEND_IP_ADDRESS_COUNT;
+	}
+	count = w->conflict_count;
+	pthread_mutex_unlock(&g_workers_lock);
+
+	if (defend && arp_announce(ifname, ip) == 0) {
+		xlog("%s: defending %s against %s %d (of %d)", ifname, a, h,
+		    count, DEFEND_IP_ADDRESS_COUNT);
+		return;
+	}
+
+	pthread_mutex_lock(&g_workers_lock);
+	w = worker_find_locked(ifname);
+	if (w != NULL && !w->stop) {
+		w->conflict = true;
+		w->stop = 1;
+	} else {
+		w = NULL;
+	}
+	pthread_mutex_unlock(&g_workers_lock);
+	if (w != NULL)
+		xlog("%s: %s in use by %s — giving it up (%s)", ifname, a, h,
+		    manual ? "Manual: retrying later"
+		    : "DHCP: declining and starting over");
+}
+
+/* Link-watch conflict callback (sc_link_watch.h); on a dispatch worker. */
+static void
+on_addr_conflict(const char *ifname, int af, const void *addr,
+    const uint8_t *hw, int hw_len)
+{
+	if (af == AF_INET)
+		on_arp_collision(ifname, *(const struct in_addr *)addr, hw,
+		    hw_len);
+	else if (af == AF_INET6)
+		on_v6_duplicated(ifname, (const struct in6_addr *)addr);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1220,7 +1636,8 @@ main(int argc, char **argv)
 		startup_check();
 	}
 
-	if (sc_link_watch_start(on_link_event, lease_cap_secs) != 0)
+	if (sc_link_watch_start(on_link_event, on_addr_conflict,
+	    lease_cap_secs) != 0)
 		xlog("IPCFG-BOUND-FAIL: link watch unavailable — DHCP will "
 		    "not be triggered");
 
