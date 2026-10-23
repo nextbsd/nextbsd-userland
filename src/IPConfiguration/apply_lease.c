@@ -33,8 +33,11 @@
 
 #include <arpa/inet.h>
 
+#include <SystemConfiguration/SCPrivate.h>	/* _SC_NOTIFY_NETWORK_CHANGE */
+
 #include <errno.h>
 #include <fcntl.h>
+#include <notify.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -216,7 +219,7 @@ default_route(const struct dhcp_lease *lease, int rtm_type)
  * a wired em0's resolvers even though em0 outranks it. And the write
  * was a bare fopen("w") — a reader could observe the file truncated and
  * half-written, and nothing was fsync'd, so a crash could leave it
- * empty (part of #40).
+ * empty (part of #40). A successful rewrite posts network_change (#339).
  *
  * When nothing is bound the file is left alone: better to keep stale
  * resolvers than to have none, and a static resolv.conf that shipped in
@@ -288,6 +291,11 @@ resolv_conf_sync(void)
 	}
 	xlog("resolv.conf: %u nameserver(s) from primary %s",
 	    lease.dns_count, primary);
+
+	/* New resolvers: tell notify(3) watchers, as IPMonitor does. */
+	if (notify_post(_SC_NOTIFY_NETWORK_CHANGE) != NOTIFY_STATUS_OK)
+		xlog("resolv.conf: notify_post(" _SC_NOTIFY_NETWORK_CHANGE
+		    ") failed");
 }
 
 int

@@ -56,6 +56,11 @@ CFLAGS+=	-Wmissing-prototypes -Wpointer-arith
 # headers (AvailabilityMacros.h, ...) from launchd/freebsd-shims.
 CFLAGS+=	-I${.CURDIR}/../launchd/liblaunch
 CFLAGS+=	-I${.CURDIR}/../launchd/freebsd-shims
+# <notify.h> includes os/base.h from the libnotify shims (hostnamed takes
+# the same -I). <SystemConfiguration/SCPrivate.h> (_SC_NOTIFY_NETWORK_CHANGE)
+# comes from the source tree: libSystemConfiguration installs after configd.
+CFLAGS+=	-I${.CURDIR}/../Libnotify/freebsd-shims
+CFLAGS+=	-I${.CURDIR}/../libSystemConfiguration
 
 SYSROOT?=
 .if !empty(SYSROOT)
@@ -67,7 +72,10 @@ LDFLAGS+=	-Wl,--allow-shlib-undefined
 
 # -llaunch: bootstrap_check_in + the bootstrap_port global.
 # -lsystem_kernel: mach_msg and the Mach port syscalls.
+# -lnotify: notify_post(com.apple.system.config.network_change) after an
+# IPv4 / IPv6 key change, as Darwin's KernelEventMonitor does.
 LDADD+=		-llaunch -lsystem_kernel
+LDADD+=		-lnotify
 
 BINDIR=		/usr/sbin
 

@@ -588,9 +588,10 @@ needed_check "$DESTDIR/bin/launchctl" "libCoreFoundation"
 needed_check "$DESTDIR/bin/launchctl" "lib_FoundationICU"   # TODO verify under cross: soname may be libicucore
 
 # ---- configd ----------------------------------------------------------------
-# build.sh ~1511-1543. Generate config.defs MIG stubs (host mig), then build
-# configd (bsd.prog.mk) with MIGOUT pointing at them. usr/sbin pre-created.
-comp "configd"
+# build.sh ~1511-1543. Generate config.defs MIG stubs (host mig) here, for
+# libSystemConfiguration below. The configd daemon itself (bsd.prog.mk,
+# MIGOUT pointing at them) builds after libnotify: it links -lnotify (#339).
+comp "configd MIG stubs (host mig)"
 mkdir -p "$DESTDIR/usr/sbin"
 CONFIGD_MIG="$MIGROOT/configd"
 rm -rf "$CONFIGD_MIG"; mkdir -p "$CONFIGD_MIG"
@@ -600,9 +601,6 @@ run_mig "$CONFIGD_MIG" -I"$SRC/libmach/include" \
     "$SRC/configd/config.defs" \
     || { echo "FAIL: mig could not process config.defs"; exit 1; }
 test -s "$CONFIGD_MIG/configServer.c" || { echo "FAIL: mig produced no configServer.c"; exit 1; }
-run_buildenv "make -C $SRC/configd DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$CONFIGD_MIG all install"
-test -x "$DESTDIR/usr/sbin/configd" || { echo "FAIL: /usr/sbin/configd not installed"; exit 1; }
-echo "==> CONFIGD-BUILD-OK"
 # DROPPED: configtest/notifytest/patterntest/listtest/multitest (host-exec).
 
 # ---- libSystemConfiguration -------------------------------------------------
@@ -738,6 +736,12 @@ run_buildenv "make -C $SRC/Libnotify DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$L
 sync_sysroot
 test -f "$DESTDIR/usr/lib/system/libnotify.so.1" || { echo "FAIL: libnotify.so.1 not installed"; exit 1; }
 echo "==> NOTIFY-LIB-OK"
+
+# configd builds AFTER libnotify — it posts network_change via -lnotify (#339).
+comp "configd"
+run_buildenv "make -C $SRC/configd DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$CONFIGD_MIG all install"
+test -x "$DESTDIR/usr/sbin/configd" || { echo "FAIL: /usr/sbin/configd not installed"; exit 1; }
+echo "==> CONFIGD-BUILD-OK"
 
 # ---- ASL / syslog stack -----------------------------------------------------
 # build.sh ~2179-2295. Generate asl_ipc MIG stubs (host mig); build

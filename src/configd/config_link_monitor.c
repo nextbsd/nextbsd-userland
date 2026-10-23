@@ -52,7 +52,8 @@
  *   State:/Network/Interface/<ifname>/IPv4
  *   State:/Network/Interface/<ifname>/IPv6
  * in the shape Darwin's KernelEventMonitor gives them (ev_ipv4.c / ev_ipv6.c),
- * from getifaddrs plus SIOCGIFAFLAG_IN6. See publish_ip().
+ * from getifaddrs plus SIOCGIFAFLAG_IN6. See publish_ip(). Each change is
+ * followed by notify_post(com.apple.system.config.network_change) (#339).
  *
  * Kernel events (#346): the primary source is now Darwin's own — a PF_SYSTEM
  * SYSPROTO_EVENT socket filtered to KEV_NETWORK_CLASS, opened and read the way
@@ -95,6 +96,9 @@
 
 #include <mach/mach.h>
 #include <servers/bootstrap.h>
+
+#include <notify.h>
+#include <SystemConfiguration/SCPrivate.h>	/* _SC_NOTIFY_NETWORK_CHANGE */
 
 #include "config_types.h"		/* xmlData_t, SCD_SERVER, kSCStatusOK */
 #include "config_link_monitor.h"
@@ -363,6 +367,9 @@ struct ip_cache {
 static struct ip_cache	*g_ipcache;
 static size_t		g_ipcache_n;
 
+/* An IPv4 / IPv6 key was written since the last network_change post. */
+static int		g_ip_changed;
+
 static struct ip_cache *
 ip_cache_lookup(const char *key)
 {
@@ -431,7 +438,27 @@ ip_key_update(const char *key, const char *what, const char *val, size_t len)
 			c->len = len;
 		}
 	}
+	g_ip_changed = 1;
 	lmlog("KEM-ADDR: %s %s", what, val != NULL ? "updated" : "removed");
+}
+
+/*
+ * Tell notify(3) watchers (syslogd, hostnamed) the network changed, as
+ * Darwin's KernelEventMonitor does after an address change (eventmon.c).
+ * Only posts when an IPv4 / IPv6 key actually changed, unless `force`.
+ */
+static void
+post_network_change(int force)
+{
+	uint32_t status;
+
+	if (!force && !g_ip_changed)
+		return;
+	g_ip_changed = 0;
+	status = notify_post(_SC_NOTIFY_NETWORK_CHANGE);
+	if (status != NOTIFY_STATUS_OK)
+		lmlog("KEM-FAIL: notify_post(" _SC_NOTIFY_NETWORK_CHANGE
+		    ") status=%u", status);
 }
 
 /* Prefix length of an IPv6 netmask (contiguous leading one bits). */
@@ -643,6 +670,7 @@ publish_ip(const char *ifname)
 	publish_ipv4(ifa, ifname);
 	publish_ipv6(ifa, ifname);
 	freeifaddrs(ifa);
+	post_network_change(0);
 }
 
 /* A departed interface takes its IPv4 / IPv6 keys with it. */
@@ -661,6 +689,7 @@ unpublish_ip(const char *ifname)
 	    "State:/Network/Interface/%s/IPv6", ifname);
 	(void)snprintf(what, sizeof(what), "%s IPv6", ifname);
 	ip_key_update(key, what, NULL, 0);
+	post_network_change(0);
 }
 
 /*
@@ -699,7 +728,8 @@ publish_link_current(const char *ifname)
  * Publish the current link state of every interface (startup snapshot, so a
  * watcher already up before any RTM_IFINFO still sees the state). The AF_LINK
  * ifaddr's ifa_data is a `struct if_data *` carrying ifi_link_state. Each
- * interface's IPv4 / IPv6 keys are seeded from the same snapshot (#338).
+ * interface's IPv4 / IPv6 keys are seeded from the same snapshot (#338),
+ * then com.apple.system.config.network_change is posted once (#339).
  */
 static void
 publish_all(void)
@@ -724,6 +754,8 @@ publish_all(void)
 		publish_ipv6(ifa, p->ifa_name);
 	}
 	freeifaddrs(ifa);
+	/* Once after the snapshot, so early watchers re-read the state. */
+	post_network_change(1);
 }
 
 /*
