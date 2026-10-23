@@ -31,6 +31,13 @@
  *     new primary service / interface. mDNSResponder should re-pick
  *     its default-route interface for unicast DNS-SD fallback.
  *
+ *   - patterns State:/Network/Interface/[^/]+/{IPv4,IPv6,AirPort} —
+ *     the per-interface address keys configd's link monitor publishes
+ *     from RTM_NEWADDR / RTM_DELADDR (config_link_monitor.c, #338), plus
+ *     the AirPort entity. This is the set Darwin's mDNSResponder watches
+ *     (mDNSMacOSX.c WatchForNetworkChanges); any change re-walks the
+ *     interface list (#343).
+ *
  * iter 1: registered the subscriptions and logged every callback,
  * plus the HostNames -> mDNS_SetFQDN re-announce path (the debounced
  * Recompute below). It proved the Apple-shape wire-up under our
@@ -93,6 +100,17 @@
  * memory + the same workaround skipping notify_register_dispatch in
  * hostnamed's vendored set-hostname.c).
  *
+ * #343: watches the Interface/.+/{IPv4,IPv6,AirPort} keys above, and
+ * ports Darwin's TENTATIVE guard (mDNSMacOSXNetworkChanged): when the
+ * main thread is about to re-walk and any IPv6 address is still
+ * IN6_IFF_TENTATIVE (DAD in progress), it reschedules the re-walk half a
+ * second later instead of binding to an address that is not usable yet.
+ * The retry is a one-shot dispatch_after_f on g_queue that posts another
+ * wake byte, so the re-walk itself still happens on the main thread.
+ * Unlike Darwin the wait is capped (TENTATIVE_WAIT_MAX): an address
+ * whose DAD the kernel has not started (interface not running) can stay
+ * TENTATIVE indefinitely, and that must not hold off every refresh.
+ *
  * The routing-socket watcher in mDNSPosix.c remains as a parallel
  * trigger for interface state; the SCDS callback is now an additional,
  * Apple-shape trigger that fires off the same SystemConfiguration
@@ -100,12 +118,21 @@
  * is fine — the interface walk is idempotent.
  */
 
+#include <sys/types.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+
+#include <net/if.h>
+#include <netinet/in.h>
+#include <netinet6/in6_var.h>
+
 #include <CoreFoundation/CoreFoundation.h>
 #include <SystemConfiguration/SCDynamicStore.h>
 #include <SystemConfiguration/SCSchemaDefinitions.h>
 #include <dispatch/dispatch.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -148,6 +175,18 @@ static dispatch_source_t	g_debounce_timer;
  * the THREADING note at the top of the file. -1 = not yet created. */
 static int	g_wake_rd = -1;
 static int	g_wake_wr = -1;
+
+/* TENTATIVE-IPv6 deferral state (#343). Darwin's mDNSMacOSXNetworkChanged
+ * reschedules itself SetNetworkChanged(mDNSPlatformOneSecond / 2) while
+ * any IPv6 address is TENTATIVE; TENTATIVE_RETRY_MS is that half second.
+ * g_retry_pending is set (main thread) when a retry is queued and cleared
+ * (g_queue) when it fires, so a burst of deferred wakes queues only one.
+ * g_tentative_since is the main-thread tick the current deferral started
+ * (0 = not deferring); after TENTATIVE_WAIT_MAX seconds we re-walk anyway. */
+#define TENTATIVE_RETRY_MS	500
+#define TENTATIVE_WAIT_MAX	10
+static int	g_retry_pending;
+static mDNSs32	g_tentative_since;
 
 /* Cached State:/Network/HostNames key string (UTF-8). Used to tell the
  * hostname-only path (debounce -> Recompute -> mDNS_SetFQDN) from the
@@ -466,17 +505,73 @@ mDNSConfigStorePostInterfaceRefresh(void)
 		    "wake-pipe write failed: %s\n", strerror(errno));
 }
 
+/* Deferred-retry handler (#343). Runs on g_queue TENTATIVE_RETRY_MS after
+ * mDNSConfigStoreWake found a TENTATIVE address; posts a fresh wake so the
+ * main thread re-checks and, once DAD is done, re-walks. */
+static void
+mDNSConfigStoreTentativeRetry(void *context)
+{
+	(void)context;
+	__atomic_store_n(&g_retry_pending, 0, __ATOMIC_RELEASE);
+	mDNSConfigStorePostInterfaceRefresh();
+}
+
+/* TRUE if any IPv6 address on the system is still IN6_IFF_TENTATIVE —
+ * Darwin's mDNSMacOSXNetworkChanged check. It tests TENTATIVE, not
+ * IN6_IFF_NOTREADY: a TENTATIVE address will shortly become ready, a
+ * DUPLICATED one may never. The socket and the getifaddrs list are both
+ * released before returning. */
+static Boolean
+mDNSConfigStoreIPv6Tentative(char *ifname, size_t ifnamesz)
+{
+	struct ifaddrs *list, *p;
+	struct in6_ifreq ifr6;
+	Boolean tentative = FALSE;
+	int s;
+
+	s = socket(AF_INET6, SOCK_DGRAM, 0);
+	if (s < 0)
+		return (FALSE);
+	if (getifaddrs(&list) != 0) {
+		(void)close(s);
+		return (FALSE);
+	}
+	for (p = list; p != NULL; p = p->ifa_next) {
+		if (p->ifa_addr == NULL || p->ifa_addr->sa_family != AF_INET6)
+			continue;
+		(void)memset(&ifr6, 0, sizeof(ifr6));
+		(void)strlcpy(ifr6.ifr_name, p->ifa_name,
+		    sizeof(ifr6.ifr_name));
+		ifr6.ifr_addr = *(struct sockaddr_in6 *)(void *)p->ifa_addr;
+		if (ioctl(s, SIOCGIFAFLAG_IN6, &ifr6) == 0 &&
+		    (ifr6.ifr_ifru.ifru_flags6 & IN6_IFF_TENTATIVE) != 0) {
+			(void)strlcpy(ifname, p->ifa_name, ifnamesz);
+			tentative = TRUE;
+			break;
+		}
+	}
+	freeifaddrs(list);
+	(void)close(s);
+	return (tentative);
+}
+
 /* mDNS event-loop read callback for the self-pipe read end. Runs on the
  * MAIN thread (mDNSPosixRunEventLoopOnce's select loop), so it may
  * mutate mDNS-core state directly. Drains every queued wake byte, then
  * re-walks the interface list once — matching InterfaceChangeCallback
  * in mDNSPosix.c, which also calls RefreshInterfaceList from the event
- * loop without mDNS_Lock (the Posix lock is a no-op). */
+ * loop without mDNS_Lock (the Posix lock is a no-op).
+ *
+ * Before re-walking, Darwin's TENTATIVE guard (#343): while any IPv6
+ * address is still in DAD, queue one retry TENTATIVE_RETRY_MS out and
+ * return without refreshing, for at most TENTATIVE_WAIT_MAX seconds. */
 static void
 mDNSConfigStoreWake(int fd, void *context)
 {
 	char drain[64];
+	char ifname[IFNAMSIZ];
 	ssize_t n;
+	mDNSs32 now;
 
 	(void)context;
 
@@ -485,8 +580,30 @@ mDNSConfigStoreWake(int fd, void *context)
 		n = read(fd, drain, sizeof(drain));
 	} while (n > 0 || (n < 0 && errno == EINTR));
 
+	now = mDNSPlatformRawTime();
+	if (now == 0)
+		now = 1;	/* 0 means "not deferring" */
+	if (mDNSConfigStoreIPv6Tentative(ifname, sizeof(ifname)) &&
+	    (g_tentative_since == 0 || now - g_tentative_since <
+	    TENTATIVE_WAIT_MAX * mDNSPlatformOneSecond)) {
+		if (g_tentative_since == 0) {
+			g_tentative_since = now;
+			(void)fprintf(stderr, "mDNSResponder mDNSConfigStore: "
+			    "IPv6 address on %s TENTATIVE, deferring interface "
+			    "re-walk\n", ifname);
+			(void)fflush(stderr);
+		}
+		if (!__atomic_exchange_n(&g_retry_pending, 1,
+		    __ATOMIC_ACQ_REL))
+			dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW,
+			    (int64_t)TENTATIVE_RETRY_MS * NSEC_PER_MSEC),
+			    g_queue, NULL, mDNSConfigStoreTentativeRetry);
+		return;
+	}
+	g_tentative_since = 0;
+
 	(void)fprintf(stderr, "mDNSResponder mDNSConfigStore: "
-	    "MDNS-IFWATCH-OK: interface/service IPv4 change -> "
+	    "MDNS-IFWATCH-OK: interface/service address change -> "
 	    "re-walking interface list (RefreshInterfaceList)\n");
 	(void)fflush(stderr);
 
@@ -495,8 +612,8 @@ mDNSConfigStoreWake(int fd, void *context)
 
 /* SCDS callback — every registered key + pattern routes here. We log the
  * change(s), ALWAYS arm the debounced hostname recompute, and wake the main
- * thread to re-walk the interface list when an interface / service IPv4 key
- * changed.
+ * thread to re-walk the interface list when an interface / service address
+ * key changed.
  *
  * The recompute is armed unconditionally rather than only on the exact
  * HostNames key because in our configd the Setup:/Network/HostNames
@@ -528,9 +645,10 @@ mDNSConfigStoreCallback(SCDynamicStoreRef store, CFArrayRef changedKeys,
 		    "key changed -> %s\n", kk);
 
 		/* Anything that is not the exact HostNames key is an interface /
-		 * service IPv4 change (State:/Network/Global/IPv4 or the
-		 * State:/Network/Service/.+/IPv4 pattern) and drives the
-		 * interface re-walk. The hostname recompute is armed
+		 * service address change (State:/Network/Global/IPv4, the
+		 * State:/Network/Service/.+/IPv4 pattern, or one of the
+		 * State:/Network/Interface/.+/{IPv4,IPv6,AirPort} patterns) and
+		 * drives the interface re-walk. The hostname recompute is armed
 		 * unconditionally below, so no separate hostname flag is kept. */
 		if (!(g_hostnames_key[0] != '\0' &&
 		    strcmp(kk, g_hostnames_key) == 0))
@@ -595,6 +713,26 @@ mDNSConfigStoreSubscribe(SCDynamicStoreRef store)
 		CFArrayAppendValue(patterns, key);
 		CFRelease(key);
 	}
+
+	/* Patterns State:/Network/Interface/[^/]+/{IPv4,IPv6,AirPort} — the
+	 * per-interface keys Darwin's WatchForNetworkChanges watches. configd's
+	 * link monitor publishes IPv4 / IPv6 on every address add / remove
+	 * (#338); AirPort is a literal pattern, as on Darwin, since there is no
+	 * kSCEntNetAirPort here. */
+	key = SCDynamicStoreKeyCreateNetworkInterfaceEntity(NULL,
+	    kSCDynamicStoreDomainState, kSCCompAnyRegex, kSCEntNetIPv4);
+	if (key != NULL) {
+		CFArrayAppendValue(patterns, key);
+		CFRelease(key);
+	}
+	key = SCDynamicStoreKeyCreateNetworkInterfaceEntity(NULL,
+	    kSCDynamicStoreDomainState, kSCCompAnyRegex, kSCEntNetIPv6);
+	if (key != NULL) {
+		CFArrayAppendValue(patterns, key);
+		CFRelease(key);
+	}
+	CFArrayAppendValue(patterns,
+	    CFSTR("State:/Network/Interface/[^/]+/AirPort"));
 
 	ok = SCDynamicStoreSetNotificationKeys(store, keys, patterns);
 	CFRelease(keys);
@@ -738,7 +876,8 @@ mDNSConfigStoreInit(void)
 	}
 
 	(void)fprintf(stderr, "mDNSResponder MDNS-SCDS-OK: SCDynamicStore "
-	    "subscriber up (HostNames + Global/IPv4 + Service/.+/IPv4)%s\n",
+	    "subscriber up (HostNames + Global/IPv4 + Service/.+/IPv4 + "
+	    "Interface/.+/{IPv4,IPv6,AirPort})%s\n",
 	    g_wake_wr >= 0 ? "; iter-4 interface watcher armed" : "");
 	(void)fflush(stderr);
 	return (0);
