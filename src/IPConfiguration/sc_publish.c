@@ -204,8 +204,11 @@ sc_publish_ipv4(struct sc_publish *p, const char *ifname,
 
 	add_single_addr_array(dict, k_addresses, &lease->addr);
 	add_single_addr_array(dict, k_masks, &lease->netmask);
-	add_addr_string(dict, k_router, &lease->router);
-	add_addr_string(dict, k_server, &lease->server);
+	/* Absent for a Manual service without a router (#58), as on Apple. */
+	if (lease->router.s_addr != INADDR_ANY)
+		add_addr_string(dict, k_router, &lease->router);
+	if (lease->server.s_addr != INADDR_ANY)
+		add_addr_string(dict, k_server, &lease->server);
 
 	iface_str = mkstr(ifname);
 	CFDictionarySetValue(dict, k_iface, iface_str);
