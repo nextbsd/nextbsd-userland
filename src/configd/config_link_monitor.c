@@ -63,6 +63,17 @@
  * PF_SYSTEM (socket() fails), the PF_ROUTE path runs exactly as before;
  * that fallback is quiet, a line in configd's log only.
  *
+ * Three events become notify-only keys, posted with confignotify
+ * (SCDynamicStoreNotifyValue) and never stored, as ev_ipv4.c / ev_ipv6.c
+ * post them (#348):
+ *   KEV_INET_ARPCOLLISION      .../<if>/IPv4ARPCollision/<ip>/<hw>
+ *   KEV_INET6_NEW_USER_ADDR    .../<if>/IPv6DuplicatedAddress/<ip>/<hw>
+ *     with IN6_IFF_DUPLICATED
+ *   KEV_INET6_DEFROUTER        .../<if>/IPv6RouterExpired
+ * Darwin keys IPv6RouterExpired off KEV_ND6_RTR_EXPIRED. The NextBSD kernel
+ * has no ND6 subclass and posts KEV_INET6_DEFROUTER for every ::/0 add,
+ * change or delete, so only a router whose ::/0 is gone is reported.
+ *
  * The kernel posts KEV_DL_LINK_ON / LINK_OFF only for a known link state, so
  * the IFF_UP fallback link_active() applies to LINK_STATE_UNKNOWN interfaces
  * needs KEV_DL_SIFFLAGS, which older kernels do not post. Until one is seen,
@@ -74,6 +85,7 @@
 #include <sys/kern_event.h>
 #include <sys/socket.h>
 #include <sys/sys_domain.h>
+#include <sys/sysctl.h>
 
 #include <net/if.h>
 #include <net/net_kev.h>
@@ -110,6 +122,8 @@ extern kern_return_t configopen(mach_port_t, xmlData_t,
 extern kern_return_t configset(mach_port_t, xmlData_t, mach_msg_type_number_t,
     xmlData_t, mach_msg_type_number_t, int, int *, int *);
 extern kern_return_t configremove(mach_port_t, xmlData_t,
+    mach_msg_type_number_t, int *);
+extern kern_return_t confignotify(mach_port_t, xmlData_t,
     mach_msg_type_number_t, int *);
 
 /* liblaunch global — the bootstrap port configd checked its service in on. */
@@ -926,6 +940,131 @@ kev_ifname(const struct net_event_data *ed, char *ifname, size_t len)
 }
 
 /*
+ * Notify watchers of `key` without storing a value: Darwin's
+ * SCDynamicStoreNotifyValue, which the MIG interface carries as confignotify.
+ */
+static void
+notify_key(const char *key)
+{
+	int		status = 0;
+	kern_return_t	kr;
+
+	if (g_session == MACH_PORT_NULL)
+		return;
+	kr = confignotify(g_session, key, (mach_msg_type_number_t)strlen(key),
+	    &status);
+	if (kr != KERN_SUCCESS || status != kSCStatusOK) {
+		lmlog("KEM-NOTIFY-FAIL: confignotify(%s) kr=0x%x status=%d",
+		    key, (unsigned)kr, status);
+		return;
+	}
+	lmlog("KEM-NOTIFY: %s", key);
+}
+
+/*
+ * State:/Network/Interface/<ifname>/<entity>/<addr>/<hw> — the collision key
+ * of ev_ipv4.c ipv4_arp_collision and ev_ipv6.c ipv6_duplicated_address: the
+ * hardware address as "%02x" bytes joined by ':'.
+ */
+static void
+notify_addr_conflict(const char *ifname, const char *entity, const char *addr,
+    const uint8_t *hw, int hw_len)
+{
+	char	key[1024];
+	size_t	len;
+	int	i, n;
+
+	n = snprintf(key, sizeof(key), "State:/Network/Interface/%s/%s/%s",
+	    ifname, entity, addr);
+	if (n <= 0 || (size_t)n >= sizeof(key))
+		return;
+	len = (size_t)n;
+	for (i = 0; i < hw_len; i++) {
+		n = snprintf(key + len, sizeof(key) - len, "%s%02x",
+		    i == 0 ? "/" : ":", hw[i]);
+		if (n <= 0 || (size_t)n >= sizeof(key) - len)
+			return;
+		len += (size_t)n;
+	}
+	notify_key(key);
+}
+
+/* sockaddr stride in a routing message (SA_SIZE in the kernel). */
+#define RT_SA_SIZE(sa) ((sa)->sa_len == 0 ? sizeof(long) : \
+	1 + (((size_t)(sa)->sa_len - 1) | (sizeof(long) - 1)))
+
+/*
+ * Whether the inet6 table still holds ::/0 on interface `ifindex` via
+ * `router` (an interface route when `router` is ::). KEV_INET6_DEFROUTER
+ * names the router but not whether its route came or went, so this tells
+ * the delete that Darwin reports as KEV_ND6_RTR_EXPIRED from an add or a
+ * change. -1 when the table cannot be read.
+ */
+static int
+defrouter_present(unsigned ifindex, const struct in6_addr *router)
+{
+	int			mib[6] = { CTL_NET, PF_ROUTE, 0, AF_INET6,
+				    NET_RT_DUMP, 0 };
+	const struct rt_msghdr	*rtm;
+	const struct sockaddr	*sa, *dst, *gw;
+	struct sockaddr_in6	gw6;
+	char			*buf, *next, *lim, *cp;
+	size_t			len;
+	int			i, found = 0;
+
+	if (sysctl(mib, 6, NULL, &len, NULL, 0) != 0)
+		return (-1);
+	len += len / 2 + 1024;		/* room for routes added meanwhile */
+	if ((buf = malloc(len)) == NULL)
+		return (-1);
+	if (sysctl(mib, 6, buf, &len, NULL, 0) != 0) {
+		free(buf);
+		return (-1);
+	}
+	lim = buf + len;
+	for (next = buf; !found && next + sizeof(*rtm) <= lim;
+	    next += rtm->rtm_msglen) {
+		rtm = (const struct rt_msghdr *)(const void *)next;
+		if (rtm->rtm_msglen < sizeof(*rtm) ||
+		    next + rtm->rtm_msglen > lim)
+			break;
+		if (rtm->rtm_version != RTM_VERSION ||
+		    rtm->rtm_index != ifindex ||
+		    (rtm->rtm_flags & RTF_HOST) != 0)
+			continue;
+		dst = gw = NULL;
+		cp = next + sizeof(*rtm);
+		for (i = 0; i < RTAX_MAX && cp < next + rtm->rtm_msglen;
+		    i++) {
+			if ((rtm->rtm_addrs & (1 << i)) == 0)
+				continue;
+			sa = (const struct sockaddr *)(const void *)cp;
+			if (i == RTAX_DST)
+				dst = sa;
+			else if (i == RTAX_GATEWAY)
+				gw = sa;
+			cp += RT_SA_SIZE(sa);
+		}
+		if (dst == NULL || dst->sa_family != AF_INET6 ||
+		    !IN6_IS_ADDR_UNSPECIFIED(&((const struct sockaddr_in6 *)
+		    (const void *)dst)->sin6_addr))
+			continue;
+		if (IN6_IS_ADDR_UNSPECIFIED(router)) {
+			found = gw == NULL || gw->sa_family != AF_INET6;
+			continue;
+		}
+		if (gw == NULL || gw->sa_family != AF_INET6 ||
+		    gw->sa_len < sizeof(gw6))
+			continue;
+		(void)memcpy(&gw6, gw, sizeof(gw6));
+		unembed_scope6(&gw6);
+		found = IN6_ARE_ADDR_EQUAL(&gw6.sin6_addr, router);
+	}
+	free(buf);
+	return (found);
+}
+
+/*
  * One KEV_NETWORK_CLASS event, mapped as Darwin's KernelEventMonitor maps it
  * (eventmon.c processEvent_Apple_Network, ev_dlil.c). Every payload handled
  * here starts with a struct net_event_data naming the interface. Returns 1
@@ -936,13 +1075,20 @@ static int
 kev_message(const struct kern_event_msg *ev)
 {
 	const struct net_event_data	*ed;
+	const struct kev_in_collision	*ic;
+	const struct kev_in6_data	*i6;
+	struct sockaddr_in6		sin6;
 	char				ifname[IFNAMSIZ];
+	char				addr[INET6_ADDRSTRLEN];
+	size_t				len;
+	unsigned			idx;
 
 	if (ev->vendor_code != KEV_VENDOR_APPLE ||
 	    ev->kev_class != KEV_NETWORK_CLASS)
 		return (0);
 	if (ev->total_size < KEV_MSG_HEADER_SIZE + sizeof(*ed))
 		return (0);
+	len = ev->total_size - KEV_MSG_HEADER_SIZE;
 	ed = (const struct net_event_data *)(const void *)&ev->event_data[0];
 	if (kev_ifname(ed, ifname, sizeof(ifname)) != 0)
 		return (0);
@@ -984,11 +1130,23 @@ kev_message(const struct kern_event_msg *ev)
 		case KEV_INET_SIFNETMASK:
 			publish_ip(ifname);
 			break;
+		case KEV_INET_ARPCOLLISION:
+			/* eventmon.c: the hardware address follows the
+			 * struct, hw_len bytes of it. */
+			ic = (const struct kev_in_collision *)(const void *)ed;
+			if (len < sizeof(*ic) || len < sizeof(*ic) + ic->hw_len)
+				break;
+			(void)inet_ntop(AF_INET, &ic->ia_ipaddr, addr,
+			    sizeof(addr));
+			notify_addr_conflict(ifname, "IPv4ARPCollision", addr,
+			    ic->hw_addr, ic->hw_len);
+			break;
 		default:
 			break;
 		}
 		break;
 	case KEV_INET6_SUBCLASS:
+		i6 = (const struct kev_in6_data *)(const void *)ed;
 		switch (ev->event_code) {
 		case KEV_INET6_NEW_USER_ADDR:
 		case KEV_INET6_CHANGED_ADDR:
@@ -996,6 +1154,33 @@ kev_message(const struct kern_event_msg *ev)
 		case KEV_INET6_NEW_LL_ADDR:
 		case KEV_INET6_NEW_RTADV_ADDR:
 			publish_ip(ifname);
+			/* DAD found the address in use (eventmon.c). */
+			if (ev->event_code != KEV_INET6_NEW_USER_ADDR ||
+			    len < sizeof(*i6) ||
+			    (i6->ia6_flags & IN6_IFF_DUPLICATED) == 0)
+				break;
+			sin6 = i6->ia_addr;
+			unembed_scope6(&sin6);
+			(void)inet_ntop(AF_INET6, &sin6.sin6_addr, addr,
+			    sizeof(addr));
+			notify_addr_conflict(ifname, "IPv6DuplicatedAddress",
+			    addr, i6->ia_mac, (int)sizeof(i6->ia_mac));
+			break;
+		case KEV_INET6_DEFROUTER:
+			/* A departed interface's ::/0 went with it. */
+			if (len < sizeof(*i6) ||
+			    (idx = if_nametoindex(ifname)) == 0)
+				break;
+			sin6 = i6->ia_addr;
+			unembed_scope6(&sin6);
+			if (defrouter_present(idx, &sin6.sin6_addr) == 0) {
+				char key[128];
+
+				(void)snprintf(key, sizeof(key),
+				    "State:/Network/Interface/%s/"
+				    "IPv6RouterExpired", ifname);
+				notify_key(key);
+			}
 			break;
 		default:
 			break;
