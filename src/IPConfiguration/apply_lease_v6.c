@@ -375,8 +375,15 @@ wait_for_dad(const char *ifname, const struct in6_addr *addr)
 _Static_assert(RT_SIN6_WIRE >= sizeof(struct sockaddr_in6),
     "RT_SIN6_WIRE smaller than struct sockaddr_in6");
 
+/*
+ * Write one PF_ROUTE message for the ::/0 default via `gateway`.
+ * `type` is RTM_ADD or RTM_DELETE. An add that finds the route already
+ * present (EEXIST) and a delete that finds it already gone (ESRCH)
+ * both count as success — the caller's desired state holds.
+ */
 static int
-install_v6_default_route(const struct in6_addr *gateway, unsigned ifindex)
+v6_default_route_msg(int type, const struct in6_addr *gateway,
+    unsigned ifindex)
 {
 	struct {
 		struct rt_msghdr	hdr;
@@ -391,7 +398,7 @@ install_v6_default_route(const struct in6_addr *gateway, unsigned ifindex)
 	(void)memset(&msg, 0, sizeof(msg));
 	msg.hdr.rtm_msglen = sizeof(msg);
 	msg.hdr.rtm_version = RTM_VERSION;
-	msg.hdr.rtm_type = RTM_ADD;
+	msg.hdr.rtm_type = (u_char)type;
 	msg.hdr.rtm_addrs = RTA_DST | RTA_GATEWAY | RTA_NETMASK;
 	msg.hdr.rtm_flags = RTF_UP | RTF_GATEWAY | RTF_STATIC;
 	msg.hdr.rtm_pid = (int32_t)getpid();
@@ -434,17 +441,31 @@ install_v6_default_route(const struct in6_addr *gateway, unsigned ifindex)
 	}
 	n = write(sock, &msg, sizeof(msg));
 	if (n != (ssize_t)sizeof(msg)) {
-		if (errno == EEXIST) {
+		if ((type == RTM_ADD && errno == EEXIST) ||
+		    (type == RTM_DELETE && errno == ESRCH)) {
 			(void)close(sock);
 			return (0);
 		}
-		xlog("write(PF_ROUTE, RTM_ADD ::/0) failed: %s",
+		xlog("write(PF_ROUTE, %s ::/0) failed: %s",
+		    type == RTM_ADD ? "RTM_ADD" : "RTM_DELETE",
 		    strerror(errno));
 		(void)close(sock);
 		return (-1);
 	}
 	(void)close(sock);
 	return (0);
+}
+
+int
+install_v6_default_route(const struct in6_addr *gateway, unsigned ifindex)
+{
+	return (v6_default_route_msg(RTM_ADD, gateway, ifindex));
+}
+
+int
+remove_v6_default_route(const struct in6_addr *gateway, unsigned ifindex)
+{
+	return (v6_default_route_msg(RTM_DELETE, gateway, ifindex));
 }
 
 int

@@ -383,7 +383,7 @@ sc_publish_ipv6(struct sc_publish *p, const char *ifname,
 
 	if (inet_ntop(AF_INET6, addr, abuf, sizeof(abuf)) == NULL)
 		return (-1);
-	{
+	if (router_lladdr != NULL) {
 		char rbase[INET6_ADDRSTRLEN];
 
 		if (inet_ntop(AF_INET6, router_lladdr, rbase,
@@ -419,9 +419,12 @@ sc_publish_ipv6(struct sc_publish *p, const char *ifname,
 	CFRelease(plen_arr);
 	CFRelease(plen_num);
 
-	router_str = mkstr(rbuf);
-	CFDictionarySetValue(dict, k_router, router_str);
-	CFRelease(router_str);
+	/* No default router (its lifetime expired): omit Router. */
+	if (router_lladdr != NULL) {
+		router_str = mkstr(rbuf);
+		CFDictionarySetValue(dict, k_router, router_str);
+		CFRelease(router_str);
+	}
 
 	iface_str = mkstr(ifname);
 	CFDictionarySetValue(dict, k_iface, iface_str);
