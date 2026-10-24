@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>OpenSourceProject</key>
+	<string>libxslt</string>
+	<key>OpenSourceVersion</key>
+	<string>1.1.35</string>
+	<key>OpenSourceWebsiteURL</key>
+	<string>https://gitlab.gnome.org/GNOME/libxslt</string>
+	<key>OpenSourceURL</key>
+	<string>https://gitlab.gnome.org/GNOME/libxslt/-/archive/v1.1.35/libxslt-v1.1.35.tar.gz</string>
+	<key>OpenSourceMD5</key>
+	<string>49c0249ea013c03e10a6dbda5abf1f30</string>
+	<key>OpenSourceImportDate</key>
+	<string>2022-02-28</string>
+	<key>OpenSourceLicense</key>
+	<string>other</string>
+	<key>OpenSourceLicenseFile</key>
+	<string>libxslt/COPYING</string>
+	<key>OpenSourceModifications</key>
+	<array>
+		<string>rdar://problem/5014274</string>
+		<string>rdar://problem/6139289</string>
+		<string>rdar://problem/7342418</string>
+		<string>rdar://problem/9930624</string>
+		<string>rdar://problem/12811401</string>
+		<string>rdar://problem/26927392</string>
+		<string>rdar://problem/42025972</string>
+	</array>
+</dict>
+</plist>
