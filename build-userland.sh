@@ -1311,6 +1311,114 @@ for pc in libxml-2.0 libxslt libexslt; do
 done
 echo "==> libxml2 + libxslt built"
 
+# ---- curl + libcurl (nextbsd/nextbsd-userland#444, E24 D4) -----------------
+# Apple's curl (apple-oss-distributions/curl curl-166.0.0.0.1 = curl 8.7.1),
+# vendored verbatim in src/curl/dist; NextBSD's security backports are the
+# series in src/curl/patches, applied to a copy here. See src/curl/VENDORED.md.
+#
+# Apple's own TLS (Secure Transport) does not exist on NextBSD, so the TLS
+# backend is base OpenSSL; zlib and GSS-API (MIT Kerberos) also come from the
+# base sysroot. No nghttp2, libpsl, libidn2, libssh2, brotli or zstd: none is
+# in base. LDAP is off (base has no public OpenLDAP). The CA bundle is
+# /etc/ssl/cert.pem, Apple's and OpenSSL's path; the image assembly writes it
+# from base /usr/share/certs (certctl's bundle).
+#
+# Installs /usr/bin/curl, /usr/bin/curl-config, /usr/lib/libcurl.so.4,
+# /usr/include/curl, /usr/libdata/pkgconfig/libcurl.pc (base's .pc location)
+# and the man pages. Plain host cmake/ninja with the cross toolchain file,
+# like the other CMake components; nothing here links nextbsd-userland libs.
+comp "curl + libcurl [cmake cross, Apple curl-166.0.0.0.1 + patches]"
+CURL_SRC="$ROOT/.build/curl-src-$T"
+CURL_BUILD="$ROOT/.build/curl-$T"
+rm -rf "$CURL_SRC" "$CURL_BUILD"; mkdir -p "$CURL_SRC" "$CURL_BUILD"
+cp -a "$SRC/curl/dist/." "$CURL_SRC/"
+while IFS= read -r p; do
+    case "$p" in ''|'#'*) continue ;; esac
+    note "patch $p"
+    if command -v git >/dev/null 2>&1; then
+        # The ceiling keeps git from treating the nextbsd-userland checkout
+        # as the repository the patch is relative to.
+        ( cd "$CURL_SRC" && GIT_CEILING_DIRECTORIES="$ROOT/.build" \
+            git apply -p1 "$SRC/curl/patches/$p" )
+    else
+        ( cd "$CURL_SRC" && patch -p1 --forward --silent < "$SRC/curl/patches/$p" )
+    fi || { echo "FAIL: curl patch $p does not apply"; exit 1; }
+done < "$SRC/curl/patches/series"
+# pkg-config is pointed at nothing so the RUNNER's .pc files cannot leak in;
+# OpenSSL, zlib and GSS-API are found in the sysroot by the toolchain file's
+# CMAKE_FIND_ROOT_PATH. HAVE_POLL_FINE / HAVE_WRITABLE_ARGV are run-time
+# checks CMake skips when cross compiling; both hold on NextBSD.
+PKG_CONFIG_LIBDIR=/nonexistent PKG_CONFIG_PATH= \
+cmake -G Ninja -S "$CURL_SRC" -B "$CURL_BUILD" \
+    -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DCMAKE_INSTALL_LIBDIR=lib \
+    -DTHREADS_PREFER_PTHREAD_FLAG=ON \
+    -DBUILD_SHARED_LIBS=ON -DBUILD_STATIC_LIBS=OFF -DBUILD_CURL_EXE=ON \
+    -DBUILD_TESTING=OFF -DBUILD_LIBCURL_DOCS=OFF -DENABLE_CURL_MANUAL=OFF \
+    -DCURL_USE_OPENSSL=ON -DOPENSSL_ROOT_DIR=/usr \
+    -DCURL_ZLIB=ON \
+    -DCURL_USE_GSSAPI=ON -DGSS_ROOT_DIR=/usr \
+    -DENABLE_THREADED_RESOLVER=ON -DENABLE_IPV6=ON \
+    -DCURL_CA_BUNDLE=/etc/ssl/cert.pem -DCURL_CA_PATH=none -DCURL_CA_FALLBACK=OFF \
+    -DCURL_DISABLE_LDAP=ON -DCURL_DISABLE_LDAPS=ON \
+    -DUSE_NGHTTP2=OFF -DUSE_NGTCP2=OFF -DUSE_QUICHE=OFF -DUSE_MSH3=OFF \
+    -DCURL_USE_LIBPSL=OFF -DUSE_LIBIDN2=OFF \
+    -DCURL_USE_LIBSSH2=OFF -DCURL_USE_LIBSSH=OFF \
+    -DCURL_BROTLI=OFF -DCURL_ZSTD=OFF -DENABLE_WEBSOCKETS=OFF \
+    -DHAVE_POLL_FINE=1 -DHAVE_WRITABLE_ARGV=1
+grep -q '^#define USE_OPENSSL 1' "$CURL_BUILD/lib/curl_config.h" \
+    || { echo "FAIL: curl not configured with OpenSSL"; exit 1; }
+grep -q '^#define HAVE_GSSAPI 1' "$CURL_BUILD/lib/curl_config.h" \
+    || { echo "FAIL: curl not configured with GSS-API"; exit 1; }
+grep -q '^#define HAVE_LIBZ 1' "$CURL_BUILD/lib/curl_config.h" \
+    || { echo "FAIL: curl not configured with zlib"; exit 1; }
+DESTDIR="$DESTDIR" ninja -C "$CURL_BUILD" install
+# FreeBSD base keeps its .pc files in /usr/libdata/pkgconfig (openssl.pc,
+# zlib.pc, mit-krb5-gssapi.pc), so libcurl.pc goes there too.
+mkdir -p "$DESTDIR/usr/libdata/pkgconfig"
+mv "$DESTDIR/usr/lib/pkgconfig/libcurl.pc" "$DESTDIR/usr/libdata/pkgconfig/libcurl.pc"
+rmdir "$DESTDIR/usr/lib/pkgconfig" 2>/dev/null || true
+# The generated libcurl.pc, curl-config and CMake package files record the
+# build: sysroot library paths, the cross compiler, its --target/--sysroot/
+# --ld-path flags and the compiler's implicit -lgcc/-lc. On the installed
+# system the dependencies are plain /usr/lib libraries and the compiler is cc.
+for f in "$DESTDIR/usr/libdata/pkgconfig/libcurl.pc" "$DESTDIR/usr/bin/curl-config" \
+         "$DESTDIR"/usr/lib/cmake/CURL/*.cmake; do
+    [ -f "$f" ] || continue
+    sed -i -E \
+        -e "s#$SYSROOT/usr/lib/lib([A-Za-z0-9_]+)\.so#-l\1#g" \
+        -e "s#\"$CROSS_BINDIR/clang\"#\"cc\"#g" \
+        -e 's# --(target|sysroot|ld-path)=[^ ]*##g' \
+        -e "s#$SYSROOT##g" \
+        -e ':strip' -e 's# -l(gcc_s|gcc|c)( |$)#\2#' -e 't strip' \
+        "$f"
+done
+if grep -rlE "$SYSROOT|$CROSS_BINDIR/(clang|ld)" "$DESTDIR/usr/libdata/pkgconfig/libcurl.pc" \
+       "$DESTDIR/usr/bin/curl-config" "$DESTDIR/usr/lib/cmake/CURL" 2>/dev/null; then
+    echo "FAIL: curl's installed metadata still names the build host"; exit 1
+fi
+# Pre-built man pages from Apple's tree (the CMake doc build would need Perl),
+# gzipped like base's.
+CURL_MAN="$CURL_BUILD/man"
+mkdir -p "$CURL_MAN/man1" "$CURL_MAN/man3"
+cp "$CURL_SRC/docs/curl.1" "$CURL_SRC/docs/curl-config.1" "$CURL_MAN/man1/"
+find "$CURL_SRC/docs/libcurl" -name '*.3' -exec cp {} "$CURL_MAN/man3/" \;
+gzip -9n "$CURL_MAN"/man1/*.1 "$CURL_MAN"/man3/*.3
+mkdir -p "$DESTDIR/usr/share/man/man1" "$DESTDIR/usr/share/man/man3"
+install -m 0444 "$CURL_MAN"/man1/*.gz "$DESTDIR/usr/share/man/man1/"
+install -m 0444 "$CURL_MAN"/man3/*.gz "$DESTDIR/usr/share/man/man3/"
+test -x "$DESTDIR/usr/bin/curl" || { echo "FAIL: /usr/bin/curl not installed"; exit 1; }
+test -f "$DESTDIR/usr/lib/libcurl.so.4" || { echo "FAIL: /usr/lib/libcurl.so.4 not installed"; exit 1; }
+test -f "$DESTDIR/usr/include/curl/curl.h" || { echo "FAIL: <curl/curl.h> not installed"; exit 1; }
+needed_check "$DESTDIR/usr/bin/curl" "libcurl.so.4"
+needed_check "$DESTDIR/usr/lib/libcurl.so.4" "libssl.so"
+needed_check "$DESTDIR/usr/lib/libcurl.so.4" "libcrypto.so"
+needed_check "$DESTDIR/usr/lib/libcurl.so.4" "libz.so"
+needed_check "$DESTDIR/usr/lib/libcurl.so.4" "libgssapi_krb5.so"
+echo "==> curl built"
+
 # =============================================================================
 # TIER 3 — on-image test binaries (freebsd-launchd-mach suite).
 # build.sh builds these natively and installs them to

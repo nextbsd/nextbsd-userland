@@ -37,6 +37,7 @@ provenance; it does not relicense anything.
 | `libffi` | apple-oss-distributions/libffi (`libffi-40`, libffi 3.4.0-rc2) | MIT |
 | `libxml2` (+ xmllint, xmlcatalog) | apple-oss-distributions/libxml2 (`libxml2-39.10`, libxml2 2.9.13) | MIT (`src/libxml2/Copyright`) |
 | `libxslt` (+ libexslt, xsltproc) | apple-oss-distributions/libxslt (`libxslt-21.13`, libxslt 1.1.35) | MIT (`src/libxslt/Copyright`) |
+| `curl` (+ libcurl) | apple-oss-distributions/curl (`curl-166.0.0.0.1`, curl 8.7.1); NextBSD security patches in `src/curl/patches` | curl (MIT-style), `src/curl/dist/COPYING` |
 | `nss_directory_services` | Joseph Maloney; adapted from his Gershwin DirectoryServices NSS module (gershwin-desktop/gershwin-components) for NextBSD | BSD-2-Clause |
 | `accounts/createhomedir` | NextBSD | BSD-2-Clause |
 | `accounts/autologin-user` | NextBSD | BSD-2-Clause |
