@@ -8,9 +8,9 @@ limits, XPointer locations live. Every NextBSD program is new code, so the
 helpers return true here, and XPointer locations are disabled at run time as
 they are on current Apple OSes.
 
-The callers (xpath.c, xmlmemory.c, xpointer.c) only included
-xmlversionInternal.h under __APPLE__, so the declaration was missing off
-Darwin; include it unconditionally.
+The callers (xpath.c, xmlmemory.c, xpointer.c, and encoding.c's ICU
+converter) only included xmlversionInternal.h under __APPLE__, so the
+declaration was missing off Darwin; include it unconditionally.
 
 linkedOnOrAfter2024EReleases() is only reached when the public headers
 define LIBXML_HAS_DEPRECATED_MEMORY_ALLOCATION_FUNCTIONS, which they leave
@@ -99,3 +99,15 @@ undefined off Darwin, so the xmlMalloc family is unchanged.
  
  #ifdef LIBXML_XPTR_ENABLED
  
+--- a/encoding.c
++++ b/encoding.c
+@@ -53,9 +53,7 @@
+ #include "enc.h"
+ #include "private/memory.h"
+ 
+-#ifdef __APPLE__
+ #include "xmlversionInternal.h"
+-#endif
+ 
+ static xmlCharEncodingHandlerPtr xmlUTF16LEHandler = NULL;
+ static xmlCharEncodingHandlerPtr xmlUTF16BEHandler = NULL;
