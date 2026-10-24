@@ -2,7 +2,7 @@
 
 Cross-built **Darwin system layer** for NextBSD — the Mach / launchd / configd /
 CoreFoundation / IOKit stack and its daemons — built on an Ubuntu host with the
-`nextbsd-kernel-toolchain` clang cross-compiler, exactly like `nextbsd-kernel`
+`nextbsd-toolchain` clang cross-compiler, exactly like `nextbsd-kernel`
 and `nextbsd-freebsd-compat`. Publishes a rolling `continuous` userland artifact
 that the `nextbsd` ISO assembler ingests.
 
