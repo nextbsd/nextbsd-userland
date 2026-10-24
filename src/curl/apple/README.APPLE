@@ -1,0 +1,52 @@
+The 'curl' subdirectory is based on curl 8.1.2
+
+== Updating to a new upstream version ==
+
+The upstream code this curl fork is based on is present in the `dev/UPSTREAM` git branch.
+To upgrade to a new upstream version of curl, use autopatch_project.sh from buildtools:
+- https://stashweb.sd.apple.com/users/achivetta/repos/buildtools/browse
+
+== Updating configuration ==
+
+Confirm/update versions in xcconfigs/libcurl-version.xcconfig
+ - This will probably require building the regular open source version and running otool on the resulting library.
+
+Update CURL_SUPPORT_* in xcconfigs/common.xcconfig
+ - Run configure, check config.status
+
+If options change (see below), update CURL_CONFIGURE_OPTIONS in xcconfigs/common.xcconfig
+
+Make sure all files are being compiled.
+curl: CURL_CFILES and CURLX_CFILES in curl/src/Makefile.inc 
+libcurl: LIB_CFILES and LIB_VTLS_CFILES in curl/lib/Makefile.inc
+The Xcode targets list the files in the same order.
+Might be able to process the Makefile.inc files into Xcode file lists at some point.
+
+Make sure all man pages and headers are being installed.
+
+Update xcscripts/install_libtest.sh (see comment at top) -- NOTE: This hasn't been updated in quite some time, see radar:17812072
+
+== Configuration ==
+
+If you have tools installed via brew or other means you should consider adding somehting similiar to: PATH='/bin:/usr/bin/:/usr/local/bin:/usr/sbin' to the below commands
+to avoid picking up those binaries and configurations unintentionally.
+
+macOS:
+SDKROOT=macosx.internal ./configure --enable-threaded-resolver --with-gssapi --with-ssl=$(xcrun --show-sdk-path)/usr/local/libressl --with-secure-transport --without-libpsl
+
+iOS (etc):
+SDKROOT=macosx.internal ./configure --enable-hidden-symbols --enable-threaded-resolver --disable-ldap --with-secure-transport --without-libpsl
+
+Remember to check that the man pages are built and up to date when importing a new version now that they're not included in the dst tarball.
+
+Changes to curl_config.h post-configure:
+  (1) Add #ifdef __LP64__ for SIZEOF_LONG, SIZEOF_SIZE_T, SIZEOF_TIME_T, SIZEOF_VOIDP
+  (2) #undef OS - conditionally defined in common.xcconfig
+  (3) [iOS only] #undef CURL_CA_BUNDLE - causes an error; we currently use SecureTransport
+  (4) Enable USE_NGHTTP2.  Because our nghttp2 is at a non-standard path and we
+      don't install the pkgconfig support, the configure script cannot
+      configure it automatically.
+
+Manual Testing:
+
+Right now we don't have automated tests running, even if they did they won't catch every error. In addition to doing basic curl test on well known URLs it's good to test both SSL backends available. This can be done soley on a macOS hosts.  By default macOS use libressl curl can be set to SecureTransport with the follow environment variable change 'CURL_SSL_BACKEND='Secure-Transport'
