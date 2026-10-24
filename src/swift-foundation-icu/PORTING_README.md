@@ -8,7 +8,8 @@ for swift-corelibs-foundation. NOT general-purpose ICU — see the upstream
 
 - **Upstream**: [github.com/apple/swift-foundation-icu](https://github.com/apple/swift-foundation-icu)
 - **Upstream HEAD**: `30f73e2` ("Update automerger to merge from release/6.4.x", PR #96)
-- **ICU version**: 74.0 (per upstream README versioning matrix)
+- **ICU version**: 76.1 (`uvernum.h`, data package `icudt76l`; the
+  upstream README's "74.0" versioning matrix is stale)
 - **Vendored**: 2026-05-15
 - **License**: Apache 2.0 (see `LICENSE.md`)
 
@@ -55,6 +56,21 @@ project's vendor-everything pattern.
 | Headers | ~5.5 MB | `/usr/include/_foundation_unicode/` (build-tools only, runtime cost zero) |
 
 Roughly the same as macOS's `/usr/lib/libicucore.dylib`.
+
+## Third-party consumers (nextbsd-userland#441)
+
+For code outside this repo (GNUstep and the like):
+
+- `uconfig.h` defaults `U_DISABLE_RENAMING` to 1 on every platform (NextBSD
+  patch), matching how the library is built, so `ucol_open` stays `ucol_open`
+  without any special flag.
+- `/usr/include/icucore/unicode` links to `../_foundation_unicode`, so
+  `-I/usr/include/icucore` gives the standard `<unicode/...>` spelling. There
+  is deliberately no global `/usr/include/unicode`.
+- `pkgconfig/icu-uc.pc`, `icu-i18n.pc` and `icu-io.pc` install into
+  `/usr/libdata/pkgconfig`; all three link `-L/usr/lib/system -licucore`.
+- No `libicuuc`/`libicui18n`/`libicudata` names: this library exports the
+  unversioned API, not the `_76`-suffixed one other ICU builds export.
 
 ## Build
 

@@ -99,16 +99,16 @@
  * @internal
  */
 #ifndef U_DISABLE_RENAMING
-#if APPLE_ICU_CHANGES
-//rdar://60884991 #58 Replace installsrc patching with changes directly in header files
-#if defined(__APPLE__)
+/*
+ * NextBSD patch (nextbsd-userland#441): default to 1 on every platform,
+ * as Apple does for __APPLE__. lib_FoundationICU (libicucore) is built
+ * with U_DISABLE_RENAMING=1 (CMakeLists.txt) and exports the plain,
+ * unversioned ICU C API (ucol_open, not swift_ucol_open/ucol_open_76),
+ * so the installed headers must match by default. A consumer that still
+ * passes -DU_DISABLE_RENAMING=1 (libCoreFoundation, launchd, ...) gets
+ * the same value.
+ */
 #define U_DISABLE_RENAMING 1
-#else
-#define U_DISABLE_RENAMING 0
-#endif
-#else
-#define U_DISABLE_RENAMING 0
-#endif // APPLE_ICU_CHANGES
 #endif
 
 /**

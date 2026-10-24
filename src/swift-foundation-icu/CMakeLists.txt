@@ -55,7 +55,7 @@ add_compile_definitions(
     # freebsd-launchd-mach patch (2026-05-15): force U_DISABLE_RENAMING=1
     # unconditionally. Upstream gates this on Darwin only, leaving FreeBSD
     # at 0 - which makes ICU rename every public symbol (e.g. ucol_open
-    # becomes icu_74_ucol_open via urename.h #defines). CoreFoundation
+    # becomes ucol_open_76 via urename.h #defines). CoreFoundation
     # references the un-renamed names directly; without this flag CF
     # cannot link against libicucore.so.
     $<$<COMPILE_LANGUAGE:C,CXX>:U_DISABLE_RENAMING=1>

@@ -1,0 +1,14 @@
+# NextBSD (nextbsd-userland#441): base ICU is one library, Apple's
+# swift-foundation-icu (ICU 76.1) as lib_FoundationICU.so / libicucore,
+# so icu-uc, icu-i18n and icu-io all link -licucore. Headers are
+# <unicode/...> through the /usr/include/icucore/unicode link.
+prefix=/usr
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib/system
+includedir=${prefix}/include/icucore
+
+Name: icu-io
+Description: International Components for Unicode: stream and file I/O library (libicucore)
+Version: 76.1
+Cflags: -I${includedir} -DU_DISABLE_RENAMING=1
+Libs: -L${libdir} -licucore

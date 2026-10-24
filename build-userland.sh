@@ -532,10 +532,20 @@ cmake -G Ninja -S "$SRC/swift-foundation-icu" -B "$ICU_BUILD" \
     -DCMAKE_BUILD_TYPE=Release
 DESTDIR="$DESTDIR" ninja -C "$ICU_BUILD" install
 # build.sh ~1350-1352: libicucore.so alias for the _FoundationICU target.
+# The library is ICU 76.1 (uvernum.h), so the versioned aliases say .76 (#441).
 ( cd "$DESTDIR/usr/lib/system"
   ln -sf lib_FoundationICU.so libicucore.so
-  ln -sf lib_FoundationICU.so libicucore.so.74
-  ln -sf lib_FoundationICU.so lib_FoundationICU.so.74 )
+  ln -sf lib_FoundationICU.so libicucore.so.76
+  ln -sf lib_FoundationICU.so lib_FoundationICU.so.76 )
+# Third-party ICU consumers (GNUstep, #441): <unicode/...> headers through an
+# icucore/unicode link (not a global /usr/include/unicode), and pkg-config
+# icu-uc/icu-i18n/icu-io, all -licucore. No libicuuc/libicui18n names.
+mkdir -p "$DESTDIR/usr/include/icucore" "$DESTDIR/usr/libdata/pkgconfig"
+ln -sfn ../_foundation_unicode "$DESTDIR/usr/include/icucore/unicode"
+for pc in icu-uc icu-i18n icu-io; do
+    install -m 0444 "$SRC/swift-foundation-icu/pkgconfig/$pc.pc" \
+        "$DESTDIR/usr/libdata/pkgconfig/$pc.pc"
+done
 sync_sysroot
 
 # ---- libCoreFoundation ------------------------------------------------------
