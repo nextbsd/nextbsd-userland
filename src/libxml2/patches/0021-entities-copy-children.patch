@@ -1,0 +1,43 @@
+NextBSD local patch for vendored Apple libxml2-39.10 (libxml2 2.9.13 based)
+
+CVE:      none assigned for libxml2 (upstream NEWS v2.15.3 "Security" entry;
+          libxml2 issue #1074 "XPath ID lookup bypass + document copy mutation
+          via entity reference handling", root cause of the CVE-2025-23369
+          GitHub Enterprise SAML bypass). xmlCopyDoc() dropped the expanded
+          children of entity declarations, so attribute values containing
+          entity references changed in the copy.
+Upstream: 52397a02a627d7e00ed7fa760f3cc5f4cbee51e5 (v2.15.3)
+          c9aa3048eb55333a51b4176599c4e1c7a5458561 (master)
+          "entities: copy children in xmlCopyEntity"
+Adapted:  2.9.13 has no non-static xmlStaticCopyNodeList(), so the public
+          xmlCopyNodeList() (== xmlStaticCopyNodeList(node, NULL, NULL), the
+          same NULL doc upstream passes) is used and the parent/last pointers
+          are fixed up afterwards. Because 2.9.13 xmlFreeEntity() only frees
+          children when entity->owner == 1, the copy sets owner = 1 when it
+          has children. Document pointers are set later by the existing
+          xmlSetTreeDoc() call in xmlCopyDoc(), as upstream. The separate
+          XPath node-hash issue from #1074 is not fixed upstream either.
+
+diff --git a/entities.c b/entities.c
+--- a/entities.c
++++ b/entities.c
+@@ -969,6 +969,19 @@ xmlCopyEntity(void *payload, const xmlChar *name ATTRI
+ 	cur->orig = xmlStrdup(ent->orig);
+     if (ent->URI != NULL)
+ 	cur->URI = xmlStrdup(ent->URI);
++    /* Handle XML_TEXT_NODE children for XML_ENTITY_DECL */
++    if (ent->children != NULL) {
++        xmlNodePtr tmp;
++
++        cur->children = xmlCopyNodeList(ent->children);
++        cur->last = NULL;
++        for (tmp = cur->children; tmp != NULL; tmp = tmp->next) {
++            tmp->parent = (xmlNodePtr) cur;
++            cur->last = tmp;
++        }
++        if (cur->children != NULL)
++            cur->owner = 1;
++    }
+     return(cur);
+ }
+ 

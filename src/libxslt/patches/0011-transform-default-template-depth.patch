@@ -1,0 +1,31 @@
+CVE: none assigned (upstream libxslt hardening, found by OSS-Fuzz; unbounded
+     recursion through built-in/default template rules -> stack overflow DoS)
+Upstream: libxslt fe9da133fdb55386d0ae3c7c97c54a35a110fc32
+          "transform: Check maximum depth when processing default templates"
+          (v1.1.39)
+Adaptation: none; upstream hunk applies verbatim (offset only) to Apple
+          libxslt-21.13 transform.c:xsltDefaultProcessOneNode.
+--- a/libxslt/transform.c
++++ b/libxslt/transform.c
+@@ -1996,7 +1996,21 @@ xsltDefaultProcessOneNode(xsltTransformContextPtr ctxt
+ 	    case XML_ELEMENT_NODE:
+ 		ctxt->xpathCtxt->contextSize = nbchild;
+ 		ctxt->xpathCtxt->proximityPosition = childno;
++
++                if (ctxt->depth >= ctxt->maxTemplateDepth) {
++                    xsltTransformError(ctxt, NULL, cur,
++                        "xsltDefaultProcessOneNode: Maximum template depth "
++                        "exceeded.\n"
++                        "You can adjust xsltMaxDepth (--maxdepth) in order to "
++                        "raise the maximum number of nested template calls and "
++                        "variables/params (currently set to %d).\n",
++                        ctxt->maxTemplateDepth);
++                    ctxt->state = XSLT_STATE_STOPPED;
++                    return;
++                }
++                ctxt->depth++;
+ 		xsltProcessOneNode(ctxt, cur, params);
++                ctxt->depth--;
+ 		break;
+ 	    case XML_CDATA_SECTION_NODE:
+ 		template = xsltGetTemplate(ctxt, cur, NULL);

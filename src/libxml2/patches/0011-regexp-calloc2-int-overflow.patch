@@ -1,0 +1,38 @@
+NextBSD local patch for vendored Apple libxml2-39.10 (libxml2 2.9.13 based)
+
+CVE:      none assigned (upstream "Security" entry in NEWS for v2.13.9 / v2.14.6,
+          gitlab issue #950: integer overflow -> heap-buffer-overflow in
+          xmlRegEpxFromParse)
+Upstream: 89b8b9def763c45d0977d2489019ac069320f8ed (2.13 branch, v2.13.9)
+          "regexp: Avoid integer overflow and OOB array access"
+Adapted:  Apple only fixed this in the `#ifdef __APPLE__` block-based
+          xmlRegCalloc2 macro. NextBSD does not define __APPLE__, so the
+          generic xmlRegCalloc2() is compiled; this applies the upstream
+          XML_MAX_ITEMS limit (and the dim2/elemSize == 0 guard from the same
+          upstream function) to that generic version. XML_MAX_ITEMS comes from
+          private/memory.h, which xmlregexp.c already includes.
+
+diff --git a/xmlregexp.c b/xmlregexp.c
+--- a/xmlregexp.c
++++ b/xmlregexp.c
+@@ -448,13 +448,17 @@ xmlRegCalloc2(size_t dim1, size_t dim2, size_t elemSiz
+ #else
+ static void*
+ xmlRegCalloc2(size_t dim1, size_t dim2, size_t elemSize) {
+-    size_t totalSize;
++    size_t numElems, totalSize;
+     void *ret;
+ 
+     /* Check for overflow */
+-    if (dim1 > SIZE_MAX / dim2 / elemSize)
++    if ((dim2 == 0) || (elemSize == 0) ||
++        (dim1 > SIZE_MAX / dim2 / elemSize))
+         return (NULL);
+-    totalSize = dim1 * dim2 * elemSize;
++    numElems = dim1 * dim2;
++    if (numElems > XML_MAX_ITEMS)
++        return NULL;
++    totalSize = numElems * elemSize;
+     ret = xmlMalloc(totalSize);
+     if (ret != NULL)
+         memset(ret, 0, totalSize);

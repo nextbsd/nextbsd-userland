@@ -1,0 +1,23 @@
+NextBSD local patch for vendored Apple libxml2-39.10 (libxml2 2.9.13 based)
+
+CVE:      none assigned (heap use-after-free in xmlRelaxNGValidateValue when
+          a deferred XML_RELAXNG_ERR_LISTEXTRA error keeps a pointer into a
+          freed list value; libxml2 issue #1055, MR !382)
+Upstream: df2ba65f661addfba50bdb7f280d594781249dfc (v2.15.2)
+          5dfd9065ec30d3fe19998cd270b5a9dec0125ed1 (master)
+          "use duplicating variant in relaxng to mitigate UAF"
+Adapted:  Verbatim one-line change (VALID_ERR2 -> VALID_ERR2P, which
+          duplicates the string), context offsets only.
+
+diff --git a/relaxng.c b/relaxng.c
+--- a/relaxng.c
++++ b/relaxng.c
+@@ -8930,7 +8930,7 @@ xmlRelaxNGValidateValue(xmlRelaxNGValidCtxtPtr ctxt,
+ 
+                 if ((ret == 0) && (ctxt->state->value != NULL) &&
+                     (ctxt->state->value != ctxt->state->endvalue)) {
+-                    VALID_ERR2(XML_RELAXNG_ERR_LISTEXTRA,
++                    VALID_ERR2P(XML_RELAXNG_ERR_LISTEXTRA,
+                                ctxt->state->value);
+                     ret = -1;
+                 }

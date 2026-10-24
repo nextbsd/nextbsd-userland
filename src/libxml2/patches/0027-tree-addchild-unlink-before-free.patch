@@ -1,0 +1,34 @@
+NextBSD local patch for vendored Apple libxml2-39.10 (libxml2 2.9.13 based)
+
+CVE:      none assigned (libxml2 issue #1129, labelled Security:
+          "xmlAddChild(text parent) frees linked child without unlinking,
+          causing UAF" - dangling prev/next/parent->last pointers in the
+          tree the text node came from)
+Upstream: 7873093e78f3806bcbcfe1f9fb6a3df8074e81e9 (v2.15.4)
+          6be0acd2afb3f55af3c721e1e35ac6675df3057a (master)
+          "xmlAddChild: unlink node before free for text nodes"
+Adapted:  Upstream only has the text-parent merge branch left (2.13+ code);
+          2.9.13 frees `cur` in two text-merge branches (merge into a text
+          parent, and merge into parent->last), so xmlUnlinkNode() is added
+          before both xmlFreeNode() calls. xmlUnlinkNode() is a no-op for an
+          unlinked node.
+
+diff --git a/tree.c b/tree.c
+--- a/tree.c
++++ b/tree.c
+@@ -3459,6 +3459,7 @@ xmlAddChild(xmlNodePtr parent, xmlNodePtr cur) {
+ 	    (parent->content != NULL) &&
+ 	    (parent->name == cur->name)) {
+ 	    xmlNodeAddContent(parent, cur->content);
++	    xmlUnlinkNode(cur);
+ 	    xmlFreeNode(cur);
+ 	    return(parent);
+ 	}
+@@ -3466,6 +3467,7 @@ xmlAddChild(xmlNodePtr parent, xmlNodePtr cur) {
+ 	    (parent->last->name == cur->name) &&
+ 	    (parent->last != cur)) {
+ 	    xmlNodeAddContent(parent->last, cur->content);
++	    xmlUnlinkNode(cur);
+ 	    xmlFreeNode(cur);
+ 	    return(parent->last);
+ 	}

@@ -1,0 +1,24 @@
+NextBSD local patch for vendored Apple libxml2-39.10 (libxml2 2.9.13 based)
+
+CVE:      none assigned (upstream NEWS v2.15.3 "Security" entry; libxml2
+          issue #1096, labelled Security: type confusion reading
+          xmlDoc as xmlNode->properties in C14N 1.0 inclusive mode)
+Upstream: 495c9451c541da25829ce321d2273da9fca72d25 (v2.15.3)
+          0fd00ec5f51065340c98f084df045d76258c6bc3 (master)
+          "c14n: Fix Type confusion in xmlC14NProcessAttrsAxis"
+Adapted:  Verbatim one-line change, context offsets only. (The related
+          xmlC14NProcessNamespacesAxis fix f879a017 / #1016 is already
+          present in Apple's tree.)
+
+diff --git a/c14n.c b/c14n.c
+--- a/c14n.c
++++ b/c14n.c
+@@ -1189,7 +1189,7 @@ xmlC14NProcessAttrsAxis(xmlC14NCtxPtr ctx, xmlNodePtr 
+              * visible!
+              */
+             tmp = cur->parent;
+-            while (tmp != NULL) {
++            while (tmp != NULL && tmp->type == XML_ELEMENT_NODE) {
+                 attr = tmp->properties;
+                 while (attr != NULL) {
+                     if (xmlC14NIsXmlAttr(attr) != 0) {
