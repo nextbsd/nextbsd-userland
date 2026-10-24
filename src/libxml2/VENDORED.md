@@ -45,10 +45,22 @@ its own build), but it keeps the `CMakeLists.txt` upstream added in 2.9.11.
 
 The features follow Apple's own build (its `Pregenerated Files` config):
 threads, zlib, HTTP/FTP, legacy and DocBook APIs, XPointer locations
-compiled in (and disabled at run time, see patch 0001), no lzma. One
-difference: the encoding converter is **libc `iconv(3)`**, not ICU. Apple
-links libicucore, but NextBSD's ICU is swift-foundation-icu, whose headers
-are `_foundation_unicode/*.h`, not the `<unicode/*.h>` libxml2 includes.
+compiled in (and disabled at run time, see patch 0001), no lzma, and
+**ICU** as the encoding converter, linked against base ICU (`libicucore`,
+Apple's swift-foundation-icu, ICU 76.1) as macOS links it. libc `iconv(3)`
+is not used.
+
+The first import ([#442](https://github.com/nextbsd/nextbsd-userland/issues/442))
+used iconv, because base ICU had no `<unicode/*.h>` headers then.
+[#441](https://github.com/nextbsd/nextbsd-userland/issues/441) added them
+under `/usr/include/icucore`, and
+[#453](https://github.com/nextbsd/nextbsd-userland/issues/453) switched to
+ICU. CMake's `FindICU` only knows the `libicuuc`/`libicui18n`/`libicudata`
+names, which base does not have, so `build-userland.sh` sets its cache
+variables (`ICU_INCLUDE_DIR`, `ICU_{UC,I18N,DATA}_LIBRARY_RELEASE`) to the
+sysroot's `icucore` headers and `libicucore.so`. `libxml2.so.2` therefore
+needs `lib_FoundationICU.so` (libicucore's soname), and `libxml-2.0.pc`
+carries `Requires.private: icu-uc` (patch 0004).
 
 Installed:
 
@@ -56,13 +68,13 @@ Installed:
 |---|---|
 | `/usr/lib/libxml2.so.2` (→ `.so.2.9.13`), `libxml2.so` | library, upstream soname |
 | `/usr/include/libxml2/libxml/*.h` | headers |
-| `/usr/libdata/pkgconfig/libxml-2.0.pc` | pkg-config (`prefix=/usr`) |
+| `/usr/libdata/pkgconfig/libxml-2.0.pc` | pkg-config (`prefix=/usr`, `Requires.private: icu-uc`) |
 | `/usr/lib/cmake/libxml2-2.9.13/` | CMake package config |
 | `/usr/bin/xml2-config` | upstream config script |
 | `/usr/bin/xmllint`, `/usr/bin/xmlcatalog` | the commands macOS ships |
 | `xmllint(1)`, `xmlcatalog(1)`, `libxml(3)` | man pages |
 
-Not built: Python bindings, tests, ICU, lzma. The HTML documentation is not
+Not built: Python bindings, tests, iconv, lzma. The HTML documentation is not
 shipped.
 
 ## Patches
@@ -72,6 +84,7 @@ shipped.
 | `0001-nextbsd-apple-linked-on-or-after-behaviour.patch` | Apple's stricter behaviour (XPath operation and recursion limits, XPointer locations disabled at run time) is gated on dyld's linked-on-or-after checks, which only exist on Darwin, so off Darwin `linkedOnOrAfter*()` returned false and NextBSD got legacy 2.9.13 behaviour. They now return true, and `LIBXML_HAS_XPOINTER_LOCATIONS_DISABLED_AT_RUNTIME` is defined. Also includes `xmlversionInternal.h` unconditionally, which off Darwin was an implicit declaration (an error with clang 19). |
 | `0002-cmake-soversion.patch` | 2.9.13's CMake build has no `SOVERSION`, so its soname was `libxml2.so.2.9.13`; upstream's is `libxml2.so.2`. |
 | `0003-uri-include-stdint.patch` | Apple's overflow check in `xmlBuildRelativeURI()` uses `INT32_MAX`, which only Darwin's headers declare transitively. |
+| `0004-cmake-icu-libicucore.patch` | 2.9.13's CMake build writes `-licudata -licui18n -licuuc` into `libxml-2.0.pc` and `xml2-config --libs`. Base ICU is the one library libicucore, so the `.pc` now says `Requires.private: icu-uc` (upstream uses `icu-i18n` from 2.10) and `xml2-config` prints `-L/usr/lib/system -licucore`. |
 | `0010`–`0027` | Security fixes from upstream that Apple's tree lacks on NextBSD; see the CVE check below. |
 
 The memory-allocator change Apple gates on `linkedOnOrAfter2024EReleases()`

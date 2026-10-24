@@ -1213,12 +1213,17 @@ echo "==> libffi built"
 # in its VENDORED.md; src/<project>/patches is applied, in order, to a copy
 # under .build so the vendored tree stays byte-for-byte Apple's.
 #
-# Feature set follows Apple's own build (zlib, no lzma, XPointer locations
-# compiled in and disabled at run time), except that the encoding converter
-# is libc iconv(3) instead of ICU: NextBSD's ICU is swift-foundation-icu
-# (_foundation_unicode/ headers), not the <unicode/*.h> libicucore libxml2
-# expects. The commands are the ones macOS ships (xmllint, xmlcatalog,
-# xsltproc); Python bindings, tests and the HTML docs are not built or shipped. Sonames are upstream's (libxml2.so.2, libxslt.so.1, libexslt.so.0)
+# Feature set follows Apple's own build: zlib, no lzma, XPointer locations
+# compiled in and disabled at run time, and ICU (not iconv) as the encoding
+# converter, linked against base ICU, libicucore, as macOS links it (#453).
+# The ICU section above installed it into the sysroot (sync_sysroot), with
+# the <unicode/*.h> headers under /usr/include/icucore. CMake's FindICU only
+# knows the libicuuc/libicui18n/libicudata names, which base does not have,
+# so its cache variables point all three components at libicucore; patch
+# 0004 makes libxml-2.0.pc say `Requires.private: icu-uc` instead of those
+# names. The commands are the ones macOS ships (xmllint, xmlcatalog,
+# xsltproc); Python bindings, tests and the HTML docs are not built or
+# shipped. Sonames are upstream's (libxml2.so.2, libxslt.so.1, libexslt.so.0)
 # and the .pc files go where base keeps them, /usr/libdata/pkgconfig.
 apply_vendor_patches() {
     local src="$1" dst="$2" p
@@ -1245,8 +1250,12 @@ cmake -G Ninja -S "$XML2_SRC" -B "$XML2_BUILD" \
     -DCMAKE_BUILD_TYPE=Release \
     -DLIBXML2_WITH_PYTHON=OFF \
     -DLIBXML2_WITH_TESTS=OFF \
-    -DLIBXML2_WITH_ICU=OFF \
-    -DLIBXML2_WITH_ICONV=ON \
+    -DLIBXML2_WITH_ICU=ON \
+    -DLIBXML2_WITH_ICONV=OFF \
+    -DICU_INCLUDE_DIR="$SYSROOT/usr/include/icucore" \
+    -DICU_UC_LIBRARY_RELEASE="$SYSROOT/usr/lib/system/libicucore.so" \
+    -DICU_I18N_LIBRARY_RELEASE="$SYSROOT/usr/lib/system/libicucore.so" \
+    -DICU_DATA_LIBRARY_RELEASE="$SYSROOT/usr/lib/system/libicucore.so" \
     -DLIBXML2_WITH_LZMA=OFF \
     -DLIBXML2_WITH_ZLIB=ON \
     -DLIBXML2_WITH_XPTR_LOCS=ON
@@ -1264,6 +1273,8 @@ test -x "$DESTDIR/usr/bin/xmlcatalog"  || { echo "FAIL: /usr/bin/xmlcatalog miss
 test -f "$DESTDIR/usr/include/libxml2/libxml/xmlversion.h" \
     || { echo "FAIL: libxml2 headers missing"; exit 1; }
 needed_check "$DESTDIR/usr/lib/libxml2.so.2" "libz"
+# libicucore's soname is the CMake target's, lib_FoundationICU.so.
+needed_check "$DESTDIR/usr/lib/libxml2.so.2" "lib_FoundationICU"
 needed_check "$DESTDIR/usr/bin/xmllint" "libxml2.so.2"
 # libxslt's find_package(LibXml2 CONFIG) only searches the sysroot (the
 # toolchain file's FIND_ROOT_PATH), so stage libxml2 there as sync_sysroot
@@ -1276,7 +1287,8 @@ if [ "$SYSROOT" != "$DESTDIR" ]; then
     cp -a "$DESTDIR/usr/lib/"libxml2.so* "$SYSROOT/usr/lib/"
     cp -a "$DESTDIR/usr/lib/cmake/"libxml2-* "$SYSROOT/usr/lib/cmake/"
     cp -a "$DESTDIR/usr/include/libxml2" "$SYSROOT/usr/include/"
-    cp -a "$DESTDIR/usr/libdata/pkgconfig/libxml-2.0.pc" "$SYSROOT/usr/libdata/pkgconfig/"
+    cp -a "$DESTDIR/usr/libdata/pkgconfig/libxml-2.0.pc" \
+          "$DESTDIR/usr/libdata/pkgconfig/"icu-*.pc "$SYSROOT/usr/libdata/pkgconfig/"
 fi
 
 comp "libxslt + libexslt [cmake cross, Apple libxslt-21.13]"

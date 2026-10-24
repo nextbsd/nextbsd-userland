@@ -1,0 +1,39 @@
+NextBSD: link base ICU (libicucore) and describe it with icu-uc.pc.
+
+NextBSD's ICU is one library, libicucore (Apple's swift-foundation-icu,
+ICU 76.1) in /usr/lib/system, as on macOS; there are no libicudata,
+libicui18n or libicuuc. 2.9.13's CMake build hard-codes those three names
+into libxml-2.0.pc's Libs.private and into `xml2-config --libs`, which
+would break every consumer.
+
+libxml-2.0.pc now carries ICU as `Requires.private: icu-uc` (upstream
+does the same with icu-i18n from 2.10), and xml2-config, which has no
+pkg-config, prints -L/usr/lib/system -licucore. The link itself goes
+through CMake's FindICU, whose cache variables build-userland.sh points
+at libicucore.
+
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -463,7 +463,10 @@
+ 	if(WIN32)
+ 		set(ICU_LIBS "-licudt -licuin -licuuc")
+ 	else()
+-		set(ICU_LIBS "-licudata -licui18n -licuuc")
++		# NextBSD: base ICU is the one library libicucore in /usr/lib/system,
++		# which icu-uc.pc describes; there is no libicudata/libicui18n/libicuuc.
++		set(ICU_LIBS "-L/usr/lib/system -licucore")
++		set(ICU_PC_REQUIRES "icu-uc")
+ 	endif()
+ endif()
+ 
+--- a/libxml-2.0.pc.in
++++ b/libxml-2.0.pc.in
+@@ -8,6 +8,7 @@
+ Version: @VERSION@
+ Description: libXML library version2.
+ Requires:
++Requires.private: @ICU_PC_REQUIRES@
+ Libs: -L${libdir} -lxml2
+-Libs.private: @ICU_LIBS@ @THREAD_LIBS@ @Z_LIBS@ @LZMA_LIBS@ @ICONV_LIBS@ @M_LIBS@ @WIN32_EXTRA_LIBADD@ @LIBS@
++Libs.private: @THREAD_LIBS@ @Z_LIBS@ @LZMA_LIBS@ @ICONV_LIBS@ @M_LIBS@ @WIN32_EXTRA_LIBADD@ @LIBS@
+ Cflags: @XML_INCLUDEDIR@ @XML_CFLAGS@
