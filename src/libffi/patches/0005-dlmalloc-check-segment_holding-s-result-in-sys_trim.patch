@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pkgdemon <pkgdemonteam@gmail.com>
+Date: Sat, 24 Oct 2026 01:45:01 -0500
+Subject: [PATCH] dlmalloc: check segment_holding's result in sys_trim
+
+Upstream libffi commit 4639c933 ("add NULL check in sys_trim", #966,
+libffi 3.6.0).
+
+segment_holding returns NULL when the top chunk lies in no known
+segment, which only happens once the closure heap is corrupt; sys_trim
+then dereferenced it. Report the corruption through
+CORRUPTION_ERROR_ACTION (abort) instead of a wild read.
+---
+ src/dlmalloc.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/dlmalloc.c b/src/dlmalloc.c
+index 1aba657..89d1248 100644
+--- a/src/dlmalloc.c
++++ b/src/dlmalloc.c
+@@ -3669,6 +3669,8 @@ static int sys_trim(mstate m, size_t pad) {
+                       SIZE_T_ONE) * unit;
+       msegmentptr sp = segment_holding(m, (char*)m->top);
+ 
++      if (sp == 0)
++        CORRUPTION_ERROR_ACTION(m);
+       if (!is_extern_segment(sp)) {
+         if (is_mmapped_segment(sp)) {
+           if (HAVE_MMAP &&

@@ -1,0 +1,95 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pkgdemon <pkgdemonteam@gmail.com>
+Date: Sat, 24 Oct 2026 01:43:49 -0500
+Subject: [PATCH] Emit .note.GNU-stack on FreeBSD for x86 and aarch64
+
+Upstream libffi commit 19cc1424 ("Include .note.GNU-stack on
+FreeBSD/x86", libffi 3.7.0) extends the x86 assembly's
+.note.GNU-stack guard from __linux__ to __FreeBSD__ as well, so no
+object asks for an executable stack (the class of CVE-2017-1000376).
+NextBSD applies the same guard to src/aarch64/sysv.S, which upstream
+still limits to Linux.
+---
+ src/aarch64/sysv.S    | 2 +-
+ src/x86/sysv.S        | 2 +-
+ src/x86/sysv_intel.S  | 2 +-
+ src/x86/unix64.S      | 2 +-
+ src/x86/win64.S       | 2 +-
+ src/x86/win64_intel.S | 2 +-
+ 6 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/src/aarch64/sysv.S b/src/aarch64/sysv.S
+index 329889c..6773897 100644
+--- a/src/aarch64/sysv.S
++++ b/src/aarch64/sysv.S
+@@ -531,7 +531,7 @@ CNAME(ffi_go_closure_SYSV):
+ #endif /* FFI_CLOSURES */
+ #endif /* __arm64__ */
+ 
+-#if defined __ELF__ && defined __linux__
++#if defined __ELF__ && (defined __linux__ || defined __FreeBSD__)
+ 	.section .note.GNU-stack,"",%progbits
+ #endif
+ 
+diff --git a/src/x86/sysv.S b/src/x86/sysv.S
+index 891024a..a095373 100644
+--- a/src/x86/sysv.S
++++ b/src/x86/sysv.S
+@@ -1213,6 +1213,6 @@ L(EFDE9):
+ 
+ #endif /* ifdef __i386__ */
+ 
+-#if defined __ELF__ && defined __linux__
++#if defined __ELF__ && (defined __linux__ || defined __FreeBSD__)
+ 	.section	.note.GNU-stack,"",@progbits
+ #endif
+diff --git a/src/x86/sysv_intel.S b/src/x86/sysv_intel.S
+index 3cafd71..f55dd81 100644
+--- a/src/x86/sysv_intel.S
++++ b/src/x86/sysv_intel.S
+@@ -987,7 +987,7 @@ L(EFDE9):
+ #endif /* ifndef _MSC_VER */
+ #endif /* ifndef __x86_64__ */
+ 
+-#if defined __ELF__ && defined __linux__
++#if defined __ELF__ && (defined __linux__ || defined __FreeBSD__)
+ 	.section	.note.GNU-stack,"",@progbits
+ #endif
+ #endif
+diff --git a/src/x86/unix64.S b/src/x86/unix64.S
+index 5785420..3dcad2a 100644
+--- a/src/x86/unix64.S
++++ b/src/x86/unix64.S
+@@ -635,6 +635,6 @@ L(EFDE5):
+ #endif
+ 
+ #endif /* __x86_64__ */
+-#if defined __ELF__ && defined __linux__
++#if defined __ELF__ && (defined __linux__ || defined __FreeBSD__)
+ 	.section	.note.GNU-stack,"",@progbits
+ #endif
+diff --git a/src/x86/win64.S b/src/x86/win64.S
+index 2f59a34..61cceb5 100644
+--- a/src/x86/win64.S
++++ b/src/x86/win64.S
+@@ -247,6 +247,6 @@ C(ffi_closure_win64_alt):
+ #endif
+ #endif /* __x86_64__ */
+ 
+-#if defined __ELF__ && defined __linux__
++#if defined __ELF__ && (defined __linux__ || defined __FreeBSD__)
+ 	.section	.note.GNU-stack,"",@progbits
+ #endif
+diff --git a/src/x86/win64_intel.S b/src/x86/win64_intel.S
+index 970a4f9..c3d99a6 100644
+--- a/src/x86/win64_intel.S
++++ b/src/x86/win64_intel.S
+@@ -231,7 +231,7 @@ ffi_closure_win64_2 LABEL near
+ 	cfi_endproc
+ 	C(ffi_closure_win64) endp
+ 
+-#if defined __ELF__ && defined __linux__
++#if defined __ELF__ && defined (__linux__ || defined __FreeBSD__)
+ 	.section	.note.GNU-stack,"",@progbits
+ #endif
+ _text ends

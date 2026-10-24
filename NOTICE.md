@@ -34,6 +34,7 @@ provenance; it does not relicense anything.
 | `scutil` | apple-oss-distributions/configd (`scutil.tproj`) | APSL-2.0 |
 | `caffeinate` | apple-oss-distributions/PowerManagement | APSL-2.0 |
 | `pam_launchd` | apple-oss-distributions/pam_modules (`pam_modules-126`) | APSL-2.0 |
+| `libffi` | apple-oss-distributions/libffi (`libffi-40`, libffi 3.4.0-rc2) | MIT |
 | `nss_directory_services` | Joseph Maloney; adapted from his Gershwin DirectoryServices NSS module (gershwin-desktop/gershwin-components) for NextBSD | BSD-2-Clause |
 | `accounts/createhomedir` | NextBSD | BSD-2-Clause |
 | `accounts/autologin-user` | NextBSD | BSD-2-Clause |

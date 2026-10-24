@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pkgdemon <pkgdemonteam@gmail.com>
+Date: Sat, 24 Oct 2026 01:44:01 -0500
+Subject: [PATCH] x86-64: copy at most one eightbyte into each GPR slot
+
+Upstream libffi commits d21881f5 ("Fix x86/ffi64 calls with 6 gp and
+some sse registers", #848, libffi 3.4.7) and fe203ffb ("Fix bugs in
+the x86-64 and x32 target", #889, libffi 3.4.8), squashed.
+
+ffi_call_int copied the whole argument size into reg_args->gpr[n] for
+each INTEGER-class eightbyte. A struct that is split across a GPR and
+an SSE register therefore wrote past its GPR slot; when it took the
+sixth GPR, the extra bytes landed in the SSE register area and
+clobbered arguments already placed there. The first fix copied a fixed
+8 bytes, which read past the end of arguments smaller than 8 bytes;
+the second bounds the copy to the smaller of the two.
+---
+ src/x86/ffi64.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/x86/ffi64.c b/src/x86/ffi64.c
+index 3bd5273..a8838ff 100644
+--- a/src/x86/ffi64.c
++++ b/src/x86/ffi64.c
+@@ -650,7 +650,7 @@ ffi_call_int (ffi_cif *cif, void (*fn)(void), void *rvalue,
+ 		      break;
+ 		    default:
+ 		      reg_args->gpr[gprcount] = 0;
+-		      memcpy (&reg_args->gpr[gprcount], a, size);
++		      memcpy (&reg_args->gpr[gprcount], a, size <= 8 ? size : 8);
+ 		    }
+ 		  gprcount++;
+ 		  break;

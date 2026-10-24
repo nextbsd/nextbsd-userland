@@ -1153,6 +1153,48 @@ needed_check "$DESTDIR/usr/lib/pam_launchd.so.6" "libpam"
 needed_check "$DESTDIR/usr/lib/pam_launchd.so.6" "libsystem_dispatch"
 echo "==> pam_launchd built"
 
+# ---- libffi (nextbsd/nextbsd-userland#443, E24 D4) -------------------------
+# Apple's libffi-40 (libffi 3.4.0-rc2, MIT) for gnustep-base. Installed in
+# /usr like a base library: /usr/lib/libffi.so.7 (+ libffi.so, libffi.a),
+# <ffi.h>/<ffitarget.h>, /usr/libdata/pkgconfig/libffi.pc and the ffi(3)
+# pages. src/libffi stays exactly as Apple ships it; the NextBSD patch
+# series (upstream fixes since 3.4.0, see src/libffi/VENDORED.md) is applied
+# to a copy under .build, and that copy is what bsd.lib.mk builds. Plain
+# libc, nothing else in this file depends on it.
+comp "libffi (Apple libffi-40 + patches/)"
+FFI_BUILD="$ROOT/.build/libffi-$T"
+rm -rf "$FFI_BUILD"; mkdir -p "$ROOT/.build"
+cp -R "$SRC/libffi" "$FFI_BUILD"
+for p in "$SRC/libffi/patches/"*.patch; do
+    note "patch: $(basename "$p")"
+    if command -v patch >/dev/null 2>&1; then
+        patch -d "$FFI_BUILD" -p1 -N -s --no-backup-if-mismatch < "$p" \
+            || { echo "FAIL: libffi patch $(basename "$p") did not apply"; exit 1; }
+    else
+        # Ceiling: the copy sits inside this checkout, and git apply run
+        # inside a repository would resolve the paths from its top.
+        ( cd "$FFI_BUILD" && GIT_CEILING_DIRECTORIES="$ROOT/.build" git apply -p1 "$p" ) \
+            || { echo "FAIL: libffi patch $(basename "$p") did not apply"; exit 1; }
+    fi
+done
+mkdir -p "$DESTDIR/usr/lib" "$DESTDIR/usr/include" \
+         "$DESTDIR/usr/libdata/pkgconfig" "$DESTDIR/usr/share/man/man3"
+run_buildenv "make -C $FFI_BUILD DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -f "$DESTDIR/usr/lib/libffi.so.7" || { echo "FAIL: /usr/lib/libffi.so.7 not installed"; exit 1; }
+test -L "$DESTDIR/usr/lib/libffi.so"   || { echo "FAIL: /usr/lib/libffi.so link not installed"; exit 1; }
+test -f "$DESTDIR/usr/include/ffi.h"   || { echo "FAIL: /usr/include/ffi.h not installed"; exit 1; }
+test -f "$DESTDIR/usr/include/ffitarget.h" || { echo "FAIL: /usr/include/ffitarget.h not installed"; exit 1; }
+grep -q '^Version: 3.4.0-rc2$' "$DESTDIR/usr/libdata/pkgconfig/libffi.pc" \
+    || { echo "FAIL: libffi.pc missing or wrong"; exit 1; }
+FFI_DYN="$("$READELF" -d "$DESTDIR/usr/lib/libffi.so.7" 2>&1)" \
+    || { echo "FAIL: $READELF -d libffi.so.7: $FFI_DYN"; exit 1; }
+printf '%s\n' "$FFI_DYN" | grep -q 'SONAME.*libffi\.so\.7' \
+    || { echo "FAIL: libffi.so.7 has the wrong SONAME"; printf '%s\n' "$FFI_DYN" | grep -i soname; exit 1; }
+sync_sysroot
+mkdir -p "$SYSROOT/usr/lib"
+cp -a "$DESTDIR/usr/lib/libffi."* "$SYSROOT/usr/lib/"
+echo "==> libffi built"
+
 # =============================================================================
 # TIER 3 — on-image test binaries (freebsd-launchd-mach suite).
 # build.sh builds these natively and installs them to
