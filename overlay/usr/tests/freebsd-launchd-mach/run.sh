@@ -2450,7 +2450,19 @@ fi
 # interface ipconfigd elects as primary. Computed unconditionally: doing it
 # inside the ipconfigd.stderr block below would silently fall back to em0
 # whenever that file is absent, which is exactly the bug it fixes.
-PRIMARY_IF=$(route -n get default 2>/dev/null | awk '/interface:/ {print $2; exit}')
+#
+# The default route can lag DHCP by a few seconds, so poll for it. If it never
+# appears, fall back to the first Ethernet interface rather than em0: an empty
+# route lookup on arm64 used to fall through to em0 and fail IPCFG-RPC there.
+PRIMARY_IF=
+i=0
+while [ $i -lt 15 ]; do
+    PRIMARY_IF=$(route -n get default 2>/dev/null | awk '/interface:/ {print $2; exit}')
+    [ -n "$PRIMARY_IF" ] && break
+    sleep 1
+    i=$((i + 1))
+done
+[ -n "$PRIMARY_IF" ] || PRIMARY_IF=$(ifconfig -l ether 2>/dev/null | awk '{print $1}')
 [ -n "$PRIMARY_IF" ] || PRIMARY_IF=em0
 echo "==> primary interface: $PRIMARY_IF"
 
