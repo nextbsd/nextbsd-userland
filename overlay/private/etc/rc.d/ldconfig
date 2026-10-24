@@ -18,10 +18,22 @@ stop_cmd=:
 restart_cmd=ldconfig_start
 status_cmd=:
 
+# The hints list, in order: rtld's compiled-in default (nextbsd-freebsd-compat),
+# then /etc/ld-elf.so.conf (nextbsd-overlays: /usr/X11/lib before
+# /usr/local/lib, E23), then the ports' /usr/local/libdata/ldconfig drop-ins.
+# rtld searches the hints before its default path, so the order here has to
+# match it. Missing directories are skipped so ldconfig stays quiet.
 ldconfig_start()
 {
-	/sbin/ldconfig -elf /lib /usr/lib /usr/lib/system /usr/local/lib \
-	    $(cat /usr/local/libdata/ldconfig/* 2>/dev/null)
+	local _dirs _d
+	_dirs=
+	for _d in /lib /usr/lib /usr/lib/system /System/Library/Libraries \
+	    $(sed -e 's/#.*//' /etc/ld-elf.so.conf 2>/dev/null) \
+	    /usr/local/lib \
+	    $(sed -e 's/#.*//' /usr/local/libdata/ldconfig/* 2>/dev/null); do
+		[ -d "$_d" ] && _dirs="$_dirs $_d"
+	done
+	/sbin/ldconfig -elf $_dirs
 }
 
 load_rc_config $name 2>/dev/null
