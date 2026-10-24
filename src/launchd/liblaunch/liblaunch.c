@@ -1510,3 +1510,160 @@ create_and_switch_to_per_session_launchd(const char *login __attribute__((unused
 
 	return 1;
 }
+
+/*
+ * launch_activate_socket() -- NextBSD addition (nextbsd/nextbsd-userland#445).
+ *
+ * Apple added this in OS X 10.10, after launchd-842. Daemons such as Apple's
+ * CUPS (cupsd's service_checkin()) use it to pick up their launchd-managed
+ * sockets for on-demand start. It is built on the launchd-842 check-in path
+ * that pre-10.10 daemons used by hand: send LAUNCH_KEY_CHECKIN, find the
+ * job's Sockets entry called `name', and hand back its descriptors in a
+ * malloc(3)'d array the caller frees. Results follow Apple's launch.h:
+ *
+ *   ENOENT   -- the job has no Sockets entry called `name'
+ *   ESRCH    -- the caller is not a process managed by launchd
+ *   EALREADY -- this process has already activated `name'
+ *
+ * Every check-in passes fresh copies of all of the job's socket descriptors,
+ * so the ones for other entries are closed here; they can still be activated
+ * by name later. Activated names are remembered per process.
+ *
+ * launch_msg_internal() is used rather than launch_msg() so that a check-in
+ * made only for sockets does not also claim the job's MachServices; the
+ * daemon still checks those in itself with bootstrap_check_in().
+ */
+static pthread_mutex_t launch_activated_lock = PTHREAD_MUTEX_INITIALIZER;
+static launch_data_t launch_activated_names;
+
+static void
+launch_activate_socket_close(launch_data_t obj, const char *key __attribute__((unused)),
+		void *context __attribute__((unused)))
+{
+	launch_data_t tmp;
+	size_t i, n;
+
+	if (launch_data_get_type(obj) == LAUNCH_DATA_FD) {
+		if (launch_data_get_fd(obj) != -1) {
+			(void)close(launch_data_get_fd(obj));
+		}
+		return;
+	}
+	if (launch_data_get_type(obj) != LAUNCH_DATA_ARRAY) {
+		return;
+	}
+	n = launch_data_array_get_count(obj);
+	for (i = 0; i < n; i++) {
+		tmp = launch_data_array_get_index(obj, i);
+		if (tmp != NULL) {
+			launch_activate_socket_close(tmp, NULL, NULL);
+		}
+	}
+}
+
+int
+launch_activate_socket(const char *name, int **fds, size_t *cnt)
+{
+	launch_data_t msg, resp = NULL, sockets = NULL, entry, tmp, mark;
+	size_t i, n;
+	int *result = NULL;
+	int error;
+
+	*fds = NULL;
+	*cnt = 0;
+
+	pthread_mutex_lock(&launch_activated_lock);
+
+	if (launch_activated_names != NULL
+			&& launch_data_dict_lookup(launch_activated_names, name) != NULL) {
+		error = EALREADY;
+		goto out;
+	}
+
+	if ((msg = launch_data_new_string(LAUNCH_KEY_CHECKIN)) == NULL) {
+		error = ENOMEM;
+		goto out;
+	}
+	resp = launch_msg_internal(msg);
+	launch_data_free(msg);
+
+	if (resp == NULL || launch_data_get_type(resp) != LAUNCH_DATA_DICTIONARY) {
+		error = ESRCH;
+		goto out;
+	}
+
+	sockets = launch_data_dict_lookup(resp, LAUNCH_JOBKEY_SOCKETS);
+	if (sockets == NULL || launch_data_get_type(sockets) != LAUNCH_DATA_DICTIONARY) {
+		sockets = NULL;
+		error = ENOENT;
+		goto out;
+	}
+
+	entry = launch_data_dict_lookup(sockets, name);
+	if (entry == NULL) {
+		error = ENOENT;
+		goto out;
+	}
+
+	n = 1;
+	if (launch_data_get_type(entry) == LAUNCH_DATA_ARRAY) {
+		n = launch_data_array_get_count(entry);
+	}
+	if (n == 0) {
+		error = ENOENT;
+		goto out;
+	}
+
+	if ((result = calloc(n, sizeof(int))) == NULL) {
+		error = ENOMEM;
+		goto out;
+	}
+
+	for (i = 0; i < n; i++) {
+		tmp = entry;
+		if (launch_data_get_type(entry) == LAUNCH_DATA_ARRAY) {
+			tmp = launch_data_array_get_index(entry, i);
+		}
+		if (tmp == NULL || launch_data_get_type(tmp) != LAUNCH_DATA_FD
+				|| launch_data_get_fd(tmp) == -1) {
+			error = ENOENT;
+			goto out;
+		}
+		result[i] = launch_data_get_fd(tmp);
+	}
+
+	if (launch_activated_names == NULL) {
+		launch_activated_names = launch_data_alloc(LAUNCH_DATA_DICTIONARY);
+	}
+	if (launch_activated_names == NULL
+			|| (mark = launch_data_new_bool(true)) == NULL) {
+		error = ENOMEM;
+		goto out;
+	}
+	launch_data_dict_insert(launch_activated_names, mark, name);
+
+	/* The caller owns these now; keep them out of the cleanup below. */
+	for (i = 0; i < n; i++) {
+		tmp = entry;
+		if (launch_data_get_type(entry) == LAUNCH_DATA_ARRAY) {
+			tmp = launch_data_array_get_index(entry, i);
+		}
+		launch_data_set_fd(tmp, -1);
+	}
+
+	*fds = result;
+	*cnt = n;
+	result = NULL;
+	error = 0;
+
+out:
+	pthread_mutex_unlock(&launch_activated_lock);
+	if (sockets != NULL) {
+		launch_data_dict_iterate(sockets, launch_activate_socket_close, NULL);
+	}
+	if (resp != NULL) {
+		launch_data_free(resp);
+	}
+	free(result);
+	return error;
+}

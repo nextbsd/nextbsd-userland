@@ -361,6 +361,18 @@ __ld_normal
 launch_data_t
 launch_msg(const launch_data_t);
 
+/* launch_activate_socket()
+ *
+ * Returns the file descriptors for the Sockets entry called `name' in the
+ * calling job's launchd.plist(5), in an array the caller must free(3).
+ * Returns 0, or ENOENT (no such entry), ESRCH (not managed by launchd) or
+ * EALREADY (already activated). Added in OS X 10.10; NextBSD adds it to
+ * launchd-842's liblaunch for Apple's CUPS (nextbsd/nextbsd-userland#445).
+ */
+__attribute__((__nonnull__(1, 2, 3), __warn_unused_result__))
+int
+launch_activate_socket(const char *name, int **fds, size_t *cnt);
+
 __END_DECLS
 
 #pragma GCC visibility pop
