@@ -1,0 +1,22 @@
+NextBSD: link libexslt against libm.
+
+libexslt's math module calls fmod, floor, pow, sin and friends, but
+1.1.35's CMakeLists.txt only links libm into libxslt. Darwin's libSystem
+carries libm, so Apple's build never noticed; on NextBSD libexslt.so.0
+needs its own DT_NEEDED on libm, or anything linked with
+--no-allow-shlib-undefined (xsltproc) fails. The autotools build has always
+linked it ($(LIBM)).
+
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -322,6 +322,10 @@
+ endif()
+ 
+ target_link_libraries(LibExslt PUBLIC LibXslt LibXml2::LibXml2)
++
++if(UNIX)
++	target_link_libraries(LibExslt PRIVATE m)
++endif()
+ 
+ set_target_properties(
+ 	LibExslt

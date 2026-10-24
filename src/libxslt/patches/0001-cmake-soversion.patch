@@ -1,0 +1,25 @@
+NextBSD: give the CMake-built libraries the upstream sonames.
+
+libxslt 1.1.35's CMakeLists.txt sets VERSION but no SOVERSION, so CMake
+uses the full versions as sonames (libxslt.so.1.1.35, libexslt.so.0.8.20).
+The autotools build, and every distribution, ship libxslt.so.1 and
+libexslt.so.0.
+
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -241,6 +241,7 @@
+ 	OUTPUT_NAME xslt
+ 	POSITION_INDEPENDENT_CODE ON
+ 	PREFIX lib
++	SOVERSION ${LIBXSLT_MAJOR_VERSION}
+ 	VERSION ${PROJECT_VERSION}
+ )
+ 
+@@ -324,6 +325,7 @@
+ 	OUTPUT_NAME exslt
+ 	POSITION_INDEPENDENT_CODE ON
+ 	PREFIX lib
++	SOVERSION ${LIBEXSLT_MAJOR_VERSION}
+ 	VERSION ${LIBEXSLT_VERSION}
+ )
+ 

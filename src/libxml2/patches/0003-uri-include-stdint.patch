@@ -1,0 +1,16 @@
+NextBSD: include <stdint.h> where uri.c uses INT32_MAX.
+
+Apple's overflow check in xmlBuildRelativeURI() uses INT32_MAX, which
+Darwin's headers pull in through <libxml/xmlversion.h>'s <Availability.h>
+and friends. Off Darwin nothing declares it, so include <stdint.h>.
+
+--- a/uri.c
++++ b/uri.c
+@@ -12,6 +12,7 @@
+ #include "libxml.h"
+ 
+ #include <limits.h>
++#include <stdint.h>
+ #include <string.h>
+ 
+ #include <libxml/xmlmemory.h>

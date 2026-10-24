@@ -1195,6 +1195,122 @@ mkdir -p "$SYSROOT/usr/lib"
 cp -a "$DESTDIR/usr/lib/libffi."* "$SYSROOT/usr/lib/"
 echo "==> libffi built"
 
+# ---- libxml2 + libxslt (Apple's, nextbsd/nextbsd-userland#442, E24 D4) ------
+# Apple's libxml2-39.10 (2.9.13) and libxslt-21.13 (1.1.35), as macOS ships
+# them in /usr/lib. Apple's trees carry no generated configure, only
+# configure.ac and the CMakeLists.txt upstream added in 2.9.11/1.1.35, so both
+# are host cmake/ninja runs like ICU. src/<project> is Apple's tree as pinned
+# in its VENDORED.md; src/<project>/patches is applied, in order, to a copy
+# under .build so the vendored tree stays byte-for-byte Apple's.
+#
+# Feature set follows Apple's own build (zlib, no lzma, XPointer locations
+# compiled in and disabled at run time), except that the encoding converter
+# is libc iconv(3) instead of ICU: NextBSD's ICU is swift-foundation-icu
+# (_foundation_unicode/ headers), not the <unicode/*.h> libicucore libxml2
+# expects. The commands are the ones macOS ships (xmllint, xmlcatalog,
+# xsltproc); Python bindings, tests and the HTML docs are not built or shipped. Sonames are upstream's (libxml2.so.2, libxslt.so.1, libexslt.so.0)
+# and the .pc files go where base keeps them, /usr/libdata/pkgconfig.
+apply_vendor_patches() {
+    local src="$1" dst="$2" p
+    rm -rf "$dst"; mkdir -p "$(dirname "$dst")"; cp -a "$src" "$dst"
+    for p in "$src"/patches/*.patch; do
+        [ -f "$p" ] || continue
+        note "patch: $(basename "$src")/$(basename "$p")"
+        patch -d "$dst" -p1 -s < "$p" || { echo "FAIL: $p does not apply"; exit 1; }
+    done
+}
+
+comp "libxml2 [cmake cross, Apple libxml2-39.10]"
+XML2_SRC="$ROOT/.build/libxml2-src-$T"
+XML2_BUILD="$ROOT/.build/libxml2-$T"
+apply_vendor_patches "$SRC/libxml2" "$XML2_SRC"
+rm -rf "$XML2_BUILD"; mkdir -p "$XML2_BUILD"
+cmake -G Ninja -S "$XML2_SRC" -B "$XML2_BUILD" \
+    -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN" \
+    -DTHREADS_PREFER_PTHREAD_FLAG=ON \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DCMAKE_INSTALL_LIBDIR=lib \
+    -DCMAKE_INSTALL_INCLUDEDIR=include \
+    -DCMAKE_INSTALL_MANDIR=share/man \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DLIBXML2_WITH_PYTHON=OFF \
+    -DLIBXML2_WITH_TESTS=OFF \
+    -DLIBXML2_WITH_ICU=OFF \
+    -DLIBXML2_WITH_ICONV=ON \
+    -DLIBXML2_WITH_LZMA=OFF \
+    -DLIBXML2_WITH_ZLIB=ON \
+    -DLIBXML2_WITH_XPTR_LOCS=ON
+DESTDIR="$DESTDIR" ninja -C "$XML2_BUILD" install
+mkdir -p "$DESTDIR/usr/libdata/pkgconfig"
+mv "$DESTDIR/usr/lib/pkgconfig/libxml-2.0.pc" "$DESTDIR/usr/libdata/pkgconfig/"
+rmdir "$DESTDIR/usr/lib/pkgconfig" 2>/dev/null || true
+rm -rf "$DESTDIR/usr/share/doc/libxml2"
+rm -f "$DESTDIR/usr/lib/xml2Conf.sh"
+gzip -9f "$DESTDIR/usr/share/man/man1/xmllint.1" "$DESTDIR/usr/share/man/man1/xmlcatalog.1" \
+         "$DESTDIR/usr/share/man/man3/libxml.3"
+test -L "$DESTDIR/usr/lib/libxml2.so.2" || { echo "FAIL: /usr/lib/libxml2.so.2 missing"; exit 1; }
+test -x "$DESTDIR/usr/bin/xmllint"     || { echo "FAIL: /usr/bin/xmllint missing"; exit 1; }
+test -x "$DESTDIR/usr/bin/xmlcatalog"  || { echo "FAIL: /usr/bin/xmlcatalog missing"; exit 1; }
+test -f "$DESTDIR/usr/include/libxml2/libxml/xmlversion.h" \
+    || { echo "FAIL: libxml2 headers missing"; exit 1; }
+needed_check "$DESTDIR/usr/lib/libxml2.so.2" "libz"
+needed_check "$DESTDIR/usr/bin/xmllint" "libxml2.so.2"
+# libxslt's find_package(LibXml2 CONFIG) only searches the sysroot (the
+# toolchain file's FIND_ROOT_PATH), so stage libxml2 there as sync_sysroot
+# does for /usr/lib/system. The exported targets name xmllint and xmlcatalog
+# too, and CMake checks every imported file exists, so those come along.
+if [ "$SYSROOT" != "$DESTDIR" ]; then
+    mkdir -p "$SYSROOT/usr/lib/cmake" "$SYSROOT/usr/include" "$SYSROOT/usr/libdata/pkgconfig" \
+             "$SYSROOT/usr/bin"
+    cp -a "$DESTDIR/usr/bin/xmllint" "$DESTDIR/usr/bin/xmlcatalog" "$SYSROOT/usr/bin/"
+    cp -a "$DESTDIR/usr/lib/"libxml2.so* "$SYSROOT/usr/lib/"
+    cp -a "$DESTDIR/usr/lib/cmake/"libxml2-* "$SYSROOT/usr/lib/cmake/"
+    cp -a "$DESTDIR/usr/include/libxml2" "$SYSROOT/usr/include/"
+    cp -a "$DESTDIR/usr/libdata/pkgconfig/libxml-2.0.pc" "$SYSROOT/usr/libdata/pkgconfig/"
+fi
+
+comp "libxslt + libexslt [cmake cross, Apple libxslt-21.13]"
+XSLT_SRC="$ROOT/.build/libxslt-src-$T"
+XSLT_BUILD="$ROOT/.build/libxslt-$T"
+apply_vendor_patches "$SRC/libxslt" "$XSLT_SRC"
+rm -rf "$XSLT_BUILD"; mkdir -p "$XSLT_BUILD"
+# LIBXSLT_DEFAULT_PLUGINS_PATH: 1.1.35's CMakeLists sets it only after
+# xsltconfig.h is generated, which would leave the header's path empty.
+cmake -G Ninja -S "$XSLT_SRC" -B "$XSLT_BUILD" \
+    -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN" \
+    -DTHREADS_PREFER_PTHREAD_FLAG=ON \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DCMAKE_INSTALL_LIBDIR=lib \
+    -DCMAKE_INSTALL_INCLUDEDIR=include \
+    -DCMAKE_INSTALL_MANDIR=share/man \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DLIBXSLT_WITH_PYTHON=OFF \
+    -DLIBXSLT_WITH_TESTS=OFF \
+    -DLIBXSLT_WITH_CRYPTO=OFF \
+    -DLIBXSLT_DEFAULT_PLUGINS_PATH=/usr/lib/libxslt-plugins
+DESTDIR="$DESTDIR" ninja -C "$XSLT_BUILD" install
+mv "$DESTDIR/usr/lib/pkgconfig/libxslt.pc" "$DESTDIR/usr/lib/pkgconfig/libexslt.pc" \
+   "$DESTDIR/usr/libdata/pkgconfig/"
+rmdir "$DESTDIR/usr/lib/pkgconfig" 2>/dev/null || true
+rm -rf "$DESTDIR/usr/share/doc/libxslt"
+rm -f "$DESTDIR/usr/lib/xsltConf.sh"
+gzip -9f "$DESTDIR/usr/share/man/man1/xsltproc.1" \
+         "$DESTDIR/usr/share/man/man3/libxslt.3" "$DESTDIR/usr/share/man/man3/libexslt.3"
+test -L "$DESTDIR/usr/lib/libxslt.so.1"  || { echo "FAIL: /usr/lib/libxslt.so.1 missing"; exit 1; }
+test -L "$DESTDIR/usr/lib/libexslt.so.0" || { echo "FAIL: /usr/lib/libexslt.so.0 missing"; exit 1; }
+test -x "$DESTDIR/usr/bin/xsltproc"      || { echo "FAIL: /usr/bin/xsltproc missing"; exit 1; }
+needed_check "$DESTDIR/usr/lib/libxslt.so.1"  "libxml2.so.2"
+needed_check "$DESTDIR/usr/lib/libexslt.so.0" "libxslt.so.1"
+needed_check "$DESTDIR/usr/bin/xsltproc"      "libexslt.so.0"
+# CMake writes prefix=${pcfiledir}/../.., which pkgconf would prefix again
+# with PKG_CONFIG_SYSROOT_DIR when cross-building against /stage. Pin it to
+# /usr like base's own .pc files.
+for pc in libxml-2.0 libxslt libexslt; do
+    sed -i.orig 's|^prefix=.*|prefix=/usr|' "$DESTDIR/usr/libdata/pkgconfig/$pc.pc"
+    rm -f "$DESTDIR/usr/libdata/pkgconfig/$pc.pc.orig"
+done
+echo "==> libxml2 + libxslt built"
+
 # =============================================================================
 # TIER 3 — on-image test binaries (freebsd-launchd-mach suite).
 # build.sh builds these natively and installs them to

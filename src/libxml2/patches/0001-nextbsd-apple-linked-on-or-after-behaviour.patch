@@ -1,0 +1,101 @@
+NextBSD: take Apple's current (stricter) behaviour on NextBSD.
+
+Apple gates its hardening on dyld's "linked on or after" checks
+(dyld_program_minos_at_least / dyld_program_sdk_at_least). Those exist only
+on Darwin, so off __APPLE__ both linkedOnOrAfter*() helpers returned false
+and NextBSD got the legacy 2.9.13 behaviour: no XPath operation/recursion
+limits, XPointer locations live. Every NextBSD program is new code, so the
+helpers return true here, and XPointer locations are disabled at run time as
+they are on current Apple OSes.
+
+The callers (xpath.c, xmlmemory.c, xpointer.c) only included
+xmlversionInternal.h under __APPLE__, so the declaration was missing off
+Darwin; include it unconditionally.
+
+linkedOnOrAfter2024EReleases() is only reached when the public headers
+define LIBXML_HAS_DEPRECATED_MEMORY_ALLOCATION_FUNCTIONS, which they leave
+undefined off Darwin, so the xmlMalloc family is unchanged.
+
+--- a/xmlversion.c
++++ b/xmlversion.c
+@@ -25,8 +25,15 @@
+         result = dyld_program_minos_at_least(dyld_fall_2022_os_versions);
+     });
+     return result;
+-#else
++#elif defined(__APPLE__)
+     return false;
++#else
++    /*
++     * NextBSD: there is no dyld SDK or minimum-OS stamp to test, and every
++     * NextBSD program is new code, so always take Apple's current
++     * (stricter) behaviour.
++     */
++    return true;
+ #endif
+ }
+ 
+@@ -39,7 +46,14 @@
+         result = dyld_program_sdk_at_least(dyld_2024_SU_E_os_versions);
+     });
+     return result;
+-#else
++#elif defined(__APPLE__)
+     return false;
++#else
++    /*
++     * NextBSD: there is no dyld SDK or minimum-OS stamp to test, and every
++     * NextBSD program is new code, so always take Apple's current
++     * (stricter) behaviour.
++     */
++    return true;
+ #endif
+ }
+--- a/xmlversionInternal.h
++++ b/xmlversionInternal.h
+@@ -41,7 +41,8 @@
+ 
+ #else /* __APPLE__ */
+ 
+-#undef LIBXML_HAS_XPOINTER_LOCATIONS_DISABLED_AT_RUNTIME
++/* NextBSD: XPointer locations are disabled, as on current Apple OSes. */
++#define LIBXML_HAS_XPOINTER_LOCATIONS_DISABLED_AT_RUNTIME
+ #undef LIBXML_LINKED_ON_OR_AFTER_MACOS13_IOS16_WATCHOS9_TVOS16
+ 
+ #undef LIBXML_LINKED_ON_OR_AFTER_MACOS15_4_IOS18_4_WATCHOS11_4_TVOS18_4_VISIONOS2_4
+--- a/xpath.c
++++ b/xpath.c
+@@ -70,9 +70,7 @@
+ #define XPATH_STREAMING
+ #endif
+ 
+-#ifdef __APPLE__
+ #include "xmlversionInternal.h"
+-#endif
+ 
+ #define TODO								\
+     xmlGenericError(xmlGenericErrorContext,				\
+--- a/xmlmemory.c
++++ b/xmlmemory.c
+@@ -48,9 +48,7 @@
+ #include <libxml/xmlerror.h>
+ #include <libxml/threads.h>
+ 
+-#ifdef __APPLE__
+ #include "xmlversionInternal.h"
+-#endif
+ 
+ static int xmlMemInitialized = 0;
+ static unsigned long  debugMemSize = 0;
+--- a/xpointer.c
++++ b/xpointer.c
+@@ -40,9 +40,7 @@
+ #include <libxml/xmlerror.h>
+ #include <libxml/globals.h>
+ 
+-#ifdef __APPLE__
+ #include "xmlversionInternal.h"
+-#endif
+ 
+ #ifdef LIBXML_XPTR_ENABLED
+ 

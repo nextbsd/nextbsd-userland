@@ -272,6 +272,10 @@ above; `/System/Library` and `~/Library` paths are kept as-is.
 | cpdup | `man cpdup` (1) | filesystem copy / mirror utility |
 | WLAN | `man wlan` (8) | WLAN command-line client |
 | WLAN | `man wland` (8) | 802.11 management daemon |
+| libxml2 | `man xmllint` (1), `man xmlcatalog` (1) | XML parser / validator, catalog tool |
+| libxml2 | `man libxml` (3) | libxml2 library overview |
+| libxslt | `man xsltproc` (1) | XSLT processor |
+| libxslt | `man libxslt` (3), `man libexslt` (3) | XSLT / EXSLT library overviews |
 
 **Shipped binaries with no man page** (deliberately none — not fabricated):
 `ipconfigd` (upstream ships only `ipconfig.8` for the client CLI, which NextBSD

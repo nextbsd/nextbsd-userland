@@ -35,6 +35,8 @@ provenance; it does not relicense anything.
 | `caffeinate` | apple-oss-distributions/PowerManagement | APSL-2.0 |
 | `pam_launchd` | apple-oss-distributions/pam_modules (`pam_modules-126`) | APSL-2.0 |
 | `libffi` | apple-oss-distributions/libffi (`libffi-40`, libffi 3.4.0-rc2) | MIT |
+| `libxml2` (+ xmllint, xmlcatalog) | apple-oss-distributions/libxml2 (`libxml2-39.10`, libxml2 2.9.13) | MIT (`src/libxml2/Copyright`) |
+| `libxslt` (+ libexslt, xsltproc) | apple-oss-distributions/libxslt (`libxslt-21.13`, libxslt 1.1.35) | MIT (`src/libxslt/Copyright`) |
 | `nss_directory_services` | Joseph Maloney; adapted from his Gershwin DirectoryServices NSS module (gershwin-desktop/gershwin-components) for NextBSD | BSD-2-Clause |
 | `accounts/createhomedir` | NextBSD | BSD-2-Clause |
 | `accounts/autologin-user` | NextBSD | BSD-2-Clause |

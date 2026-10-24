@@ -1,0 +1,17 @@
+NextBSD: give the CMake-built library the upstream soname.
+
+libxml2 2.9.13's CMakeLists.txt sets VERSION but no SOVERSION, so CMake
+uses the full version as the soname (libxml2.so.2.9.13). The autotools
+build, and every distribution, ship libxml2.so.2. Upstream fixed this in
+2.10 in the same way.
+
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -489,6 +489,7 @@
+ 	OUTPUT_NAME xml2
+ 	POSITION_INDEPENDENT_CODE ON
+ 	PREFIX lib
++	SOVERSION ${LIBXML_MAJOR_VERSION}
+ 	VERSION ${PROJECT_VERSION}
+ )
+ 

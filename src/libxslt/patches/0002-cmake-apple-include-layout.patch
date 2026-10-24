@@ -1,0 +1,33 @@
+NextBSD: put the directories Apple's flattened includes expect on the path.
+
+Apple's Xcode build resolves headers through header maps, so its tree
+includes them by bare name across directories: the generated configuration
+headers as "xsltconfig.h" and "exsltconfig.h" (upstream:
+<libxslt/xsltconfig.h>), and libexslt and xsltproc include libxslt's
+headers as "xsltutils.h", "xslt.h" and so on. A CMake build finds none of
+those, so put the source and generated libxslt/ and libexslt/ directories
+on the build-tree include path. Build tree only: the installed headers
+include only their own neighbours, which resolve as upstream's do.
+
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -223,7 +223,11 @@
+ 	LibXslt
+ 	PUBLIC
+ 	$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
++	$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/libxslt>
++	$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/libexslt>
+ 	$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
++	$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libxslt>
++	$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libexslt>
+ 	$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_INCLUDEDIR}>
+ )
+ 
+@@ -307,6 +311,7 @@
+ 	LibExslt
+ 	PUBLIC
+ 	$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
++	$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/libexslt>
+ 	$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+ 	$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_INCLUDEDIR}>
+ )
