@@ -139,6 +139,18 @@ kern_return_t	IORegistryEntryGetPath(io_registry_entry_t entry,
 		    const io_name_t plane, io_string_t path);
 
 /*
+ * IORegistryEntryGetRegistryEntryID — `entry`'s registry entry id into
+ * *entryID: the kernel registry's stable 64-bit id for the node, the one the
+ * registry properties report as "id" and that notifications carry. Ids are
+ * never reused, and the call needs no kernel round trip, so it also works on
+ * an entry that has since departed (for example one handed to a
+ * kIOTerminatedNotification callback). KERN_INVALID_ARGUMENT if `entry` is
+ * not a registry entry or `entryID` is NULL.
+ */
+kern_return_t	IORegistryEntryGetRegistryEntryID(io_registry_entry_t entry,
+		    uint64_t *entryID);
+
+/*
  * IOObjectRetain — gain an additional reference to a handle.
  * IOObjectRelease — drop a reference and free the handle at zero.
  * Releasing IO_OBJECT_NULL is a no-op (matches macOS).

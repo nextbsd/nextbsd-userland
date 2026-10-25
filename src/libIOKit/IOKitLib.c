@@ -228,6 +228,17 @@ IORegistryEntryGetPath(io_registry_entry_t entry,
 }
 
 kern_return_t
+IORegistryEntryGetRegistryEntryID(io_registry_entry_t entry, uint64_t *entryID)
+{
+	if (entry == NULL || entry->kind != IOOBJ_KIND_ENTRY || entryID == NULL)
+		return (KERN_INVALID_ARGUMENT);
+	/* The handle already carries the kernel registry id every IOREGIOC*
+	 * call is keyed on; no ioctl needed. */
+	*entryID = entry->node_id;
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
 IOObjectRetain(io_object_t object)
 {
 	if (object == NULL)
