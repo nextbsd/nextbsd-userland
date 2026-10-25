@@ -2103,6 +2103,17 @@ mDNSexport mStatus mDNSPlatformInit(mDNS *const m)
     // Machine model for the _device-info "model=" TXT record.
     SetupDeviceModel(m);
 
+    // NextBSD (nextbsd-userland#461): always advertise this machine's own
+    // <hostlabel>.local address records and their reverse PTRs. mDNSCore only
+    // advertises them while m->AutoTargetServices > 0, a count of registered
+    // SRV records that target this host (AdvertiseInterfaceIfNeeded in
+    // mDNSCore/mDNS.c). A Mac always has services like that, so its name
+    // always resolves; a NextBSD machine with no Bonjour services would not
+    // answer for its own name at all. Hold one permanent reference, taken
+    // before SetupInterfaceList() registers the interfaces, so the count
+    // never drops to zero.
+    m->AutoTargetServices = 1;
+
     mDNS_SetFQDN(m);
 
     sa.sa_family = AF_INET;

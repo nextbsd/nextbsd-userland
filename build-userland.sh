@@ -1131,6 +1131,19 @@ test -f "$DESTDIR/usr/lib/nss_directory_services.so.1" || { echo "FAIL: /usr/lib
 test ! -e "$DESTDIR/usr/lib/libnss_directory_services.a" || { echo "FAIL: nss_directory_services must not install a static library"; exit 1; }
 echo "==> nss_directory_services built"
 
+# ---- nss_mdns (nextbsd/nextbsd-userland#461, #435) -------------------------
+# The `mdns` source for hosts: names under local. answered by mDNSResponder
+# through libdns_sd, the way Libinfo's mdns module does on macOS. One shared
+# object at the name nsdispatch(3) dlopens; links libc and libdns_sd only.
+# nsswitch.conf's `hosts: files mdns dns` comes from nextbsd-overlays.
+comp "nss_mdns"
+mkdir -p "$DESTDIR/usr/lib"
+run_buildenv "make -C $SRC/nss_mdns DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -f "$DESTDIR/usr/lib/nss_mdns.so.1" || { echo "FAIL: /usr/lib/nss_mdns.so.1 not installed"; exit 1; }
+test ! -e "$DESTDIR/usr/lib/libnss_mdns.a" || { echo "FAIL: nss_mdns must not install a static library"; exit 1; }
+needed_check "$DESTDIR/usr/lib/nss_mdns.so.1" "libdns_sd.so.1"
+echo "==> nss_mdns built"
+
 # ---- pam_launchd (nextbsd/nextbsd-userland#354, PR 3) ----------------------
 # Apple's launchd PAM session module (pam_modules-126), built for the OpenPAM
 # inherited from FreeBSD: OpenPAM headers and libpam come from the compat base

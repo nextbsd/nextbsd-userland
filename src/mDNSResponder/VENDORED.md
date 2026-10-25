@@ -76,3 +76,22 @@ Address changes come from configd's `State:/Network/Interface/*/{IPv4,IPv6}`
 keys through `mDNSConfigStore.c`, as on Darwin. The socket is registered with
 the same select() event loop as before, and `WatchForInterfaceChange()` now
 closes it if registration fails (fd >= FD_SETSIZE) instead of leaking it.
+
+### `mDNSPosix/mDNSPosix.c` — always advertise the host name (nextbsd-userland#461)
+
+mDNSCore advertises the per-interface `<hostlabel>.local` A/AAAA records and
+their reverse PTRs only while `m->AutoTargetServices > 0`
+(`AdvertiseInterfaceIfNeeded` in `mDNSCore/mDNS.c`), and that count only
+covers registered SRV records that target this host. A Mac always has some, so
+its name always resolves. A NextBSD machine with no Bonjour services didn't
+answer for its own name, so `getent hosts <name>.local` failed even with
+`nss_mdns` in place. `mDNSPlatformInit()` now sets `m->AutoTargetServices = 1`
+before `SetupInterfaceList()`, a permanent reference that keeps the count above
+zero. Renames still go through `mDNS_SetFQDN` and conflict handling as before.
+
+### Not built: `mDNSPosix/nss_mdns.c`
+
+The vendored NSS module is written for glibc's NSS interface. NextBSD's `mdns`
+hosts source is `src/nss_mdns`, an `nsdispatch(3)` module whose lookup follows
+Libinfo's `mdns_module.c` (nextbsd-userland#435, #461). `nss_mdns.c`,
+`nss_mdns.conf` and the two man pages stay here only as a reference.

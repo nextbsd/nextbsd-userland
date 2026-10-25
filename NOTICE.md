@@ -39,6 +39,7 @@ provenance; it does not relicense anything.
 | `libxslt` (+ libexslt, xsltproc) | apple-oss-distributions/libxslt (`libxslt-21.13`, libxslt 1.1.35) | MIT (`src/libxslt/Copyright`) |
 | `curl` (+ libcurl) | apple-oss-distributions/curl (`curl-166.0.0.0.1`, curl 8.7.1); NextBSD security patches in `src/curl/patches` | curl (MIT-style), `src/curl/dist/COPYING` |
 | `nss_directory_services` | Joseph Maloney; adapted from his Gershwin DirectoryServices NSS module (gershwin-desktop/gershwin-components) for NextBSD | BSD-2-Clause |
+| `nss_mdns` | NextBSD; lookup flow modelled on Libinfo's `mdns_module.c` (apple-oss-distributions/Libinfo), no code copied | BSD-2-Clause |
 | `accounts/createhomedir` | NextBSD | BSD-2-Clause |
 | `accounts/autologin-user` | NextBSD | BSD-2-Clause |
 | `accounts/adduser`, `passwd`, `rmuser` | NextBSD | BSD-2-Clause |
