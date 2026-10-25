@@ -24,7 +24,7 @@
 #     test (CI runs them inside the booted VM, not here).
 #
 # EXECUTION CONTEXT (set up by CI BEFORE this script runs)
-#   Running inside the nextbsd-kernel-toolchain container on a GitHub Ubuntu
+#   Running inside the nextbsd-toolchain container on a GitHub Ubuntu
 #   (x86_64) runner. CI has already:
 #     1. staged a SYSROOT from compat's continuous base into $SYSROOT, and
 #     2. run, in the freebsd src tree:

@@ -1,7 +1,7 @@
 name: Build NextBSD Userland (Darwin system layer)
 
 # Cross-builds the Darwin system layer (Mach / launchd / configd / CoreFoundation
-# / IOKit + daemons) on an Ubuntu host with the nextbsd-kernel-toolchain clang
+# / IOKit + daemons) on an Ubuntu host with the nextbsd-toolchain clang
 # cross-compiler. REUSES the image's baked kernel-toolchain via `buildenv`
 # (no per-run toolchain rebuild). Publishes a rolling `continuous` userland
 # artifact that the nextbsd ISO assembler ingests.

@@ -8,7 +8,7 @@ name: build-arch (reusable per-arch pipeline)
 # workflows do not).
 #
 # Cross-builds Tier 0-2 only (see README); both arches cross-build on the x86_64
-# runner via the per-arch nextbsd-kernel-toolchain image.
+# runner via the per-arch nextbsd-toolchain image.
 
 on:
   workflow_call:
@@ -59,7 +59,7 @@ jobs:
     container:
       # Per-arch toolchain image: clang cross-compiler at $CROSS_BINDIR,
       # FreeBSD /usr/src + make.py, and the baked kernel-toolchain.
-      image: ghcr.io/nextbsd/nextbsd-kernel-toolchain:${{ inputs.arch }}-${{ inputs.fbsd_sha && format('fbsd-{0}', inputs.fbsd_sha) || 'latest' }}
+      image: ghcr.io/nextbsd/nextbsd-toolchain:${{ inputs.arch }}-${{ inputs.fbsd_sha && format('fbsd-{0}', inputs.fbsd_sha) || 'latest' }}
     steps:
       - uses: actions/checkout@v4
 
