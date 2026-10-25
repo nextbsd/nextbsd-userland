@@ -15,6 +15,13 @@
  * eventhandlers. The kernel is the registry; hwregd has been retired, so there
  * is no userland fallback.
  *
+ * Interest notifications (#456, kernel nextbsd-kernel#338) share the port:
+ * IOServiceAddInterestNotification registers the same recv right on ONE
+ * registry entry with ioctl(IOREGIOCINTEREST), and the kernel pushes an
+ * ioreg_interest_msg (msgid IOKIT_NOTIFY_INTEREST_MSGID) carrying a kIOMessage*
+ * code, the entry id, two arguments and a devnode. The handler dispatches it to
+ * the port's interest registrations for that id.
+ *
  * Delivery is the native EVFILT_MACHPORT filter (mach.ko filt_machport, slot
  * -16) that libmach reroutes the source's kevent onto. task #41's "MACH_RECV
  * doesn't reliably deliver" was the module-era register_event_bell pipe bridge,
@@ -22,6 +29,7 @@
  * Stage 4 (#255).
  */
 #include <IOKit/IOKitLib.h>
+#include <IOKit/IOMessage.h>
 #include "IOKitInternal.h"
 
 #include "ioregistry.h"		/* vendored: IOREGIOCWATCH, ioreg_watch_reg, IOREG_EVENT_* */
@@ -31,6 +39,8 @@
 #include <mach/mach.h>
 
 #include <sys/ioctl.h>		/* ioctl(2) on /dev/ioregistry */
+
+#include <errno.h>
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -58,7 +68,40 @@ struct __io_watch {
 	void				*refcon;
 };
 
+/*
+ * One IOServiceAddInterestNotification registration. Linked on its port's
+ * `interests` list while active; owned by the io_object_t handed to the caller
+ * (IOOBJ_KIND_INTEREST), so it is freed only by IOObjectRelease. Unlinked
+ * (linked = false) by that release, by kIOMessageServiceIsTerminated, or by
+ * port destruction. Holds a reference on the port and on `service`.
+ */
+struct __io_interest {
+	struct __io_interest		*next;
+	struct IONotificationPort	*port;
+	uint64_t			 id;		/* service registry id */
+	io_service_t			 service;	/* retained */
+	IOServiceInterestCallback	 callback;
+	void				*refcon;
+	bool				 linked;
+};
+
+/*
+ * Registry ids this port holds a kernel interest watch on. The kernel has no
+ * per-watch unregister (the watch ends when the port dies or the entry
+ * departs), so a second registration for the same id on the same port reuses
+ * the existing watch instead of adding one; otherwise every message would
+ * arrive twice and fire each registration twice.
+ */
+struct __io_kinterest {
+	struct __io_kinterest	*next;
+	uint64_t		 id;
+};
+
 struct IONotificationPort {
+	atomic_int		 refcnt;	/* 1 for the port itself, plus one
+						 * per interest registration */
+	struct __io_interest	*interests;	/* guarded by `lock` */
+	struct __io_kinterest	*kinterests;	/* guarded by `lock` */
 	mach_port_t		 recv_port;	/* receive right we own */
 	dispatch_source_t	 source;	/* MACH_RECV source on recv_port */
 	dispatch_queue_t	 recv_queue;	/* private serial queue the source
@@ -162,7 +205,165 @@ union event_rcv_buf {
 		ioreg_event_msg		msg;
 		mach_msg_max_trailer_t	trailer;
 	} k;
+	struct {
+		ioreg_interest_msg	msg;
+		mach_msg_max_trailer_t	trailer;
+	} i;
 };
+
+/*
+ * Drop one reference on the port; the last one frees the struct and its lock.
+ * The rights, queues and watch list go in io_source_cancel; only the memory an
+ * outstanding interest registration can still reach lives until here.
+ */
+static void
+port_unref(struct IONotificationPort *port)
+{
+	if (atomic_fetch_sub(&port->refcnt, 1) != 1)
+		return;
+	(void)pthread_mutex_destroy(&port->lock);
+	free(port);
+}
+
+static void
+interest_unlink_locked(struct IONotificationPort *port,
+    struct __io_interest *rec)
+{
+	struct __io_interest **pp;
+
+	if (!rec->linked)
+		return;
+	for (pp = &port->interests; *pp != NULL; pp = &(*pp)->next) {
+		if (*pp == rec) {
+			*pp = rec->next;
+			break;
+		}
+	}
+	rec->next = NULL;
+	rec->linked = false;
+}
+
+static void
+kinterest_forget_locked(struct IONotificationPort *port, uint64_t id)
+{
+	struct __io_kinterest **pp, *k;
+
+	for (pp = &port->kinterests; (k = *pp) != NULL; pp = &k->next) {
+		if (k->id == id) {
+			*pp = k->next;
+			free(k);
+			return;
+		}
+	}
+}
+
+static void
+kinterests_free_locked(struct IONotificationPort *port)
+{
+	struct __io_kinterest *k, *next;
+
+	for (k = port->kinterests; k != NULL; k = next) {
+		next = k->next;
+		free(k);
+	}
+	port->kinterests = NULL;
+}
+
+/*
+ * One interest callout. The callback, refcon and a retained service are copied
+ * out of the registration under the port lock, so the callout does not touch
+ * the registration (which a concurrent IOObjectRelease may free). `arg` is the
+ * messageArgument the callback sees; it lives as long as the callout.
+ */
+struct interest_callout {
+	IOServiceInterestCallback		 callback;
+	void					*refcon;
+	io_service_t				 service;	/* retained */
+	uint32_t				 message;
+	IOServiceInterestMessageArgument	 arg;
+};
+
+static void
+interest_trampoline(void *ctx)
+{
+	struct interest_callout *c = ctx;
+
+	c->callback(c->refcon, c->service, c->message, &c->arg);
+	IOObjectRelease(c->service);
+	free(c);
+}
+
+/*
+ * Handle one ioreg_interest_msg: fire every active registration on this port
+ * for the message's entry id, on the callback queue if one is set and inline
+ * otherwise (the fire_callback rule). kIOMessageServiceIsTerminated is the
+ * last message for the entry: the kernel drops its watch after sending it, so
+ * the registrations are unlinked and the port forgets its kernel watch.
+ */
+#define INTEREST_SNAP_MAX	16
+
+static void
+handle_interest(struct IONotificationPort *port, const union event_rcv_buf *buf)
+{
+	const ioreg_interest_msg *m = &buf->i.msg;
+	struct interest_callout *snap[INTEREST_SNAP_MAX];
+	IOServiceInterestMessageArgument arg;
+	struct __io_interest *rec, *next;
+	dispatch_queue_t q;
+	bool terminated;
+	int n_snap = 0, i;
+
+	if (buf->hdr.msgh_size < sizeof(*m) - sizeof(m->trailer))
+		return;		/* malformed: drop */
+
+	memset(&arg, 0, sizeof(arg));
+	arg.registryEntryID = m->id;
+	arg.argument[0] = m->argument[0];
+	arg.argument[1] = m->argument[1];
+	/* Untrusted wire data: copy and force-terminate. */
+	_Static_assert(sizeof(arg.devnode) == sizeof(m->devnode),
+	    "IOServiceInterestMessageArgument.devnode != wire devnode");
+	memcpy(arg.devnode, m->devnode, sizeof(arg.devnode));
+	arg.devnode[sizeof(arg.devnode) - 1] = '\0';
+	terminated = (m->message == kIOMessageServiceIsTerminated);
+
+	pthread_mutex_lock(&port->lock);
+	q = port->queue;
+	if (q != NULL)
+		dispatch_retain(q);
+	for (rec = port->interests; rec != NULL; rec = next) {
+		next = rec->next;
+		if (rec->id != m->id)
+			continue;
+		if (n_snap < INTEREST_SNAP_MAX) {
+			struct interest_callout *c = calloc(1, sizeof(*c));
+
+			if (c != NULL) {
+				c->callback = rec->callback;
+				c->refcon = rec->refcon;
+				c->service = rec->service;
+				(void)IOObjectRetain(c->service);
+				c->message = m->message;
+				c->arg = arg;
+				snap[n_snap++] = c;
+			}
+		}
+		if (terminated)
+			interest_unlink_locked(port, rec);
+	}
+	if (terminated)
+		kinterest_forget_locked(port, m->id);
+	pthread_mutex_unlock(&port->lock);
+
+	for (i = 0; i < n_snap; i++) {
+		if (q != NULL)
+			dispatch_async_f(q, snap[i], interest_trampoline);
+		else
+			interest_trampoline(snap[i]);
+	}
+	if (q != NULL)
+		dispatch_release(q);
+}
 
 /*
  * Decode one received message into (evt, id, name, class). Returns true if the
@@ -236,6 +437,10 @@ io_source_handler(void *arg)
 		    0 /* non-blocking */, MACH_PORT_NULL);
 		if (mr != MACH_MSG_SUCCESS)
 			break;		/* drained (RCV_TIMED_OUT) or transient */
+		if (buf.hdr.msgh_id == IOKIT_NOTIFY_INTEREST_MSGID) {
+			handle_interest(port, &buf);
+			continue;
+		}
 		if (!decode_event(&buf, &evt, &id, name, sizeof(name),
 		    klass, sizeof(klass)))
 			continue;
@@ -264,28 +469,37 @@ io_source_handler(void *arg)
  * any in-flight event handler complete, so recv_port and the lock stay valid
  * until the source is truly done. Frees the watch list, drops the port's send +
  * receive rights (the kernel prunes this port's watches on its next emission),
- * releases the callback + receive queues, destroys the lock, and frees the port.
+ * releases the callback + receive queues, deactivates any interest
+ * registrations still outstanding, and drops the port's own reference (the
+ * lock and struct go when the last registration is released too).
  */
 static void
 io_source_cancel(void *arg)
 {
 	struct IONotificationPort *port = arg;
 	struct __io_watch *w, *next;
+	dispatch_queue_t q;
 
 	for (w = port->watches; w != NULL; w = next) {
 		next = w->next;
 		free(w);
 	}
+	pthread_mutex_lock(&port->lock);
+	while (port->interests != NULL)
+		interest_unlink_locked(port, port->interests);
+	kinterests_free_locked(port);
+	q = port->queue;
+	port->queue = NULL;
+	pthread_mutex_unlock(&port->lock);
 	(void)mach_port_mod_refs(mach_task_self(), port->recv_port,
 	    MACH_PORT_RIGHT_SEND, -1);
 	(void)mach_port_mod_refs(mach_task_self(), port->recv_port,
 	    MACH_PORT_RIGHT_RECEIVE, -1);
-	if (port->queue != NULL)
-		dispatch_release(port->queue);
+	if (q != NULL)
+		dispatch_release(q);
 	if (port->recv_queue != NULL)
 		dispatch_release(port->recv_queue);
-	(void)pthread_mutex_destroy(&port->lock);
-	free(port);
+	port_unref(port);
 }
 
 IONotificationPortRef
@@ -325,6 +539,7 @@ IONotificationPortCreate(mach_port_t mainPort __unused)
 		return (NULL);
 	}
 	p->recv_port = mp;
+	atomic_store(&p->refcnt, 1);
 	(void)pthread_mutex_init(&p->lock, NULL);
 
 	/*
@@ -487,4 +702,120 @@ IOServiceAddMatchingNotification(IONotificationPortRef port,
 	 * also owes the caller). */
 	return (IOServiceGetMatchingServices(kIOMainPortDefault,
 	    matching, out_iterator));
+}
+
+/*
+ * Register an interest watch for registry entry `id` on this port, unless the
+ * port already holds one (see struct __io_kinterest). Called with the port
+ * lock held so two concurrent registrations for one id add one kernel watch.
+ */
+static kern_return_t
+kernel_interest_register_locked(struct IONotificationPort *port, uint64_t id)
+{
+	struct ioreg_interest_reg reg;
+	struct __io_kinterest *k;
+	int fd = __io_ioregistry_fd();
+
+	for (k = port->kinterests; k != NULL; k = k->next)
+		if (k->id == id)
+			return (KERN_SUCCESS);
+	if (fd < 0)
+		return (kIOReturnNoDevice);
+	k = calloc(1, sizeof(*k));
+	if (k == NULL)
+		return (KERN_RESOURCE_SHORTAGE);
+
+	memset(&reg, 0, sizeof(reg));
+	reg.id = id;
+	reg.interest = IOREG_INTEREST_GENERAL;
+	reg.notify_port = (uint32_t)port->recv_port;	/* recv right name */
+	if (ioctl(fd, IOREGIOCINTEREST, &reg) != 0) {
+		int e = errno;
+
+		free(k);
+		switch (e) {
+		case ENOENT:
+			return (kIOReturnNotFound);	/* departed / unknown */
+		case ENOSYS:
+		case ENOTTY:	/* kernel predating IOREGIOCINTEREST */
+			return (kIOReturnUnsupported);
+		case EINVAL:
+			return (kIOReturnBadArgument);
+		default:
+			return (kIOReturnError);
+		}
+	}
+	k->id = id;
+	k->next = port->kinterests;
+	port->kinterests = k;
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+IOServiceAddInterestNotification(IONotificationPortRef port,
+    io_service_t service, const io_name_t interestType,
+    IOServiceInterestCallback callback, void *refcon,
+    io_object_t *notification)
+{
+	struct __io_interest *rec;
+	io_object_t obj;
+	kern_return_t kr;
+
+	if (port == NULL || service == NULL ||
+	    service->kind != IOOBJ_KIND_ENTRY || interestType == NULL ||
+	    callback == NULL || notification == NULL)
+		return (KERN_INVALID_ARGUMENT);
+	if (strcmp(interestType, kIOGeneralInterest) != 0)
+		return (kIOReturnUnsupported);
+
+	rec = calloc(1, sizeof(*rec));
+	obj = calloc(1, sizeof(*obj));
+	if (rec == NULL || obj == NULL) {
+		free(rec);
+		free(obj);
+		return (KERN_RESOURCE_SHORTAGE);
+	}
+	rec->port = port;
+	rec->id = service->node_id;
+	rec->service = service;
+	rec->callback = callback;
+	rec->refcon = refcon;
+
+	pthread_mutex_lock(&port->lock);
+	kr = kernel_interest_register_locked(port, rec->id);
+	if (kr != KERN_SUCCESS) {
+		pthread_mutex_unlock(&port->lock);
+		free(rec);
+		free(obj);
+		return (kr);
+	}
+	(void)IOObjectRetain(service);
+	(void)atomic_fetch_add(&port->refcnt, 1);
+	rec->linked = true;
+	rec->next = port->interests;
+	port->interests = rec;
+	pthread_mutex_unlock(&port->lock);
+
+	obj->kind = IOOBJ_KIND_INTEREST;
+	atomic_store(&obj->refcnt, 1);
+	obj->node_id = rec->id;
+	obj->interest = rec;
+	*notification = obj;
+	return (KERN_SUCCESS);
+}
+
+void
+__io_interest_release(struct __io_interest *rec)
+{
+	struct IONotificationPort *port;
+
+	if (rec == NULL)
+		return;
+	port = rec->port;
+	pthread_mutex_lock(&port->lock);
+	interest_unlink_locked(port, rec);
+	pthread_mutex_unlock(&port->lock);
+	IOObjectRelease(rec->service);
+	free(rec);
+	port_unref(port);
 }

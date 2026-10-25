@@ -62,7 +62,7 @@ CFLAGS+=	-I${SYSROOT}/usr/include
 LDADD+=		-L${SYSROOT}/usr/lib/system
 .endif
 
-INCS=		IOKit/IOKitLib.h
+INCS=		IOKit/IOKitLib.h IOKit/IOMessage.h
 INCS+=		IOKit/pwr_mgt/IOPMLib.h IOKit/pwr_mgt/IOPMLibPrivate.h
 INCSDIR=	${PREFIX}/include/IOKit
 LIBDIR=		${PREFIX}/lib/system

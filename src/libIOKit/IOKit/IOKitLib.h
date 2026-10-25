@@ -33,6 +33,10 @@
  *   IONotificationPortGetMachPort, IONotificationPortSetDispatchQueue,
  *   IOServiceAddMatchingNotification.
  *
+ * Interest notifications (nextbsd-userland#456, kernel nextbsd-kernel#338):
+ *   IOServiceAddInterestNotification (kIOGeneralInterest), with the
+ *   kIOMessage* codes in <IOKit/IOMessage.h>.
+ *
  * NOTE: there is also a separate Apple-API stub at
  * src/launchd/freebsd-shims/IOKit/IOKitLib.h covering the four IOKit
  * calls launchctl makes (IOKitWaitQuiet etc.). That shim aliases
@@ -86,6 +90,7 @@ typedef int IOReturn;
 #define kIOReturnSuccess     0
 #define kIOReturnError       0x2bc
 #define kIOReturnNoDevice    0x2c0
+#define kIOReturnUnsupported 0x2c7
 #define kIOReturnBadArgument 0x2c9
 #define kIOReturnNotFound    0x2f0
 
@@ -298,6 +303,87 @@ kern_return_t	IOServiceAddMatchingNotification(
 		    IOServiceMatchingCallback callback,
 		    void *refCon,
 		    io_iterator_t *notification);
+
+/*
+ * Interest notifications ------------------------------------------
+ *
+ * IOServiceAddInterestNotification — Darwin's per-service message channel
+ * (IOService::messageClients). Register `callback` for the messages the
+ * provider of ONE existing service sends, delivered through `notifyPort`
+ * with the same rules as matching notifications (on the queue set by
+ * IONotificationPortSetDispatchQueue, or on the port's receive thread when
+ * none is set). `service` is retained for as long as the registration lives
+ * and is the object handed to the callback.
+ *
+ * Only kIOGeneralInterest is supported; any other interest type returns
+ * kIOReturnUnsupported. Other errors: KERN_INVALID_ARGUMENT for a NULL or
+ * non-entry argument, kIOReturnNotFound if the service has already departed,
+ * kIOReturnNoDevice without /dev/ioregistry, kIOReturnUnsupported on a kernel
+ * without interest support.
+ *
+ * Messages (kIOMessage*, <IOKit/IOMessage.h>) the NextBSD kernel sends:
+ *   kIOMessageServicePropertyChange — e.g. a DRM connector hotplug on a drmn
+ *       entry (see IOServiceInterestMessageArgument below);
+ *   kIOMessageServiceIsTerminated — the service departed. This is the last
+ *       message; the registration is inactive afterwards, and the caller
+ *       still releases `*notification`.
+ *
+ * `*notification` is the registration. IOObjectRelease on it unregisters:
+ * no callback for it starts after the release (one already handed to a
+ * dispatch queue may still run). As with matching notifications the kernel
+ * side of the watch lasts until the port is destroyed or the service
+ * terminates; libIOKit drops messages for released registrations, and
+ * registering the same service again on the same port reuses the kernel
+ * watch, so each message reaches each registration exactly once.
+ */
+#define kIOGeneralInterest		"IOGeneralInterest"
+#define kIOBusyInterest			"IOBusyInterest"
+#define kIOAppPowerStateInterest	"IOAppPowerStateInterest"
+#define kIOPriorityPowerStateInterest	"IOPriorityPowerStateInterest"
+
+/*
+ * IOServiceInterestCallback — Darwin's signature. `service` is the object
+ * passed to IOServiceAddInterestNotification; do not release it.
+ * `messageType` is a kIOMessage* code.
+ *
+ * `messageArgument` (NextBSD): Darwin documents it as message-specific and
+ * the kernel's message carries more than one pointer's worth (two 64-bit
+ * arguments and a device node), so libIOKit passes a pointer to an
+ * IOServiceInterestMessageArgument. It is owned by libIOKit and valid only
+ * until the callback returns; copy what you need. It is never NULL for
+ * messages from the NextBSD kernel. Fields may be appended later; existing
+ * ones keep their offsets.
+ */
+typedef void (*IOServiceInterestCallback)(void *refcon,
+		    io_service_t service, uint32_t messageType,
+		    void *messageArgument);
+
+#define kIOServiceInterestDevnodeMax	32
+
+typedef struct IOServiceInterestMessageArgument {
+	/* Registry entry id of the service (IORegistryEntryGetRegistryEntryID). */
+	uint64_t	registryEntryID;
+	/*
+	 * Message-specific arguments. kIOMessageServicePropertyChange from a
+	 * DRM device (drmn): argument[0] is the DRM connector object id (0 for
+	 * a change concerning the whole device), argument[1] the DRM property
+	 * id (0 for a connection change). Zero for kIOMessageServiceIsTerminated.
+	 */
+	uint64_t	argument[2];
+	/*
+	 * Device node relative to /dev the message concerns, NUL-terminated,
+	 * "" if none. DRM: "dri/cardN".
+	 */
+	char		devnode[kIOServiceInterestDevnodeMax];
+} IOServiceInterestMessageArgument;
+
+kern_return_t	IOServiceAddInterestNotification(
+		    IONotificationPortRef notifyPort,
+		    io_service_t service,
+		    const io_name_t interestType,
+		    IOServiceInterestCallback callback,
+		    void *refCon,
+		    io_object_t *notification);
 
 /*
  * iter 5 — bus quiescence -----------------------------------------

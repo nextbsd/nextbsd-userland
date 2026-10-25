@@ -24,6 +24,9 @@
  */
 #define IOOBJ_KIND_ENTRY	1
 #define IOOBJ_KIND_ITERATOR	2
+#define IOOBJ_KIND_INTEREST	3	/* IOServiceAddInterestNotification */
+
+struct __io_interest;
 
 struct __IOObject {
 	uint32_t	kind;		/* IOOBJ_KIND_* */
@@ -34,7 +37,16 @@ struct __IOObject {
 	uint64_t	*ids;		/* malloced; freed in release */
 	uint32_t	count;
 	uint32_t	cursor;
+	/* interest notification (IOKitNotify.c owns it): */
+	struct __io_interest *interest;
 };
+
+/*
+ * __io_interest_release — called by IOObjectRelease when the last reference
+ * to an IOOBJ_KIND_INTEREST object goes: unregisters the interest from its
+ * IONotificationPort and frees it (IOKitNotify.c).
+ */
+void	__io_interest_release(struct __io_interest *interest);
 
 /*
  * __io_ioregistry_fd — cached read-only fd to the kernel /dev/ioregistry

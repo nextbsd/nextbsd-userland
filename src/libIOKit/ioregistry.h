@@ -22,7 +22,9 @@
  * PR1 (#214) is kernel-only and read-only: it builds no shadow tree, it walks
  * the live newbus topology on demand. A stable uint64 registry id is minted per
  * device_t (and lingers, marked detached, after the device goes away) so a
- * userland iterator never dangles. The libIOKit migration (later PR) consumes
+ * userland iterator never dangles. A lingering id still reads back as the
+ * device it was (name, class, driver, path, PCI ids; snapshotted at detach,
+ * #334) until it ages out, after which it returns ENOENT. The libIOKit migration (later PR) consumes
  * this ABI; keep these structs frozen once shipped.
  *
  * See pkgdemon.github.io/nextbsd-inkernel-iokit-feasibility.html.
@@ -66,7 +68,8 @@ struct ioreg_criteria {
  * Node lifecycle state (ioreg_node.state). Distinct from the newbus
  * device_state_t: this is the registry id's own liveness, so a userland
  * iterator can tell a live node from one that detached but has not yet aged
- * out (linger-until-unreferenced, mirroring hwregd).
+ * out (linger-until-unreferenced, mirroring hwregd). A DETACHED node carries
+ * the snapshot taken at departure, with devstate DS_NOTPRESENT.
  */
 #define	IOREG_STATE_LIVE	0	/* device_t currently present */
 #define	IOREG_STATE_DETACHED	1	/* device gone; id lingering */
@@ -201,6 +204,31 @@ struct ioreg_test_event {
 	char		classname[IOREG_NAME_MAX]; /* in: devclass name */
 };
 
+/*
+ * IOREGIOCINTEREST (#338): Darwin's IOServiceAddInterestNotification. Where
+ * IOREGIOCWATCH follows entries that match criteria as they come and go, this
+ * follows ONE existing entry, `id`: the kernel pushes an ioreg_interest_msg
+ * (<sys/mach/iokit_notify.h>, msgid IOKIT_NOTIFY_INTEREST_MSGID) to
+ * `notify_port` each time the entry's provider messages its clients, for
+ * example kIOMessageServicePropertyChange when a DRM connector is plugged or
+ * unplugged on a drmn entry. When the entry departs the watch receives
+ * kIOMessageServiceIsTerminated and is dropped. As with IOREGIOCWATCH the
+ * kernel keeps a send right, and the watch also ends when the client's
+ * receive right dies.
+ *
+ * `interest` is the interest type; only IOREG_INTEREST_GENERAL
+ * (kIOGeneralInterest) exists. Returns 0, EINVAL for a bad port or interest
+ * type, ENOENT if `id` is not a live entry, ENOSYS on a kernel built without
+ * COMPAT_MACH. Self-contained / fixed-size for 32- and 64-bit ABI parity.
+ */
+#define	IOREG_INTEREST_GENERAL	1	/* kIOGeneralInterest */
+
+struct ioreg_interest_reg {
+	uint64_t	id;		/* in: registry id of the entry */
+	uint32_t	interest;	/* in: IOREG_INTEREST_* */
+	uint32_t	notify_port;	/* in: mach_port_name_t (recv right name) */
+};
+
 #define	IOREGIOCROOT	_IOR('R', 1, uint64_t)		   /* get root node id */
 #define	IOREGIOCCHILDREN _IOWR('R', 2, struct ioreg_children) /* enum children */
 #define	IOREGIOCNODE	_IOWR('R', 3, struct ioreg_node)   /* node by id (in id) */
@@ -208,5 +236,52 @@ struct ioreg_test_event {
 #define	IOREGIOCLOOKUP	_IOWR('R', 5, struct ioreg_lookup) /* match by criteria */
 #define	IOREGIOCWATCH	_IOW('R', 6, struct ioreg_watch_reg) /* register notify */
 #define	IOREGIOCTESTEVENT _IOW('R', 7, struct ioreg_test_event) /* inject event */
+#define	IOREGIOCINTEREST _IOW('R', 8, struct ioreg_interest_reg) /* interest */
+
+#ifdef _KERNEL
+/*
+ * Virtual registry entries (#333, part of #331). An entry with no newbus
+ * device_t behind it — e.g. an evdev input node — published by an in-kernel
+ * producer. The registry owns a snapshot of the entry (name, class, path and
+ * an optional property bag) and serves it through IOREGIOCCHILDREN,
+ * IOREGIOCLOOKUP, IOREGIOCNODE, IOREGIOCPROPS, IOREGIOCWATCH and
+ * hw.iokit.registry exactly like a newbus node; userland sees no new ABI.
+ *
+ * ioreg_publish_virtual() inserts a live entry under `parent` (its newbus
+ * node), or under the synthetic "IOResources" node (a child of the root,
+ * created on first use, as on Darwin) when `parent` is NULL. `props` is an
+ * optional bag of extra keys (strings, numbers, bools); ownership passes to
+ * the registry in every case. The registry's own keys (id, name, class, ...)
+ * win over a caller key of the same name. Returns the new entry's stable id,
+ * or 0 on bad arguments. ARRIVE+MATCHED go to matching watches, coalesced
+ * with an in-flight newbus probe/attach like a device_attach.
+ *
+ * ioreg_retire_virtual() sends DEPART and marks the entry detached. Its
+ * snapshot stays readable (IOREGIOCNODE / IOREGIOCPROPS) while it lingers;
+ * the oldest lingering entries (virtual and departed newbus alike) are freed
+ * past a fixed cap, after which the id returns ENOENT. Ids are never reused. Returns 0, or ENOENT if `id`
+ * is not a live virtual entry.
+ *
+ * Both may sleep (sx + M_WAITOK); call them from a sleepable context.
+ */
+struct _device;
+struct nvlist;
+uint64_t ioreg_publish_virtual(struct _device *parent, const char *name,
+	    const char *classname, struct nvlist *props);
+int	ioreg_retire_virtual(uint64_t id);
+
+/*
+ * Interest messages (#338), IOService::messageClients() on Darwin.
+ * ioreg_message_device() sends `message` (a kIOMessage* value, see
+ * IOKIT_NOTIFY_MSG_* in <sys/mach/iokit_notify.h>) with its two arguments and
+ * an optional devnode to every IOREGIOCINTEREST watch on `dev`'s live newbus
+ * entry. `dev` is only compared against the id map, never dereferenced, so a
+ * caller that queued the pointer may pass it after the device has gone; it
+ * then matches nothing. No-op without COMPAT_MACH or with no interest watch.
+ * May sleep (sx + M_WAITOK).
+ */
+void	ioreg_message_device(struct _device *dev, uint32_t message,
+	    uint64_t arg0, uint64_t arg1, const char *devnode);
+#endif /* _KERNEL */
 
 #endif /* _SYS_IOREGISTRY_H_ */

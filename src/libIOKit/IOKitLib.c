@@ -248,6 +248,8 @@ IOObjectRelease(io_object_t object)
 		return (KERN_SUCCESS);
 	if (object->kind == IOOBJ_KIND_ITERATOR)
 		free(object->ids);
+	else if (object->kind == IOOBJ_KIND_INTEREST)
+		__io_interest_release(object->interest);
 	free(object);
 	return (KERN_SUCCESS);
 }

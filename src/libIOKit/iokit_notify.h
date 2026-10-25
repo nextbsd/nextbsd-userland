@@ -24,7 +24,13 @@
  * <sys/ioregistry.h>) together with a packed-nvlist match bag and an event
  * mask. The kernel copies a send right to that port and, from the newbus
  * device_attach / device_detach eventhandlers, pushes one ioreg_event_msg per
- * matching event to the client's port.
+ * matching event to the client's port. This is the kernel-served replacement
+ * for hwregd's /dev/devctl watch (which stays inert per the #225 decision).
+ *
+ * Mirrors the kernel-originated send proven in compat/mach/iokit_kextd.c
+ * (ikm_alloc -> fill header -> init trailer -> ipc_mqueue_send_always); the
+ * trailer MUST be initialized or a receiver that does not request
+ * MACH_RCV_TRAILER gets MACH_RCV_INVALID_DATA (the bug PR#18 fixed).
  */
 #ifndef _SYS_MACH_IOKIT_NOTIFY_H_
 #define _SYS_MACH_IOKIT_NOTIFY_H_
@@ -68,5 +74,40 @@ typedef struct {
 	uint32_t			pci_device;	/* 0 if not a PCI nub */
 	mach_msg_format_0_trailer_t	trailer;	/* appended on receive */
 } ioreg_event_msg;
+
+/*
+ * Interest notification (#338). Darwin's IOServiceAddInterestNotification
+ * (kIOGeneralInterest): a client registers interest in ONE existing registry
+ * entry with IOREGIOCINTEREST (<sys/ioregistry.h>) and receives an
+ * ioreg_interest_msg whenever that entry's provider messages its clients, for
+ * example on a DRM connector hotplug. It is a separate msgid on the same
+ * channel, so ioreg_event_msg is unchanged. The body is smaller than
+ * ioreg_event_msg, so a receive buffer sized for that holds this too.
+ */
+#define	IOKIT_NOTIFY_INTEREST_MSGID	0x494f4e49	/* 'I','O','N','I' */
+
+/* ioreg_interest_msg.message: values of Darwin's kIOMessage* (IOMessage.h,
+ * iokit_common_msg(x) == 0xe0000000 | x). */
+#define	IOKIT_NOTIFY_MSG_SERVICE_IS_TERMINATED	0xe0000010
+#define	IOKIT_NOTIFY_MSG_SERVICE_PROPERTY_CHANGE 0xe0000130
+
+/*
+ * `argument` is message-specific. kIOMessageServicePropertyChange from a DRM
+ * device (#338): argument[0] is the DRM connector object id (0 when the
+ * change concerns the whole device) and argument[1] the DRM property id (0
+ * for a connection change); `devnode` is the card node relative to /dev
+ * ("dri/card0"). kIOMessageServiceIsTerminated carries no arguments and is
+ * the last message for that registration.
+ */
+typedef struct {
+	mach_msg_header_t		hdr;
+	NDR_record_t			NDR;
+	uint32_t			message;	/* IOKIT_NOTIFY_MSG_* */
+	uint32_t			_pad;		/* keep id 8-byte aligned */
+	uint64_t			id;		/* the entry's registry id */
+	uint64_t			argument[2];	/* message-specific */
+	char				devnode[IOKIT_NOTIFY_NAME_MAX]; /* "" if n/a */
+	mach_msg_format_0_trailer_t	trailer;	/* appended on receive */
+} ioreg_interest_msg;
 
 #endif /* _SYS_MACH_IOKIT_NOTIFY_H_ */
