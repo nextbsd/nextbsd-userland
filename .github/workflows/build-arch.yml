@@ -187,8 +187,8 @@ jobs:
           gh release download continuous -R nextbsd/nextbsd-contrib \
             --pattern 'nextbsd-contrib-${{ inputs.arch }}.tar.gz' --dir art --clobber
           # Kext tarballs are per-arch (graphics-kexts-<arch>), except the
-          # amd64-only IntelWiFi, IntelEthernet and NVIDIA ones, which keep
-          # arch-less names. assemble-image.sh extracts every tarball into the
+          # amd64-only IntelWiFi and IntelEthernet ones, which keep arch-less
+          # names. assemble-image.sh extracts every tarball into the
           # same /System/Library/Extensions in `ls` order, so last wins: an
           # unfiltered '*kext*.tar.gz' once laid x86-64 objects over arm64's
           # ("Exec format error"). The stale arch-less graphics-kexts.tar.gz
@@ -197,11 +197,14 @@ jobs:
           gh release download continuous -R nextbsd/nextbsd-kernel-extensions \
             --pattern "*kext*-${ARCH}.tar.gz" --dir art --clobber || true
           if [ "$ARCH" = amd64 ]; then
-            for p in intelethernet-kext.tar.gz \
-                     intelwifi-kext.tar.gz nvidia-kexts.tar.gz; do
+            for p in intelethernet-kext.tar.gz intelwifi-kext.tar.gz; do
               gh release download continuous -R nextbsd/nextbsd-kernel-extensions \
                 --pattern "$p" --dir art --clobber || true
             done
+            # NVIDIA (amd64-only) comes from its own repo (nextbsd/nextbsd#548)
+            # and must be there: a missing asset fails the lane.
+            gh release download continuous -R nextbsd/nextbsd-kernel-extensions-nvidia \
+              --pattern 'nvidia-kexts-amd64.tar.gz' --dir art --clobber
           fi
           # NOTE (arm64 VirtIOGraphics, was nextbsd-kernel#170): the arm64
           # graphics set ships RAW, VirtIOGraphics.kext included. The old
