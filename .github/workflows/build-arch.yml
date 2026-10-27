@@ -44,7 +44,7 @@ on:
       harness_ref:
         description: 'nextbsd/nextbsd-ci ref this lane checks out (T4): the shared image assembly (scripts/assemble-image.sh) AND the boot harness. Pinned to the release tag the 4-repo lockstep lands on, so neither drifts with nextbsd-ci main.'
         required: false
-        default: 'v0.3.5'
+        default: 'v0.3.6'
         type: string
       fbsd_sha:
         description: 'pinned FreeBSD SHA for the toolchain image tag (blank = latest)'
@@ -246,13 +246,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4          # userland repo: workspace root; the image artifact lands here
       # T4: the shared boot harness, pinned to the release tag (harness_ref,
-      # v0.3.5) the 4-repo lockstep lands on. The in-repo tests/boot-test.sh
+      # v0.3.6) the 4-repo lockstep lands on. The in-repo tests/boot-test.sh
       # fork (73 KB) stays in the tree as the fallback but is no longer the gate
       # — the shared nextbsd-ci harness is (one loader contract, one sentinel
       # protocol, one audited marker manifest, every repo). Pinning a tag (not
       # main) is what keeps this lane from drifting with harness development.
       # v0.3.5 = v0.3.4 plus the T8 flake fixes (nextbsd#428 end-state hold,
       # nextbsd#503 teardown rc + hard fail, nextbsd#405 marker protocol doc).
+      # v0.3.6 adds the KERNEL-BUILD-ID check to assemble-image.sh: the image
+      # refuses kexts built for a different kernel (nextbsd#549).
       # The assembled image ships the graphics kexts RAW (the stale #170 arm64
       # VirtIOGraphics strip is gone — the kernel-side fix landed in #252/patch
       # 0058), so this boot also validates that.
