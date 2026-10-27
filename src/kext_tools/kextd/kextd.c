@@ -198,7 +198,7 @@ parse_name_match(CFDictionaryRef d, char **out)
 }
 
 /*
- * Push a device-tree personality (nextbsd-kernel-extensions#185).
+ * Push a device-tree personality (nextbsd-kernel-extensions-graphics#185).
  *
  * Separate from the PCI push because it uses a different ioctl and record --
  * struct iocat_add is a kernel ABI shared with the in-kernel catalogue, so the
