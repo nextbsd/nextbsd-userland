@@ -186,18 +186,18 @@ jobs:
           # the boot test's SUDO check runs against the real image layout.
           gh release download continuous -R nextbsd/nextbsd-contrib \
             --pattern 'nextbsd-contrib-${{ inputs.arch }}.tar.gz' --dir art --clobber
-          # Kext tarballs are per-arch, but the release also carries legacy
-          # UNSUFFIXED ones that are x86-64 builds. assemble-image.sh extracts
-          # every tarball into the same /System/Library/Extensions in `ls`
-          # order, so last wins -- and graphics-kexts.tar.gz sorts AFTER
-          # graphics-kexts-arm64.tar.gz. An unfiltered '*kext*.tar.gz' laid
-          # x86-64 objects over arm64's, and arm64 kldload'd them with "Exec
-          # format error". Filter by arch; take the unsuffixed x86-64 ones only
-          # on amd64, where they are the correct architecture.
+          # Kext tarballs are per-arch (graphics-kexts-<arch>), except the
+          # amd64-only IntelWiFi, IntelEthernet and NVIDIA ones, which keep
+          # arch-less names. assemble-image.sh extracts every tarball into the
+          # same /System/Library/Extensions in `ls` order, so last wins: an
+          # unfiltered '*kext*.tar.gz' once laid x86-64 objects over arm64's
+          # ("Exec format error"). The stale arch-less graphics-kexts.tar.gz
+          # this lane also fetched on amd64 sorted after graphics-kexts-amd64
+          # and replaced it; it is deleted (nextbsd/nextbsd#550).
           gh release download continuous -R nextbsd/nextbsd-kernel-extensions \
             --pattern "*kext*-${ARCH}.tar.gz" --dir art --clobber || true
           if [ "$ARCH" = amd64 ]; then
-            for p in graphics-kexts.tar.gz intelethernet-kext.tar.gz \
+            for p in intelethernet-kext.tar.gz \
                      intelwifi-kext.tar.gz nvidia-kexts.tar.gz; do
               gh release download continuous -R nextbsd/nextbsd-kernel-extensions \
                 --pattern "$p" --dir art --clobber || true
