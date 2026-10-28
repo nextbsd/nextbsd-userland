@@ -28,6 +28,8 @@ SRCS=		OSKext.c OSKextVersion.c misc_util.c printPList_new.c \
 MIGOUT?=
 .if !empty(MIGOUT)
 SRCS+=		KextManager.c
+# NBSDFilesystemLoadKext(): a filesystem's kext through KextManager (#436).
+SRCS+=		NBSDFilesystemKext.c
 .PATH:		${MIGOUT}
 SRCS+=		kextmanager_migUser.c
 CFLAGS+=	-I${MIGOUT}
@@ -35,6 +37,8 @@ CFLAGS+=	-I${MIGOUT}
 CFLAGS+=	-DNO_SECURITY_FRAMEWORK
 # <servers/bootstrap.h>, <bootstrap_priv.h> (bootstrap_look_up2) for KextManager.c.
 CFLAGS.KextManager.c+=	-I${KT}/../launchd/liblaunch -I${KT}/../launchd/freebsd-shims
+# <AvailabilityMacros.h> for KextManager.h, from the same shims.
+CFLAGS.NBSDFilesystemKext.c+=	-I${KT}/../launchd/freebsd-shims
 
 .PATH:		${KT}/compat
 SRCS+=		macho_compat.c iocf_compat.c
