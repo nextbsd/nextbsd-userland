@@ -288,7 +288,19 @@ static const NXArchInfo       __sOSKextUnknownArchInfo         = {
 };
 static const NXArchInfo     * __sOSKextArchInfo                     = &__sOSKextUnknownArchInfo;
 static Boolean                __sOSKextSimulatedSafeBoot           = FALSE;
-static Boolean                __sOSKextUsesCaches                  = TRUE;
+/*
+ * NextBSD: no kext caches by default (nextbsd-kernel-extensions-graphics#50).
+ * Darwin's caches stay correct because kextcache and kextd rebuild them
+ * whenever /System/Library/Extensions changes; NextBSD has no kextcache, and
+ * the identifier cache's freshness test (cache mtime == folder mtime + 1)
+ * cannot see a bundle replaced in place, which leaves the folder's mtime
+ * alone. A stale cache then resolves dependencies against bundles that are
+ * gone ("no dependency found for ...") until the cache directory is deleted.
+ * Scanning the folder's Info.plists each time is cheap, and with caches off
+ * any cache already on disk is ignored. OSKextSetUsesCaches(true) still
+ * turns them on for a caller that maintains them.
+ */
+static Boolean                __sOSKextUsesCaches                  = FALSE;
 static Boolean                __sOSKextStrictRecordingByLastOpened = FALSE;
 
 static CFArrayRef             __sOSKextPackageTypeValues       = NULL;
