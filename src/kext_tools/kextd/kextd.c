@@ -253,8 +253,9 @@ push_platform_personality(int fd, CFDictionaryRef p, const char *bundle_id,
 	}
 	if (verbose)
 		printf("kextd: pushed %s (%s, score %d, %u name(s))\n",
-		    add.bundle_id, prefix != NULL ? "IOACPIPlatformDevice" :
-		    "IOPlatformDevice", add.probe_score, n);
+		    add.bundle_id, prefix == NULL ? "IOPlatformDevice" :
+		    strcmp(prefix, IOCAT_VMBUS_PREFIX) == 0 ? "IOVMBusDevice" :
+		    "IOACPIPlatformDevice", add.probe_score, n);
 	return (1);
 }
 
@@ -361,6 +362,91 @@ push_usb_personality(int fd, CFDictionaryRef p, const char *bundle_id,
 	    score, w, 2, "IOUSBHostInterface"));
 }
 
+/*
+ * A HID personality (nextbsd-kernel#360), in Darwin's IOHIDDevice keys:
+ * VendorID + ProductID match a device; PrimaryUsagePage + PrimaryUsage, or
+ * each pair in DeviceUsagePairs (DeviceUsagePage/DeviceUsage), match a
+ * top-level collection by usage. The kernel prefers a vendor/product match.
+ */
+static int
+push_hid_personality(int fd, CFDictionaryRef p, const char *bundle_id)
+{
+	int32_t vid, pid, page, usage, score;
+	uint32_t *w, n = 0;
+	CFArrayRef pairs;
+	CFIndex i;
+
+	score = dict_int(p, CFSTR("IOProbeScore"), 0);
+	vid = dict_int(p, CFSTR("VendorID"), -1);
+	pid = dict_int(p, CFSTR("ProductID"), -1);
+	if (vid >= 0 && pid >= 0) {
+		if ((w = calloc(1, sizeof(*w))) == NULL)
+			return (-1);
+		w[0] = ((uint32_t)pid << 16) | ((uint32_t)vid & 0xffff);
+		return (push_words(fd, bundle_id, IOCAT_PROVIDER_IOHIDDEVICE,
+		    score, w, 1, "IOHIDDevice"));
+	}
+	if ((w = calloc(IOCAT_MAX_MATCH, sizeof(*w))) == NULL)
+		return (-1);
+	page = dict_int(p, CFSTR("PrimaryUsagePage"), -1);
+	usage = dict_int(p, CFSTR("PrimaryUsage"), -1);
+	if (page >= 0 && usage >= 0)
+		w[n++] = ((uint32_t)page << 16) | ((uint32_t)usage & 0xffff);
+	pairs = CFDictionaryGetValue(p, CFSTR("DeviceUsagePairs"));
+	if (pairs != NULL && CFGetTypeID(pairs) == CFArrayGetTypeID()) {
+		for (i = 0; i < CFArrayGetCount(pairs) && n < IOCAT_MAX_MATCH;
+		    i++) {
+			CFDictionaryRef d = CFArrayGetValueAtIndex(pairs, i);
+
+			if (d == NULL || CFGetTypeID(d) != CFDictionaryGetTypeID())
+				continue;
+			page = dict_int(d, CFSTR("DeviceUsagePage"), -1);
+			usage = dict_int(d, CFSTR("DeviceUsage"), -1);
+			if (page >= 0 && usage >= 0)
+				w[n++] = ((uint32_t)page << 16) |
+				    ((uint32_t)usage & 0xffff);
+		}
+	}
+	if (n == 0) {
+		free(w);
+		return (0);
+	}
+	return (push_words(fd, bundle_id, IOCAT_PROVIDER_IOHIDUSAGE, score, w,
+	    n, "IOHIDDevice usage"));
+}
+
+/* A virtio personality (nextbsd-kernel#360): VirtIODeviceType, one type or
+ * an array of them. NextBSD's key; Darwin has no virtio matching. */
+static int
+push_virtio_personality(int fd, CFDictionaryRef p, const char *bundle_id)
+{
+	CFTypeRef v = CFDictionaryGetValue(p, CFSTR("VirtIODeviceType"));
+	uint32_t *w, n = 0;
+	int32_t t;
+	CFIndex i;
+
+	if (v == NULL || (w = calloc(IOCAT_MAX_MATCH, sizeof(*w))) == NULL)
+		return (v == NULL ? 0 : -1);
+	if (CFGetTypeID(v) == CFNumberGetTypeID()) {
+		if (CFNumberGetValue(v, kCFNumberSInt32Type, &t))
+			w[n++] = (uint32_t)t;
+	} else if (CFGetTypeID(v) == CFArrayGetTypeID()) {
+		for (i = 0; i < CFArrayGetCount(v) && n < IOCAT_MAX_MATCH; i++) {
+			CFNumberRef e = CFArrayGetValueAtIndex(v, i);
+
+			if (e != NULL && CFGetTypeID(e) == CFNumberGetTypeID() &&
+			    CFNumberGetValue(e, kCFNumberSInt32Type, &t))
+				w[n++] = (uint32_t)t;
+		}
+	}
+	if (n == 0) {
+		free(w);
+		return (0);
+	}
+	return (push_words(fd, bundle_id, IOCAT_PROVIDER_IOVIRTIODEVICE,
+	    dict_int(p, CFSTR("IOProbeScore"), 0), w, n, "IOVirtIODevice"));
+}
+
 /* Push one personality dict; returns 1 if pushed, 0 if skipped, -1 on error. */
 static int
 push_personality(int fd, CFDictionaryRef p)
@@ -392,6 +478,14 @@ push_personality(int fd, CFDictionaryRef p)
 		return (push_usb_personality(fd, p, add.bundle_id, false));
 	else if (strcmp(provider, "IOUSBHostInterface") == 0)
 		return (push_usb_personality(fd, p, add.bundle_id, true));
+	else if (strcmp(provider, "IOHIDDevice") == 0)
+		return (push_hid_personality(fd, p, add.bundle_id));
+	else if (strcmp(provider, "IOVirtIODevice") == 0)
+		return (push_virtio_personality(fd, p, add.bundle_id));
+	else if (strcmp(provider, "IOVMBusDevice") == 0)
+		/* VMBus class GUIDs: the string path, prefixed (#360). */
+		return (push_platform_personality(fd, p, add.bundle_id,
+		    IOCAT_VMBUS_PREFIX));
 	else
 		add.provider_class = IOCAT_PROVIDER_UNKNOWN;
 

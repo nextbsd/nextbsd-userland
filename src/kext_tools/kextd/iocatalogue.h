@@ -43,6 +43,15 @@
 #define	IOCAT_PROVIDER_IOUSBHOSTINTERFACE 4
 #define	IOCAT_PROVIDER_IOPCICLASS	5
 #define	IOCAT_ACPI_PREFIX		"acpi:"
+/* nextbsd-kernel#360 -- keep in step with the kernel's <sys/iocatalogue.h>.
+ * IOHIDDevice: VendorID/ProductID -> 0x<ProductID><VendorID> words;
+ *   PrimaryUsagePage/PrimaryUsage -> IOCAT_PROVIDER_IOHIDUSAGE 0x<page><usage>.
+ * IOVirtIODevice: VirtIODeviceType words. IOVMBusDevice: IONameMatch class
+ * GUIDs on the string path, prefixed "vmbus:". */
+#define	IOCAT_PROVIDER_IOHIDDEVICE	6
+#define	IOCAT_PROVIDER_IOHIDUSAGE	7
+#define	IOCAT_PROVIDER_IOVIRTIODEVICE	8
+#define	IOCAT_VMBUS_PREFIX		"vmbus:"
 
 /* Longest FDT compatible string we will store, including NUL. */
 #define	IOCAT_COMPAT_MAX		128
