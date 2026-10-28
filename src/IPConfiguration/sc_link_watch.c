@@ -89,6 +89,9 @@
 #include <sys/socket.h>		/* AF_INET, AF_INET6 */
 
 #include <net/if.h>		/* IFNAMSIZ */
+#include <net/if_dl.h>		/* struct sockaddr_dl */
+#include <net/if_types.h>	/* IFT_ETHER */
+#include <ifaddrs.h>
 #include <netinet/in.h>
 #include <netinet6/in6_var.h>	/* IN6_IFF_TENTATIVE, IN6_IFF_DUPLICATED */
 #include <arpa/inet.h>		/* inet_pton */
@@ -417,6 +420,33 @@ wlan_ready(SCDynamicStoreRef store, const char *ifname)
 }
 
 /*
+ * Whether `ifname` is an interface ipconfigd configures: Ethernet, the
+ * type dhcp_pick_interface() and Darwin's IPConfiguration accept (net80211
+ * VAPs report IFT_ETHER too). Pseudo-interfaces the kernel creates at boot,
+ * such as enc0 (IPsec) and pflog0 (pf), report link Active but have no
+ * hardware address, so DHCP on them can only fail.
+ */
+static int
+iface_is_ethernet(const char *ifname)
+{
+	struct ifaddrs *ifa, *p;
+	int ether = 0;
+
+	if (getifaddrs(&ifa) != 0)
+		return (0);
+	for (p = ifa; p != NULL; p = p->ifa_next) {
+		if (p->ifa_addr == NULL || p->ifa_addr->sa_family != AF_LINK ||
+		    strcmp(p->ifa_name, ifname) != 0)
+			continue;
+		ether = ((const struct sockaddr_dl *)(void *)p->ifa_addr)->
+		    sdl_type == IFT_ETHER;
+		break;
+	}
+	freeifaddrs(ifa);
+	return (ether);
+}
+
+/*
  * Decide whether `ifname` should be DHCP'd, admin-upped, or left alone, and
  * schedule the caller's callback accordingly.
  *
@@ -448,6 +478,10 @@ evaluate_interface(SCDynamicStoreRef store, const char *ifname)
 		schedule_link_event(ifname, SC_LINK_GONE);
 		return;
 	}
+
+	/* Not ours to configure (enc0, pflog0, ...): neither up nor DHCP. */
+	if (!iface_is_ethernet(ifname))
+		return;
 
 	link_up = iface_entity_bool(store, ifname, "Link", "Active", 0);
 	if (!link_up) {
