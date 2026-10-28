@@ -26,7 +26,9 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <TargetConditionals.h>
-#if !TARGET_OS_IPHONE
+/* NextBSD: no Security.framework; NO_SECURITY_FRAMEWORK is also what
+ * kextmanager_mig.defs keys its Authorization types on. */
+#if !TARGET_OS_IPHONE && !defined(NO_SECURITY_FRAMEWORK)
 #include <Security/Authorization.h>
 #endif /* !TARGET_OS_IPHONE */
 

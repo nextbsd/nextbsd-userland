@@ -89,4 +89,15 @@ PREFIX?=	/usr
 # the wire format matches. IOKitMatching.c decodes the bag with it. libxpc's
 # private nvlist copy has a different wire format and is not used here.
 LIBADD+=	pthread nv
+
+# The kext API (nextbsd-userland#438): Apple's OSKext engine and KextManager
+# live in IOKit.framework, so libkext (src/kext_tools/kext.subproj, built
+# first by build-userland.sh) is linked whole into libIOKit. KextManager's
+# load requests go to kextd's org.nextbsd.KernelExtensionServer.
+LIBKEXT?=
+.if !empty(LIBKEXT)
+LDADD+=		-Wl,--whole-archive ${LIBKEXT} -Wl,--no-whole-archive
+DPADD+=		${LIBKEXT}
+LIBADD+=	z
+.endif
 .include <bsd.lib.mk>

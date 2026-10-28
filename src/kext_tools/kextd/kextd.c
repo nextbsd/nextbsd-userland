@@ -47,8 +47,18 @@
 #include <unistd.h>
 #include <sys/ioctl.h>
 
+#include <mach/mach.h>		/* vm_allocate, vm_deallocate */
+#include <mach/mig_errors.h>	/* mig_reply_error_t, MIG_BAD_* */
+#include <servers/bootstrap.h>	/* bootstrap_check_in */
+
 #include "OSKext.h"
+#include "KextManagerPriv.h"	/* kKextLoad*Key: the load request's keys */
+#include "kextmanager_migServer.h"	/* MIG: kextmanager_server() + handlers */
 #include "iocatalogue.h"	/* vendored ABI; canonical copy in nextbsd-kernel */
+
+#ifndef VM_FLAGS_ANYWHERE
+#define	VM_FLAGS_ANYWHERE	0x0001	/* Apple's value; libmach lacks it */
+#endif
 
 #ifndef HOST_KEXTD_PORT
 #define HOST_KEXTD_PORT 15
@@ -594,6 +604,350 @@ load_bundle(const char *bundle_id)
 }
 
 /*
+ * ---- KextManager server (nextbsd-userland#438) ----
+ *
+ * kextd serves the kextmanager MIG subsystem (kext.subproj's
+ * kextmanager_mig.defs) under org.nextbsd.KernelExtensionServer, the
+ * MachServices name its launchd plist declares; Apple's is
+ * com.apple.KernelExtensionServer. KextManager in libIOKit is the client:
+ * KextManagerLoadKextWithIdentifier() and friends. With the kernel no longer
+ * loading modules by name (E21 D9), this is how userland asks for a kext,
+ * e.g. a mount helper for its filesystem (#436).
+ *
+ * The handlers follow Apple's kextd_request.c of the same kext_tools release:
+ * loads are by identifier or path, allowed for root or for a kext whose
+ * Info.plist sets OSBundleAllowUserLoad. NextBSD has no kernel caches to
+ * rebuild, so the cache, volume and reboot locks always succeed at once.
+ */
+static const char *repo_path = "/System/Library/Extensions";
+static CFArrayRef repo_kexts;	/* non-retaining registry: hold alive */
+
+/* (Re)open the repository, so kexts installed since start are found, and
+ * rebuild the module-name index from it. */
+static void
+refresh_repo(void)
+{
+	CFArrayRef kexts;
+	CFURLRef u;
+
+	u = url_for_path(repo_path);
+	if (u == NULL)
+		return;
+	kexts = OSKextCreateKextsFromURL(kCFAllocatorDefault, u);
+	CFRelease(u);
+	if (kexts == NULL)
+		return;
+	if (repo_kexts != NULL)
+		CFRelease(repo_kexts);
+	repo_kexts = kexts;
+	build_module_index(repo_kexts);
+}
+
+static bool
+allow_user_load(OSKextRef k)
+{
+	CFTypeRef v = OSKextGetValueForInfoDictionaryKey(k,
+	    CFSTR("OSBundleAllowUserLoad"));
+
+	return (v != NULL && CFGetTypeID(v) == CFBooleanGetTypeID() &&
+	    CFBooleanGetValue((CFBooleanRef)v));
+}
+
+kern_return_t
+_kextmanager_load_kext(mach_port_t server __unused, audit_token_t remote_creds,
+    xmlDataIn_t load_data, mach_msg_type_number_t load_dataCnt)
+{
+	OSReturn result = kOSReturnError;
+	CFDataRef data = NULL;
+	CFPropertyListRef plist = NULL;
+	CFMutableArrayRef held = NULL;	/* kexts created for this request */
+	CFStringRef ident, path;
+	CFArrayRef deps;
+	OSKextRef kext = NULL;
+	uid_t euid = (uid_t)remote_creds.val[1];
+	char what[MAXPATHLEN] = "?";
+	CFIndex i;
+
+	held = CFArrayCreateMutable(kCFAllocatorDefault, 0,
+	    &kCFTypeArrayCallBacks);
+	data = CFDataCreate(kCFAllocatorDefault, (const UInt8 *)load_data,
+	    (CFIndex)load_dataCnt);
+	if (held == NULL || data == NULL) {
+		result = kOSKextReturnNoMemory;
+		goto finish;
+	}
+	plist = CFPropertyListCreateWithData(kCFAllocatorDefault, data,
+	    kCFPropertyListImmutable, NULL, NULL);
+	if (plist == NULL || CFGetTypeID(plist) != CFDictionaryGetTypeID()) {
+		result = kOSKextReturnSerialization;
+		goto finish;
+	}
+
+	/* Kexts and folders the caller wants its kext's dependencies found in. */
+	deps = CFDictionaryGetValue(plist, kKextLoadDependenciesKey);
+	if (deps != NULL && CFGetTypeID(deps) == CFArrayGetTypeID()) {
+		for (i = 0; i < CFArrayGetCount(deps); i++) {
+			CFStringRef p = CFArrayGetValueAtIndex(deps, i);
+			CFURLRef u;
+			CFArrayRef ks;
+
+			if (p == NULL || CFGetTypeID(p) != CFStringGetTypeID())
+				continue;
+			u = CFURLCreateWithFileSystemPath(kCFAllocatorDefault, p,
+			    kCFURLPOSIXPathStyle, true);
+			if (u == NULL)
+				continue;
+			ks = OSKextCreateKextsFromURL(kCFAllocatorDefault, u);
+			CFRelease(u);
+			if (ks != NULL) {
+				CFArrayAppendValue(held, ks);
+				CFRelease(ks);
+			}
+		}
+	}
+
+	ident = CFDictionaryGetValue(plist, kKextLoadIdentifierKey);
+	path = CFDictionaryGetValue(plist, kKextLoadPathKey);
+	if (ident != NULL && CFGetTypeID(ident) == CFStringGetTypeID()) {
+		CFStringGetCString(ident, what, sizeof(what),
+		    kCFStringEncodingUTF8);
+		refresh_repo();
+		kext = OSKextGetKextWithIdentifier(ident);
+	} else if (path != NULL && CFGetTypeID(path) == CFStringGetTypeID()) {
+		CFURLRef u;
+
+		CFStringGetCString(path, what, sizeof(what),
+		    kCFStringEncodingUTF8);
+		u = CFURLCreateWithFileSystemPath(kCFAllocatorDefault, path,
+		    kCFURLPOSIXPathStyle, true);
+		if (u != NULL) {
+			kext = OSKextCreate(kCFAllocatorDefault, u);
+			CFRelease(u);
+			if (kext != NULL) {
+				CFArrayAppendValue(held, kext);
+				CFRelease(kext);
+			}
+		}
+	} else {
+		result = kOSKextReturnInvalidArgument;
+		goto finish;
+	}
+	if (kext == NULL) {
+		result = kOSKextReturnNotFound;
+		goto finish;
+	}
+	if (euid != 0 && !allow_user_load(kext)) {
+		result = kOSKextReturnNotPrivileged;
+		goto finish;
+	}
+	result = OSKextLoad(kext);
+	if (result != kOSReturnSuccess)
+		OSKextLogDiagnostics(kext, kOSKextDiagnosticsFlagAll);
+
+finish:
+	printf("kextd: KextManager load %s for uid %u: %s (0x%x)\n", what,
+	    (unsigned)euid, result == kOSReturnSuccess ? "loaded" : "failed",
+	    (unsigned)result);
+	if (plist != NULL)
+		CFRelease(plist);
+	if (data != NULL)
+		CFRelease(data);
+	if (held != NULL)
+		CFRelease(held);
+	/* The request arrived out of line; it's ours to free. */
+	vm_deallocate(mach_task_self(), (vm_address_t)load_data, load_dataCnt);
+	return (result);
+}
+
+kern_return_t
+_kextmanager_path_for_bundle_id(mach_port_t server __unused,
+    kext_bundle_id_t bundle_id, posix_path_t path, kext_result_t *kext_result)
+{
+	CFStringRef ident;
+	OSKextRef k;
+	CFURLRef u;
+
+	path[0] = '\0';
+	*kext_result = kOSKextReturnNotFound;
+	bundle_id[sizeof(kext_bundle_id_t) - 1] = '\0';
+	ident = CFStringCreateWithCString(kCFAllocatorDefault, bundle_id,
+	    kCFStringEncodingUTF8);
+	if (ident == NULL)
+		return (KERN_SUCCESS);
+	refresh_repo();
+	k = OSKextGetKextWithIdentifier(ident);
+	CFRelease(ident);
+	if (k == NULL || (u = OSKextGetURL(k)) == NULL)
+		return (KERN_SUCCESS);
+	u = CFURLCopyAbsoluteURL(u);
+	if (u != NULL) {
+		if (CFURLGetFileSystemRepresentation(u, true, (UInt8 *)path,
+		    sizeof(posix_path_t)))
+			*kext_result = kOSReturnSuccess;
+		CFRelease(u);
+	}
+	return (KERN_SUCCESS);
+}
+
+/* Every kext whose Info.plist has `prop_key`, as an array of dictionaries
+ * holding its CFBundleIdentifier and the key's value (binary plist). */
+kern_return_t
+_kextmanager_create_property_value_array(mach_port_t server __unused,
+    property_key_t prop_key, xmlDataOut_t *data,
+    mach_msg_type_number_t *dataCnt)
+{
+	CFMutableArrayRef out;
+	CFStringRef key;
+	CFDataRef bytes = NULL;
+	vm_address_t buf = 0;
+	CFIndex i, n;
+
+	*data = NULL;
+	*dataCnt = 0;
+	prop_key[sizeof(property_key_t) - 1] = '\0';
+	key = CFStringCreateWithCString(kCFAllocatorDefault, prop_key,
+	    kCFStringEncodingUTF8);
+	out = CFArrayCreateMutable(kCFAllocatorDefault, 0,
+	    &kCFTypeArrayCallBacks);
+	if (key == NULL || out == NULL)
+		goto finish;
+	refresh_repo();
+	n = repo_kexts != NULL ? CFArrayGetCount(repo_kexts) : 0;
+	for (i = 0; i < n; i++) {
+		OSKextRef k = (OSKextRef)CFArrayGetValueAtIndex(repo_kexts, i);
+		CFTypeRef v = OSKextGetValueForInfoDictionaryKey(k, key);
+		CFMutableDictionaryRef d;
+
+		if (v == NULL)
+			continue;
+		d = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
+		    &kCFTypeDictionaryKeyCallBacks,
+		    &kCFTypeDictionaryValueCallBacks);
+		if (d == NULL)
+			continue;
+		CFDictionarySetValue(d, kCFBundleIdentifierKey,
+		    OSKextGetIdentifier(k));
+		CFDictionarySetValue(d, key, v);
+		CFArrayAppendValue(out, d);
+		CFRelease(d);
+	}
+	bytes = CFPropertyListCreateData(kCFAllocatorDefault, out,
+	    kCFPropertyListBinaryFormat_v1_0, 0, NULL);
+	if (bytes == NULL || vm_allocate(mach_task_self(), &buf,
+	    (vm_size_t)CFDataGetLength(bytes), VM_FLAGS_ANYWHERE) != KERN_SUCCESS)
+		goto finish;
+	memcpy((void *)buf, CFDataGetBytePtr(bytes), (size_t)CFDataGetLength(bytes));
+	*data = (xmlDataOut_t)buf;
+	*dataCnt = (mach_msg_type_number_t)CFDataGetLength(bytes);
+finish:
+	if (bytes != NULL)
+		CFRelease(bytes);
+	if (out != NULL)
+		CFRelease(out);
+	if (key != NULL)
+		CFRelease(key);
+	return (KERN_SUCCESS);
+}
+
+/* No kernel caches on NextBSD: the locks kextcache and reboot take are
+ * granted at once. Rights the client sent are released. */
+kern_return_t
+_kextmanager_lock_reboot(mach_port_t server __unused, mach_port_t reply __unused,
+    mach_port_t reaper, int waitForLock __unused, mountpoint_t busyVol,
+    int *busyStatus)
+{
+	if (MACH_PORT_VALID(reaper))
+		mach_port_deallocate(mach_task_self(), reaper);
+	busyVol[0] = '\0';
+	*busyStatus = 0;
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_kextmanager_lock_volume(mach_port_t server __unused, mach_port_t reply __unused,
+    mach_port_t reaper, uuid_t vol_uuid __unused, int waitForLock __unused,
+    int *lockStatus)
+{
+	if (MACH_PORT_VALID(reaper))
+		mach_port_deallocate(mach_task_self(), reaper);
+	*lockStatus = 0;
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_kextmanager_unlock_volume(mach_port_t server __unused, mach_port_t clientIdent,
+    uuid_t vol_uuid __unused, int exitStatus __unused)
+{
+	if (MACH_PORT_VALID(clientIdent))
+		mach_port_deallocate(mach_task_self(), clientIdent);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_kextmanager_lock_kextload(mach_port_t server __unused, mach_port_t clientPort,
+    int *lockstatus)
+{
+	if (MACH_PORT_VALID(clientPort))
+		mach_port_deallocate(mach_task_self(), clientPort);
+	*lockstatus = 0;
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_kextmanager_unlock_kextload(mach_port_t server __unused, mach_port_t clientPort)
+{
+	if (MACH_PORT_VALID(clientPort))
+		mach_port_deallocate(mach_task_self(), clientPort);
+	return (KERN_SUCCESS);
+}
+
+/* Receive options: the audit trailer carries the caller's identity, which
+ * load_kext's ServerAuditToken argument reads (MIG rejects it without). */
+#define	KEXTD_RCV_TRAILER						\
+	(MACH_RCV_TRAILER_TYPE(MACH_MSG_TRAILER_FORMAT_0) |		\
+	 MACH_RCV_TRAILER_ELEMENTS(MACH_RCV_TRAILER_AUDIT))
+#define	KEXTD_MSG_BUFSZ	16384
+
+/* Serve one KextManager request and send its reply, as configd does. */
+static void
+serve_kextmanager(mach_msg_header_t *req)
+{
+	union {
+		mach_msg_header_t hdr;
+		char buf[KEXTD_MSG_BUFSZ];
+	} rep;
+	mach_msg_return_t mr;
+	kern_return_t code;
+	int rejected;
+
+	memset(&rep, 0, sizeof(rep));
+	if (!kextmanager_server(req, &rep.hdr)) {
+		mach_msg_destroy(req);
+		return;
+	}
+	/*
+	 * The handlers above always take ownership of what a request carries,
+	 * even when they fail; only a request MIG refused before calling one
+	 * (bad id, bad arguments, no audit trailer) still holds out-of-line
+	 * memory and rights. Release those, keeping the reply right.
+	 */
+	code = ((mig_reply_error_t *)(void *)&rep.hdr)->RetCode;
+	rejected = !(rep.hdr.msgh_bits & MACH_MSGH_BITS_COMPLEX) &&
+	    (code == MIG_BAD_ID || code == MIG_BAD_ARGUMENTS ||
+	    code == MIG_TRAILER_ERROR);
+	if (rejected) {
+		req->msgh_remote_port = MACH_PORT_NULL;
+		mach_msg_destroy(req);
+	}
+	if (rep.hdr.msgh_remote_port != MACH_PORT_NULL) {
+		mr = mach_msg(&rep.hdr, MACH_SEND_MSG | MACH_SEND_TIMEOUT,
+		    rep.hdr.msgh_size, 0, MACH_PORT_NULL, 1000, MACH_PORT_NULL);
+		if (mr != MACH_MSG_SUCCESS)
+			mach_msg_destroy(&rep.hdr);
+	}
+}
+
+/*
  * Watch mode (the real daemon, U1/K3b): register HOST_KEXTD_PORT so the kernel
  * matcher can reach us, push the repo's personalities into the IOCatalogue
  * (which, with push-triggers-match, fires load requests for already-unmatched
@@ -606,12 +960,12 @@ do_watch(int fd, const char *repo)
 	mach_port_name_t task = mach_task_self();
 	mach_port_name_t host = mach_host_self();
 	mach_port_name_t port = MACH_PORT_NULL;
-	CFArrayRef repoKexts, personalities;
-	CFURLRef u;
+	mach_port_t service = MACH_PORT_NULL, pset = MACH_PORT_NULL;
+	CFArrayRef personalities;
 	kern_return_t kr;
 	union {
 		kextd_load_body_t body;
-		unsigned char raw[sizeof(kextd_load_body_t) + 64];
+		char raw[KEXTD_MSG_BUFSZ];
 	} buf;
 
 	kr = mach_port_allocate(task, MACH_PORT_RIGHT_RECEIVE, &port);
@@ -629,16 +983,29 @@ do_watch(int fd, const char *repo)
 	if (verbose)
 		printf("kextd: listening on HOST_KEXTD_PORT (port 0x%x)\n", port);
 
+	/* KextManager requests arrive on the launchd service port; kernel
+	 * load requests on HOST_KEXTD_PORT. One port set receives both. */
+	kr = mach_port_allocate(task, MACH_PORT_RIGHT_PORT_SET, &pset);
+	if (kr != KERN_SUCCESS)
+		errx(1, "mach_port_allocate(port set): 0x%x", (unsigned)kr);
+	kr = mach_port_move_member(task, port, pset);
+	if (kr != KERN_SUCCESS)
+		errx(1, "mach_port_move_member: 0x%x", (unsigned)kr);
+	kr = bootstrap_check_in(bootstrap_port, KEXTD_SERVER_NAME, &service);
+	if (kr == KERN_SUCCESS)
+		kr = mach_port_move_member(task, service, pset);
+	if (kr != KERN_SUCCESS)
+		printf("kextd: not serving %s (0x%x); kernel requests only\n",
+		    KEXTD_SERVER_NAME, (unsigned)kr);
+	else if (verbose)
+		printf("kextd: serving %s\n", KEXTD_SERVER_NAME);
+
 	if (verbose)
 		printf("kextd: opening repo %s\n", repo);
-	u = url_for_path(repo);
-	repoKexts = (u != NULL) ?
-	    OSKextCreateKextsFromURL(kCFAllocatorDefault, u) : NULL;
-	if (u != NULL)
-		CFRelease(u);
-	if (repoKexts == NULL)
+	repo_path = repo;
+	refresh_repo();
+	if (repo_kexts == NULL)
 		errx(1, "%s: no kexts found", repo);
-	build_module_index(repoKexts);
 	if (verbose)
 		printf("kextd: repo opened; copying personalities\n");
 	(void) ioctl(fd, IOCATIOCFLUSH);
@@ -664,10 +1031,14 @@ do_watch(int fd, const char *repo)
 		mach_msg_return_t mr;
 
 		memset(&buf, 0, sizeof(buf));
-		mr = mach_msg(&buf.body.hdr, MACH_RCV_MSG, 0, sizeof(buf), port,
-		    MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+		mr = mach_msg(&buf.body.hdr, MACH_RCV_MSG | KEXTD_RCV_TRAILER, 0,
+		    sizeof(buf), pset, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
 		if (mr != MACH_MSG_SUCCESS) {
 			fprintf(stderr, "kextd: mach_msg(RCV) 0x%x\n", (unsigned)mr);
+			continue;
+		}
+		if (buf.body.hdr.msgh_local_port == service) {
+			serve_kextmanager(&buf.body.hdr);
 			continue;
 		}
 		if (buf.body.hdr.msgh_id != IOKIT_KEXTD_LOAD_MSGID)

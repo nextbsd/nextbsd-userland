@@ -37,7 +37,9 @@
 #include <sys/mount.h>
 #include <uuid/uuid.h>              // uuid_t
 
-#define KEXTD_SERVER_NAME       "com.apple.KernelExtensionServer"
+/* NextBSD: kextd checks in org.nextbsd.KernelExtensionServer (Apple's name is
+ * com.apple.KernelExtensionServer; nextbsd-userland#438, #437). */
+#define KEXTD_SERVER_NAME       "org.nextbsd.KernelExtensionServer"
 #define PROPERTYKEY_LEN         128
 
 typedef int kext_result_t;
