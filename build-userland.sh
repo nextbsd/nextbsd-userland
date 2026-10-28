@@ -666,7 +666,8 @@ run_buildenv "make -C $SRC/libIOKit DESTDIR=$DESTDIR SYSROOT=$SYSROOT LIBKEXT=$S
 # (and the libkern/OSReturn.h it includes) and the MIG types.
 mkdir -p "$DESTDIR/usr/include/IOKit/kext" "$DESTDIR/usr/include/libkern"
 install -m 0644 "$SRC/kext_tools/kext.subproj/KextManager.h" \
-    "$SRC/kext_tools/kext.subproj/kextmanager_types.h" "$DESTDIR/usr/include/IOKit/kext/"
+    "$SRC/kext_tools/kext.subproj/kextmanager_types.h" \
+    "$SRC/kext_tools/kext.subproj/NBSDFilesystemKext.h" "$DESTDIR/usr/include/IOKit/kext/"
 install -m 0644 "$SRC/kext_tools/compat/libkern/OSReturn.h" "$DESTDIR/usr/include/libkern/"
 sync_sysroot
 test -f "$DESTDIR/usr/lib/system/libIOKit.so.1" || { echo "FAIL: libIOKit.so.1 not installed"; exit 1; }

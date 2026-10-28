@@ -28,6 +28,8 @@ SRCS=		OSKext.c OSKextVersion.c misc_util.c printPList_new.c \
 MIGOUT?=
 .if !empty(MIGOUT)
 SRCS+=		KextManager.c
+# NBSDFilesystemLoadKext(): a filesystem's kext through KextManager (#436).
+SRCS+=		NBSDFilesystemKext.c
 .PATH:		${MIGOUT}
 SRCS+=		kextmanager_migUser.c
 CFLAGS+=	-I${MIGOUT}
