@@ -20,6 +20,22 @@ KT=		${.CURDIR}/..
 SRCS=		OSKext.c OSKextVersion.c misc_util.c printPList_new.c \
 		macho_util.c fat_util.c
 
+# KextManager (nextbsd-userland#438): the client half of kextd's
+# org.nextbsd.KernelExtensionServer. libkext is linked whole into libIOKit,
+# so KextManager and the OSKext calls it makes live in IOKit, as in
+# IOKit.framework. The MIG client stubs come from build-userland.sh's host
+# mig run over kextmanager_mig.defs (MIGOUT).
+MIGOUT?=
+.if !empty(MIGOUT)
+SRCS+=		KextManager.c
+.PATH:		${MIGOUT}
+SRCS+=		kextmanager_migUser.c
+CFLAGS+=	-I${MIGOUT}
+.endif
+CFLAGS+=	-DNO_SECURITY_FRAMEWORK
+# <servers/bootstrap.h>, <bootstrap_priv.h> (bootstrap_look_up2) for KextManager.c.
+CFLAGS.KextManager.c+=	-I${KT}/../launchd/liblaunch -I${KT}/../launchd/freebsd-shims
+
 .PATH:		${KT}/compat
 SRCS+=		macho_compat.c iocf_compat.c
 

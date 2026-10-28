@@ -630,9 +630,44 @@ test -f "$DESTDIR/usr/include/SystemConfiguration/SCDynamicStore.h" \
 # build.sh ~1910-1939 (lib) and ~2059-2077 (ioreg). libIOKit is bsd.lib.mk;
 # pre-create the IOKit include dir. ioreg(8) in build.sh was a standalone `cc`
 # link of ioreg.c; cross-shape it through the build env with the cross clang.
+# ---- KextManager MIG stubs + libkext (before libIOKit) ----------------------
+# nextbsd-userland#438: KextManager is the client half of kextd's
+# org.nextbsd.KernelExtensionServer, and on Darwin it and the OSKext engine
+# live in IOKit.framework. So libkext (OSKext + KextManager + the MIG user
+# stubs) is built here, before libIOKit, which links it whole; kextd builds
+# the server stubs from the same MIGOUT later. The generated code imports
+# <IOKit/kext/kextmanager_types.h>, so MIGOUT gets that path too.
+# NO_SECURITY_FRAMEWORK drops the Authorization types (no Security.framework);
+# __DARWIN_64_BIT_INO_T sizes mountpoint_t to MAXPATHLEN, which is FreeBSD's
+# MNAMELEN (both 1024); mig's preprocessor sees no <sys/param.h>, so
+# MAXPATHLEN is passed in.
+comp "KextManager MIG stubs (host mig)"
+KEXTMGR_MIG="$MIGROOT/kextmanager"
+rm -rf "$KEXTMGR_MIG"; mkdir -p "$KEXTMGR_MIG/IOKit/kext"
+cp "$SRC/kext_tools/kext.subproj/kextmanager_types.h" "$KEXTMGR_MIG/IOKit/kext/"
+run_mig "$KEXTMGR_MIG" -I"$SRC/libmach/include" \
+    -DNO_SECURITY_FRAMEWORK -D__DARWIN_64_BIT_INO_T=1 -DMAXPATHLEN=1024 \
+    -header kextmanager_mig.h -user kextmanager_migUser.c \
+    -server kextmanager_migServer.c -sheader kextmanager_migServer.h \
+    "$SRC/kext_tools/kext.subproj/kextmanager_mig.defs" \
+    || { echo "FAIL: mig could not process kextmanager_mig.defs"; exit 1; }
+for f in kextmanager_mig.h kextmanager_migUser.c kextmanager_migServer.c; do
+    test -s "$KEXTMGR_MIG/$f" || { echo "FAIL: mig produced no $f"; exit 1; }
+done
+
+comp "libkext (OSKext + KextManager, for libIOKit)"
+run_buildenv "make -C $SRC/kext_tools/kext.subproj SYSROOT=$SYSROOT MIGOUT=$KEXTMGR_MIG all"
+test -f "$SRC/kext_tools/kext.subproj/libkext.a" || { echo "FAIL: libkext.a not built"; exit 1; }
+
 comp "libIOKit"
 mkdir -p "$DESTDIR/usr/include/IOKit"
-run_buildenv "make -C $SRC/libIOKit DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+run_buildenv "make -C $SRC/libIOKit DESTDIR=$DESTDIR SYSROOT=$SYSROOT LIBKEXT=$SRC/kext_tools/kext.subproj/libkext.a all install"
+# The public kext API headers, as IOKit.framework ships them: KextManager.h
+# (and the libkern/OSReturn.h it includes) and the MIG types.
+mkdir -p "$DESTDIR/usr/include/IOKit/kext" "$DESTDIR/usr/include/libkern"
+install -m 0644 "$SRC/kext_tools/kext.subproj/KextManager.h" \
+    "$SRC/kext_tools/kext.subproj/kextmanager_types.h" "$DESTDIR/usr/include/IOKit/kext/"
+install -m 0644 "$SRC/kext_tools/compat/libkern/OSReturn.h" "$DESTDIR/usr/include/libkern/"
 sync_sysroot
 test -f "$DESTDIR/usr/lib/system/libIOKit.so.1" || { echo "FAIL: libIOKit.so.1 not installed"; exit 1; }
 test -f "$DESTDIR/usr/include/IOKit/IOKitLib.h" || { echo "FAIL: IOKit/IOKitLib.h not installed"; exit 1; }
@@ -663,7 +698,7 @@ needed_check "$DESTDIR/usr/bin/caffeinate" "libIOKit"
 # kextload/kextunload/kextstat/kextdeps + libexec/kextd; installs sys/iocatalogue.h.
 comp "kext_tools"
 mkdir -p "$DESTDIR/usr/sbin" "$DESTDIR/usr/libexec" "$DESTDIR/usr/include/sys"
-run_buildenv "make -C $SRC/kext_tools DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+run_buildenv "make -C $SRC/kext_tools DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$KEXTMGR_MIG all install"
 for b in kextload kextunload kextstat kextdeps; do
     test -x "$DESTDIR/usr/sbin/$b" || { echo "FAIL: /usr/sbin/$b not installed"; exit 1; }
 done

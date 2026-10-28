@@ -23,6 +23,14 @@
 		     It must work with no manual poke (real-hardware shape). -->
 		<string>-v</string>
 	</array>
+	<!-- KextManager (nextbsd-userland#438): the Mach service libIOKit's
+	     KextManagerLoadKextWithIdentifier() and friends look up. Apple's
+	     kextd checked in com.apple.KernelExtensionServer. -->
+	<key>MachServices</key>
+	<dict>
+		<key>org.nextbsd.KernelExtensionServer</key>
+		<true/>
+	</dict>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
