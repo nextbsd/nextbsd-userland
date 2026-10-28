@@ -186,9 +186,8 @@ jobs:
           # the boot test's SUDO check runs against the real image layout.
           gh release download continuous -R nextbsd/nextbsd-contrib \
             --pattern 'nextbsd-contrib-${{ inputs.arch }}.tar.gz' --dir art --clobber
-          # Kext tarballs are per-arch: graphics-kexts-<arch>, and on amd64 only
-          # freebsd-kexts-amd64 (IntelWiFi, IntelEthernet; nextbsd/nextbsd#554)
-          # and nvidia-kexts-amd64. assemble-image.sh extracts every tarball into the
+          # Kext tarballs are per-arch: graphics-kexts-<arch> and freebsd-kexts-<arch>
+          # (nextbsd/nextbsd#554), and on amd64 only nvidia-kexts-amd64. assemble-image.sh extracts every tarball into the
           # same /System/Library/Extensions in `ls` order, so last wins: an
           # unfiltered '*kext*.tar.gz' once laid x86-64 objects over arm64's
           # ("Exec format error"). The stale arch-less graphics-kexts.tar.gz
@@ -198,9 +197,9 @@ jobs:
           # instead of booting an image without it (nextbsd/nextbsd#552).
           gh release download continuous -R nextbsd/nextbsd-kernel-extensions-graphics \
             --pattern "graphics-kexts-${ARCH}.tar.gz" --dir art --clobber
+          gh release download continuous -R nextbsd/nextbsd-kernel-extensions \
+            --pattern "freebsd-kexts-${ARCH}.tar.gz" --dir art --clobber
           if [ "$ARCH" = amd64 ]; then
-            gh release download continuous -R nextbsd/nextbsd-kernel-extensions \
-              --pattern 'freebsd-kexts-amd64.tar.gz' --dir art --clobber
             # NVIDIA (amd64-only) comes from its own repo (nextbsd/nextbsd#548).
             gh release download continuous -R nextbsd/nextbsd-kernel-extensions-nvidia \
               --pattern 'nvidia-kexts-amd64.tar.gz' --dir art --clobber
