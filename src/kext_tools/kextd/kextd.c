@@ -285,7 +285,7 @@ push_personality(int fd, CFDictionaryRef p)
  * -l <matchword>: ask the kernel which driver bundle claims a PCI id
  * (0x<device><vendor>) via IOCATIOCLOOKUP — the same lookup the in-kernel
  * device_nomatch matcher (K3) uses. Lets the matcher be verified deterministically
- * (e.g. 0x24f38086 -> org.nextbsd.kext.intelwifi) without the physical device.
+ * (e.g. 0x24f38086 -> org.nextbsd.driver.IntelIwlwifi) without the physical device.
  */
 static int
 do_lookup(const char *word)
