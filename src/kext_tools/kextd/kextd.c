@@ -24,7 +24,10 @@
  * "IOKIT load <bundle-id>" requests and kextload-ing the named bundle. For now
  * kextd populates the catalogue and exits; the matcher that consumes it is K3.
  *
- * Usage:  kextd [-r repo_dir] [-v]
+ * It also keeps the module-name index (nextbsd-userland#439, see
+ * build_module_index()); `-m <name>` resolves one name through it.
+ *
+ * Usage:  kextd [-r repo_dir] [-v] | -l word | -m module | -w | -t word
  */
 #include <CoreFoundation/CoreFoundation.h>
 #include <mach/mach_types.h>	/* kern_return_t, before OSKext.h -> OSReturn.h */
@@ -448,6 +451,120 @@ do_lookup(const char *word)
 	return (rc == 0 ? 0 : 1);
 }
 
+/*
+ * The module-name index (E21 step 24, nextbsd-userland#439): FreeBSD module
+ * name -> kext bundle ID, NextBSD's equivalent of linker.hints. Each kext built
+ * from a FreeBSD module records what it provides in its Info.plist:
+ * NBSDModuleFile is the .ko it wraps ("if_em.ko") and NBSDModules the module
+ * and MODULE_VERSION interface names in it ("wlan", "wlan_ccmp", ...). Kernel
+ * load requests by name (nextbsd-kernel#52) and the filesystem loader
+ * (nextbsd-userland#436) resolve through it.
+ *
+ * Both kinds of name go in one dictionary: module names as they are, file
+ * names under their .ko name and their bare stem, so a name resolves the way
+ * kldload(2) takes it ("if_em", "if_em.ko" or "wlan_ccmp"). The first kext
+ * to claim a name keeps it.
+ */
+static CFMutableDictionaryRef module_index;
+
+static void
+index_name(CFStringRef name, CFStringRef bundle_id)
+{
+	if (name != NULL && CFGetTypeID(name) == CFStringGetTypeID() &&
+	    !CFDictionaryContainsKey(module_index, name))
+		CFDictionarySetValue(module_index, name, bundle_id);
+}
+
+static void
+build_module_index(CFArrayRef kexts)
+{
+	CFIndex i, j, n;
+
+	if (module_index != NULL)
+		CFRelease(module_index);
+	module_index = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
+	    &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+	if (module_index == NULL || kexts == NULL)
+		return;
+	n = CFArrayGetCount(kexts);
+	for (i = 0; i < n; i++) {
+		OSKextRef k = (OSKextRef)CFArrayGetValueAtIndex(kexts, i);
+		CFStringRef id = OSKextGetIdentifier(k);
+		CFArrayRef mods;
+		CFStringRef file;
+
+		if (id == NULL)
+			continue;
+		mods = OSKextGetValueForInfoDictionaryKey(k,
+		    CFSTR("NBSDModules"));
+		if (mods != NULL && CFGetTypeID(mods) == CFArrayGetTypeID())
+			for (j = 0; j < CFArrayGetCount(mods); j++)
+				index_name(CFArrayGetValueAtIndex(mods, j), id);
+		file = OSKextGetValueForInfoDictionaryKey(k,
+		    CFSTR("NBSDModuleFile"));
+		if (file != NULL && CFGetTypeID(file) == CFStringGetTypeID()) {
+			index_name(file, id);
+			if (CFStringHasSuffix(file, CFSTR(".ko"))) {
+				CFStringRef stem = CFStringCreateWithSubstring(
+				    kCFAllocatorDefault, file,
+				    CFRangeMake(0, CFStringGetLength(file) - 3));
+
+				if (stem != NULL) {
+					index_name(stem, id);
+					CFRelease(stem);
+				}
+			}
+		}
+	}
+	if (verbose)
+		printf("kextd: module index: %ld names\n",
+		    (long)CFDictionaryGetCount(module_index));
+}
+
+/* The bundle ID providing module or file `name`, or NULL. */
+static CFStringRef
+lookup_module(const char *name)
+{
+	CFStringRef key, id;
+
+	if (module_index == NULL)
+		return (NULL);
+	key = CFStringCreateWithCString(kCFAllocatorDefault, name,
+	    kCFStringEncodingUTF8);
+	if (key == NULL)
+		return (NULL);
+	id = CFDictionaryGetValue(module_index, key);
+	CFRelease(key);
+	return (id);
+}
+
+/* -m <name>: resolve a module or .ko name through the index and exit. */
+static int
+do_module_lookup(const char *repo, const char *name)
+{
+	CFArrayRef kexts;
+	CFStringRef id;
+	CFURLRef u;
+	char buf[128];
+
+	u = url_for_path(repo);
+	kexts = (u != NULL) ?
+	    OSKextCreateKextsFromURL(kCFAllocatorDefault, u) : NULL;
+	if (u != NULL)
+		CFRelease(u);
+	if (kexts == NULL)
+		errx(1, "%s: no kexts found", repo);
+	build_module_index(kexts);
+	id = lookup_module(name);
+	if (id != NULL && CFStringGetCString(id, buf, sizeof(buf),
+	    kCFStringEncodingUTF8))
+		printf("MODULE %s -> %s\n", name, buf);
+	else
+		printf("MODULE %s -> (none)\n", name);
+	CFRelease(kexts);
+	return (id != NULL ? 0 : 1);
+}
+
 /* Load a kext by CFBundleIdentifier from the already-open repo set. */
 static void
 load_bundle(const char *bundle_id)
@@ -521,6 +638,7 @@ do_watch(int fd, const char *repo)
 		CFRelease(u);
 	if (repoKexts == NULL)
 		errx(1, "%s: no kexts found", repo);
+	build_module_index(repoKexts);
 	if (verbose)
 		printf("kextd: repo opened; copying personalities\n");
 	(void) ioctl(fd, IOCATIOCFLUSH);
@@ -583,6 +701,7 @@ main(int argc, char *argv[])
 	const char *repo = "/System/Library/Extensions";
 	const char *lookup = NULL;
 	const char *testsend = NULL;
+	const char *module = NULL;
 	bool watch = false;
 	CFArrayRef repoKexts = NULL;	/* non-retaining registry: hold alive */
 	CFArrayRef personalities = NULL;
@@ -596,7 +715,7 @@ main(int argc, char *argv[])
 	 * would be lost. Line buffering flushes each message as it's printed. */
 	setlinebuf(stdout);
 
-	while ((ch = getopt(argc, argv, "r:vl:wt:")) != -1) {
+	while ((ch = getopt(argc, argv, "r:vl:m:wt:")) != -1) {
 		switch (ch) {
 		case 'r':
 			repo = optarg;
@@ -607,6 +726,9 @@ main(int argc, char *argv[])
 		case 'l':
 			lookup = optarg;
 			break;
+		case 'm':
+			module = optarg;
+			break;
 		case 'w':
 			watch = true;
 			break;
@@ -614,7 +736,7 @@ main(int argc, char *argv[])
 			testsend = optarg;
 			break;
 		default:
-			errx(2, "usage: kextd [-r repo] [-v] | -l word | -w | -t word");
+			errx(2, "usage: kextd [-r repo] [-v] | -l word | -m module | -w | -t word");
 		}
 	}
 
@@ -626,6 +748,10 @@ main(int argc, char *argv[])
 	if (verbose)
 		OSKextSetLogFilter(kOSKextLogDetailLevel |
 		    kOSKextLogVerboseFlagsMask, false);
+
+	/* Query mode: resolve one module name through the index and exit. */
+	if (module != NULL)
+		return (do_module_lookup(repo, module));
 
 	fd = open("/dev/iocatalogue", O_RDWR);
 	if (fd < 0)
