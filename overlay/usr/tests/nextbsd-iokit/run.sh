@@ -182,19 +182,15 @@ if [ ! -c /dev/iocatalogue ]; then
 	exit 0
 fi
 
-# Everything from here down — IOCATALOGUE, IOKIT-LOOKUP, KEXTD-LOAD,
-# EM-AUTOLOAD — asserts INTEL hardware kexts: IntelWiFi's 8260 personality
-# (0x24f38086) reaching the catalogue, the kernel matcher resolving that id,
-# kextd loading IntelWiFi on request, and IntelEthernet binding em0.
+# Everything from here down — IOCATALOGUE, IOKIT-LOOKUP, KEXTD-LOAD —
+# asserts an INTEL hardware kext: IntelWiFi's 8260 personality (0x24f38086)
+# reaching the catalogue, the kernel matcher resolving that id, and kextd
+# loading IntelWiFi on request. (EM-AUTOLOAD, IntelEthernet binding em0, is
+# retired: em is compiled into the kernel again, nextbsd-kernel#328.)
 #
-# nextbsd-kernel-extensions publishes IntelWiFi and IntelEthernet as x86-64 builds
-# ONLY — there is no arm64 variant of either. So this group is amd64-only by
-# construction, twice over:
-#
-#   - the kexts do not exist for arm64, and shipping x86-64 drivers into an
-#     arm64 image purely to satisfy the assertions would be wrong;
-#   - arm64 qemu `virt` has no em(4) NIC at all — it is virtio-net (vtnet0) —
-#     so EM-AUTOLOAD has no device to bind even in principle.
+# nextbsd-kernel-extensions publishes IntelWiFi as an x86-64 build ONLY — there
+# is no arm64 variant — and shipping an x86-64 driver into an arm64 image purely
+# to satisfy the assertions would be wrong. So this group is amd64-only.
 #
 # Emit the SKIP markers and the done-sentinel. boot-test.sh runs this section as
 # a pull model that ends on IOKIT-RUN-DONE: only an explicit *-FAIL gates, and
@@ -207,7 +203,6 @@ amd64|x86_64)
 	echo "IOCATALOGUE-SKIP: IntelWiFi.kext is x86-64-only; no arm64 personalities to assert (nextbsd-userland#163)"
 	echo "IOKIT-LOOKUP-SKIP: no IntelWiFi personality on $(uname -m) to resolve"
 	echo "KEXTD-LOAD-SKIP: no arm64 IntelWiFi.kext build"
-	echo "EM-AUTOLOAD-SKIP: arm64 virt has no em(4) NIC (virtio-net) and IntelEthernet is x86-64-only"
 	if [ -x /usr/tests/launchctl-snapshot.sh ]; then
 		/usr/tests/launchctl-snapshot.sh "END nextbsd-iokit (arm64 early exit)"
 	fi
@@ -308,36 +303,6 @@ if [ -x /usr/libexec/kextd ]; then
 	fi
 else
 	echo "KEXTD-LOAD-SKIP: kextd not present"
-fi
-
-# EM-AUTOLOAD — #219 (D1): Intel ethernet em -> IntelEthernet.kext auto-load.
-# With `nodevice em` (#219) the qemu e1000 (82540EM) hits device_nomatch and
-# kextd loads IntelEthernet.kext (if_em) to bind it as em0. The loaded kld file
-# is named after the bundle executable (IntelEthernet), so kextstat/kldstat show
-# it ONLY when it was auto-loaded — a built-in em driver does not appear as a
-# separate loaded file, so the kext-loaded signal cleanly distinguishes the two.
-# em0's address is read with `ipconfig` (Apple IPConfiguration); FreeBSD's
-# ifconfig(8) is NOT on the stripped image, so it must not be used here. Emits:
-#
-# No manual kextd poke ran above, so this is the PURE boot-autoload result —
-# em0 must have been brought up by the boot daemon alone (real-hardware shape).
-#   EM-AUTOLOAD-OK    — IntelEthernet auto-loaded by the boot daemon AND em0 has an address
-#   EM-AUTOLOAD-SKIP  — IntelEthernet not loaded but em0 IS up -> em is built into this kernel
-#   EM-AUTOLOAD-FAIL  — IntelEthernet loaded but em0 has no address (bind/DHCP failed), OR
-#                       IntelEthernet not loaded AND em0 has no address (boot autoload did NOT happen)
-em_addr=$(ipconfig getifaddr em0 2>/dev/null || true)
-if kextstat 2>/dev/null | grep -qi intelethernet; then
-	if [ -n "$em_addr" ]; then
-		echo "EM-AUTOLOAD-OK: em0 ($em_addr) up via boot-daemon auto-load of IntelEthernet.kext"
-	else
-		echo "EM-AUTOLOAD-FAIL: IntelEthernet.kext loaded but em0 has no address (bind/DHCP failed)"
-	fi
-elif [ -n "$em_addr" ]; then
-	echo "EM-AUTOLOAD-SKIP: IntelEthernet not loaded but em0 is up — em is built into this kernel"
-else
-	# em is nodevice in the continuous kernel (#219), so "not loaded + no address"
-	# means the boot daemon never autoloaded the NIC — the real-hardware bug.
-	echo "EM-AUTOLOAD-FAIL: boot daemon did NOT autoload IntelEthernet — em0 absent (real-hardware autoload failure)"
 fi
 
 # CAFFEINATE — verify caffeinate(8) executes cleanly.
