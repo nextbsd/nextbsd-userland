@@ -38,7 +38,9 @@
 #endif
 
 #define	IWL_8260_MATCH	0x24f38086u
-#define	WANT_BUNDLE	"org.nextbsd.kext.intelwifi"
+#define	WANT_BUNDLE	"org.nextbsd.driver.IntelIwlwifi"
+/* The bundle ID before the E21 D7 rename (IntelWiFi.kext); either is accepted. */
+#define	WANT_BUNDLE_OLD	"org.nextbsd.kext.intelwifi"
 
 /* Mirror of the kernel's iokit_kextd_load_msg_t body (sys/mach/iokit_kextd.h),
  * minus the trailer the kernel appends on receive. NDR_record_t is 8 bytes. */
@@ -128,7 +130,8 @@ main(void)
 	    buf.body.hdr.msgh_id, (unsigned)buf.body.hdr.msgh_size,
 	    buf.body.bundle_id, buf.body.match_word);
 
-	if (strcmp(buf.body.bundle_id, WANT_BUNDLE) == 0 &&
+	if ((strcmp(buf.body.bundle_id, WANT_BUNDLE) == 0 ||
+	    strcmp(buf.body.bundle_id, WANT_BUNDLE_OLD) == 0) &&
 	    buf.body.match_word == IWL_8260_MATCH) {
 		printf("KEXTD-MACH-OK\n");
 		return (0);

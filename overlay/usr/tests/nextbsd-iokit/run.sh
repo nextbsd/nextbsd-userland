@@ -237,9 +237,13 @@ if [ "${count}" -lt 1 ] 2>/dev/null; then
 	exit 1
 fi
 
-# The shipped IntelWiFi.kext (P1, #213) carries the Intel match table; its
+# The shipped Intel Wi-Fi kext (P1, #213) carries the Intel match table; its
 # 8260 id (0x24f38086) flowing through proves kext plist -> kextd -> kernel.
-if echo "${dump}" | grep -q "org.nextbsd.kext.intelwifi" &&
+# Its bundle ID moved from org.nextbsd.kext.intelwifi (IntelWiFi.kext) to
+# org.nextbsd.driver.IntelIwlwifi (IntelIwlwifi.kext, E21 D7); accept either
+# so this test does not depend on which side of the rename an image is.
+INTEL_WIFI_IDS='org.nextbsd.kext.intelwifi|org.nextbsd.driver.IntelIwlwifi'
+if echo "${dump}" | grep -qE "${INTEL_WIFI_IDS}" &&
    echo "${dump}" | grep -qi "24f38086"; then
 	echo "IOCATALOGUE-OK: IntelWiFi personalities (incl. 8260) in the catalogue"
 else
@@ -255,7 +259,7 @@ if [ -x /usr/libexec/kextd ]; then
 	lk=$(/usr/libexec/kextd -l 0x24f38086 2>/dev/null || true)
 	echo "matcher lookup: ${lk}"
 	case "${lk}" in
-	*org.nextbsd.kext.intelwifi*)
+	*org.nextbsd.kext.intelwifi*|*org.nextbsd.driver.IntelIwlwifi*)
 		echo "IOKIT-LOOKUP-OK: kernel matcher resolves 0x24f38086 -> IntelWiFi"
 		;;
 	*unsupported*)
@@ -285,11 +289,11 @@ if [ -x /usr/libexec/kextd ]; then
 	i=0
 	while [ "$i" -lt 12 ]; do
 		# The loaded kld file is named after the bundle executable
-		# (IntelWiFi); `kextstat` lists loaded files, so it shows that.
+		# (IntelWiFi, now IntelIwlwifi); `kextstat` lists loaded files.
 		# The driver module inside (if_iwlwifi) is found by module name
 		# via `kextstat -m` (modfind(2)). The kld* CLIs were retired
 		# (#193); kextstat rides the same kld*(2) syscalls. Check both.
-		if kextstat 2>/dev/null | grep -qi intelwifi ||
+		if kextstat 2>/dev/null | grep -qiE 'intelwifi|inteliwlwifi' ||
 		   kextstat -m if_iwlwifi >/dev/null 2>&1; then loaded=yes; break; fi
 		sleep 1; i=$((i + 1))
 	done
