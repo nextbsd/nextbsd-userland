@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <AvailabilityMacros.h>	/* KextManager.h's AVAILABLE_MAC_OS_X_* */
 #include <CoreFoundation/CoreFoundation.h>
 
 #include "OSKext.h"		/* kOSKextReturnNotPrivileged */
