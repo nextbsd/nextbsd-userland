@@ -127,6 +127,21 @@ struct iocat_lookup_compat {
 #define	IOCATIOCADDCOMPAT	_IOW('K', 5, struct iocat_add_compat)
 #define	IOCATIOCLOOKUPCOMPAT	_IOWR('K', 6, struct iocat_lookup_compat)
 
+/*
+ * Kernel-requested loads by module name (nextbsd-kernel#52). kern_kldload()
+ * passes a module name it finds nowhere to kextd as an IOKIT_KEXTD_KLD_MSGID
+ * request; kextd loads the kext providing it and reports the outcome.
+ * IOCATIOCKLDSERVE: this process serves the requests until it closes the
+ *   descriptor. IOCATIOCKLDDONE: request `seq` finished with `error` (0 when
+ *   the module is loaded; ENOENT when no kext provides it).
+ */
+struct iocat_kld_done {
+	uint32_t	seq;
+	int32_t		error;
+};
+#define	IOCATIOCKLDSERVE	_IO('K', 7)
+#define	IOCATIOCKLDDONE		_IOW('K', 8, struct iocat_kld_done)
+
 #ifdef _KERNEL
 #include <sys/queue.h>
 #include <sys/sysctl.h>

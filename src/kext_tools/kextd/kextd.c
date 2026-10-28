@@ -25,7 +25,10 @@
  * kextd populates the catalogue and exits; the matcher that consumes it is K3.
  *
  * It also keeps the module-name index (nextbsd-userland#439, see
- * build_module_index()); `-m <name>` resolves one name through it.
+ * build_module_index()); `-m <name>` resolves one name through it. In watch
+ * mode kextd serves the kernel's loads by module name through it
+ * (nextbsd-kernel#52): kldload of a name the kernel finds nowhere, from
+ * `mount -t`, netgraph, LinuxKPI's request_module or kldload(8).
  *
  * Usage:  kextd [-r repo_dir] [-v] | -l word | -m module | -w | -t word
  */
@@ -57,6 +60,9 @@
 /* kernel->kextd load request wire format (mirror of the kernel's
  * iokit_kextd_load_msg_t in sys/mach/iokit_kextd.h; NDR_record_t is 8 bytes). */
 #define	IOKIT_KEXTD_LOAD_MSGID	0x494f4b54
+/* ... and a request by module name (nextbsd-kernel#52): bundle_id carries the
+ * module name, match_word the sequence number IOCATIOCKLDDONE hands back. */
+#define	IOKIT_KEXTD_KLD_MSGID	0x494f4b4d
 typedef struct {
 	mach_msg_header_t	hdr;
 	unsigned char		ndr[8];
@@ -566,7 +572,7 @@ do_module_lookup(const char *repo, const char *name)
 }
 
 /* Load a kext by CFBundleIdentifier from the already-open repo set. */
-static void
+static bool
 load_bundle(const char *bundle_id)
 {
 	CFStringRef idstr;
@@ -576,12 +582,12 @@ load_bundle(const char *bundle_id)
 	idstr = CFStringCreateWithCString(kCFAllocatorDefault, bundle_id,
 	    kCFStringEncodingUTF8);
 	if (idstr == NULL)
-		return;
+		return (false);
 	k = OSKextGetKextWithIdentifier(idstr);	/* from the open repo set */
 	CFRelease(idstr);
 	if (k == NULL) {
 		printf("kextd: no kext with identifier %s\n", bundle_id);
-		return;
+		return (false);
 	}
 	r = OSKextLoad(k);
 	if (r == kOSReturnSuccess)
@@ -591,6 +597,35 @@ load_bundle(const char *bundle_id)
 		    (unsigned)r);
 		OSKextLogDiagnostics(k, kOSKextDiagnosticsFlagAll);
 	}
+	return (r == kOSReturnSuccess);
+}
+
+/*
+ * A kernel request by module name (nextbsd-kernel#52): load the kext the
+ * index names for it and tell the kernel how it went, which wakes the
+ * kldload waiting on it.
+ */
+static void
+load_module(int fd, const char *name, uint32_t seq)
+{
+	struct iocat_kld_done done;
+	CFStringRef id;
+	char bundle_id[128];
+
+	memset(&done, 0, sizeof(done));
+	done.seq = seq;
+	id = lookup_module(name);
+	if (id == NULL || !CFStringGetCString(id, bundle_id,
+	    sizeof(bundle_id), kCFStringEncodingUTF8)) {
+		if (verbose)
+			printf("kextd: no kext provides module %s\n", name);
+		done.error = ENOENT;
+	} else {
+		printf("kextd: module %s -> %s\n", name, bundle_id);
+		done.error = load_bundle(bundle_id) ? 0 : ENOEXEC;
+	}
+	if (ioctl(fd, IOCATIOCKLDDONE, &done) != 0)
+		warn("IOCATIOCKLDDONE %s", name);
 }
 
 /*
@@ -658,6 +693,15 @@ do_watch(int fd, const char *repo)
 		CFRelease(personalities);
 	}
 
+	/* Serve the kernel's requests by module name (nextbsd-kernel#52). A
+	 * kernel without them answers ENOTTY; device requests still work. */
+	if (ioctl(fd, IOCATIOCKLDSERVE) != 0) {
+		if (verbose)
+			printf("kextd: not serving module requests (%s)\n",
+			    strerror(errno));
+	} else if (verbose)
+		printf("kextd: serving module requests\n");
+
 	if (verbose)
 		printf("kextd: ready\n");
 	for (;;) {
@@ -670,9 +714,17 @@ do_watch(int fd, const char *repo)
 			fprintf(stderr, "kextd: mach_msg(RCV) 0x%x\n", (unsigned)mr);
 			continue;
 		}
+		buf.body.bundle_id[sizeof(buf.body.bundle_id) - 1] = '\0';
+		if (buf.body.hdr.msgh_id == IOKIT_KEXTD_KLD_MSGID) {
+			if (verbose)
+				printf("kextd: load request module=%s seq=%u\n",
+				    buf.body.bundle_id, buf.body.match_word);
+			load_module(fd, buf.body.bundle_id,
+			    buf.body.match_word);
+			continue;
+		}
 		if (buf.body.hdr.msgh_id != IOKIT_KEXTD_LOAD_MSGID)
 			continue;
-		buf.body.bundle_id[sizeof(buf.body.bundle_id) - 1] = '\0';
 		if (verbose)
 			printf("kextd: load request bundle=%s device=%s match=0x%08x\n",
 			    buf.body.bundle_id, buf.body.device, buf.body.match_word);
