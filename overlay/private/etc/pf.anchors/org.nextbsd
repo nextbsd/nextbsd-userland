@@ -1,0 +1,8 @@
+#
+# org.nextbsd: the anchor NextBSD features add their pf rules under, loaded
+# by /etc/pf.conf (Mac OS X's /etc/pf.anchors/com.apple, com.apple/*).
+#
+# Each feature gets a numbered sub-anchor, e.g. org.nextbsd/100.InternetSharing,
+# which it fills at run time with `pfctl -a org.nextbsd/<n>.<Name> -f ...`.
+# None ships rules yet.
+#

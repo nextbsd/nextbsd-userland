@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- org.nextbsd.pfctl (nextbsd-userland#476): load /etc/pf.conf into
+	     the kernel's pf at boot, exactly as Mac OS X 10.9's com.apple.pfctl
+	     does (RunAtLoad, `pfctl -f /etc/pf.conf`, root:wheel, run once).
+	     It loads the rules only; pf itself stays disabled until something
+	     enables it. pf and pflog are compiled into the kernel, so there is
+	     nothing to load first. -->
+	<key>Label</key>
+	<string>org.nextbsd.pfctl</string>
+	<key>Program</key>
+	<string>/sbin/pfctl</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>pfctl</string>
+		<string>-f</string>
+		<string>/etc/pf.conf</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>UserName</key>
+	<string>root</string>
+	<key>GroupName</key>
+	<string>wheel</string>
+	<key>WorkingDirectory</key>
+	<string>/var/run</string>
+	<key>StandardErrorPath</key>
+	<string>/var/log/pfctl.log</string>
+</dict>
+</plist>
