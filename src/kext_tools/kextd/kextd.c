@@ -156,11 +156,12 @@ parse_match(CFDictionaryRef d, uint32_t **out)
  * Returns the count (0 on none/absent); *out is the table (caller frees).
  */
 static uint32_t
-parse_name_match(CFDictionaryRef d, char **out)
+parse_name_match(CFDictionaryRef d, char **out, const char *prefix)
 {
 	CFTypeRef v;
 	char *tbl;
 	uint32_t n = 0;
+	size_t pl = prefix != NULL ? strlen(prefix) : 0;
 
 	*out = NULL;
 	v = CFDictionaryGetValue(d, CFSTR("IONameMatch"));
@@ -171,9 +172,10 @@ parse_name_match(CFDictionaryRef d, char **out)
 	if (tbl == NULL)
 		return (0);
 
+	/* Each slot leaves room for the prefix (#329: "acpi:"), copied in below. */
 	if (CFGetTypeID(v) == CFStringGetTypeID()) {
-		if (CFStringGetCString((CFStringRef)v, tbl, IOCAT_COMPAT_MAX,
-		    kCFStringEncodingUTF8))
+		if (CFStringGetCString((CFStringRef)v, tbl + pl,
+		    IOCAT_COMPAT_MAX - pl, kCFStringEncodingUTF8))
 			n = 1;
 	} else if (CFGetTypeID(v) == CFArrayGetTypeID()) {
 		CFArrayRef a = (CFArrayRef)v;
@@ -184,14 +186,21 @@ parse_name_match(CFDictionaryRef d, char **out)
 
 			if (e == NULL || CFGetTypeID(e) != CFStringGetTypeID())
 				continue;
-			if (CFStringGetCString(e, tbl + (size_t)n * IOCAT_COMPAT_MAX,
-			    IOCAT_COMPAT_MAX, kCFStringEncodingUTF8))
+			if (CFStringGetCString(e,
+			    tbl + (size_t)n * IOCAT_COMPAT_MAX + pl,
+			    IOCAT_COMPAT_MAX - pl, kCFStringEncodingUTF8))
 				n++;
 		}
 	}
 	if (n == 0) {
 		free(tbl);
 		return (0);
+	}
+	if (pl > 0) {
+		uint32_t i;
+
+		for (i = 0; i < n; i++)
+			memcpy(tbl + (size_t)i * IOCAT_COMPAT_MAX, prefix, pl);
 	}
 	*out = tbl;
 	return (n);
@@ -205,14 +214,15 @@ parse_name_match(CFDictionaryRef d, char **out)
  * device-tree case was added alongside it rather than by widening it.
  */
 static int
-push_platform_personality(int fd, CFDictionaryRef p, const char *bundle_id)
+push_platform_personality(int fd, CFDictionaryRef p, const char *bundle_id,
+    const char *prefix)
 {
 	struct iocat_add_compat add;
 	char *tbl;
 	uint32_t n;
 	int rc;
 
-	n = parse_name_match(p, &tbl);
+	n = parse_name_match(p, &tbl, prefix);
 	if (n == 0)
 		return (0);	/* no IONameMatch -> nothing to match on */
 
@@ -229,9 +239,113 @@ push_platform_personality(int fd, CFDictionaryRef p, const char *bundle_id)
 		return (-1);
 	}
 	if (verbose)
-		printf("kextd: pushed %s (IOPlatformDevice, score %d, %u name(s))\n",
-		    add.bundle_id, add.probe_score, n);
+		printf("kextd: pushed %s (%s, score %d, %u name(s))\n",
+		    add.bundle_id, prefix != NULL ? "IOACPIPlatformDevice" :
+		    "IOPlatformDevice", add.probe_score, n);
 	return (1);
+}
+
+/* Push one word table under `provider` (IOCATIOCADD). Takes ownership of words. */
+static int
+push_words(int fd, const char *bundle_id, uint32_t provider, int32_t score,
+    uint32_t *words, uint32_t n, const char *label)
+{
+	struct iocat_add add;
+	int rc;
+
+	memset(&add, 0, sizeof(add));
+	strlcpy(add.bundle_id, bundle_id, sizeof(add.bundle_id));
+	add.provider_class = provider;
+	add.probe_score = score;
+	add.nmatch = n;
+	add.match = (uint64_t)(uintptr_t)words;
+	rc = ioctl(fd, IOCATIOCADD, &add);
+	free(words);
+	if (rc != 0) {
+		warn("IOCATIOCADD %s (%s)", bundle_id, label);
+		return (-1);
+	}
+	if (verbose)
+		printf("kextd: pushed %s (%s, score %d, %u words)\n",
+		    bundle_id, label, score, n);
+	return (1);
+}
+
+/*
+ * IOPCIClassMatch (#329): Darwin's "0x01080200&0xffffff00" form, one or more
+ * space-separated, each a value&mask over 0x<class><subclass><progif><rev>.
+ * A bare value means an exact match. Returns (value, mask) pairs.
+ */
+static uint32_t
+parse_class_match(CFDictionaryRef d, uint32_t **out)
+{
+	char buf[4096];
+	uint32_t *words, n = 0;
+	char *p, *tok, *save, *amp;
+
+	*out = NULL;
+	if (!dict_string(d, CFSTR("IOPCIClassMatch"), buf, sizeof(buf)))
+		return (0);
+	words = calloc(IOCAT_MAX_MATCH, sizeof(*words));
+	if (words == NULL)
+		return (0);
+	for (p = buf; (tok = strtok_r(p, " ,\t", &save)) != NULL; p = NULL) {
+		if (n + 2 > IOCAT_MAX_MATCH)
+			break;
+		amp = strchr(tok, '&');
+		if (amp != NULL)
+			*amp++ = '\0';
+		words[n++] = (uint32_t)strtoul(tok, NULL, 16);
+		words[n++] = amp != NULL ? (uint32_t)strtoul(amp, NULL, 16) :
+		    0xffffffff;
+	}
+	if (n == 0) {
+		free(words);
+		return (0);
+	}
+	*out = words;
+	return (n);
+}
+
+/*
+ * A USB personality (#329), in Darwin's keys: IOUSBHostDevice matches
+ * idVendor + idProduct; IOUSBHostInterface matches idVendor + idProduct when
+ * both are given, otherwise any of bInterfaceClass / bInterfaceSubClass /
+ * bInterfaceProtocol (the ones present are significant, the rest masked out).
+ */
+static int
+push_usb_personality(int fd, CFDictionaryRef p, const char *bundle_id,
+    bool interface)
+{
+	int32_t vid, pid, cls, sub, proto, score;
+	uint32_t *w, val = 0, mask = 0;
+
+	score = dict_int(p, CFSTR("IOProbeScore"), 0);
+	vid = dict_int(p, CFSTR("idVendor"), -1);
+	pid = dict_int(p, CFSTR("idProduct"), -1);
+	if (vid >= 0 && pid >= 0) {
+		if ((w = calloc(1, sizeof(*w))) == NULL)
+			return (-1);
+		w[0] = ((uint32_t)pid << 16) | ((uint32_t)vid & 0xffff);
+		return (push_words(fd, bundle_id, IOCAT_PROVIDER_IOUSBHOSTDEVICE,
+		    score, w, 1, "IOUSBHostDevice"));
+	}
+	if (!interface)
+		return (0);	/* a device personality without ids: nothing */
+	cls = dict_int(p, CFSTR("bInterfaceClass"), -1);
+	sub = dict_int(p, CFSTR("bInterfaceSubClass"), -1);
+	proto = dict_int(p, CFSTR("bInterfaceProtocol"), -1);
+	if (cls >= 0) { val |= ((uint32_t)cls & 0xff) << 16; mask |= 0xff0000; }
+	if (sub >= 0) { val |= ((uint32_t)sub & 0xff) << 8; mask |= 0xff00; }
+	if (proto >= 0) { val |= (uint32_t)proto & 0xff; mask |= 0xff; }
+	if (mask == 0)
+		return (0);
+	if ((w = calloc(2, sizeof(*w))) == NULL)
+		return (-1);
+	w[0] = val;
+	w[1] = mask;
+	return (push_words(fd, bundle_id, IOCAT_PROVIDER_IOUSBHOSTINTERFACE,
+	    score, w, 2, "IOUSBHostInterface"));
 }
 
 /* Push one personality dict; returns 1 if pushed, 0 if skipped, -1 on error. */
@@ -249,15 +363,39 @@ push_personality(int fd, CFDictionaryRef p)
 	    sizeof(add.bundle_id)))
 		return (0);	/* no bundle id -> can't be loaded; skip */
 
-	if (dict_string(p, CFSTR("IOProviderClass"), provider, sizeof(provider)) &&
-	    strcmp(provider, "IOPCIDevice") == 0)
+	if (!dict_string(p, CFSTR("IOProviderClass"), provider,
+	    sizeof(provider)))
+		provider[0] = '\0';
+	if (strcmp(provider, "IOPCIDevice") == 0)
 		add.provider_class = IOCAT_PROVIDER_IOPCIDEVICE;
-	else if (dict_string(p, CFSTR("IOProviderClass"), provider,
-	    sizeof(provider)) && strcmp(provider, "IOPlatformDevice") == 0)
+	else if (strcmp(provider, "IOPlatformDevice") == 0)
 		/* Device tree: different record and ioctl entirely (#185). */
-		return (push_platform_personality(fd, p, add.bundle_id));
+		return (push_platform_personality(fd, p, add.bundle_id, NULL));
+	else if (strcmp(provider, "IOACPIPlatformDevice") == 0)
+		/* ACPI _HID/_CID: the same string path, prefixed (#329). */
+		return (push_platform_personality(fd, p, add.bundle_id,
+		    IOCAT_ACPI_PREFIX));
+	else if (strcmp(provider, "IOUSBHostDevice") == 0)
+		return (push_usb_personality(fd, p, add.bundle_id, false));
+	else if (strcmp(provider, "IOUSBHostInterface") == 0)
+		return (push_usb_personality(fd, p, add.bundle_id, true));
 	else
 		add.provider_class = IOCAT_PROVIDER_UNKNOWN;
+
+	/* IOPCIClassMatch (#329), alongside or instead of IOPCIPrimaryMatch. */
+	if (add.provider_class == IOCAT_PROVIDER_IOPCIDEVICE) {
+		uint32_t *cw, cn;
+
+		cn = parse_class_match(p, &cw);
+		if (cn > 0 && push_words(fd, add.bundle_id,
+		    IOCAT_PROVIDER_IOPCICLASS,
+		    dict_int(p, CFSTR("IOProbeScore"), 0), cw, cn,
+		    "IOPCIClassMatch") < 0)
+			return (-1);
+		if (cn > 0 && !CFDictionaryContainsKey(p,
+		    CFSTR("IOPCIPrimaryMatch")))
+			return (1);
+	}
 
 	n = parse_match(p, &words);
 	if (n == 0)
