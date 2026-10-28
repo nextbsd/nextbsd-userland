@@ -29,6 +29,20 @@
  * the same as a Darwin one rather than inventing a NextBSD-only spelling.
  */
 #define	IOCAT_PROVIDER_IOPLATFORMDEVICE	2
+/*
+ * nextbsd-kernel#329 -- keep in step with the kernel's <sys/iocatalogue.h>.
+ * IOUSBHostDevice: match[] = 0x<idProduct><idVendor> words.
+ * IOUSBHostInterface: match[] = (value, mask) pairs over
+ *   0x00<bInterfaceClass><bInterfaceSubClass><bInterfaceProtocol>.
+ * IOPCIClass: match[] = (value, mask) pairs over Darwin's IOPCIClassMatch word
+ *   0x<class><subclass><progif><revision>.
+ * ACPI _HID/_CID personalities go through IOCATIOCADDCOMPAT with each name
+ * prefixed "acpi:".
+ */
+#define	IOCAT_PROVIDER_IOUSBHOSTDEVICE	3
+#define	IOCAT_PROVIDER_IOUSBHOSTINTERFACE 4
+#define	IOCAT_PROVIDER_IOPCICLASS	5
+#define	IOCAT_ACPI_PREFIX		"acpi:"
 
 /* Longest FDT compatible string we will store, including NUL. */
 #define	IOCAT_COMPAT_MAX		128
