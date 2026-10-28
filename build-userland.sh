@@ -639,13 +639,14 @@ test -f "$DESTDIR/usr/include/SystemConfiguration/SCDynamicStore.h" \
 # <IOKit/kext/kextmanager_types.h>, so MIGOUT gets that path too.
 # NO_SECURITY_FRAMEWORK drops the Authorization types (no Security.framework);
 # __DARWIN_64_BIT_INO_T sizes mountpoint_t to MAXPATHLEN, which is FreeBSD's
-# MNAMELEN.
+# MNAMELEN (both 1024); mig's preprocessor sees no <sys/param.h>, so
+# MAXPATHLEN is passed in.
 comp "KextManager MIG stubs (host mig)"
 KEXTMGR_MIG="$MIGROOT/kextmanager"
 rm -rf "$KEXTMGR_MIG"; mkdir -p "$KEXTMGR_MIG/IOKit/kext"
 cp "$SRC/kext_tools/kext.subproj/kextmanager_types.h" "$KEXTMGR_MIG/IOKit/kext/"
 run_mig "$KEXTMGR_MIG" -I"$SRC/libmach/include" \
-    -DNO_SECURITY_FRAMEWORK -D__DARWIN_64_BIT_INO_T=1 \
+    -DNO_SECURITY_FRAMEWORK -D__DARWIN_64_BIT_INO_T=1 -DMAXPATHLEN=1024 \
     -header kextmanager_mig.h -user kextmanager_migUser.c \
     -server kextmanager_migServer.c -sheader kextmanager_migServer.h \
     "$SRC/kext_tools/kext.subproj/kextmanager_mig.defs" \
