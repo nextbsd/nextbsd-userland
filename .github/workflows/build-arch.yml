@@ -44,7 +44,7 @@ on:
       harness_ref:
         description: 'nextbsd/nextbsd-ci ref this lane checks out (T4): the shared image assembly (scripts/assemble-image.sh) AND the boot harness. Pinned to the release tag the 4-repo lockstep lands on, so neither drifts with nextbsd-ci main.'
         required: false
-        default: 'v0.3.6'
+        default: 'v0.3.7'
         type: string
       fbsd_sha:
         description: 'pinned FreeBSD SHA for the toolchain image tag (blank = latest)'
