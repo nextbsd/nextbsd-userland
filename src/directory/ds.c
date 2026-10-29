@@ -994,7 +994,8 @@ do_leave(void)
 	if (fstab_set(NULL) == -1)
 		warnx("the %s line is still in %s; remove it by hand",
 		    DS_NETWORK, DS_FSTAB);
-	if (unlink(DS_BINDING) == -1) {
+	/* Already gone (a leave interrupted half way) is as good as removed. */
+	if (unlink(DS_BINDING) == -1 && errno != ENOENT) {
 		warn("%s", DS_BINDING);
 		return (1);
 	}
