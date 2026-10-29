@@ -24,6 +24,7 @@ ${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes -Wpointer-arith \
     -DLOCAL_DOMAIN="\"$fix/Local-Domain.plist\"" \
     -DNETWORK_DOMAIN="\"$fix/Network-Domain.plist\"" \
     -DLOGINWINDOW_PLIST="\"$fix/loginwindow.plist\"" \
+    -DFSTAB="\"$fix/fstab\"" \
     -I"$top/src/nss_directory_services" \
     -o "$fix/autologin-user" \
     "$top/src/accounts/autologin-user/autologin.c" \

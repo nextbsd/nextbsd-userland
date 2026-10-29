@@ -52,7 +52,11 @@
  *
  * A joined directory client never logs in automatically, whatever its local
  * database says: its accounts come from the server, and the local plist is
- * not what the system resolves.
+ * not what the system resolves. Joined means dsjoin's /Network line is in
+ * /etc/fstab, not that /Network is mounted: getty asks this at boot, before
+ * org.nextbsd.autofsd has mounted /Network, and while the server is down it
+ * is not mounted at all -- either way the client would look standalone and
+ * log its local admin in.
  *
  * Nor does a machine with Gershwin's login window installed. Installing it
  * means something else now asks who you are, and a console that has already
@@ -89,6 +93,9 @@
 #ifndef NETWORK_DOMAIN
 #define NETWORK_DOMAIN	"/Network/Library/DirectoryServices/Domain.plist"
 #endif
+#ifndef FSTAB
+#define FSTAB		"/etc/fstab"
+#endif
 
 /* The one account this will ever authorise; see the comment above. */
 #define AUTOLOGIN_USER	"admin"
@@ -105,6 +112,35 @@
 
 /* A plist bigger than this is not a fresh single-user database. */
 #define MAX_FILE	(4 * 1024 * 1024)
+
+/*
+ * /etc/fstab mounts something on /Network: the line dsjoin writes. Read by
+ * hand rather than with getfsfile(3) so the tests can point it elsewhere.
+ */
+static int
+fstab_has_network(void)
+{
+	char line[1024], *p, *mp;
+	FILE *f;
+	int found = 0;
+
+	if ((f = fopen(FSTAB, "r")) == NULL)
+		return (0);
+	while (!found && fgets(line, sizeof(line), f) != NULL) {
+		if ((p = strchr(line, '#')) != NULL)
+			*p = '\0';
+		p = line;
+		if (strsep(&p, " \t\n") == NULL)
+			continue;
+		while ((mp = strsep(&p, " \t\n")) != NULL && *mp == '\0')
+			;
+		if (mp != NULL && (strcmp(mp, "/Network") == 0 ||
+		    strcmp(mp, "/Network/") == 0))
+			found = 1;
+	}
+	(void)fclose(f);
+	return (found);
+}
 
 static char *
 slurp(const char *path, size_t *lenp)
@@ -162,6 +198,8 @@ main(void)
 	 */
 	if (access(LOCAL_DOMAIN, F_OK) != 0 &&
 	    access(NETWORK_DOMAIN, F_OK) == 0)
+		return (0);
+	if (fstab_has_network())
 		return (0);
 
 	/*
