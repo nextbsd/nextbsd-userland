@@ -8472,6 +8472,73 @@ finish:
 /*********************************************************************
 *********************************************************************/
 #endif /* NextBSD #182: end XNU kext_request IPC helpers */
+
+/*********************************************************************
+* NextBSD: refuse a kext built for another kernel (E21 step 19,
+* nextbsd-kernel-extensions#5).
+*
+* A kext and the kernel share struct layouts, so one built against another
+* kernel build links and then panics somewhere unrelated
+* (nextbsd-kernel-extensions-graphics#46). Darwin pins such kexts with a
+* dependency on com.apple.kernel, the codeless System.kext whose version is
+* the kernel's. NextBSD's System.kext is org.nextbsd.kernel, generated with
+* the kexts from the kernel SDK, and every kext records the kernel build it was
+* built for as NBSDKernelBuildID (nextbsd-kernel#326). A kext version can't
+* hold that ID (<commit>.<run_id>.<attempt>), so the two keys are compared
+* here, for every kext about to be kldload'ed.
+*
+* Without a System.kext carrying the key (an image from before it), or for a
+* kext without the key, there is nothing to compare and the load goes ahead.
+*********************************************************************/
+#define __kOSKextNBSDKernelBundleID      CFSTR("org.nextbsd.kernel")
+#define __kOSKextNBSDKernelBuildIDKey    CFSTR("NBSDKernelBuildID")
+
+static Boolean __OSKextIsBuiltForInstalledKernel(
+    OSKextRef aKext,
+    OSKextRef loadingKext)
+{
+    OSKextRef   kernelKext = NULL;  // do not release
+    CFStringRef want       = NULL;  // do not release
+    CFStringRef got        = NULL;  // do not release
+    char      * wantCString = NULL; // must free
+    char      * gotCString  = NULL; // must free
+    char        kextPath[PATH_MAX];
+    char        loadingPath[PATH_MAX];
+
+    kernelKext = OSKextGetKextWithIdentifier(__kOSKextNBSDKernelBundleID);
+    if (!kernelKext || !OSKextIsKernelComponent(kernelKext)) {
+        return true;
+    }
+    want = OSKextGetValueForInfoDictionaryKey(kernelKext,
+        __kOSKextNBSDKernelBuildIDKey);
+    got = OSKextGetValueForInfoDictionaryKey(aKext,
+        __kOSKextNBSDKernelBuildIDKey);
+    if (!want || CFGetTypeID(want) != CFStringGetTypeID() ||
+        !got || CFGetTypeID(got) != CFStringGetTypeID() ||
+        CFEqual(want, got)) {
+        return true;
+    }
+
+    __OSKextGetFileSystemPath(aKext, /* otherURL */ NULL,
+        /* resolveToBase */ false, kextPath);
+    __OSKextGetFileSystemPath(loadingKext, /* otherURL */ NULL,
+        /* resolveToBase */ false, loadingPath);
+    wantCString = createUTF8CStringForCFString(want);
+    gotCString = createUTF8CStringForCFString(got);
+    OSKextLog(loadingKext, kOSKextLogErrorLevel | kOSKextLogLoadFlag,
+        "Can't load %s - %s was built for kernel %s, but the installed "
+        "kernel (System.kext) is %s.",
+        loadingPath, kextPath,
+        gotCString ? gotCString : "(unknown)",
+        wantCString ? wantCString : "(unknown)");
+    __OSKextAddDiagnostic(aKext, kOSKextDiagnosticsFlagDependencies,
+        kOSKextDependencyNoCompatibleVersion, __kOSKextNBSDKernelBundleID,
+        /* note */ NULL);
+    SAFE_FREE(wantCString);
+    SAFE_FREE(gotCString);
+    return false;
+}
+
 OSReturn __OSKextLoadWithArgsDict(
     OSKextRef       aKext,
     CFDictionaryRef loadArgsDict __unused)  /* NextBSD: kld ignores load args */
@@ -8651,6 +8718,23 @@ OSReturn __OSKextLoadWithArgsDict(
     * CFBundleExecutable) carry only personalities and are skipped here;
     * driver matching / personality handling is kextd's job (#177). (#182)
     */
+   /* NextBSD: every kext about to be kldload'ed must be built for the
+    * installed kernel; check them all before loading any (#5).
+    */
+    count = CFArrayGetCount(loadList);
+    for (i = 0; i < count; i++) {
+        OSKextRef thisKext = (OSKextRef)CFArrayGetValueAtIndex(loadList, i);
+
+        if (OSKextIsKernelComponent(thisKext) ||
+            !OSKextDeclaresExecutable(thisKext) || OSKextIsLoaded(thisKext)) {
+            continue;
+        }
+        if (!__OSKextIsBuiltForInstalledKernel(thisKext, aKext)) {
+            result = kOSKextReturnDependencies;
+            goto finish;
+        }
+    }
+
     OSKextLog(aKext, kOSKextLogProgressLevel | kOSKextLogLoadFlag,
          "Loading %s.", kextPath);
 
