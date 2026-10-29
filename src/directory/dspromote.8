@@ -216,6 +216,13 @@ empties the block and unmounts
 but leaves the jobs enabled: with no network volume in
 .Pa /etc/fstab ,
 autofsd stops retrying, loads nothing and starts nothing.
+When
+.Pa /Network
+is in use, for example by a network user who is logged in, it stays mounted and
+.Nm dsleave
+says to restart the machine to finish leaving; with the line gone from
+.Pa /etc/fstab ,
+nothing mounts it again.
 .Sh OPTIONS
 .Bl -tag -width indent
 .It Fl v
