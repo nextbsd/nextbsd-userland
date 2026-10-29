@@ -27,10 +27,11 @@
 
 /*
  * nss_mdns: the `mdns` source for the hosts database in nsswitch.conf(5).
- * Names under `local.` and reverse lookups of IPv4 link-local addresses
- * (169.254/16) are answered by mDNSResponder through the dns_sd(3) client
- * API; every other name or address returns NS_NOTFOUND at once, so the
- * next source (dns) answers it (nextbsd/nextbsd-userland#461, #435).
+ * Single-label names under `local.` (<host>.local) and reverse lookups of
+ * IPv4 link-local addresses (169.254/16) are answered by mDNSResponder
+ * through the dns_sd(3) client API; every other name or address returns
+ * NS_NOTFOUND at once, so the next source (dns) answers it
+ * (nextbsd/nextbsd-userland#461, #435).
  *
  * This is the NextBSD counterpart of Libinfo's `mdns` module
  * (lookup.subproj/mdns_module.c), which macOS's libc uses for the same
@@ -288,7 +289,20 @@ out:
 	return (rc);
 }
 
-/* `name` ends in .local (or .local.) and has a label before it. */
+/*
+ * `name` is <host>.local (or <host>.local.): exactly one label before
+ * `local`, which is what Bonjour host names are.
+ *
+ * A deeper name such as mac-studio.home.local belongs to a unicast DNS zone
+ * that happens to be called local -- routers commonly hand out home.local or
+ * lan.local -- and mDNS never answers it. Asking anyway made every lookup of
+ * such a name wait out the mDNS timeout before dns was tried: 10 s per
+ * forward lookup, which sshd's UseDNS check paid twice on every login from a
+ * machine with one of those names. On macOS mDNSResponder serves both
+ * multicast and unicast DNS, so the same name is answered there by the
+ * unicast server at once; here unicast is the `dns` source after this one,
+ * so the name is passed straight to it.
+ */
 static bool
 is_local_name(const char *name)
 {
@@ -299,8 +313,10 @@ is_local_name(const char *name)
 	len = strlen(name);
 	if (len > 0 && name[len - 1] == '.')
 		len--;
-	return (len > 6 && name[len - 6] == '.' &&
-	    strncasecmp(name + len - 5, "local", 5) == 0);
+	if (len <= 6 || name[len - 6] != '.' ||
+	    strncasecmp(name + len - 5, "local", 5) != 0)
+		return (false);
+	return (memchr(name, '.', len - 6) == NULL);
 }
 
 /*
