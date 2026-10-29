@@ -1,0 +1,42 @@
+#!/bin/sh
+#
+# special_static -- Apple's "-static" map for automountd(8).
+#
+# A direct map of the remote /etc/fstab entries that do NOT have the "net"
+# option, each at its own mount point, as Apple's -static map is. FreeBSD's
+# special_noauto is the model: with no argument print the keys (mount
+# points); with one, print that key's "-options location".
+
+# Mount points org.nextbsd.autofsd is skipping because their server did not
+# answer; left out of the map so automount installs no trigger for them.
+SKIP=/var/run/autofsd.skip
+
+entries() {
+	# remote entries only (device has a ':'), without "net"
+	[ -r /etc/fstab ] || return 0
+	sed 's/#.*//' /etc/fstab | awk '$1 ~ /:/ && $4 !~ /(^|,)net(,|$)/'
+}
+
+keys() {
+	if [ -s "$SKIP" ]; then
+		entries | awk -v skip="$SKIP" '
+		    BEGIN { while ((getline l < skip) > 0) s[l] = 1 }
+		    !($2 in s) { print $2 }'
+	else
+		entries | awk '{ print $2 }'
+	fi
+}
+
+if [ $# -eq 0 ]; then
+	keys
+	exit 0
+fi
+
+mp="${1%/}"
+entries | awk -v mp="$mp" '$2 == mp {
+	opts = $4
+	# noauto only keeps mount -a away from a line; autofs ignores it
+	gsub(/(^|,)noauto(,|$)/, ",", opts); gsub(/^,|,$/, "", opts); gsub(/,,+/, ",", opts)
+	print "-fstype=" $3 (opts != "" ? "," opts : ""), $1
+}'
+exit 0

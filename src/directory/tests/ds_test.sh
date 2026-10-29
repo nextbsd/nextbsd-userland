@@ -35,6 +35,7 @@ DOMAIN=$LOCAL_DIR/Domain.plist
 NET_DOMAIN=$NET_DIR/Domain.plist
 EXPORTS=$R/etc/exports
 NTP=$R/etc/ntp.conf
+FSTAB=$R/etc/fstab
 SVCDIR=$R/Local/Library/Preferences/mDNSResponder/Services
 SVC=$SVCDIR/org.nextbsd.directory.plist
 
@@ -60,6 +61,8 @@ WARNS6="-Wall -Wextra -Wstrict-prototypes -Wmissing-prototypes -Wpointer-arith
 # shellcheck disable=SC2086
 ${CC:-cc} -O1 -g $WARNS6 \
     -DDS_TEST \
+    -DDS_LOCAL="\"$R/Local\"" \
+    -DDS_NETWORK="\"$R/Network\"" \
     -DDS_LOCAL_DIR="\"$LOCAL_DIR\"" \
     -DDS_NETWORK_DIR="\"$NET_DIR\"" \
     -DDS_LOCAL_USERS="\"$LOCAL_USERS\"" \
@@ -70,6 +73,7 @@ ${CC:-cc} -O1 -g $WARNS6 \
     -DDS_LAUNCHD_DIR="\"$R/System/Library/LaunchDaemons\"" \
     -DDS_EXPORTS="\"$EXPORTS\"" \
     -DDS_NTP_CONF="\"$NTP\"" \
+    -DDS_FSTAB="\"$FSTAB\"" \
     -DDS_SERVICE_DIR="\"$SVCDIR\"" \
     -DDS_LAUNCHCTL="\"$fix/bin/launchctl\"" \
     -o "$fix/dspromote" "$top/src/directory/ds.c" || exit 2
@@ -106,7 +110,7 @@ seed() {
     rm -rf "$R"; : > "$DS_LAUNCHCTL_LOG"
     mkdir -p "$LOCAL_DIR" "$LOCAL_USERS" "$R/etc" \
              "$R/System/Library/LaunchDaemons"
-    for j in rpcbind mountd nfsd network-mount; do
+    for j in rpcbind mountd nfsd automountd autofsd; do
         : > "$R/System/Library/LaunchDaemons/org.nextbsd.$j.plist"
     done
     printf '<plist><dict><key>admin</key><dict/></dict></plist>\n' > "$LOCAL_DIR/Users.plist"
@@ -145,8 +149,7 @@ ckfile   "the domain marker is written"    "$DOMAIN"
 ckgrep   "and it is an empty dict"         "$DOMAIN" "<dict/>"
 ckfile   "exports written"                 "$EXPORTS"
 ckfile   "the Bonjour record written"      "$SVC"
-ckgrep   "exports names the homes"         "$EXPORTS" "$LOCAL_USERS"
-ckgrep   "exports shares /Local accounts"  "$EXPORTS" "$LOCAL_DIR"
+ckgrep   "exports shares /Local"           "$EXPORTS" "^$R/Local\$"
 cknogrep "and exports no /Network path"    "$EXPORTS" "/Network"
 ckgrep   "the record advertises the type"  "$SVC" "_nextbsd-ds._tcp"
 ckgrep   "and nfs's port as an integer"    "$SVC" "<integer>2049</integer>"
@@ -156,10 +159,10 @@ cksay    "status now reports server"       "directory server" "$fix/dsstatus"
 cklc     "promote loads rpcbind"           "load -w .*org.nextbsd.rpcbind"
 cklc     "promote loads mountd"            "load -w .*org.nextbsd.mountd"
 cklc     "promote loads nfsd"              "load -w .*org.nextbsd.nfsd"
-cknolc   "and does not load network-mount" "org.nextbsd.network-mount"
+cknolc   "and does not load autofsd"   "org.nextbsd.autofsd"
 
-# One line, not two, when both paths share a filesystem -- which they do here.
-ck "exports is one line on one filesystem" \
+# One line: /Local, which holds the accounts and the homes.
+ck "exports is one line" \
    "$(grep -c -v '^#' "$EXPORTS")" "1"
 
 # ---- promote refusals
@@ -213,7 +216,10 @@ ckgrep   "the NTP block names the server"  "$NTP" "^server server.local iburst$"
 ckgrep   "the markers are still there"     "$NTP" "^# END directory server$"
 cknogrep "the pool line is untouched"      "$NTP" "^#pool"
 cksay    "status reports the binding"      "bound to server.local" "$fix/dsstatus"
-cklc     "join loads network-mount"        "load -w .*org.nextbsd.network-mount"
+cklc     "join loads automountd"           "load -w .*org.nextbsd.automountd"
+cklc     "join loads autofsd"              "load -w .*org.nextbsd.autofsd"
+ckgrep   "join writes the /Network line"   "$FSTAB" "^server.local:$R/Local	$R/Network	nfs	nfsv3,soft,intr	0	0$"
+ckgrep   "inside the managed block"        "$FSTAB" "^# BEGIN directory server"
 
 # ---- join refusals
 cksay "join refuses when already bound"    "already bound to server.local" "$fix/dsjoin" other.local
@@ -230,7 +236,8 @@ seed
 mkdir -p "$NET_DIR"; printf '<plist><dict/></plist>\n' > "$NET_DOMAIN"
 "$fix/dsleave" >/dev/null 2>&1
 cknofile "leave removes the binding"       "$BINDING"
-cklc     "leave unloads network-mount"     "unload -w .*org.nextbsd.network-mount"
+cknolc   "leave keeps the jobs enabled"    "unload"
+cknogrep "and removes the /Network line"   "$FSTAB" "server.local:"
 cknogrep "and empties the NTP block"       "$NTP" "^server server.local"
 ckgrep   "leaving the markers behind"      "$NTP" "^# BEGIN directory server"
 rm -f "$NET_DOMAIN"

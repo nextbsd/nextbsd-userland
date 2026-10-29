@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.nextbsd.automountd</string>
+    <key>Disabled</key>
+    <true/>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/sbin/automountd</string>
+    </array>
+    <!--
+        Not RunAtLoad: automountd needs /dev/autofs, which exists only once
+        org.nextbsd.autofsd has loaded AutoFS.kext; autofsd then starts this
+        job. automountd puts itself in the background and forks a child per
+        mount request, so its process group is left alone.
+    -->
+    <key>AbandonProcessGroup</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/var/log/automountd.stderr</string>
+</dict>
+</plist>

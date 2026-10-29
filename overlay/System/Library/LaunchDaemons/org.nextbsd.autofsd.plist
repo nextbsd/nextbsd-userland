@@ -3,16 +3,16 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>org.nextbsd.network-mount</string>
+    <string>org.nextbsd.autofsd</string>
     <key>Disabled</key>
     <true/>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/libexec/nextbsd/network-mount</string>
+        <string>/usr/libexec/nextbsd/autofsd</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardErrorPath</key>
-    <string>/var/log/network-mount.stderr</string>
+    <string>/var/log/autofsd.stderr</string>
 </dict>
 </plist>

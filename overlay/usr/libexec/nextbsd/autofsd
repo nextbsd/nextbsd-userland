@@ -1,0 +1,101 @@
+#!/bin/sh
+# autofsd -- mount the /etc/fstab network volumes at boot (org.nextbsd.autofsd).
+#
+# The role of Apple's autofsd, which runs automount at boot and whenever the
+# maps change. dsjoin writes one fstab line, the directory server's /Local on
+# /Network, enables this job and starts it, so /Network mounts at once;
+# launchd runs it again at every boot.
+#
+#   1. No NFS line in fstab (never joined, or dsleave removed it): drop any
+#      trigger left from an earlier line and stop. AutoFS.kext is not loaded
+#      and automountd is not started, so a standalone machine runs neither.
+#   2. Otherwise load AutoFS.kext if /dev/autofs is missing -- NextBSD's
+#      kernel loads nothing by name, so automountd's own kldload("autofs")
+#      cannot -- start org.nextbsd.automountd, and run automount to install
+#      the triggers from auto_master's -static map.
+#   3. Mount each point now, by touching it, rather than waiting for someone
+#      to browse there: account lookups and the joined-domain checks expect
+#      /Network to be mounted already. The server's mountd is asked first,
+#      with a short limit; when it does not answer the point gets no
+#      trigger, so /Network is an empty directory rather than an autofs
+#      trigger that stalls every account lookup while the server is away.
+#   4. A joined client does not give up: while a point is not mounted --
+#      the network is not up yet at boot, or the server is down -- autofsd
+#      asks again, every 2 seconds for the first minute (DHCP finishing)
+#      and every 30 seconds after that, and mounts it as soon as the server
+#      answers. Only removing the fstab line (dsleave) ends that. The boot
+#      never waits for it.
+#
+# nextbsd/nextbsd#537.
+set -u
+
+KEXT=/System/Library/Extensions/AutoFS.kext
+MAP=/etc/autofs/special_static
+SKIP=/var/run/autofsd.skip      # points whose server did not answer
+TRIES=${AUTOFSD_TRIES:-0}       # attempts so far in this run of the job
+
+log() { echo "$(/bin/date '+%T') autofsd: $*" >&2; }
+
+# Every run starts from all the points: one skipped last time is retried.
+/bin/rm -f "$SKIP"
+points=$("$MAP")
+
+if [ -z "$points" ]; then
+    [ -e /dev/autofs ] && /usr/sbin/automount
+    log "no network volumes in /etc/fstab"
+    exit 0
+fi
+
+if [ ! -e /dev/autofs ]; then
+    /usr/sbin/kextload "$KEXT" || { log "kextload $KEXT failed"; exit 1; }
+    [ -e /dev/autofs ] || { log "/dev/autofs is missing after kextload"; exit 1; }
+fi
+
+nfs_mounted() {
+    /sbin/mount -t nfs | /usr/bin/awk -v m="$1" '$3 == m { f = 1 } END { exit !f }'
+}
+
+# Ask each point's server first, and leave the ones that do not answer out
+# of the map (special_static reads $SKIP), so automount never installs a
+# trigger that would stall every lookup while the server is away. A point
+# already mounted is left alone.
+: > "$SKIP.new"
+for mp in $points; do
+    nfs_mounted "$mp" && continue
+    # "-fstype=nfs,... server:/path" -> server
+    host=$("$MAP" "$mp" | /usr/bin/awk '{ sub(/:.*/, "", $2); print $2 }')
+    if ! /usr/bin/timeout 5 /usr/bin/rpcinfo -T tcp "$host" 100005 3 >/dev/null 2>&1; then
+        [ "$TRIES" -eq 0 ] && log "$host does not answer; $mp is not mounted yet, retrying"
+        echo "$mp" >> "$SKIP.new"
+    fi
+done
+/bin/mv "$SKIP.new" "$SKIP"
+
+/bin/pgrep -qx automountd || /bin/launchctl start org.nextbsd.automountd
+/usr/sbin/automount
+
+rc=0
+for mp in $points; do
+    /usr/bin/grep -qx "$mp" "$SKIP" && { rc=1; continue; }
+    if nfs_mounted "$mp"; then
+        log "$mp is mounted"
+        continue
+    fi
+    /usr/bin/timeout 60 /bin/ls "$mp/" >/dev/null 2>&1
+    if nfs_mounted "$mp"; then
+        log "$mp mounted$( [ "$TRIES" -gt 0 ] && echo " after $TRIES retries")"
+    else
+        log "$mp did not mount; retrying"
+        echo "$mp" >> "$SKIP"
+        /usr/sbin/automount     # drops its trigger, now that it is skipped
+        rc=1
+    fi
+done
+[ "$rc" -eq 0 ] && exit 0
+
+# Something is still not mounted: try again from the top, so an fstab change
+# in the meantime (dsleave emptying it) is seen. Quickly at first, since at
+# boot this usually just means DHCP has not finished.
+if [ "$TRIES" -lt 30 ]; then /bin/sleep 2; else /bin/sleep 30; fi
+export AUTOFSD_TRIES=$((TRIES + 1))
+exec "$0"
