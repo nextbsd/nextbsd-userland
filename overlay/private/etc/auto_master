@@ -1,0 +1,10 @@
+#
+# Automounter master map.
+#
+# As on macOS, "/-  -static" is a direct map of the /etc/fstab entries
+# without the "net" option, each at its own mount point. dsjoin writes one:
+# the directory server's /Local on /Network, which org.nextbsd.autofsd
+# mounts at boot. Apple's "+auto_master" (a master map from a directory
+# service) and its /home and /Network/Servers entries are left out.
+#
+/-		-static

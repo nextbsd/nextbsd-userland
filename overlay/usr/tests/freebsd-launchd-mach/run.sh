@@ -1258,21 +1258,22 @@ else
 fi
 
 # NTP / NFS — the E18 service LaunchDaemons (nextbsd/nextbsd-userland#251,
-# #252): org.nextbsd.ntpd, .rpcbind, .mountd, .nfsd and .network-mount all
-# ship Disabled, so none may be in the job table after boot. Each is then
+# #252) and the client's autofs jobs (nextbsd/nextbsd#537): org.nextbsd.ntpd,
+# .rpcbind, .mountd, .nfsd, .automountd and .autofsd all ship Disabled, so
+# none may be in the job table after boot. Each is then
 # turned on the way dspromote and dsjoin do (load -w), exercised, and turned off
 # (unload -w), which leaves the overrides database saying Disabled, the same
 # as a fresh image. /etc/ntp.conf (when the overlay has not shipped it yet),
-# /etc/exports and the binding plist are written for the duration and removed.
+# /etc/exports and an fstab line are written for the duration and removed.
 # The two-VM join is a manual test; here the server is proved by a loopback
-# NFSv3 mount and the client by its script's behaviour with and without a
-# binding.
-echo "==> E18 services: ntpd, rpcbind, mountd, nfsd, network-mount LaunchDaemons"
+# NFSv3 mount and the client by its -static map and by autofsd standing down
+# with no network volume in fstab.
+echo "==> E18 services: ntpd, rpcbind, mountd, nfsd, automountd, autofsd LaunchDaemons"
 svc_ld=/System/Library/LaunchDaemons
 svc_loaded() { launchctl list 2>/dev/null | awk -v l="$1" '$3 == l { f = 1 } END { exit !f }'; }
 svc_pid() { launchctl list 2>/dev/null | awk -v l="$1" '$3 == l { print $1 }'; }
 svc_fail=""
-for svc_l in org.nextbsd.ntpd org.nextbsd.rpcbind org.nextbsd.mountd org.nextbsd.nfsd org.nextbsd.network-mount; do
+for svc_l in org.nextbsd.ntpd org.nextbsd.rpcbind org.nextbsd.mountd org.nextbsd.nfsd org.nextbsd.automountd org.nextbsd.autofsd; do
     if [ ! -f "$svc_ld/$svc_l.plist" ]; then
         svc_fail="$svc_fail $svc_l.plist missing;"
     elif svc_loaded "$svc_l"; then
@@ -1280,7 +1281,9 @@ for svc_l in org.nextbsd.ntpd org.nextbsd.rpcbind org.nextbsd.mountd org.nextbsd
     fi
 done
 [ -x /usr/libexec/nextbsd/nfs-wait-rpcbind ] || svc_fail="$svc_fail nfs-wait-rpcbind missing;"
-[ -x /usr/libexec/nextbsd/network-mount ] || svc_fail="$svc_fail network-mount missing;"
+[ -x /usr/libexec/nextbsd/autofsd ] || svc_fail="$svc_fail autofsd missing;"
+[ -x /etc/autofs/special_static ] || svc_fail="$svc_fail /etc/autofs/special_static missing;"
+grep -q '^/-[[:space:]]*-static' /etc/auto_master 2>/dev/null || svc_fail="$svc_fail /etc/auto_master lacks /- -static;"
 if [ -n "$svc_fail" ]; then
     echo "NTP-FAIL:$svc_fail"
     echo "NFS-FAIL:$svc_fail"
@@ -1348,34 +1351,33 @@ else
     if [ -e /etc/exports ]; then
         nfs_fail="/etc/exports already exists; not touching it"
     else
-        # One line: both directories are on /, and the kernel allows one
-        # default export per filesystem (see org.nextbsd.mountd.plist).
-        printf '# Written by dspromote; dsdemote removes this file.\n/Local/Users /Local/Library/DirectoryServices\n' > /etc/exports
+        # The line dspromote writes: /Local, which clients mount on /Network.
+        printf '# Written by dspromote; dsdemote removes this file.\n/Local\n' > /etc/exports
         for svc_l in org.nextbsd.rpcbind org.nextbsd.mountd org.nextbsd.nfsd; do
             launchctl load -w "$svc_ld/$svc_l.plist"
         done
         i=0; nfs_exports=""
         while [ "$i" -lt 30 ]; do
             nfs_exports=$(timeout 5 showmount -e 127.0.0.1 2>/dev/null)
-            if echo "$nfs_exports" | grep -q '^/Local/Users' && echo "$nfs_exports" | grep -q '^/Local/Library/DirectoryServices'; then
+            if echo "$nfs_exports" | grep -q '^/Local[[:space:]]'; then
                 break
             fi
             sleep 1; i=$((i + 1))
         done
         if [ "$i" -ge 30 ]; then
-            nfs_fail="showmount -e did not list both /Local exports within 30s: [$(echo "$nfs_exports" | tr '\n' ' ')] rpcinfo: [$(timeout 5 rpcinfo -p 127.0.0.1 2>&1 | awk 'NR > 1 { print $5 }' | sort -u | tr '\n' ' ')] rpcbind: [$(grep -v os_assumes /var/log/rpcbind.stderr 2>/dev/null | tail -2 | tr '\n' ' ')] mountd: [$(grep -v os_assumes /var/log/mountd.stderr 2>/dev/null | tail -2 | tr '\n' ' ')] nfsd: [$(grep -v os_assumes /var/log/nfsd.stderr 2>/dev/null | tail -2 | tr '\n' ' ')]"
+            nfs_fail="showmount -e did not list /Local within 30s: [$(echo "$nfs_exports" | tr '\n' ' ')] rpcinfo: [$(timeout 5 rpcinfo -p 127.0.0.1 2>&1 | awk 'NR > 1 { print $5 }' | sort -u | tr '\n' ' ')] rpcbind: [$(grep -v os_assumes /var/log/rpcbind.stderr 2>/dev/null | tail -2 | tr '\n' ' ')] mountd: [$(grep -v os_assumes /var/log/mountd.stderr 2>/dev/null | tail -2 | tr '\n' ' ')] nfsd: [$(grep -v os_assumes /var/log/nfsd.stderr 2>/dev/null | tail -2 | tr '\n' ' ')]"
         else
             for svc_l in org.nextbsd.rpcbind org.nextbsd.mountd org.nextbsd.nfsd; do
                 case "$(svc_pid "$svc_l")" in ''|-) nfs_fail="$nfs_fail $svc_l has no process;" ;; esac
             done
             timeout 5 rpcinfo -p 127.0.0.1 2>/dev/null | grep -q ' nfs$' || nfs_fail="$nfs_fail nfs not registered with rpcbind;"
             mkdir -p /tmp/nfs.test
-            if timeout 30 mount -t nfs -o nfsv3,soft,retrycnt=2 127.0.0.1:/Local/Users /tmp/nfs.test 2>/tmp/nfs.mount.err; then
+            if timeout 30 mount -t nfs -o nfsv3,soft,retrycnt=2 127.0.0.1:/Local /tmp/nfs.test 2>/tmp/nfs.mount.err; then
                 # /tmp is a symlink to private/tmp here; the mount table shows the resolved path.
                 mount -t nfs | grep -q " on $(realpath /tmp/nfs.test) " || nfs_fail="$nfs_fail loopback mount not in the mount table: [$(mount -t nfs | tr '\n' ' ')];"
                 umount /tmp/nfs.test 2>/dev/null || umount -f /tmp/nfs.test 2>/dev/null
             else
-                nfs_fail="$nfs_fail loopback NFSv3 mount of 127.0.0.1:/Local/Users failed: $(tr '\n' ' ' < /tmp/nfs.mount.err);"
+                nfs_fail="$nfs_fail loopback NFSv3 mount of 127.0.0.1:/Local failed: $(tr '\n' ' ' < /tmp/nfs.mount.err);"
             fi
             rmdir /tmp/nfs.test 2>/dev/null
         fi
@@ -1390,58 +1392,35 @@ else
     fi
     for f in $nfs_standins; do rm -f "$f"; done
 
-    # ---- NFS client: the script does nothing without a binding, and attempts
-    # both mounts with one (an unreachable TEST-NET host; -o bg backgrounds the
-    # retry, which is then cleared so later tests see a quiet machine).
-    nfs_bind=/Local/Library/DirectoryServices/Binding.plist
+    # ---- NFS client: the -static map turns dsjoin's fstab line into the
+    # /Network key with its options, and autofsd with no network volume in
+    # fstab loads nothing and starts nothing. Mounting through autofs needs a
+    # server and AutoFS.kext, so that half is the two-VM manual test.
     if [ -z "$nfs_fail" ]; then
-        if [ -e "$nfs_bind" ]; then
-            nfs_fail="$nfs_bind already exists; not touching it"
-        else
-            nfs_out=$(/usr/libexec/nextbsd/network-mount 2>&1); nfs_rc=$?
-            [ "$nfs_rc" -eq 0 ] || nfs_fail="network-mount without a binding: rc=$nfs_rc [$nfs_out];"
-            nfs_made_bind=""
-            [ -d /Local/Library/DirectoryServices ] || { mkdir -p /Local/Library/DirectoryServices; nfs_made_bind=1; }
-            printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n\t<key>server</key>\n\t<string>192.0.2.1</string>\n\t<key>version</key>\n\t<integer>1</integer>\n</dict>\n</plist>\n' > "$nfs_bind"
-            nfs_out=$(timeout 25 /usr/libexec/nextbsd/network-mount 2>&1); nfs_rc=$?
-            # The server's /Local path, mounted onto this machine's /Network: a
-            # server shares /Local and moves nothing (#253). Asserting the source
-            # path and not just the mount point is the point -- the old layout
-            # exported /Network, and matching only the target would pass on both.
-            echo "$nfs_out" | grep -q 'mounting 192.0.2.1:/Local/Library/DirectoryServices on /Network/Library/DirectoryServices' \
-                || nfs_fail="$nfs_fail network-mount did not attempt the mounts: rc=$nfs_rc [$nfs_out];"
-            pkill -f mount_nfs 2>/dev/null; sleep 1
-            for m in /Network/Users /Network/Library/DirectoryServices; do
-                mount | grep -q " on $m " && umount -f "$m" 2>/dev/null
-            done
-            # A server mounts nothing, even with a binding left behind. /Local is
-            # what it exports, so mounting its own export back onto /Network
-            # would make every account tool treat it as somebody's client. The
-            # binding is still in place here, so this asserts the ordering and
-            # not merely that a missing binding does nothing.
-            nfs_dom=/Local/Library/DirectoryServices/Domain.plist
-            if [ -e "$nfs_dom" ]; then
-                nfs_fail="$nfs_fail $nfs_dom already exists; not touching it;"
-            else
-                printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict/>\n</plist>\n' > "$nfs_dom"
-                nfs_out=$(timeout 25 /usr/libexec/nextbsd/network-mount 2>&1); nfs_rc=$?
-                [ "$nfs_rc" -eq 0 ] || nfs_fail="$nfs_fail network-mount on a server: rc=$nfs_rc [$nfs_out];"
-                echo "$nfs_out" | grep -q 'directory server; nothing to mount' \
-                    || nfs_fail="$nfs_fail network-mount did not stand down on a server: [$nfs_out];"
-                echo "$nfs_out" | grep -q 'mounting' \
-                    && nfs_fail="$nfs_fail network-mount tried to mount on a server: [$nfs_out];"
-                rm -f "$nfs_dom"
-            fi
-            rm -f "$nfs_bind"
-            [ -n "$nfs_made_bind" ] && rmdir /Local/Library/DirectoryServices 2>/dev/null
-            rmdir /Network/Users 2>/dev/null
-        fi
+        nfs_fstab_made=""
+        [ -e /etc/fstab ] || { : > /etc/fstab; nfs_fstab_made=1; }
+        cp -p /etc/fstab /tmp/nfs.fstab.saved
+        nfs_keys=$(/etc/autofs/special_static)
+        [ -z "$nfs_keys" ] || nfs_fail="$nfs_fail special_static lists keys with no network volume: [$nfs_keys];"
+        nfs_autofs_before=0; [ -e /dev/autofs ] && nfs_autofs_before=1
+        nfs_out=$(timeout 25 /usr/libexec/nextbsd/autofsd 2>&1); nfs_rc=$?
+        [ "$nfs_rc" -eq 0 ] || nfs_fail="$nfs_fail autofsd with no network volume: rc=$nfs_rc [$nfs_out];"
+        echo "$nfs_out" | grep -q 'no network volumes' || nfs_fail="$nfs_fail autofsd did not stand down: [$nfs_out];"
+        [ "$nfs_autofs_before" -eq 0 ] && [ -e /dev/autofs ] && nfs_fail="$nfs_fail autofsd loaded AutoFS.kext with nothing to mount;"
+        # The line dsjoin writes, at a TEST-NET address that is never mounted.
+        printf '# BEGIN directory server (managed by dsjoin and dsleave; do not edit)\n192.0.2.1:/Local\t/Network\tnfs\tnfsv3,soft,intr\t0\t0\n# END directory server\n' >> /etc/fstab
+        nfs_keys=$(/etc/autofs/special_static)
+        [ "$nfs_keys" = "/Network" ] || nfs_fail="$nfs_fail special_static keys: [$nfs_keys], want /Network;"
+        nfs_entry=$(/etc/autofs/special_static /Network/)
+        [ "$nfs_entry" = "-fstype=nfs,nfsv3,soft,intr 192.0.2.1:/Local" ] || nfs_fail="$nfs_fail special_static /Network: [$nfs_entry];"
+        cp -p /tmp/nfs.fstab.saved /etc/fstab; rm -f /tmp/nfs.fstab.saved
+        [ -n "$nfs_fstab_made" ] && rm -f /etc/fstab
     fi
     for d in $nfs_made; do rmdir "$d" 2>/dev/null; done
     if [ -n "$nfs_fail" ]; then
         echo "NFS-FAIL:$nfs_fail"
     else
-        echo "NFS-OK: rpcbind + mountd + nfsd served the contract exports (showmount, loopback NFSv3 mount), all Disabled again after unload -w; network-mount idle without a binding and attempts both mounts with one${nfs_standins:+ (stand-ins:$nfs_standins)}"
+        echo "NFS-OK: rpcbind + mountd + nfsd served /Local (showmount, loopback NFSv3 mount), all Disabled again after unload -w; the -static map gives /Network from dsjoin's fstab line, and autofsd stands down without one${nfs_standins:+ (stand-ins:$nfs_standins)}"
     fi
 fi
 

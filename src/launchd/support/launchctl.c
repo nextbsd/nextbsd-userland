@@ -4164,13 +4164,13 @@ linux_mount(const char *fstype, const char *source, const char *path, const char
  * costs two mkdir(2) calls that fail with EEXIST the rest of the time.
  *
  * 0755 root:wheel is what Darwin ships for /Volumes. Modern Darwin has no
- * /Network to copy: it was an autofs trigger, and NextBSD mounts it for real
- * from dsjoin(8), so it follows /Volumes.
+ * /Network to copy: it was an autofs trigger. On NextBSD a joined client's
+ * /Network is the server's /Local, mounted at boot by org.nextbsd.autofsd
+ * from dsjoin(8)'s fstab line, so it follows /Volumes.
  *
- * network-mount already mkdir -p's the paths it mounts on, so a client works
- * without this. What this fixes is everything else: /Volumes on a machine that
- * never joins anything, and /Network existing before the first dsjoin rather
- * than as a side effect of it.
+ * autofs needs the mount point to exist, and this is what makes it exist:
+ * /Network before the first dsjoin rather than as a side effect of it, and
+ * /Volumes on a machine that never joins anything.
  */
 static void
 domain_mkdirs(void)

@@ -36,7 +36,13 @@ The accounts and the home directories are served over NFS and advertised over
 Bonjour as
 .Li _nextbsd-ds._tcp .
 .It Li client
-Accounts come from a server, and its home directories are mounted at
+The server's
+.Pa /Local
+is mounted at
+.Pa /Network ,
+so its accounts are in
+.Pa /Network/Library/DirectoryServices
+and its home directories in
 .Pa /Network/Users .
 .El
 .Pp
@@ -53,8 +59,10 @@ The property lists stay in
 .Pa /Local/Library/DirectoryServices
 on every machine in every role, and
 .Nm dspromote
-shares that directory and
-.Pa /Local/Users
+shares
+.Pa /Local ,
+which holds them and
+.Pa /Local/Users ,
 over NFS.
 .Pp
 .Xr nss_directory_services 8
@@ -71,9 +79,9 @@ and its own home directories are under
 where they belong.
 A client mounts the server's
 .Pa /Local
-paths onto its own
+onto its own
 .Pa /Network ,
-reads
+the network domain mirroring the server's local one, reads
 .Pa /Network ,
 and finds its home directories under
 .Pa /Network/Users .
@@ -157,14 +165,57 @@ be unbound.
 .It the Bonjour record Ta dspromote Ta dsdemote
 .It Pa Binding.plist Ta dsjoin Ta dsleave
 .It the block in Pa /etc/ntp.conf Ta dsjoin Ta emptied by dsleave
+.It the block in Pa /etc/fstab Ta dsjoin Ta emptied by dsleave
 .It rpcbind, mountd, nfsd Ta dspromote Ta dsdemote
-.It network-mount Ta dsjoin Ta dsleave
+.It autofsd, automountd Ta dsjoin Ta \(em
 .El
 .Pp
-The kernel permits one default export per filesystem, so
 .Pa /etc/exports
-groups the exported directories by device.
-On the usual layout that is a single line.
+is the single line
+.Pa /Local .
+NFS does not cross filesystems, so
+.Nm dspromote
+refuses when
+.Pa /Local/Library/DirectoryServices
+or
+.Pa /Local/Users
+is on a different filesystem from
+.Pa /Local .
+.Pp
+The block in
+.Pa /etc/fstab
+is one line, the server's
+.Pa /Local
+on
+.Pa /Network
+with
+.Li nfsv3,soft,intr .
+.Nm dsjoin
+enables the
+.Li org.nextbsd.autofsd
+and
+.Li org.nextbsd.automountd
+jobs and starts autofsd.
+At that point and at every boot, autofsd loads
+.Pa AutoFS.kext ,
+installs the trigger from the
+.Li -static
+map in
+.Pa /etc/auto_master
+and mounts
+.Pa /Network
+straight away, without waiting for it to be browsed.
+The boot never waits for the server.
+While it does not answer,
+.Pa /Network
+stays an empty directory, so account lookups do not stall, and autofsd asks
+again every 30 seconds until the mount succeeds.
+.Nm dsleave
+empties the block and unmounts
+.Pa /Network
+but leaves the jobs enabled: with no network volume in
+.Pa /etc/fstab ,
+autofsd stops retrying, loads nothing and starts nothing.
 .Sh OPTIONS
 .Bl -tag -width indent
 .It Fl v
@@ -189,19 +240,27 @@ the accounts, on every machine in every role
 .It Pa /Local/Library/DirectoryServices/Domain.plist
 the marker.
 Present only on a server
+.It Pa /Network
+the server's
+.Pa /Local ,
+mounted on a client
 .It Pa /Network/Library/DirectoryServices
-the mount on a client, absent otherwise
+the server's accounts, on a client
 .It Pa /Network/Library/DirectoryServices/Domain.plist
 the server's marker, seen through that mount
 .It Pa /Local/Users
 the home directories
 .It Pa /Network/Users
-the mount on a client, absent otherwise
+the server's home directories, on a client
 .It Pa /etc/exports
 written by
 .Nm dspromote
 .It Pa /etc/ntp.conf
 the managed block only
+.It Pa /etc/fstab
+the managed block only
+.It Pa /etc/auto_master
+the automounter master map
 .It Pa /Local/Library/Preferences/mDNSResponder/Services
 the Bonjour record
 .El

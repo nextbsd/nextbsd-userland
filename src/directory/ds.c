@@ -21,7 +21,8 @@
  *   standalone   accounts in /Local, nothing exported, nothing mounted
  *   server       serves the accounts and the homes over NFS, advertised
  *                over Bonjour as _nextbsd-ds._tcp
- *   client       reads the server's accounts and mounts its homes
+ *   client       mounts the server's /Local on its own /Network, which
+ *                brings the accounts and the homes with it
  *
  * WHERE THE AUTHORITATIVE PLISTS LIVE
  *
@@ -36,9 +37,10 @@
  *            are under /Local/Users -- correct, because those homes really are
  *            local. Every command asks about /Local first and stops there, so
  *            a /Network that somehow appeared could not change the answer
- *   client   mounts the server's /Local paths onto its own /Network, reads
- *            /Network, and its homes are under /Network/Users, which is the
- *            mount of the server's /Local/Users
+ *   client   mounts the server's /Local onto its own /Network -- one mount,
+ *            the network domain mirroring the server's local one as on
+ *            NeXT and Darwin -- reads /Network, and its homes are under
+ *            /Network/Users, which is the server's /Local/Users
  *
  * An earlier version moved the plists to /Network on promotion and left
  * /Local behind as a symlink to them, reasoning that a server "has to read
@@ -112,6 +114,12 @@
 #define nitems(x)	(sizeof((x)) / sizeof((x)[0]))
 #endif
 
+#ifndef DS_LOCAL
+#define DS_LOCAL	"/Local"
+#endif
+#ifndef DS_NETWORK
+#define DS_NETWORK	"/Network"
+#endif
 #ifndef DS_LOCAL_DIR
 #define DS_LOCAL_DIR	"/Local/Library/DirectoryServices"
 #endif
@@ -139,6 +147,9 @@
 #ifndef DS_NTP_CONF
 #define DS_NTP_CONF	"/etc/ntp.conf"
 #endif
+#ifndef DS_FSTAB
+#define DS_FSTAB	"/etc/fstab"
+#endif
 #ifndef DS_SERVICE_DIR
 #define DS_SERVICE_DIR	"/Local/Library/Preferences/mDNSResponder/Services"
 #endif
@@ -157,18 +168,35 @@
 #define DS_SERVICE_PORT	2049		/* nfsd; what a client actually needs */
 
 /*
- * The managed block in /etc/ntp.conf. This text is a contract with the file
- * nextbsd-overlays ships, which already carries both markers with an empty
- * body -- so dsjoin fills a block that is there rather than appending one.
+ * The managed blocks in /etc/ntp.conf and /etc/fstab. For ntp.conf this text
+ * is a contract with the file nextbsd-overlays ships, which already carries
+ * both markers with an empty body -- so dsjoin fills a block that is there
+ * rather than appending one. fstab gets the block appended on first join.
  */
-#define NTP_BEGIN "# BEGIN directory server (managed by dsjoin and dsleave; do not edit)"
-#define NTP_END   "# END directory server"
+#define BLOCK_BEGIN "# BEGIN directory server (managed by dsjoin and dsleave; do not edit)"
+#define BLOCK_END   "# END directory server"
+
+/*
+ * The fstab line dsjoin writes: the server's /Local on /Network.
+ * org.nextbsd.autofsd mounts it at boot through autofs's -static map and
+ * skips it when the server does not answer.
+ */
+#define FSTAB_LINE \
+	"%s:" DS_LOCAL "\t" DS_NETWORK "\tnfs\tnfsv3,soft,intr\t0\t0\n"
 
 /* The jobs each role turns on. Order matters: rpcbind before the rest. */
 static const char *const server_jobs[] = {
 	"org.nextbsd.rpcbind", "org.nextbsd.mountd", "org.nextbsd.nfsd"
 };
-static const char *const client_jobs[] = { "org.nextbsd.network-mount" };
+/*
+ * dsjoin enables these and dsleave leaves them enabled: with no NFS line in
+ * fstab, autofsd loads nothing and starts nothing. dsjoin then starts
+ * autofsd so /Network mounts at once -- on a rejoin the jobs are already
+ * loaded, and launchd has no WatchPaths to notice the new fstab line.
+ */
+static const char *const client_jobs[] = {
+	"org.nextbsd.automountd", "org.nextbsd.autofsd"
+};
 
 enum mode { M_PROMOTE, M_DEMOTE, M_JOIN, M_LEAVE, M_STATUS };
 
@@ -264,40 +292,78 @@ launchctl(const char *verb, const char *const *labels, size_t n)
 	}
 }
 
+/*
+ * Run a loaded job now: `launchctl start label`. Reported, never fatal, like
+ * launchctl() above.
+ */
+static void
+launchctl_start(const char *label)
+{
+	pid_t pid;
+	int st;
+
+	if ((pid = fork()) == -1) {
+		warn("fork");
+		return;
+	}
+	if (pid == 0) {
+		(void)execl(DS_LAUNCHCTL, "launchctl", "start", label,
+		    (char *)NULL);
+		_exit(127);
+	}
+	if (waitpid(pid, &st, 0) == -1 || !WIFEXITED(st) ||
+	    WEXITSTATUS(st) != 0)
+		warnx("launchctl start %s did not succeed", label);
+	else
+		say("  launchctl start %s", label);
+}
+
 /* ------------------------------------------------------------- the exports */
 
 /*
- * The kernel permits one default export line per filesystem, so directories
- * that share a device have to share a line. On the usual single-filesystem
- * layout that is one line naming both paths; on a machine where /Local is its
- * own filesystem it is two.
+ * One export, /Local, which a client mounts on its /Network: the accounts and
+ * the homes come with it as /Network/Library/DirectoryServices and
+ * /Network/Users.
+ *
+ * No -alldirs. Clients mount /Local itself, which a plain export allows, and
+ * mountd rejects -alldirs on a directory that is not a mount point -- the
+ * usual layout, /Local on the root filesystem -- dropping the line and
+ * exporting nothing.
+ *
+ * NFS does not cross filesystems, so the accounts and the homes have to be on
+ * /Local's own: on another filesystem they would be empty directories on the
+ * client. That is refused here, before anything else is written.
  */
 static int
 write_exports(void)
 {
-	struct stat a, b;
+	static const char *const under[] = { DS_LOCAL_DIR, DS_LOCAL_USERS };
+	struct stat l, st;
 	FILE *f;
+	size_t i;
 
-	if (stat(DS_LOCAL_USERS, &a) == -1) {
-		warn("%s", DS_LOCAL_USERS);
+	if (stat(DS_LOCAL, &l) == -1) {
+		warn("%s", DS_LOCAL);
 		return (-1);
 	}
-	if (stat(DS_LOCAL_DIR, &b) == -1) {
-		warn("%s", DS_LOCAL_DIR);
-		return (-1);
+	for (i = 0; i < nitems(under); i++) {
+		if (stat(under[i], &st) == -1) {
+			warn("%s", under[i]);
+			return (-1);
+		}
+		if (st.st_dev != l.st_dev) {
+			warnx("%s is not on the same filesystem as %s, so "
+			    "exporting %s would not share it", under[i],
+			    DS_LOCAL, DS_LOCAL);
+			return (-1);
+		}
 	}
 	if ((f = fopen(DS_EXPORTS, "w")) == NULL) {
 		warn("%s", DS_EXPORTS);
 		return (-1);
 	}
 	(void)fprintf(f, "# Written by dspromote(8). Removed by dsdemote(8).\n");
-	if (a.st_dev == b.st_dev)
-		(void)fprintf(f, "%s %s -alldirs\n", DS_LOCAL_USERS,
-		    DS_LOCAL_DIR);
-	else {
-		(void)fprintf(f, "%s -alldirs\n", DS_LOCAL_USERS);
-		(void)fprintf(f, "%s -alldirs\n", DS_LOCAL_DIR);
-	}
+	(void)fprintf(f, "%s\n", DS_LOCAL);
 	if (fclose(f) != 0) {
 		warn("%s", DS_EXPORTS);
 		return (-1);
@@ -347,10 +413,24 @@ write_service(void)
 
 /* ------------------------------------------------------------- the unmounts */
 
+/* A mount point: on a different device from its parent. */
+static bool
+is_mounted(const char *p)
+{
+	char parent[PATH_MAX];
+	struct stat a, b;
+
+	if (snprintf(parent, sizeof(parent), "%s/..", p) >= (int)sizeof(parent))
+		return (false);
+	return (stat(p, &a) == 0 && stat(parent, &b) == 0 &&
+	    a.st_dev != b.st_dev);
+}
+
 /*
- * Unmount what dsjoin mounted. Reported, never fatal: a busy mount is the
- * administrator's problem to clear, and refusing to finish dsleave over it
- * would leave the machine bound to a server it has been told to leave.
+ * Unmount what dsjoin set up: the server's /Local on /Network. Reported, never
+ * fatal: a busy mount is the administrator's problem to clear, and refusing to
+ * finish dsleave over it would leave the machine bound to a server it has been
+ * told to leave.
  *
  * This is not cosmetic. nss_directory_services prefers /Network whenever the
  * file is there (dsdb.c), so a mount that outlives the binding keeps the
@@ -364,7 +444,12 @@ write_service(void)
 static void
 unmount_network(void)
 {
-	static const char *const points[] = { DS_NETWORK_USERS, DS_NETWORK_DIR };
+	/*
+	 * /Network twice: the NFS mount, then the autofs trigger under it.
+	 * autofsd would drop the trigger itself once the fstab line is gone;
+	 * doing it here means dsleave does not race it.
+	 */
+	static const char *const points[] = { DS_NETWORK, DS_NETWORK };
 	/*
 	 * execv(3) wants char *const argv[], so these are writable copies
 	 * rather than a cast that throws const away -- which the tree builds
@@ -378,7 +463,7 @@ unmount_network(void)
 	int st;
 
 	for (i = 0; i < nitems(points); i++) {
-		if (!exists(points[i]))
+		if (!is_mounted(points[i]))
 			continue;
 		if (strlcpy(mp, points[i], sizeof(mp)) >= sizeof(mp)) {
 			warnx("%s: path too long to unmount", points[i]);
@@ -475,63 +560,97 @@ atomic_commit(struct atomic *a)
 	return (0);
 }
 
-/* ------------------------------------------------------ the NTP time source */
+/* ------------------------------------------ the ntp.conf and fstab blocks */
 
 /*
- * Fill or empty the managed block in /etc/ntp.conf. The block's markers are
- * shipped by nextbsd-overlays with nothing between them, so the common case
- * is rewriting the body in place. A file that has lost its markers gets them
- * appended, and one we cannot read at all is reported rather than clobbered:
- * ntp.conf is the administrator's file and only this block is ours -- which
- * now includes its mode: the replacement goes through atomic_open(), which
- * carries the mode over. It previously came out 0600 root:wheel after every
- * dsjoin and dsleave, whatever it had been.
+ * Fill or empty the managed block in `path` with `body` (NULL empties it).
+ * A file that has lost its markers gets them appended; a missing one is
+ * created when `create` is set (fstab, which a fresh machine does not have)
+ * and reported otherwise (ntp.conf, which ships with the markers). Only the
+ * block is ours: everything else is copied through, and the replacement goes
+ * through atomic_open(), which carries the file's mode over -- ntp.conf used
+ * to come out 0600 root:wheel after every dsjoin and dsleave.
  */
 static int
-ntp_set(const char *server)
+block_set(const char *path, const char *body, bool create)
 {
 	char line[1024];
 	struct atomic a;
 	FILE *in, *out;
 	bool in_block = false, seen = false;
 
-	if ((in = fopen(DS_NTP_CONF, "r")) == NULL) {
-		warn("%s", DS_NTP_CONF);
+	if ((in = fopen(path, "r")) == NULL) {
+		if (errno != ENOENT || !create) {
+			warn("%s", path);
+			return (-1);
+		}
+		if (body == NULL)
+			return (0);	/* no file, so no block to empty */
+	}
+	if ((out = atomic_open(&a, path, 0644)) == NULL) {
+		if (in != NULL)
+			(void)fclose(in);
 		return (-1);
 	}
-	if ((out = atomic_open(&a, DS_NTP_CONF, 0644)) == NULL) {
-		(void)fclose(in);
-		return (-1);
-	}
-	while (fgets(line, sizeof(line), in) != NULL) {
-		if (!in_block && strncmp(line, NTP_BEGIN, strlen(NTP_BEGIN)) == 0) {
+	while (in != NULL && fgets(line, sizeof(line), in) != NULL) {
+		if (!in_block &&
+		    strncmp(line, BLOCK_BEGIN, strlen(BLOCK_BEGIN)) == 0) {
 			in_block = true; seen = true;
-			(void)fputs(NTP_BEGIN "\n", out);
-			if (server != NULL)
-				(void)fprintf(out, "server %s iburst\n", server);
+			(void)fputs(BLOCK_BEGIN "\n", out);
+			if (body != NULL)
+				(void)fputs(body, out);
 			continue;
 		}
 		if (in_block) {
-			if (strncmp(line, NTP_END, strlen(NTP_END)) == 0) {
+			if (strncmp(line, BLOCK_END, strlen(BLOCK_END)) == 0) {
 				in_block = false;
-				(void)fputs(NTP_END "\n", out);
+				(void)fputs(BLOCK_END "\n", out);
 			}
 			continue;	/* drop whatever the block held */
 		}
 		(void)fputs(line, out);
 	}
-	(void)fclose(in);
+	if (in != NULL)
+		(void)fclose(in);
 	if (!seen) {
-		warnx("%s had no managed block; appending one", DS_NTP_CONF);
-		(void)fputs("\n" NTP_BEGIN "\n", out);
-		if (server != NULL)
-			(void)fprintf(out, "server %s iburst\n", server);
-		(void)fputs(NTP_END "\n", out);
+		if (in != NULL && body != NULL)
+			warnx("%s had no managed block; appending one", path);
+		(void)fputs(in != NULL ? "\n" BLOCK_BEGIN "\n" :
+		    BLOCK_BEGIN "\n", out);
+		if (body != NULL)
+			(void)fputs(body, out);
+		(void)fputs(BLOCK_END "\n", out);
 	}
-	if (atomic_commit(&a) == -1)
+	return (atomic_commit(&a));
+}
+
+/* The time source: the server, or nothing. */
+static int
+ntp_set(const char *server)
+{
+	char body[MAXHOSTNAMELEN + 32];
+
+	if (server != NULL)
+		(void)snprintf(body, sizeof(body), "server %s iburst\n", server);
+	if (block_set(DS_NTP_CONF, server != NULL ? body : NULL, false) == -1)
 		return (-1);
 	say("  %s the time source in %s",
 	    server != NULL ? "set" : "cleared", DS_NTP_CONF);
+	return (0);
+}
+
+/* The /Network line: the server's /Local, or nothing. */
+static int
+fstab_set(const char *server)
+{
+	char body[MAXHOSTNAMELEN + 128];
+
+	if (server != NULL)
+		(void)snprintf(body, sizeof(body), FSTAB_LINE, server);
+	if (block_set(DS_FSTAB, server != NULL ? body : NULL, true) == -1)
+		return (-1);
+	say("  %s the %s line in %s", server != NULL ? "wrote" : "removed",
+	    DS_NETWORK, DS_FSTAB);
 	return (0);
 }
 
@@ -614,10 +733,10 @@ is_server(void)
 }
 
 /*
- * The bound server's name. Binding.plist records where to mount from -- it is
- * what network-mount reads before /Network exists -- but it does not decide
- * the role: is_client() does. False here means only that the name could not be
- * read, never that this machine is unbound.
+ * The bound server's name. Binding.plist records which server this machine
+ * joined -- dsleave and dsstatus read it when /Network is down -- but it does
+ * not decide the role: is_client() does. False here means only that the name
+ * could not be read, never that this machine is unbound.
  */
 static bool
 binding_server(char *out, size_t len)
@@ -821,9 +940,15 @@ do_join(const char *server)
 
 	if (binding_write(server) == -1)
 		return (1);
+	if (fstab_set(server) == -1) {
+		/* Without the line nothing mounts; do not leave a half join. */
+		(void)unlink(DS_BINDING);
+		return (1);
+	}
 	if (ntp_set(server) == -1)
 		warnx("the binding is written; the time source is not");
 	launchctl("load", client_jobs, nitems(client_jobs));
+	launchctl_start("org.nextbsd.autofsd");
 
 	(void)printf("Joined %s.\n", server);
 	return (0);
@@ -857,7 +982,14 @@ do_leave(void)
 		    DS_NETWORK_DIR);
 		break;
 	}
-	launchctl("unload", client_jobs, nitems(client_jobs));
+	/*
+	 * The jobs stay enabled. Removing the fstab line is what stops the
+	 * mount: an autofsd still retrying sees it gone on its next pass and
+	 * exits, and at the next boot it loads nothing.
+	 */
+	if (fstab_set(NULL) == -1)
+		warnx("the %s line is still in %s; remove it by hand",
+		    DS_NETWORK, DS_FSTAB);
 	if (unlink(DS_BINDING) == -1) {
 		warn("%s", DS_BINDING);
 		return (1);
