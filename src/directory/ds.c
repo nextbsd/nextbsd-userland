@@ -428,9 +428,11 @@ is_mounted(const char *p)
 
 /*
  * Unmount what dsjoin set up: the server's /Local on /Network. Reported, never
- * fatal: a busy mount is the administrator's problem to clear, and refusing to
- * finish dsleave over it would leave the machine bound to a server it has been
- * told to leave.
+ * fatal: refusing to finish dsleave over a busy mount would leave the machine
+ * bound to a server it has been told to leave. /Network is busy whenever a
+ * network user is logged in -- often the very session running dsleave -- and
+ * the fstab line is already gone by now, so a restart finishes the job:
+ * autofsd then finds nothing to mount. dsleave says so and stops trying.
  *
  * This is not cosmetic. nss_directory_services prefers /Network whenever the
  * file is there (dsdb.c), so a mount that outlives the binding keeps the
@@ -481,11 +483,13 @@ unmount_network(void)
 			_exit(127);
 		}
 		if (waitpid(pid, &st, 0) == -1 || !WIFEXITED(st) ||
-		    WEXITSTATUS(st) != 0)
-			warnx("%s is still mounted; unmount it by hand",
+		    WEXITSTATUS(st) != 0) {
+			warnx("%s is in use and stays mounted until this "
+			    "machine restarts; restart it to finish leaving",
 			    points[i]);
-		else
-			say("  unmounted %s", points[i]);
+			return;
+		}
+		say("  unmounted %s", points[i]);
 	}
 }
 
@@ -990,7 +994,8 @@ do_leave(void)
 	if (fstab_set(NULL) == -1)
 		warnx("the %s line is still in %s; remove it by hand",
 		    DS_NETWORK, DS_FSTAB);
-	if (unlink(DS_BINDING) == -1) {
+	/* Already gone (a leave interrupted half way) is as good as removed. */
+	if (unlink(DS_BINDING) == -1 && errno != ENOENT) {
 		warn("%s", DS_BINDING);
 		return (1);
 	}
