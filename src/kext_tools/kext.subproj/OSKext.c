@@ -8475,39 +8475,123 @@ finish:
 
 /*********************************************************************
 * NextBSD: refuse a kext built for another kernel (E21 step 19,
-* nextbsd-kernel-extensions#5).
+* nextbsd-kernel-extensions#5; kernel ABI versions, nextbsd-kernel#376).
 *
 * A kext and the kernel share struct layouts, so one built against another
-* kernel build links and then panics somewhere unrelated
+* kernel links and then panics somewhere unrelated
 * (nextbsd-kernel-extensions-graphics#46). Darwin pins such kexts with a
 * dependency on com.apple.kernel, the codeless System.kext whose version is
 * the kernel's. NextBSD's System.kext is org.nextbsd.kernel, generated with
-* the kexts from the kernel SDK, and every kext records the kernel build it was
-* built for as NBSDKernelBuildID (nextbsd-kernel#326). A kext version can't
-* hold that ID (<commit>.<run_id>.<attempt>), so the two keys are compared
-* here, for every kext about to be kldload'ed.
+* the kexts from the kernel SDK.
 *
-* Without a System.kext carrying the key (an image from before it), or for a
-* kext without the key, there is nothing to compare and the load goes ahead.
+* Kexts are tied to the kernel ABI version (major.minor of the Darwin-style
+* kernel release, e.g. 27.0 for 27.0.0), recorded in each kext's Info.plist
+* as NBSDKernelABIVersion (nextbsd-kernel#376). The running kernel's ABI is
+* major.minor of kern.osrelease when that is N.N.N; an older kernel reports
+* a build timestamp there, and then System.kext's NBSDKernelABIVersion is
+* used instead. A kext with the key and a different ABI is refused.
+*
+* A kext without NBSDKernelABIVersion (or with no running ABI to compare it
+* against) falls back to the legacy check: its NBSDKernelBuildID
+* (nextbsd-kernel#326) must equal System.kext's. Without a System.kext
+* carrying that key, or for a kext without it, there is nothing to compare
+* and the load goes ahead.
 *********************************************************************/
 #define __kOSKextNBSDKernelBundleID      CFSTR("org.nextbsd.kernel")
 #define __kOSKextNBSDKernelBuildIDKey    CFSTR("NBSDKernelBuildID")
+#define __kOSKextNBSDKernelABIVersionKey CFSTR("NBSDKernelABIVersion")
+
+/* The running kernel's ABI version ("major.minor"), or NULL if there is none
+ * to compare against. osrelease receives kern.osrelease ("" if unreadable).
+ */
+static CFStringRef __OSKextCopyRunningKernelABIVersion(
+    OSKextRef   kernelKext,
+    char      * osrelease,
+    size_t      osreleaseSize)
+{
+    CFStringRef  abiVersion = NULL;
+    size_t       size       = osreleaseSize;
+    unsigned int major = 0, minor = 0, patch = 0;
+    int          consumed   = -1;
+
+    if (sysctlbyname("kern.osrelease", osrelease, &size, NULL, 0) != 0) {
+        osrelease[0] = '\0';
+    }
+    osrelease[osreleaseSize - 1] = '\0';
+
+    if (osrelease[0] >= '0' && osrelease[0] <= '9' &&
+        sscanf(osrelease, "%u.%u.%u%n", &major, &minor, &patch,
+            &consumed) == 3 &&
+        consumed > 0 && osrelease[consumed] == '\0') {
+
+        return CFStringCreateWithFormat(kCFAllocatorDefault, /* options */ NULL,
+            CFSTR("%u.%u"), major, minor);
+    }
+
+    if (kernelKext) {
+        abiVersion = OSKextGetValueForInfoDictionaryKey(kernelKext,
+            __kOSKextNBSDKernelABIVersionKey);
+        if (abiVersion && CFGetTypeID(abiVersion) == CFStringGetTypeID()) {
+            return CFRetain(abiVersion);
+        }
+    }
+    return NULL;
+}
 
 static Boolean __OSKextIsBuiltForInstalledKernel(
     OSKextRef aKext,
     OSKextRef loadingKext)
 {
-    OSKextRef   kernelKext = NULL;  // do not release
-    CFStringRef want       = NULL;  // do not release
-    CFStringRef got        = NULL;  // do not release
-    char      * wantCString = NULL; // must free
-    char      * gotCString  = NULL; // must free
+    Boolean     result      = false;
+    OSKextRef   kernelKext  = NULL;  // do not release
+    CFStringRef runningABI  = NULL;  // must release
+    CFStringRef kextABI     = NULL;  // do not release
+    CFStringRef want        = NULL;  // do not release
+    CFStringRef got         = NULL;  // do not release
+    char      * wantCString = NULL;  // must free
+    char      * gotCString  = NULL;  // must free
+    char      * bundleIDCString = NULL; // must free
+    char        osrelease[256];
     char        kextPath[PATH_MAX];
     char        loadingPath[PATH_MAX];
 
     kernelKext = OSKextGetKextWithIdentifier(__kOSKextNBSDKernelBundleID);
-    if (!kernelKext || !OSKextIsKernelComponent(kernelKext)) {
-        return true;
+    if (kernelKext && !OSKextIsKernelComponent(kernelKext)) {
+        kernelKext = NULL;
+    }
+
+   /* Kernel ABI version: the kext's NBSDKernelABIVersion against the running
+    * kernel's.
+    */
+    kextABI = OSKextGetValueForInfoDictionaryKey(aKext,
+        __kOSKextNBSDKernelABIVersionKey);
+    if (kextABI && CFGetTypeID(kextABI) == CFStringGetTypeID()) {
+        runningABI = __OSKextCopyRunningKernelABIVersion(kernelKext,
+            osrelease, sizeof(osrelease));
+    }
+    if (runningABI) {
+        if (CFEqual(kextABI, runningABI)) {
+            result = true;
+            goto finish;
+        }
+        bundleIDCString = createUTF8CStringForCFString(
+            OSKextGetIdentifier(aKext));
+        gotCString = createUTF8CStringForCFString(kextABI);
+        OSKextLog(loadingKext, kOSKextLogErrorLevel | kOSKextLogLoadFlag,
+            "Can't load %s - built for kernel ABI %s, running kernel is %s.",
+            bundleIDCString ? bundleIDCString : "(unknown)",
+            gotCString ? gotCString : "(unknown)",
+            osrelease[0] ? osrelease : "(unknown)");
+        __OSKextAddDiagnostic(aKext, kOSKextDiagnosticsFlagDependencies,
+            kOSKextDependencyNoCompatibleVersion, __kOSKextNBSDKernelBundleID,
+            /* note */ NULL);
+        goto finish;
+    }
+
+   /* Legacy: the kext's NBSDKernelBuildID against System.kext's. */
+    if (!kernelKext) {
+        result = true;
+        goto finish;
     }
     want = OSKextGetValueForInfoDictionaryKey(kernelKext,
         __kOSKextNBSDKernelBuildIDKey);
@@ -8516,7 +8600,8 @@ static Boolean __OSKextIsBuiltForInstalledKernel(
     if (!want || CFGetTypeID(want) != CFStringGetTypeID() ||
         !got || CFGetTypeID(got) != CFStringGetTypeID() ||
         CFEqual(want, got)) {
-        return true;
+        result = true;
+        goto finish;
     }
 
     __OSKextGetFileSystemPath(aKext, /* otherURL */ NULL,
@@ -8534,9 +8619,13 @@ static Boolean __OSKextIsBuiltForInstalledKernel(
     __OSKextAddDiagnostic(aKext, kOSKextDiagnosticsFlagDependencies,
         kOSKextDependencyNoCompatibleVersion, __kOSKextNBSDKernelBundleID,
         /* note */ NULL);
+
+finish:
+    SAFE_RELEASE(runningABI);
     SAFE_FREE(wantCString);
     SAFE_FREE(gotCString);
-    return false;
+    SAFE_FREE(bundleIDCString);
+    return result;
 }
 
 OSReturn __OSKextLoadWithArgsDict(

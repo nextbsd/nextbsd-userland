@@ -14,7 +14,9 @@
  * Kexts are named by bundle path, or by CFBundleIdentifier with -bundle-id
  * (nextbsd#270), looked up among the same known kexts, as in Apple's kextload.
  * Both go through OSKextLoad, so every load gets the same checks (validation,
- * architecture, the NBSDKernelBuildID match against System.kext).
+ * architecture, and the kernel check: a kext's NBSDKernelABIVersion must match
+ * the running kernel's ABI, major.minor of kern.osrelease; a kext without it
+ * falls back to the NBSDKernelBuildID match against System.kext).
  *
  * Usage:  kextload [-b bundle_id] [-d kext] [-r repo_dir] [-q] [-h] [--]
  *             [bundle.kext ...]
@@ -219,7 +221,8 @@ main(int argc, char *argv[])
 	 * The known kexts: the system extensions folders, then -repository
 	 * directories and -dependency kexts. They resolve OSBundleLibraries
 	 * and -bundle-id lookups; System.kext among them is what OSKextLoad
-	 * checks each kext's NBSDKernelBuildID against.
+	 * checks a legacy kext's NBSDKernelBuildID against, and supplies the
+	 * kernel ABI version when kern.osrelease doesn't carry one.
 	 */
 	sysFolders = OSKextGetSystemExtensionsFolderURLs();
 	for (i = 0; sysFolders != NULL && i < CFArrayGetCount(sysFolders); i++) {
