@@ -3,9 +3,11 @@
 # nextbsd-linux-bootstrap(8) -- provision the single /compat/linux root in place.
 #
 # v1 of nextbsd/nextbsd#526. Run as root. Idempotent / re-runnable: it converges
-# /compat/linux to a fresh Devuan Excalibur base (Debian 12.x without systemd) so
+# /compat/linux to a fresh Devuan Excalibur base (Debian 13 without systemd) so
 # self-contained AppImages and portable (apt) software run from the one Linuxulator
 # root. The one root is either rl9 or Devuan; this picks Devuan (rl9 ports aside).
+# The root carries no D-Bus daemon and no dbus-launch (libdbus-1-3 only), libnss3
+# for Electron/Chromium apps, and the en_US.UTF-8 locale beside the built-in C.UTF-8.
 #
 # Self-contained: it RE-IMPLEMENTS the debootstrap step (fetch the Packages index,
 # resolve a minimal base, download + extract the .debs, configure with the base's own
@@ -15,7 +17,8 @@
 #
 #   nextbsd-linux-bootstrap   DESTRUCTIVE: unmount, wipe /compat/linux, build a fresh
 #                             Devuan Excalibur base in place (zsh + plugins, and the
-#                             host's global zsh config), remount, and verify.
+#                             host's global zsh config), remount, and verify (incl.
+#                             no dbus-launch/dbus-daemon, libnss3, en_US.UTF-8).
 #                             No subcommands, no prompts -- it runs the whole job as root.
 #                             Safety: a teardown that cannot unmount every mount
 #                             (a process in the root holds one) ABORTS instead of
@@ -66,8 +69,29 @@ SEED="apt dpkg libc6 libc-bin libgcc-s1 base-passwd base-files dash ca-certifica
 # sudo lets a DirectoryServices account (no password, so a prompt is
 # unsatisfiable) escalate in the base; nextbsd-linux-users drops a NOPASSWD
 # rule for the `admin` group in /etc/sudoers.d. Binary here, rule there.
-BASE_EXTRA="sysvinit login passwd tar gzip xz-utils mawk bash curl zsh zsh-autosuggestions zsh-syntax-highlighting util-linux ncurses-base ncurses-term sudo"
-CLIENT_LIBS="libgl1 libglvnd0 libegl1 libgbm1 libglx-mesa0 libgl1-mesa-dri libx11-6 libx11-xcb1 libxcb1 libxkbcommon0 libxkbcommon-x11-0 libxcursor1 libxext6 libxi6 libxrender1 libxrandr2 libxfixes3 libxss1 libxtst6 libxcomposite1 libxdamage1 libxinerama1 libice6 libsm6 fontconfig libfreetype6 fonts-dejavu-core libasound2 libpulse0 libgtk-3-0 libdbus-1-3 dbus xauth"
+# locales supplies locale-gen + the en_US source data; LOCALES (below) is
+# preseeded into debconf so the package's own postinst generates it.
+BASE_EXTRA="sysvinit login passwd tar gzip xz-utils mawk bash curl zsh zsh-autosuggestions zsh-syntax-highlighting util-linux ncurses-base ncurses-term sudo locales"
+# Client libraries for AppImages / portable software. No D-Bus daemon and no
+# dbus-launch (nextbsd/nextbsd-userland#496): with no session bus, libdbus
+# runs `dbus-launch --autolaunch`, which never answers under the Linuxulator,
+# so Qt apps hang before their first window. libdbus-1-3 stays (apps link it;
+# without dbus-launch it fails fast and they run bus-less). libnss3 is for
+# Electron/Chromium AppImages. libgtk-3-0 alone would still drag the bus in
+# (libgtk-3-common -> dconf-gsettings-backend -> dconf-service -> a
+# dbus-session-bus, which only dbus-x11 provides); SESSION_BUS_STUB covers that.
+CLIENT_LIBS="libgl1 libglvnd0 libegl1 libgbm1 libglx-mesa0 libgl1-mesa-dri libx11-6 libx11-xcb1 libxcb1 libxkbcommon0 libxkbcommon-x11-0 libxcursor1 libxext6 libxi6 libxrender1 libxrandr2 libxfixes3 libxss1 libxtst6 libxcomposite1 libxdamage1 libxinerama1 libice6 libsm6 fontconfig libfreetype6 fonts-dejavu-core libasound2 libpulse0 libgtk-3-0 libdbus-1-3 libnss3 xauth"
+# Empty local package that Provides the virtual dbus-session-bus /
+# default-dbus-session-bus and Conflicts with dbus-x11, so dconf-service's
+# dependency is met without dbus-daemon or dbus-launch -- the Debian (equivs)
+# way to opt out of a virtual dependency. Built with the base's own dpkg-deb
+# and installed before apt-get, so apt never chooses dbus-x11 (now or on a
+# later upgrade). GLib's GDBus also autolaunches via dbus-launch, so GTK apps
+# now fail fast without a bus too.
+SESSION_BUS_STUB=nextbsd-no-session-bus
+# Locales to generate, in /etc/locale.gen form. C.UTF-8 ships prebuilt in
+# libc-bin (/usr/lib/locale/C.utf8) and stays available alongside these.
+LOCALES="en_US.UTF-8 UTF-8"
 # Host global zsh config, copied into the chroot by do_zsh_config. The host
 # (a Darwin userland) keeps the single files /etc/zshrc, /etc/zprofile,
 # /etc/zshenv; the chroot's Devuan zsh reads the directory form /etc/zsh/*. Map
@@ -420,8 +444,11 @@ do_bootstrap() {
 	chroot "$e" /usr/bin/dpkg -i $DEBS || info "expected: some seed .debs deferred on pre-deps (they sort before libc6); apt-get installs them in dependency order"
 	chroot "$e" /usr/bin/dpkg --configure -a || info "some postinst deferred; apt-get will resolve"
 	chroot "$e" /usr/bin/apt-get -o APT::Cache-Start=536870912 update || info "apt-get update failed; continuing"
+	do_session_bus_stub
+	do_locale_preseed
 	chroot "$e" /usr/bin/apt-get -o APT::Cache-Start=536870912 install -y --no-install-recommends $BASE_EXTRA $CLIENT_LIBS || die "apt-get install failed"
 	chroot "$e" /usr/bin/dpkg --configure -a || die "final dpkg --configure failed"
+	do_locales
 	# Now that the mirror is reachable, install the Devuan release keyring and drop
 	# [trusted=yes] so the finished base *verifies* its Release signatures instead of
 	# trusting unconditionally (the latter is one step from installing unverified
@@ -437,6 +464,75 @@ do_bootstrap() {
 
 	rm -rf "$WORK"
 	info "base provisioned: Devuan $DEVUAN_SUITE ($a)"
+}
+
+# Build and install the $SESSION_BUS_STUB package (see its definition above)
+# with the base's own dpkg-deb, before apt-get resolves the client libraries.
+# Built under the base's /var/tmp (not a mount) and removed afterwards.
+do_session_bus_stub() {
+	e=$(real_emul)
+	s=/var/tmp/$SESSION_BUS_STUB
+	rm -rf "$e$s" "$e$s.deb"
+	mkdir -p "$e$s/DEBIAN"
+	cat > "$e$s/DEBIAN/control" <<EOF
+Package: $SESSION_BUS_STUB
+Version: 1
+Architecture: all
+Maintainer: NextBSD nextbsd-linux-bootstrap <root@localhost>
+Section: misc
+Priority: optional
+Provides: dbus-session-bus, default-dbus-session-bus
+Conflicts: dbus-x11
+Description: NextBSD: no D-Bus session bus in the Linux root
+ Satisfies dependencies on a D-Bus session bus (dconf-service, via GTK 3)
+ without installing dbus-daemon or dbus-x11's dbus-launch. NextBSD runs no
+ D-Bus; without dbus-launch, libdbus and GDBus fail fast instead of hanging
+ in autolaunch. Installed by nextbsd-linux-bootstrap.
+EOF
+	chroot "$e" /usr/bin/dpkg-deb -Zgzip --root-owner-group --build "$s" "$s.deb" >/dev/null || die "could not build $SESSION_BUS_STUB"
+	chroot "$e" /usr/bin/dpkg -i "$s.deb" || die "could not install $SESSION_BUS_STUB"
+	rm -rf "$e$s" "$e$s.deb"
+	info "installed $SESSION_BUS_STUB (no dbus-daemon / dbus-launch in the root)"
+}
+
+# Preseed debconf before locales is installed: its postinst re-comments
+# /etc/locale.gen on every configure and uncomments only the debconf
+# selection, so the selection is what keeps $LOCALES across upgrades and
+# dpkg-reconfigure. The postinst then runs locale-gen itself.
+do_locale_preseed() {
+	e=$(real_emul)
+	printf 'locales locales/locales_to_be_generated multiselect %s\n' "$LOCALES" |
+		chroot "$e" /usr/bin/debconf-set-selections || info "warn: could not preseed locales; do_locales will generate them"
+}
+
+# Idempotent fallback: make sure each $LOCALES entry is active in
+# /etc/locale.gen and built, then run locale-gen only if one is missing from
+# `locale -a` (e.g. the preseed did not take). Never fatal: a base without
+# en_US.UTF-8 still works (C.UTF-8 is built in); do_verify reports it.
+do_locales() {
+	e=$(real_emul)
+	lg=$e/etc/locale.gen
+	need=0
+	printf '%s\n' "$LOCALES" | while read -r loc cs; do
+		[ -n "$loc" ] || continue
+		if [ -f "$lg" ] && grep -qx "$loc $cs" "$lg"; then
+			continue
+		fi
+		if [ -f "$lg" ] && grep -q "^#[ ]*$loc $cs[ ]*\$" "$lg"; then
+			awk -v l="$loc $cs" '{ s = $0; sub(/^#[ ]*/, "", s); sub(/[ ]*$/, "", s); if (s == l && !done) { print l; done = 1 } else print }' "$lg" > "$lg.nbs" && mv -f "$lg.nbs" "$lg"
+		else
+			printf '%s %s\n' "$loc" "$cs" >> "$lg"
+		fi
+	done
+	have=$(chroot "$e" /usr/bin/locale -a 2>/dev/null || true)
+	for loc in $(printf '%s\n' "$LOCALES" | awk '{ print $1 }'); do
+		norm=$(printf '%s' "$loc" | awk -F. '{ c = tolower($2); gsub(/-/, "", c); print (c == "" ? $1 : $1 "." c) }')
+		printf '%s\n' "$have" | grep -qx "$norm" || need=1
+	done
+	if [ "$need" = 1 ]; then
+		chroot "$e" /usr/sbin/locale-gen || info "warn: locale-gen failed; only C.UTF-8 is available"
+	fi
+	info "locales: $(chroot "$e" /usr/bin/locale -a 2>/dev/null | tr '\n' ' ')"
 }
 
 # Copy the host's global zsh config into the chroot so a zsh session inside the
@@ -513,6 +609,20 @@ do_verify() {
 		info "verify: chroot $e /bin/ls OK"
 	else
 		die "verify: chroot $e /bin/ls failed"
+	fi
+	# No D-Bus in the root (nextbsd/nextbsd-userland#496): dbus-launch is
+	# what hangs bus-less Qt/GTK apps, so its presence fails the bootstrap.
+	for f in /usr/bin/dbus-launch /usr/bin/dbus-daemon; do
+		[ ! -e "$e$f" ] || die "verify: $f is installed in the root -- something pulled in the D-Bus daemon"
+	done
+	info "verify: no dbus-launch / dbus-daemon in the root"
+	set -- "$e"/usr/lib/*-linux-gnu/libnss3.so
+	[ -e "$1" ] || die "verify: libnss3.so missing from the root"
+	info "verify: libnss3 present"
+	if chroot "$e" /usr/bin/locale -a 2>/dev/null | grep -qx en_US.utf8; then
+		info "verify: en_US.utf8 locale available"
+	else
+		info "warn: verify: en_US.utf8 locale missing (C.UTF-8 only); run locale-gen in the root"
 	fi
 	do_mount_all
 }
