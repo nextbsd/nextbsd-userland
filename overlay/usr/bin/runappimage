@@ -1,0 +1,213 @@
+#!/bin/sh
+#
+# runappimage(1) -- run a Linux AppImage on NextBSD as the calling user.
+#
+# nextbsd/nextbsd-userland#497 (part of AppImage click-to-run, E13).
+#
+#   runappimage /path/to/App.AppImage [args ...]
+#
+# The AppImage's own runtime is a Linux binary: it runs through the Linuxulator
+# (kern.elf64.fallback_brand=3), mounts its squashfs payload as the user through
+# /dev/fuse (vfs.usermount=1) and runs AppRun against the Linux userland in
+# /compat/linux. This wrapper adds what the runtime can't do for itself here:
+#
+#   1. It checks the file is a type-2 AppImage (ELF, "AI" 0x02 at offset 8).
+#   2. It checks the prerequisites and, on failure, prints ONE line a person can
+#      act on (Workspace shows it in a dialog) and exits with a distinct code.
+#   3. It drops the native-only variables a Gershwin session exports, which a
+#      Linux process can't use (a native LD_PRELOAD makes Linux ld.so print an
+#      error into every terminal app; native Qt/GTK/GIO plugin paths get probed).
+#      The native FONTCONFIG_FILE/FONTCONFIG_PATH are KEPT: Linux fontconfig reads
+#      the desktop's fonts.conf fine, and with it the app gets the session fonts
+#      (/System/Library/Fonts, ~/Library/Fonts) instead of only the Linux root's
+#      DejaVu. If DBUS_SESSION_BUS_ADDRESS is unset it is set to "disabled:", so
+#      libdbus fails fast instead of running dbus-launch --autolaunch, which hangs
+#      on a Linux root that still ships dbus-x11.
+#   4. It gives the run a private TMPDIR (where the runtime makes its .mount_*
+#      directory) and, after the app exits, unmounts whatever is left under it and
+#      removes it. Cleanup doesn't depend on the runtime's umount2(MNT_DETACH)
+#      working in the Linuxulator, or on the app exiting normally.
+#   5. It runs the AppImage unchanged as a child, forwards SIGHUP, SIGINT and
+#      SIGTERM to it, and exits with the child's exit status.
+#
+# Exit status: the AppImage's own status (128+N if signal N killed it), or one
+# of these when runappimage itself refuses or fails:
+#
+#   80  usage: no AppImage given
+#   81  the file does not exist, is not a regular file, or can't be read
+#   82  the file is not an AppImage
+#   83  the file is a type-1 AppImage (unsupported)
+#   84  the Linux userland is not installed (run nextbsd-linux-bootstrap)
+#   85  kern.elf64.fallback_brand is not 3
+#   86  vfs.usermount is not 1
+#   87  the file is not executable
+#   88  the private temporary directory could not be created
+#
+# Runs as a normal user. Base tools only, by absolute path: the inherited PATH is
+# a desktop session's and is not trusted.
+
+prog=runappimage
+
+EX_USAGE=80
+EX_NOFILE=81
+EX_NOTAPPIMAGE=82
+EX_TYPE1=83
+EX_NOLINUX=84
+EX_BRAND=85
+EX_USERMOUNT=86
+EX_NOEXEC=87
+EX_TMPDIR=88
+
+die() {
+	_rc=$1; shift
+	printf '%s: %s\n' "$prog" "$*" >&2
+	exit "$_rc"
+}
+
+warn() { printf '%s: %s\n' "$prog" "$*" >&2; }
+
+[ $# -ge 1 ] && [ -n "$1" ] || die $EX_USAGE "usage: runappimage file.AppImage [args ...]"
+
+app=$1; shift
+name=${app##*/}
+
+# A bare name would be looked up in PATH; run the file that was named.
+case $app in
+*/*) ;;
+*)   app=./$app ;;
+esac
+
+# --- 1. The file: ELF, type-2 AppImage marker ----------------------------------
+
+[ -e "$app" ] || die $EX_NOFILE "$name: no such file"
+[ -f "$app" ] || die $EX_NOFILE "$name: not a regular file"
+[ -r "$app" ] || die $EX_NOFILE "$name: permission denied (can't read the file)"
+
+# Bytes 0-3 are \x7fELF; bytes 8-10 are 'A' 'I' and the AppImage type.
+magic=$(/usr/bin/od -An -v -tx1 -N11 "$app" 2>/dev/null | /usr/bin/tr -d ' \n')
+case $magic in
+7f454c46????????414902) ;;
+7f454c46????????414901) die $EX_TYPE1 "$name is a type-1 AppImage, which is not supported; get the type-2 version of the app" ;;
+*)                      die $EX_NOTAPPIMAGE "$name is not an AppImage" ;;
+esac
+
+# --- 2. Prerequisites ----------------------------------------------------------
+
+emul=$(/sbin/sysctl -n compat.linux.emul_path 2>/dev/null)
+case $emul in
+/*) emul=${emul%/} ;;
+*)  emul=/compat/linux ;;
+esac
+
+case $(/usr/bin/uname -m) in
+amd64 | x86_64)  ldso=/lib64/ld-linux-x86-64.so.2 ;;
+arm64 | aarch64) ldso=/lib/ld-linux-aarch64.so.1 ;;
+*)               die $EX_NOLINUX "AppImages are not supported on $(/usr/bin/uname -m)" ;;
+esac
+[ -e "$emul$ldso" ] ||
+	die $EX_NOLINUX "the Linux userland is not installed; run nextbsd-linux-bootstrap as root"
+
+[ "$(/sbin/sysctl -n kern.elf64.fallback_brand 2>/dev/null)" = 3 ] ||
+	die $EX_BRAND "Linux binaries are not enabled; set kern.elf64.fallback_brand=3"
+
+[ "$(/sbin/sysctl -n vfs.usermount 2>/dev/null)" = 1 ] ||
+	die $EX_USERMOUNT "users can't mount the AppImage; set vfs.usermount=1"
+
+[ -x "$app" ] || die $EX_NOEXEC "$name is not executable; mark it executable to run it"
+
+# --- 3. Environment ------------------------------------------------------------
+
+unset LD_PRELOAD LD_LIBRARY_PATH QT_PLUGIN_PATH QT_QPA_PLATFORMTHEME \
+	GTK_MODULES GTK_PATH GIO_EXTRA_MODULES
+: "${DBUS_SESSION_BUS_ADDRESS:=disabled:}"
+export DBUS_SESSION_BUS_ADDRESS
+
+# --- 4. Private TMPDIR ---------------------------------------------------------
+
+base=${TMPDIR:-/tmp}
+while :; do
+	case $base in
+	?*/) base=${base%/} ;;
+	*)   break ;;
+	esac
+done
+[ -d "$base" ] || base=/tmp
+run_tmp=$(/usr/bin/mktemp -d "$base/runappimage.XXXXXXXX" 2>/dev/null) ||
+	die $EX_TMPDIR "can't create a temporary directory in $base"
+TMPDIR=$run_tmp
+export TMPDIR
+
+# Print the mount points of fusefs mounts at or under each directory given. The
+# runtime is a Linux process, so its mount usually shows under $emul (/tmp is
+# nullfs-mounted at $emul/tmp). Lines read "<from> on <mountpoint> (fusefs, ...)";
+# the mount point may contain spaces, so match on " on <dir>/" rather than split.
+fuse_mounts_under() {
+	/sbin/mount -t fusefs 2>/dev/null | /usr/bin/awk '
+	BEGIN { for (i = 1; i < ARGC; i++) dirs[i] = ARGV[i]; n = ARGC - 1; ARGC = 1 }
+	{
+		for (i = 1; i <= n; i++) {
+			k = index($0, " on " dirs[i])
+			if (k == 0) continue
+			mp = substr($0, k + 4)
+			sub(/ \([^()]*\)$/, "", mp)
+			if (mp == dirs[i] || substr(mp, 1, length(dirs[i]) + 1) == dirs[i] "/") {
+				print mp
+				break
+			}
+		}
+	}' "$@"
+}
+
+cleanup() {
+	real=$(/bin/realpath "$run_tmp" 2>/dev/null) || real=$run_tmp
+	left=0
+	# Two passes: a mount that is busy the first time is forced the second.
+	for pass in 1 2; do
+		mps=$(fuse_mounts_under "$run_tmp" "$real" "$emul$run_tmp" "$emul$real")
+		[ -n "$mps" ] || break
+		left=0
+		while IFS= read -r mp; do
+			[ -n "$mp" ] || continue
+			/sbin/umount "$mp" 2>/dev/null ||
+				/sbin/umount -f "$mp" 2>/dev/null ||
+				left=1
+		done <<EOF
+$mps
+EOF
+	done
+	if [ -n "$(fuse_mounts_under "$run_tmp" "$real" "$emul$run_tmp" "$emul$real")" ]; then
+		warn "could not unmount the AppImage under $run_tmp; leaving it in place"
+		return
+	fi
+	# -x: never cross into a mount point, whatever happened above.
+	/bin/rm -rfx "$run_tmp" 2>/dev/null ||
+		warn "could not remove $run_tmp"
+}
+
+# --- 5. Run it -----------------------------------------------------------------
+
+# A non-interactive sh starts a background job with stdin on /dev/null and
+# SIGINT/SIGQUIT ignored. Hand the child the real stdin (fd 3) and restore the
+# default dispositions in the subshell before exec, so the AppImage sees what it
+# would see run directly.
+exec 3<&0
+( trap - INT QUIT; exec "$app" "$@" <&3 3<&- ) &
+child=$!
+exec 3<&-
+
+trap 'kill -HUP  $child 2>/dev/null' HUP
+trap 'kill -INT  $child 2>/dev/null' INT
+trap 'kill -TERM $child 2>/dev/null' TERM
+
+# wait returns early (>128) when a trapped signal arrives; keep waiting until
+# the child is really gone. A zombie still answers kill -0, so the final wait
+# reaps it and yields its real status.
+while :; do
+	wait $child
+	rc=$?
+	kill -0 $child 2>/dev/null || break
+done
+
+trap '' HUP INT TERM
+cleanup
+exit $rc
