@@ -2,7 +2,7 @@
 #
 # configd builds to /usr/sbin/configd and runs as a launchd-managed
 # daemon under PID-1 launchd (plist at /System/Library/LaunchDaemons/
-# com.apple.configd.plist). It checks the
+# org.nextbsd.configd.plist). It checks the
 # com.apple.SystemConfiguration.configd Mach service in and runs a raw
 # mach_msg loop over the MIG config.defs demux (config_server()).
 # iter 2 adds config_store.c — the SCDynamicStore key/value store

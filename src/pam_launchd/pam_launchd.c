@@ -54,7 +54,7 @@
 
 /*
  * A Mach service that only PID 1 provides and that is always there once the
- * system is up: notifyd's (System/Library/LaunchDaemons/com.apple.notifyd.plist,
+ * system is up: notifyd's (System/Library/LaunchDaemons/org.nextbsd.notifyd.plist,
  * LimitLoadToSessionType System, RunAtLoad, KeepAlive). The per-user launchd
  * has no such service, so a lookup of it through the per-user port must be
  * forwarded to PID 1.

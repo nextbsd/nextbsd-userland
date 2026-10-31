@@ -202,7 +202,7 @@ The actual UDP sockets are managed by
 .Nm launchd ,
 and configured in the
 .Nm syslogd
-configuration file /System/Library/LaunchDaemons/com.apple.syslogd.plist.
+configuration file /System/Library/LaunchDaemons/org.nextbsd.syslogd.plist.
 In the default configuration,
 .Nm launchd
 does not open any sockets for the
@@ -213,7 +213,7 @@ module.
 If no sockets are provided, the module remains inactive.
 A socket may be specified by adding the following entry to the
 .Dq Sockets
-dictionary in the com.apple.syslogd.plist file.
+dictionary in the org.nextbsd.syslogd.plist file.
 .Pp
 .Dl		<key>NetworkListener</key>
 .Dl		<dict>
@@ -273,7 +273,7 @@ kernel log device
 data store directory
 .It Pa /var/log/asl.archive
 default archive directory
-.It Pa /System/Library/LaunchDaemons/com.apple.syslogd.plist
+.It Pa /System/Library/LaunchDaemons/org.nextbsd.syslogd.plist
 launchd configuration file for
 .Nm syslogd
 .El

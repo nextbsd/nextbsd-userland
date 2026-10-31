@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.apple.syslogd</string>
+	<string>org.nextbsd.syslogd</string>
 	<!-- KeepAlive=true, matching Apple's shipped plist byte-for-byte.
 	     Do NOT set it false, and do not add RunAtLoad.
 

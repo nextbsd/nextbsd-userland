@@ -4,7 +4,7 @@
 # daemon skeleton: getifaddrs interface enumeration +
 # bootstrap_check_in(com.apple.IPConfiguration) + a sleep loop.
 # Builds /usr/sbin/ipconfigd; runs as a launchd-managed daemon under
-# the com.apple.IPConfiguration.plist in overlays/.
+# the org.nextbsd.IPConfiguration.plist in overlay/.
 #
 # Build:   cd src/IPConfiguration && make SYSROOT=/path/to/rootfs
 # Install: make DESTDIR=/path/to/rootfs install

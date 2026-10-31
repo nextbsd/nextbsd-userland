@@ -1,5 +1,5 @@
 # aslmanager — Apple's ASL log rotator. Phase J4 of the ASL port.
-# Invoked on demand by launchd (com.apple.aslmanager.plist) to age
+# Invoked on demand by launchd (org.nextbsd.aslmanager.plist) to age
 # out /var/log/asl/* into Archive/. Installed at /usr/sbin/.
 
 PROG=		aslmanager

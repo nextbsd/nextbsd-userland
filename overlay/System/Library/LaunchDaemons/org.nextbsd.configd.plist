@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  com.apple.configd.plist
+  org.nextbsd.configd.plist
 
   Boot-time launchd plist for configd, the SCDynamicStore
   configuration daemon (freebsd-launchd-mach port). configd hosts the
@@ -19,7 +19,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.apple.configd</string>
+    <string>org.nextbsd.configd</string>
     <key>ProgramArguments</key>
     <array>
         <string>/usr/sbin/configd</string>

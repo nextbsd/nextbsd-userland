@@ -6443,7 +6443,7 @@ job_keepalive(job_t j)
 	struct semaphoreitem *si;
 	struct machservice *ms;
 	bool good_exit = (WIFEXITED(j->last_exit_status) && WEXITSTATUS(j->last_exit_status) == 0);
-	bool is_not_kextd = (launchd_apple_internal || (strcmp(j->label, "com.apple.kextd") != 0));
+	bool is_not_kextd = (launchd_apple_internal || (strcmp(j->label, "org.nextbsd.kextd") != 0));
 
 	if (unlikely(j->mgr->shutting_down)) {
 		return false;

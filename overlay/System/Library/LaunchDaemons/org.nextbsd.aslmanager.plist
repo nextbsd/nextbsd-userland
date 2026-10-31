@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.apple.aslmanager</string>
+	<string>org.nextbsd.aslmanager</string>
 	<key>Program</key>
 	<string>/usr/sbin/aslmanager</string>
 	<key>ProgramArguments</key>
@@ -46,6 +46,9 @@
 	     (core.c:1095) always inserts LastExitStatus, so a job that never ran
 	     prints the same "-  0" as one that exited cleanly.
 	-->
+	<!-- The job label is NextBSD's (org.nextbsd.*, nextbsd-userland#437), but
+	     the Mach service name stays com.apple.aslmanager: clients look the
+	     service up by that exact string. Do not rename one to match the other. -->
 	<key>MachServices</key>
 	<dict>
 		<key>com.apple.aslmanager</key>

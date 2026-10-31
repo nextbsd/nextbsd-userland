@@ -9,18 +9,19 @@
  *
  * WHY org.nextbsd.* AND NOT com.apple.*:
  *
- * The shipped daemons keep Apple's exact labels — com.apple.configd,
- * com.apple.notifyd, com.apple.IPConfiguration — because the rule is "a daemon
- * modelling an Apple service inherits Apple's label", and because Apple-derived
- * code looks those labels up (a clean-room Security.framework carries
+ * Every NextBSD launchd job is labelled org.nextbsd.* (nextbsd-userland#437),
+ * including the daemons ported from Apple — org.nextbsd.configd,
+ * org.nextbsd.notifyd, org.nextbsd.IPConfiguration. Those daemons still check
+ * in Apple's Mach service names, because Apple-derived clients look the
+ * services up by exact string (a clean-room Security.framework carries
  * bootstrap_look_up("com.apple.securityd") in its source, for instance).
  *
- * Neither applies here. Apple's daemon is `wifid`; ours is `wland`. So
- * com.apple.wland would be a FABRICATED Apple label for a daemon Apple never
- * shipped — the worst of both worlds. And nothing Apple-derived looks this label
- * up: we write the `wlan` CLI, we write the System Preferences backend, and the
- * CoreWLAN-shaped ObjC API sits above the Mach line in Gershwin. Both ends are
- * ours, so the label is ours.
+ * Neither reason for an Apple service name applies here. Apple's daemon is
+ * `wifid`; ours is `wland`, so com.apple.wland would be a FABRICATED Apple name
+ * for a daemon Apple never shipped. And nothing Apple-derived looks this
+ * service up: we write the `wlan` CLI, we write the System Preferences backend,
+ * and the CoreWLAN-shaped ObjC API sits above the Mach line in Gershwin. Both
+ * ends are ours, so the service name is ours too.
  */
 #include "mach_service.h"
 #include "wland.h"			/* wland_got_term */

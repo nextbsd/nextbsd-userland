@@ -111,28 +111,28 @@ printf "  %-28s %-34s %s\n" SERVICE PROBE RESULT
 probe "com.apple.launchd" "launchctl list (RPC to PID 1)" launchctl list
 
 # syslogd: the ASL Mach service. Send AND read back.
-printf "  %-28s %-34s " "com.apple.syslogd" "syslog round-trip (send+read)"
+printf "  %-28s %-34s " "org.nextbsd.syslogd" "syslog round-trip (send+read)"
 if probe_syslogd; then
 	echo "OK"
 else
 	echo "WEDGED"
 	FAILED=$((FAILED + 1))
-	dump_wedge "com.apple.syslogd"
+	dump_wedge "org.nextbsd.syslogd"
 fi
 
 # mDNSResponder: a bounded browse. -t is honoured by our dns-sd; timeout backs
 # it up in case it is not.
 if have dns-sd; then
-	probe "com.apple.mDNSResponder" "dns-sd bounded query" dns-sd -t 5 -B _services._dns-sd._udp
+	probe "org.nextbsd.mDNSResponder" "dns-sd bounded query" dns-sd -t 5 -B _services._dns-sd._udp
 else
-	UNPROBED="$UNPROBED com.apple.mDNSResponder(no-dns-sd)"
+	UNPROBED="$UNPROBED org.nextbsd.mDNSResponder(no-dns-sd)"
 fi
 
 # IPConfiguration: ipconfig talks to ipconfigd over its Mach service.
 if have ipconfig; then
-	probe "com.apple.IPConfiguration" "ipconfig ifcount" ipconfig ifcount
+	probe "org.nextbsd.IPConfiguration" "ipconfig ifcount" ipconfig ifcount
 else
-	UNPROBED="$UNPROBED com.apple.IPConfiguration(no-ipconfig)"
+	UNPROBED="$UNPROBED org.nextbsd.IPConfiguration(no-ipconfig)"
 fi
 
 # --- deliberately UNPROBED, with the reason recorded ------------------------
@@ -140,20 +140,20 @@ fi
 # can currently exercise them. They are listed so the gap is visible rather
 # than silently counted as passing.
 #
-#   com.apple.notifyd          needs notifyutil / notifypoke (not installed).
-#                              This one matters most: syslogd's startup blocks
-#                              on notify RPCs, so notifyd is the prime suspect
-#                              for the whole wedge class and we cannot probe it
-#                              directly. Installing notifyutil would close the
-#                              single biggest hole here.
-#   com.apple.configd          needs scutil, not yet ported (see #64).
-#   com.apple.DiskArbitration  no client tool on the image.
-#   com.apple.hostnamed        no Mach client tool; hostname(1) reads the
-#                              kernel value, which does not exercise its port.
-#   org.nextbsd.wland          no client tool.
-#   com.apple.aslmanager       on-demand; exercised indirectly by syslogd.
-UNPROBED="$UNPROBED com.apple.notifyd(no-notifyutil) com.apple.configd(no-scutil)"
-UNPROBED="$UNPROBED com.apple.DiskArbitration com.apple.hostnamed org.nextbsd.wland"
+#   org.nextbsd.notifyd          needs notifyutil / notifypoke (not installed).
+#                                This one matters most: syslogd's startup blocks
+#                                on notify RPCs, so notifyd is the prime suspect
+#                                for the whole wedge class and we cannot probe it
+#                                directly. Installing notifyutil would close the
+#                                single biggest hole here.
+#   org.nextbsd.configd          needs scutil, not yet ported (see #64).
+#   org.nextbsd.DiskArbitration  no client tool on the image.
+#   org.nextbsd.hostnamed        no Mach client tool; hostname(1) reads the
+#                                kernel value, which does not exercise its port.
+#   org.nextbsd.wland            no client tool.
+#   org.nextbsd.aslmanager       on-demand; exercised indirectly by syslogd.
+UNPROBED="$UNPROBED org.nextbsd.notifyd(no-notifyutil) org.nextbsd.configd(no-scutil)"
+UNPROBED="$UNPROBED org.nextbsd.DiskArbitration org.nextbsd.hostnamed org.nextbsd.wland"
 
 log ""
 if [ -n "$UNPROBED" ]; then

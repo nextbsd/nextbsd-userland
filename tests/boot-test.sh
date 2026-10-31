@@ -289,7 +289,7 @@ if {$env(BOOT_TRACE) eq "1"} {
 loader_boot
 
 # Stage 1a: capture getty's boot banner. PAM port iter 4 (issue #99)
-# restored RunAtLoad on com.apple.hostnamed.plist so hostnamed runs
+# restored RunAtLoad on org.nextbsd.hostnamed.plist so hostnamed runs
 # at boot. Banner format: "<ostype>/<arch> (HOSTNAME) (console)", from getty's
 # \s/\m -- ostype is NextBSD after the kernel rebrand (FreeBSD upstream) and
 # arch follows the target (amd64/arm64/powerpc/...). Matched brand- AND
@@ -347,7 +347,7 @@ expect {
 # syslog(LOG_INFO, "login on %s as %s", ...). LOG_CONS means it reaches
 # /dev/console only when it CANNOT be delivered to syslogd. Our asl.conf
 # sends nothing to the console and the getty job declares no ordering
-# against com.apple.syslogd, so whether that line appears at all is a race
+# against org.nextbsd.syslogd, so whether that line appears at all is a race
 # the test used to depend on winning. It lost on arm64 under qemu while a
 # working shell sat on the console (nextbsd-userland#289). So on timeout,
 # probe for a shell before concluding anything. The probe is sent only

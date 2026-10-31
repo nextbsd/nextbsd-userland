@@ -7,7 +7,7 @@
 	<key>EnableTransactions</key>
 	<true/>
 	<key>Label</key>
-	<string>com.apple.notifyd</string>
+	<string>org.nextbsd.notifyd</string>
 	<!-- RunAtLoad added for FreeBSD port (Phase J runtime
 	     validation). Force eager start until launchd-842 MachServices
 	     lazy-spawn is verified working. -->

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  com.apple.IPConfiguration.plist
+  org.nextbsd.IPConfiguration.plist
 
   Boot-time launchd plist for ipconfigd (freebsd-launchd-mach
   IPConfiguration daemon). Apple runs IPConfiguration as a configd
@@ -24,7 +24,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.apple.IPConfiguration</string>
+    <string>org.nextbsd.IPConfiguration</string>
     <key>ProgramArguments</key>
     <array>
         <string>/usr/sbin/ipconfigd</string>
@@ -33,6 +33,9 @@
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <!-- The job label is NextBSD's (org.nextbsd.*, nextbsd-userland#437), but
+         the Mach service name stays com.apple.IPConfiguration: clients look the
+         service up by that exact string. Do not rename one to match the other. -->
     <key>MachServices</key>
     <dict>
         <key>com.apple.IPConfiguration</key>

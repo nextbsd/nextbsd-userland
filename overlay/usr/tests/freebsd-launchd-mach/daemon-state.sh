@@ -76,8 +76,8 @@ echo "--- end job table ---"
 
 # ------------------------------------------------------------ plist read --
 # Emit `key=value` for the TOP-LEVEL keys of a plist, with XML comments
-# stripped first. Comment stripping is not optional: com.apple.syslogd.plist's
-# header discusses "KeepAlive=true" in prose, and com.apple.aslmanager.plist's
+# stripped first. Comment stripping is not optional: org.nextbsd.syslogd.plist's
+# header discusses "KeepAlive=true" in prose, and org.nextbsd.aslmanager.plist's
 # discusses StartInterval -- a naive grep reads both as declarations and
 # classifies the job wrongly. Depth tracking matters for the same reason:
 # MachServices and EnvironmentVariables contain nested <key> elements
@@ -134,14 +134,14 @@ plist_keys() {
 # so the expectation has to be written down. This is that list, and it should
 # stay short, with a reason per entry.
 #
-#   com.apple.aslmanager  launchd demand-launches it once (syslogd's trigger
+#   org.nextbsd.aslmanager launchd demand-launches it once (syslogd's trigger
 #                         from db_asl_open at first store open) and it then
 #                         stays resident servicing later triggers. Apple's
 #                         managed path ran dispatch_main() and never returned;
 #                         ours blocks in mach_msg (aslmanager.c:run_managed).
 #                         macOS shows the same thing: aslmanager is up from
 #                         boot from a plist with no RunAtLoad/KeepAlive.
-RESIDENT_DEMAND="com.apple.aslmanager"
+RESIDENT_DEMAND="org.nextbsd.aslmanager"
 
 # ------------------------------------------------------------- the check --
 fails=""

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  com.apple.DiskArbitration.plist
+  org.nextbsd.DiskArbitration.plist
 
   Boot-time launchd plist for diskarbitrationd (freebsd-launchd-mach
   DiskArbitration daemon).
@@ -21,7 +21,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.apple.DiskArbitration</string>
+    <string>org.nextbsd.DiskArbitration</string>
     <key>ProgramArguments</key>
     <array>
         <string>/usr/sbin/diskarbitrationd</string>
@@ -30,6 +30,9 @@
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <!-- The job label is NextBSD's (org.nextbsd.*, nextbsd-userland#437), but
+         the Mach service name stays com.apple.DiskArbitration: clients look the
+         service up by that exact string. Do not rename one to match the other. -->
     <key>MachServices</key>
     <dict>
         <key>com.apple.DiskArbitration</key>

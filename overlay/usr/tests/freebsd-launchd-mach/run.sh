@@ -816,12 +816,12 @@ done
 # continuously from load.
 #
 # Deliberately EXCLUDED:
-#   com.apple.aslmanager  - MachServices-only with no KeepAlive, so it is
+#   org.nextbsd.aslmanager - MachServices-only with no KeepAlive, so it is
 #                           genuinely unstartable until on-demand Mach launch
 #                           works (#79). It becomes required once #83 lands.
-LAUNCHD_REQUIRED="com.apple.configd com.apple.notifyd com.apple.hostnamed \
-com.apple.mDNSResponder com.apple.IPConfiguration com.apple.kextd \
-com.apple.DiskArbitration com.apple.syslogd"
+LAUNCHD_REQUIRED="org.nextbsd.configd org.nextbsd.notifyd org.nextbsd.hostnamed \
+org.nextbsd.mDNSResponder org.nextbsd.IPConfiguration org.nextbsd.kextd \
+org.nextbsd.DiskArbitration org.nextbsd.syslogd"
 
 if kill -0 "$list_pid" 2>/dev/null; then
     kill -9 "$list_pid" 2>/dev/null || true
@@ -1838,8 +1838,8 @@ else
     ps auxww | grep -E 'notifyd' | grep -v grep || echo "(none in ps)"
     echo "--- launchctl list | grep notifyd (PID Status Label) ---"
     launchctl list 2>/dev/null | grep -iE 'notifyd' || echo "(notifyd not in launchctl list)"
-    echo "--- launchctl list com.apple.notifyd (LastExitStatus) ---"
-    launchctl list com.apple.notifyd 2>&1 | grep -iE 'PID|Status|LastExit|Label' || true
+    echo "--- launchctl list org.nextbsd.notifyd (LastExitStatus) ---"
+    launchctl list org.nextbsd.notifyd 2>&1 | grep -iE 'PID|Status|LastExit|Label' || true
     echo "=== end NOTIFYD-PROC diagnostics ==="
     echo "NOTIFYD-PROC-FAIL: notifyd not running"
     exit 1
@@ -2297,12 +2297,12 @@ fi
 # happens inside the test budget instead of at T1 = lease/2 (6 hours against a
 # real DHCP server, 12 hours against SLIRP's 86400s lease).
 #
-# This used to live in the image's com.apple.IPConfiguration.plist, which meant
+# This used to live in the image's org.nextbsd.IPConfiguration.plist, which meant
 # every INSTALLED machine renewed its lease every 5 seconds forever -- roughly
 # 8,600 DHCPREQUESTs per day per interface instead of 4. Inject it here, on the
 # test image only, so the knob keeps working exactly where it is wanted and
 # never ships.
-IPCFG_PLIST=/System/Library/LaunchDaemons/com.apple.IPConfiguration.plist
+IPCFG_PLIST=/System/Library/LaunchDaemons/org.nextbsd.IPConfiguration.plist
 # Where the boot-time instance's output ends in /var/log/ipconfigd.stderr
 # (#419). launchd opens that file in APPEND mode for every instance, so after
 # the reload below it holds the boot instance's log followed by the reloaded
@@ -3065,10 +3065,10 @@ demand_probe=/usr/tests/freebsd-launchd-mach/test_demand_launch
 
 if [ ! -x "$demand_probe" ]; then
     echo "ASLMANAGER-DEMAND-SKIP: test_demand_launch not installed"
-elif ! launchctl list 2>/dev/null | awk '$3 == "com.apple.aslmanager" { f = 1 } END { exit !f }'; then
-    echo "ASLMANAGER-DEMAND-SKIP: com.apple.aslmanager is not loaded"
+elif ! launchctl list 2>/dev/null | awk '$3 == "org.nextbsd.aslmanager" { f = 1 } END { exit !f }'; then
+    echo "ASLMANAGER-DEMAND-SKIP: org.nextbsd.aslmanager is not loaded"
 else
-    pid_before=$(launchctl list 2>/dev/null | awk '$3 == "com.apple.aslmanager" { print $1; exit }')
+    pid_before=$(launchctl list 2>/dev/null | awk '$3 == "org.nextbsd.aslmanager" { print $1; exit }')
     trig_before=$(grep -c "ASLMANAGER-TRIGGERED" "$asl_stderr" 2>/dev/null || echo 0)
     echo "    before: pid=$pid_before triggers=$trig_before"
 
@@ -3087,7 +3087,7 @@ else
         sleep 1
         i=$((i + 1))
     done
-    pid_after=$(launchctl list 2>/dev/null | awk '$3 == "com.apple.aslmanager" { print $1; exit }')
+    pid_after=$(launchctl list 2>/dev/null | awk '$3 == "org.nextbsd.aslmanager" { print $1; exit }')
 
     echo "--- $asl_stderr ---"
     cat "$asl_stderr" 2>/dev/null || echo "(file does not exist)"

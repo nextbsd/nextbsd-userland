@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.apple.hostnamed</string>
+	<string>org.nextbsd.hostnamed</string>
 
 	<!-- One-shot at boot. iter 1 synthesizes the hostname, publishes
 	     it to SCDynamicStore + kernel + notifyd, then exits. No
@@ -27,7 +27,7 @@
 	     invocations remain (covering the SCPrefs + DHCP fixture
 	     rounds in run.sh — those run after the boot-time one).
 
-	     NOTE: com.apple.syslogd.plist has a separate, unrelated
+	     NOTE: org.nextbsd.syslogd.plist has a separate, unrelated
 	     reason its RunAtLoad is dropped (the launch_msg LAUNCH_KEY_CHECKIN
 	     Mach IPC hang from the mach.ko interruptibility gap). That
 	     issue isn't fixed by the PAM port — syslogd stays dropped.

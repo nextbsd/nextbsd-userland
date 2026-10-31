@@ -19,7 +19,7 @@
 # either AF_UNIX (legacy libdns_sd) or Mach RPC for DNS-SD requests.
 #
 # Builds /usr/sbin/mDNSResponder; runs as a launchd-managed daemon
-# under com.apple.mDNSResponder.plist in overlays/.
+# under org.nextbsd.mDNSResponder.plist in overlay/.
 #
 # Build:   cd src/mDNSResponder && make SYSROOT=/path/to/rootfs
 # Install: make DESTDIR=/path/to/rootfs install

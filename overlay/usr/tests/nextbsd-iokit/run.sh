@@ -212,7 +212,7 @@ amd64|x86_64)
 	;;
 esac
 
-# kextd is now a boot-time launchd daemon (com.apple.kextd.plist, RunAtLoad,
+# kextd is now a boot-time launchd daemon (org.nextbsd.kextd.plist, RunAtLoad,
 # K3b/#217) that registers HOST_KEXTD_PORT, pushes the repo personalities, and
 # serves load requests. We DO NOT push again here: a manual one-shot `kextd`
 # push used to run at this point and masked a real bug — the *boot daemon's own*
@@ -272,7 +272,7 @@ if [ -x /usr/libexec/kextd ]; then
 	esac
 fi
 
-# K3b step 3 (#217): kextd AUTO-STARTS at boot (com.apple.kextd.plist,
+# K3b step 3 (#217): kextd AUTO-STARTS at boot (org.nextbsd.kextd.plist,
 # RunAtLoad System) — it registers HOST_KEXTD_PORT, pushes personalities, and
 # serves load requests. Its startup markers (kextd: listening / opening repo /
 # repo opened / pushed / ready) already appear in this serial log above, since
