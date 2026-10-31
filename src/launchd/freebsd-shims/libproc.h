@@ -15,8 +15,13 @@
  * that report "no data" (return 0) so launchd's process walks come
  * up empty rather than reading real FreeBSD process state — a native
  * sysctl(KERN_PROC) port is the proper follow-up. The one exception
- * is proc_terminate(), which maps cleanly onto kill(2). One-shot
- * stderr notes fire so the stubbed gaps stay visible.
+ * is proc_terminate(), which maps cleanly onto kill(2).
+ *
+ * The stubs are silent. launchd is PID 1 with stderr on the console,
+ * and NextBSD keeps the console quiet until getty or loginwindow on a
+ * non-verbose boot, so this header never writes to stderr (or to
+ * syslog, which isn't up yet when PID 1 first calls in). Callers
+ * already treat the zero / -1 results as "no data".
  */
 #ifndef _LIBPROC_H_SHIM_
 #define _LIBPROC_H_SHIM_
@@ -44,20 +49,15 @@
 #define PROC_DIRTY_IS_DIRTY		0x4
 #define PROC_DIRTY_LAUNCH_IS_IN_PROGRESS 0x8
 
-#ifndef _LIBPROC_SHIM_WARN
-#define _LIBPROC_SHIM_WARN(fn) do { \
-	static int _w = 0; \
-	if (!_w) { fprintf(stderr, \
-	    "libproc: " fn ": stub (no proc_info(2) on FreeBSD)\n"); \
-	    _w = 1; } \
-} while (0)
-#endif
-
+/*
+ * Dirty tracking: no jetsam or sudden termination on NextBSD, so a
+ * silent no-op success is correct, the same answer Darwin gives for a
+ * process that doesn't track dirty state.
+ */
 static __inline int
 proc_track_dirty(pid_t pid, uint32_t flags)
 {
 	(void)pid; (void)flags;
-	_LIBPROC_SHIM_WARN("proc_track_dirty");
 	return 0;
 }
 
@@ -65,7 +65,6 @@ static __inline int
 proc_set_dirty(pid_t pid, bool dirty)
 {
 	(void)pid; (void)dirty;
-	_LIBPROC_SHIM_WARN("proc_set_dirty");
 	return 0;
 }
 
@@ -75,7 +74,6 @@ proc_get_dirty(pid_t pid, uint32_t *flags)
 	(void)pid;
 	if (flags != NULL)
 		*flags = 0;
-	_LIBPROC_SHIM_WARN("proc_get_dirty");
 	return 0;
 }
 
@@ -91,7 +89,6 @@ static __inline int
 proc_listallpids(void *buffer, int buffersize)
 {
 	(void)buffer; (void)buffersize;
-	_LIBPROC_SHIM_WARN("proc_listallpids");
 	return 0;
 }
 
@@ -99,7 +96,6 @@ static __inline int
 proc_listchildpids(pid_t ppid, void *buffer, int buffersize)
 {
 	(void)ppid; (void)buffer; (void)buffersize;
-	_LIBPROC_SHIM_WARN("proc_listchildpids");
 	return 0;
 }
 
@@ -107,7 +103,6 @@ static __inline int
 proc_listpgrppids(pid_t pgrpid, void *buffer, int buffersize)
 {
 	(void)pgrpid; (void)buffer; (void)buffersize;
-	_LIBPROC_SHIM_WARN("proc_listpgrppids");
 	return 0;
 }
 
@@ -175,7 +170,6 @@ proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int buffersize)
 		return (int)sizeof(ui);
 	}
 	default:
-		_LIBPROC_SHIM_WARN("proc_pidinfo");
 		return 0;
 	}
 }
@@ -184,7 +178,6 @@ static __inline int
 proc_pid_rusage(pid_t pid, int flavor, rusage_info_t *buffer)
 {
 	(void)pid; (void)flavor; (void)buffer;
-	_LIBPROC_SHIM_WARN("proc_pid_rusage");
 	return -1;
 }
 
