@@ -8,10 +8,11 @@
  * Apple's kDADiskDescription* dictionary, logged as DA-DISK lines. Mounts it
  * did not make are adopted from EVFILT_FS + getmntinfo (DAVolume.c, #193):
  * each sets DAVolumePath on its media disk or becomes a disk of its own.
- * Nothing is probed or mounted yet.
+ * New media is probed through the filesystem bundles in
+ * /System/Library/Filesystems (DAFileSystem.c, DAProbe.c, #194), which sets
+ * the volume kind, name, UUID and repair state. Nothing is mounted yet.
  *
  * Plan (E15, nextbsd/nextbsd#471):
- *   C4 #194 — filesystem bundles and probing.
  *   C5 #195 — stage machine and mount executor (/Volumes).
  *   D1 #197 — DiskArbitration client library over MIG.
  *   D2 #198 — unmount/eject with approval.
@@ -19,6 +20,7 @@
 #include "da_iokit_subscribe.h"
 #include "DADisk.h"
 #include "DAGeom.h"
+#include "DAProbe.h"
 #include "DAVolume.h"
 
 #include <dispatch/dispatch.h>
@@ -109,6 +111,7 @@ main(int argc, char **argv)
 	if (da_queue != NULL) {
 		DAGeomInit(da_queue);
 		DAVolumeInit(da_queue);
+		DAProbeInit(da_queue);
 	} else
 		xlog("DA-GEOM-FAIL: dispatch_queue_create failed");
 

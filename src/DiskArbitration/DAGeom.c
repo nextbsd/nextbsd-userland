@@ -20,6 +20,7 @@
  */
 #include "DAGeom.h"
 #include "DADisk.h"
+#include "DAProbe.h"
 #include "DAVolume.h"
 #include "da_iokit_subscribe.h"
 
@@ -751,6 +752,7 @@ visit_provider(struct da_walk *w, struct gprovider *pp,
 			describe_part(disk, pp, table == NULL, content, parent);
 		(void)DADiskSetDeviceLinks(disk, links, nlinks);
 		disk->walk_gen = g_walk_gen;
+		disk->needs_probe = 1;
 		TAILQ_INSERT_TAIL(&gDADiskList, disk, link);
 		w->created++;
 		DADiskLog(disk);
@@ -895,6 +897,18 @@ restart_wholes:
 	if (!g_volumes_seeded || w.created != 0 || w.removed != 0) {
 		g_volumes_seeded = 1;
 		DAVolumeRefresh();
+	}
+
+	/*
+	 * Probe the new media (#194) after the mount refresh, so a disk that
+	 * is already mounted (the root) is known as mounted and skips the
+	 * clean check.
+	 */
+	TAILQ_FOREACH(disk, &gDADiskList, link) {
+		if (disk->needs_probe) {
+			disk->needs_probe = 0;
+			DAProbeDisk(disk);
+		}
 	}
 }
 

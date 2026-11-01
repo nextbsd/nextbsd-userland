@@ -954,6 +954,21 @@ needed_check "$DESTDIR/usr/sbin/diskarbitrationd" "libIOKit"
 echo "==> diskarbitrationd built"
 # DROPPED: datest (host-exec).
 
+# Filesystem bundles (#194): fsutil, the <name>.util probe/verify helper,
+# installed once and symlinked into each bundle. The Info.plists come from
+# overlay/System/Library/Filesystems.
+comp "fsutil (filesystem bundle helper)"
+for fs in msdos exfat ntfs ufs cd9660 udf; do
+    mkdir -p "$DESTDIR/System/Library/Filesystems/$fs.fs/Contents/Resources"
+done
+mkdir -p "$DESTDIR/usr/libexec"
+run_buildenv "make -C $SRC/DiskArbitration/fsutil DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/libexec/fsutil" || { echo "FAIL: /usr/libexec/fsutil not installed"; exit 1; }
+for fs in msdos exfat ntfs ufs cd9660 udf; do
+    test -L "$DESTDIR/System/Library/Filesystems/$fs.fs/Contents/Resources/$fs.util" || { echo "FAIL: $fs.util link missing"; exit 1; }
+done
+echo "==> fsutil built"
+
 # ---- hostnamed --------------------------------------------------------------
 # build.sh ~2506-2607. One-shot daemon; no MIG surface. bsd.prog.mk links
 # SC/CF/dispatch/BlocksRuntime/system_kernel via its Makefile (-fblocks).

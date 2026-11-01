@@ -64,6 +64,7 @@ DADiskCreate(const char *id, const char *geom_class)
 	disk = calloc(1, sizeof(*disk));
 	if (disk == NULL)
 		return (NULL);
+	disk->autodiskmount = 1;
 	disk->id = strdup(id);
 	disk->geom_class = strdup(geom_class);
 	disk->description = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
