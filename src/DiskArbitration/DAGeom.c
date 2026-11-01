@@ -15,12 +15,13 @@
  *   device-tree bus node     registry parent of that    /dev/ioregistry
  *   dev-name link            LABEL-class providers      /dev/gpt/EFI
  *
- * Log-only: disks are created, described, logged and removed. Nothing is
- * probed or mounted here (#194, #195).
+ * Disks are created, described, logged and removed here; each walk then
+ * signals the stage machine (DAStage.c), which probes (#194) and mounts
+ * (#195) the new ones.
  */
 #include "DAGeom.h"
 #include "DADisk.h"
-#include "DAProbe.h"
+#include "DAStage.h"
 #include "DAVolume.h"
 #include "da_iokit_subscribe.h"
 
@@ -752,7 +753,6 @@ visit_provider(struct da_walk *w, struct gprovider *pp,
 			describe_part(disk, pp, table == NULL, content, parent);
 		(void)DADiskSetDeviceLinks(disk, links, nlinks);
 		disk->walk_gen = g_walk_gen;
-		disk->needs_probe = 1;
 		TAILQ_INSERT_TAIL(&gDADiskList, disk, link);
 		w->created++;
 		DADiskLog(disk);
@@ -810,6 +810,7 @@ da_geom_walk(void)
 			g_volumes_seeded = 1;
 			DAVolumeRefresh();
 		}
+		DAStageSignal();
 		return;
 	}
 
@@ -900,16 +901,11 @@ restart_wholes:
 	}
 
 	/*
-	 * Probe the new media (#194) after the mount refresh, so a disk that
-	 * is already mounted (the root) is known as mounted and skips the
-	 * clean check.
+	 * Stage the new media (#195): probe (#194), then mount. After the
+	 * mount refresh, so a disk that is already mounted (the root) is
+	 * known as mounted, skips the clean check and is not mounted again.
 	 */
-	TAILQ_FOREACH(disk, &gDADiskList, link) {
-		if (disk->needs_probe) {
-			disk->needs_probe = 0;
-			DAProbeDisk(disk);
-		}
-	}
+	DAStageSignal();
 }
 
 /* --- scheduling ----------------------------------------------------------- */

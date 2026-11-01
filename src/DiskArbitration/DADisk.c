@@ -7,6 +7,7 @@
  * file owns allocation, the global disk list and the DA-DISK log line.
  */
 #include "DADisk.h"
+#include "DAFileSystem.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -17,6 +18,8 @@
 struct da_disk_list gDADiskList = TAILQ_HEAD_INITIALIZER(gDADiskList);
 
 int gDALogDebug;
+
+static uint64_t g_next_serial;
 
 static void
 dalogv(const char *fmt, va_list ap)
@@ -65,6 +68,13 @@ DADiskCreate(const char *id, const char *geom_class)
 	if (disk == NULL)
 		return (NULL);
 	disk->autodiskmount = 1;
+	disk->serial = ++g_next_serial;
+	/*
+	 * Apple's DADiskCreateFromIOMedia: every disk may be mounted
+	 * automatically unless something says otherwise (the probe, for a
+	 * bundle entry with autodiskmount=false).
+	 */
+	disk->state = _kDADiskStateMountAutomatic;
 	disk->id = strdup(id);
 	disk->geom_class = strdup(geom_class);
 	disk->description = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
@@ -86,6 +96,7 @@ DADiskRelease(struct da_disk *disk)
 		return;
 	if (disk->description != NULL)
 		CFRelease(disk->description);
+	DAFileSystemCandidatesFree(disk->filesystem, 1);
 	for (i = 0; i < DA_DISK_LINK_MAX; i++)
 		free(disk->device_link[i]);
 	free(disk->id);

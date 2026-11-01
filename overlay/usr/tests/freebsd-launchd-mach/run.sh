@@ -2632,11 +2632,12 @@ da_iokit_gate()
     echo "=== diskarbitrationd.stderr (tail -40) ==="
     tail -40 "$log" 2>/dev/null
     echo "==="
-    # The disk model (#192), adopted mounts (#193) and probes (#194), for
-    # the boot log only: these daemon lines start with "diskarbitrationd", so nb-tally
-    # does not count them.
-    echo "=== diskarbitrationd disk model (DA-DISK/GEOM/VOLUME/VFS/FS/PROBE lines) ==="
-    grep -E 'DA-(DISK|GEOM|VOLUME|VFS|FS|PROBE)' "$log" 2>/dev/null | tail -80
+    # The disk model (#192), adopted mounts (#193), probes (#194) and the
+    # stage machine, mounts and /Volumes (#195), for the boot log only:
+    # these daemon lines start with "diskarbitrationd", so nb-tally does not
+    # count them.
+    echo "=== diskarbitrationd disk model (DA-DISK/GEOM/VOLUME(S)/VFS/FS/PROBE/PREFS/STAGE/MOUNT lines) ==="
+    grep -E 'DA-(DISK|GEOM|VOLUME|VFS|FS|PROBE|PREFS|STAGE|MOUNT)' "$log" 2>/dev/null | tail -80
     echo "==="
 
     # A hard registration failure gates regardless of anything else.

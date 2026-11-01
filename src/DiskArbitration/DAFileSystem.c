@@ -9,6 +9,7 @@
  * Filesystems or /Library/Filesystems.
  */
 #include "DAFileSystem.h"
+#include "DASupport.h"
 #include "loadable_fs.h"
 
 #include <sys/param.h>
@@ -37,6 +38,7 @@ candidate_clear(struct da_probe_candidate *c)
 	free(c->probe_exec);
 	free(c->probe_args);
 	free(c->repair_exec);
+	free(c->mount_exec);
 	if (c->properties != NULL)
 		CFRelease(c->properties);
 	memset(c, 0, sizeof(*c));
@@ -83,51 +85,9 @@ resolve_exec(const char *bundle, const char *name)
 	return (path);
 }
 
-static CFDictionaryRef
-read_plist(const char *path)
-{
-	CFDictionaryRef plist = NULL;
-	CFDataRef data;
-	struct stat st;
-	UInt8 *buf;
-	ssize_t n;
-	int fd;
-
-	fd = open(path, O_RDONLY | O_CLOEXEC);
-	if (fd < 0)
-		return (NULL);
-	if (fstat(fd, &st) != 0 || st.st_size <= 0 || st.st_size > 1 << 20) {
-		(void)close(fd);
-		return (NULL);
-	}
-	buf = malloc((size_t)st.st_size);
-	if (buf == NULL) {
-		(void)close(fd);
-		return (NULL);
-	}
-	n = read(fd, buf, (size_t)st.st_size);
-	(void)close(fd);
-	if (n != st.st_size) {
-		free(buf);
-		return (NULL);
-	}
-	data = CFDataCreate(kCFAllocatorDefault, buf, (CFIndex)n);
-	free(buf);
-	if (data == NULL)
-		return (NULL);
-	plist = CFPropertyListCreateWithData(kCFAllocatorDefault, data,
-	    kCFPropertyListImmutable, NULL, NULL);
-	CFRelease(data);
-	if (plist != NULL && CFGetTypeID(plist) != CFDictionaryGetTypeID()) {
-		CFRelease(plist);
-		plist = NULL;
-	}
-	return (plist);
-}
-
-/* The first personality's FSRepairExecutable, resolved. */
+/* The first personality's executable under `key`, resolved. */
 static char *
-repair_exec(const char *bundle, CFDictionaryRef info)
+personality_exec(const char *bundle, CFDictionaryRef info, CFStringRef key)
 {
 	CFDictionaryRef pers;
 	CFIndex i, n;
@@ -145,8 +105,7 @@ repair_exec(const char *bundle, CFDictionaryRef info)
 	for (i = 0; i < n && path == NULL; i++) {
 		if (CFGetTypeID(vals[i]) != CFDictionaryGetTypeID())
 			continue;
-		name = cf_cstring(CFDictionaryGetValue(vals[i],
-		    CFSTR("FSRepairExecutable")));
+		name = cf_cstring(CFDictionaryGetValue(vals[i], key));
 		path = resolve_exec(bundle, name);
 		free(name);
 	}
@@ -160,12 +119,14 @@ load_bundle(const char *bundle, struct da_probe_candidate **list,
     size_t *count, size_t *cap)
 {
 	CFDictionaryRef info, types;
-	char path[MAXPATHLEN], *kind, *repair;
+	CFArrayRef impl;
+	char path[MAXPATHLEN], *kind, *repair, *mount;
+	int user_impl = 0;
 	const void **vals;
 	CFIndex i, n;
 
 	(void)snprintf(path, sizeof(path), "%s/Contents/Info.plist", bundle);
-	info = read_plist(path);
+	info = DAPropertyListCreateFromFile(path);
 	if (info == NULL) {
 		DALog("DA-FS: %s: no readable Contents/Info.plist", bundle);
 		return;
@@ -179,7 +140,14 @@ load_bundle(const char *bundle, struct da_probe_candidate **list,
 		CFRelease(info);
 		return;
 	}
-	repair = repair_exec(bundle, info);
+	repair = personality_exec(bundle, info, CFSTR("FSRepairExecutable"));
+	mount = personality_exec(bundle, info, CFSTR("FSMountExecutable"));
+	impl = CFDictionaryGetValue(info, CFSTR("FSImplementation"));
+	if (impl != NULL && CFGetTypeID(impl) == CFArrayGetTypeID() &&
+	    CFArrayContainsValue(impl, CFRangeMake(0, CFArrayGetCount(impl)),
+	    CFSTR("user")) && !CFArrayContainsValue(impl,
+	    CFRangeMake(0, CFArrayGetCount(impl)), CFSTR("kernel")))
+		user_impl = 1;
 
 	n = CFDictionaryGetCount(types);
 	vals = calloc((size_t)n + 1, sizeof(*vals));
@@ -224,6 +192,8 @@ load_bundle(const char *bundle, struct da_probe_candidate **list,
 		    CFSTR("FSProbeArguments")));
 		c->probe_args = args != NULL ? args : strdup("-p");
 		c->repair_exec = repair != NULL ? strdup(repair) : NULL;
+		c->mount_exec = mount != NULL ? strdup(mount) : NULL;
+		c->user_impl = user_impl;
 		order = CFDictionaryGetValue(t, CFSTR("FSProbeOrder"));
 		if (order != NULL && CFGetTypeID(order) == CFNumberGetTypeID())
 			(void)CFNumberGetValue(order, kCFNumberIntType, &ord);
@@ -236,6 +206,7 @@ load_bundle(const char *bundle, struct da_probe_candidate **list,
 	}
 	free(vals);
 	free(repair);
+	free(mount);
 	free(kind);
 	CFRelease(info);
 }
@@ -369,6 +340,32 @@ candidate_matches(const struct da_probe_candidate *c,
 	return (match);
 }
 
+static void
+candidate_copy(struct da_probe_candidate *o, const struct da_probe_candidate *c)
+{
+	o->bundle = strdup(c->bundle);
+	o->kind = strdup(c->kind);
+	o->probe_exec = strdup(c->probe_exec);
+	o->probe_args = strdup(c->probe_args);
+	o->repair_exec = c->repair_exec != NULL ? strdup(c->repair_exec) : NULL;
+	o->mount_exec = c->mount_exec != NULL ? strdup(c->mount_exec) : NULL;
+	o->user_impl = c->user_impl;
+	o->order = c->order;
+	o->autodiskmount = c->autodiskmount;
+	o->properties = CFRetain(c->properties);
+}
+
+struct da_probe_candidate *
+DAFileSystemCandidateCopy(const struct da_probe_candidate *c)
+{
+	struct da_probe_candidate *o;
+
+	o = calloc(1, sizeof(*o));
+	if (o != NULL)
+		candidate_copy(o, c);
+	return (o);
+}
+
 struct da_probe_candidate *
 DAFileSystemCopyCandidates(const struct da_disk *disk, size_t *count)
 {
@@ -381,20 +378,10 @@ DAFileSystemCopyCandidates(const struct da_disk *disk, size_t *count)
 		return (NULL);
 	for (i = 0; i < g_count; i++) {
 		const struct da_probe_candidate *c = &g_list[i];
-		struct da_probe_candidate *o;
 
 		if (c->probe_exec == NULL || !candidate_matches(c, disk))
 			continue;
-		o = &out[n++];
-		o->bundle = strdup(c->bundle);
-		o->kind = strdup(c->kind);
-		o->probe_exec = strdup(c->probe_exec);
-		o->probe_args = strdup(c->probe_args);
-		o->repair_exec = c->repair_exec != NULL ?
-		    strdup(c->repair_exec) : NULL;
-		o->order = c->order;
-		o->autodiskmount = c->autodiskmount;
-		o->properties = CFRetain(c->properties);
+		candidate_copy(&out[n++], c);
 	}
 	*count = n;
 	return (out);

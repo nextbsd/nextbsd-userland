@@ -20,8 +20,10 @@ void	DAProbeInit(dispatch_queue_t queue);
 /*
  * Probe `disk` (on the daemon queue). The helpers run on a background
  * queue; the result is applied back on the daemon queue if the disk is
- * still the same one.
+ * still the same one, which clears kDADiskStateCommandActive and signals
+ * the stage machine. Returns -1, having started nothing, when the disk has
+ * no name or the probe could not be set up.
  */
-void	DAProbeDisk(struct da_disk *disk);
+int	DAProbeDisk(struct da_disk *disk);
 
 #endif /* DISKARBITRATION_DAPROBE_H */

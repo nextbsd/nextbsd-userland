@@ -8,19 +8,26 @@
  * Apple's kDADiskDescription* dictionary, logged as DA-DISK lines. Mounts it
  * did not make are adopted from EVFILT_FS + getmntinfo (DAVolume.c, #193):
  * each sets DAVolumePath on its media disk or becomes a disk of its own.
- * New media is probed through the filesystem bundles in
- * /System/Library/Filesystems (DAFileSystem.c, DAProbe.c, #194), which sets
- * the volume kind, name, UUID and repair state. Nothing is mounted yet.
+ * New media walks Apple's stage machine (DAStage.c, #195): it is probed
+ * through the filesystem bundles in /System/Library/Filesystems
+ * (DAFileSystem.c, DAProbe.c, #194), which sets the volume kind, name, UUID
+ * and repair state, and then mounted on /Volumes/<name> with Apple's
+ * untrusted-media defaults (DAMount.c, DAMountHelper.c, DACommand.c).
+ * Dirty volumes are never repaired automatically; they mount read-only.
+ * The daemon owns /Volumes: it creates and sweeps it at startup.
  *
  * Plan (E15, nextbsd/nextbsd#471):
- *   C5 #195 — stage machine and mount executor (/Volumes).
+ *   C6 #196 — /etc/fstab mount map.
  *   D1 #197 — DiskArbitration client library over MIG.
  *   D2 #198 — unmount/eject with approval.
+ *   D4 #199 — console user: deferred mounts, owner.
  */
 #include "da_iokit_subscribe.h"
 #include "DADisk.h"
 #include "DAGeom.h"
+#include "DAMount.h"
 #include "DAProbe.h"
+#include "DAStage.h"
 #include "DAVolume.h"
 
 #include <dispatch/dispatch.h>
@@ -104,11 +111,20 @@ main(int argc, char **argv)
 	    "(receive right=0x%x)", (unsigned)svc);
 
 	/*
-	 * One serial queue for the disk model: the GEOM walks and the mount
-	 * refreshes (#193) run there, and the MIG server (#197) joins it.
+	 * /Volumes before anything can mount on it (Apple's
+	 * __DAMainCreateMountPointFolder, called from main).
+	 */
+	DAMountPointFolderCreate();
+
+	/*
+	 * One serial queue for the disk model: the GEOM walks, the mount
+	 * refreshes (#193) and the stage machine (#195) run there, and the
+	 * MIG server (#197) joins it.
 	 */
 	da_queue = dispatch_queue_create("org.nextbsd.diskarbitrationd", NULL);
 	if (da_queue != NULL) {
+		DAStageInit(da_queue);
+		DAMountInit(da_queue);
 		DAGeomInit(da_queue);
 		DAVolumeInit(da_queue);
 		DAProbeInit(da_queue);
