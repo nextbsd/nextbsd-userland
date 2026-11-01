@@ -4,8 +4,8 @@
  *
  * The C counterpart of the preference half of Apple's DASupport.m
  * (DAPreferenceListRefresh, the kDAPreference* keys) plus the console-user
- * input DAMount.c asks for. #196 adds the /etc/fstab mount map here, as
- * Apple keeps it in DASupport.m too.
+ * input DAMount.c asks for, and the /etc/fstab mount map (#196), which
+ * Apple keeps in DASupport.m too.
  */
 #ifndef DISKARBITRATION_DASUPPORT_H
 #define DISKARBITRATION_DASUPPORT_H
@@ -69,5 +69,38 @@ CFDictionaryRef	DAPropertyListCreateFromFile(const char *path);
  * other change.
  */
 int		DAConsoleUserGet(uid_t *uid, gid_t *gid);
+
+/* --- the /etc/fstab mount map (#196) -------------------------------------- */
+
+/*
+ * Apple's gDAMountMapList1: one CFDictionary per /etc/fstab line whose spec
+ * is UUID=, LABEL= or DEVICE=, in file order. Keys are Apple's:
+ *   DAProbeID         CFUUID (UUID=), CFString (LABEL=) or CFDictionary
+ *                     (DEVICE=, an XML property list); always present
+ *   DAProbeKind       CFString, the fs_vfstype unless it is "auto"
+ *   DAMountAutomatic  CFBoolean, from "auto" / "noauto"; absent if neither
+ *   DAMountOptions    CFString, every other fs_mntops token, verbatim
+ *   DAMountPath       CFString, fs_file unless it is "none" (Apple keeps a
+ *                     CFURL; the mount executor here takes a path)
+ * plus one NextBSD key for log lines:
+ *   _DAMountMapSpec   CFString, the fs_spec as written ("LABEL=STICK")
+ * The list is empty, never NULL, after DAMountMapListRefresh1.
+ */
+#define kDAMountMapMountAutomaticKey	CFSTR("DAMountAutomatic")
+#define kDAMountMapMountOptionsKey	CFSTR("DAMountOptions")
+#define kDAMountMapMountPathKey		CFSTR("DAMountPath")
+#define kDAMountMapProbeIDKey		CFSTR("DAProbeID")
+#define kDAMountMapProbeKindKey		CFSTR("DAProbeKind")
+#define kDAMountMapSpecKey		CFSTR("_DAMountMapSpec")
+
+extern CFMutableArrayRef gDAMountMapList1;
+
+/*
+ * Apple's DAMountMapListRefresh1: rebuild gDAMountMapList1 from /etc/fstab
+ * when the file's mtime changed (a missing file is an empty map and logs
+ * nothing). There is no file watch: called at startup and at the first
+ * probe after idle, so an edit takes effect at the next disk event.
+ */
+void		DAMountMapListRefresh1(void);
 
 #endif /* DISKARBITRATION_DASUPPORT_H */

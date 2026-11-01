@@ -6,8 +6,9 @@
  * command, runs the first stage it has not done:
  *
  *   Probe     the fs-bundle probe (DAProbe.c, #194), asynchronous; the
- *             first probe after idle re-reads the bundles and preferences
- *             (#196 adds the /etc/fstab map refresh at the same point);
+ *             first probe after idle re-reads the bundles, the preferences
+ *             and the /etc/fstab mount map (#196), each only if its file
+ *             changed;
  *   Peek      clients' DARegisterDiskPeekCallback (#197); until sessions
  *             exist the stage only marks itself done;
  *   Mount     DAMountWithArguments(..., "automatic") unless the
@@ -57,7 +58,7 @@ stage_probe(struct da_disk *disk)
 	if (g_fresh) {
 		DAFileSystemListRefresh();
 		DAPreferenceListRefresh();
-		/* #196: DAMountMapListRefresh1(). */
+		DAMountMapListRefresh1();
 		g_fresh = 0;
 	}
 	disk->state |= kDADiskStateStagedProbe | kDADiskStateCommandActive;
@@ -192,5 +193,7 @@ DAStageInit(dispatch_queue_t queue)
 {
 	g_queue = queue;
 	DAPreferenceListRefresh();
+	/* Apple's DAMain.c reads the mount map at startup too. */
+	DAMountMapListRefresh1();
 	g_fresh = 0;
 }

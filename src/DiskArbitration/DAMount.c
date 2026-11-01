@@ -52,9 +52,29 @@
  * and removes only the mount points it made (gDAMountPointList), once
  * they are no longer mounted on.
  *
- * #196 adds the /etc/fstab map between steps 1 and 2 (its options go in
- * before the trust defaults, its mount point is used when the caller gave
- * none); #199 adds the console user to step 2.
+ * Before step 1 the /etc/fstab mount map (#196, Apple's gDAMountMapList1
+ * scan) is consulted; the first entry, in file order, whose kind filter
+ * passes and whose id matches wins:
+ *   UUID=    DAVolumeUUID, as on Apple; NextBSD also accepts DAMediaUUID
+ *            (the GPT partition UUID), since fsutil's -k reports that UUID
+ *            today and a filesystem serial later;
+ *   LABEL=   DAVolumeName, exactly (fstab's \040 is a space);
+ *   DEVICE=  every key of the XML dictionary equals the disk's description
+ *            value (Apple: IOServiceMatchPropertyTable on the IOMedia). Keys
+ *            are kDADiskDescription* names; the IOMedia property names
+ *            Apple users write (Content, UUID, BSD Name, ...) are accepted
+ *            as aliases for the DAMedia* key they stand for.
+ * For an automatic mount, "auto" sets _kDADiskStateMountAutomatic and
+ * NoDefer on the disk (so it mounts even where the bundle said
+ * autodiskmount=false, and before a console user exists) and "noauto"
+ * cancels it; a client mount ignores both, as on Apple. The entry's options
+ * go after the helper and trust defaults, so mount(8)'s last-wins rule lets
+ * a fstab "suid" or "-u=1001" override them (Apple inserts its defaults in
+ * front for the same effect). Its mount point is used only when the caller
+ * gave none; like Apple, the daemon does not create it, so a missing
+ * directory fails the mount. A dirty volume forced read-only also loses a
+ * fstab "rw" (NextBSD's never-repair rule; Apple repairs first). #199 adds
+ * the console user to step 2.
  */
 #include "DAMount.h"
 #include "DACommand.h"
@@ -70,6 +90,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fstab.h>
 #include <grp.h>
 #include <limits.h>
 #include <paths.h>
@@ -374,6 +395,159 @@ mounted_elsewhere(const struct da_disk *disk, char *on, size_t len)
 	return (0);
 }
 
+/* --- the /etc/fstab mount map (#196) -------------------------------------- */
+
+/* Apple's DADiskCompareDescription, with a UUID string matching a CFUUID. */
+static int
+desc_equal(const struct da_disk *disk, CFStringRef key, CFTypeRef value)
+{
+	CFTypeRef have = DADiskGetDescription(disk, key);
+	CFUUIDRef uuid;
+	int equal;
+
+	if (have == NULL || value == NULL)
+		return (0);
+	if (CFEqual(have, value))
+		return (1);
+	if (CFGetTypeID(have) != CFUUIDGetTypeID() ||
+	    CFGetTypeID(value) != CFStringGetTypeID())
+		return (0);
+	uuid = CFUUIDCreateFromString(kCFAllocatorDefault, (CFStringRef)value);
+	if (uuid == NULL)
+		return (0);
+	equal = CFEqual(have, uuid);
+	CFRelease(uuid);
+	return (equal);
+}
+
+/* IOMedia property names (Apple's DEVICE= matches the IOMedia) -> DA keys. */
+static const struct {
+	const char	*iomedia;
+	CFStringRef	 key;
+} device_alias[] = {
+	{ "BSD Name",	kDADiskDescriptionMediaBSDNameKey },
+	{ "Content",	kDADiskDescriptionMediaContentKey },
+	{ "Ejectable",	kDADiskDescriptionMediaEjectableKey },
+	{ "Leaf",	kDADiskDescriptionMediaLeafKey },
+	{ "Removable",	kDADiskDescriptionMediaRemovableKey },
+	{ "Size",	kDADiskDescriptionMediaSizeKey },
+	{ "UUID",	kDADiskDescriptionMediaUUIDKey },
+	{ "Whole",	kDADiskDescriptionMediaWholeKey },
+	{ "Writable",	kDADiskDescriptionMediaWritableKey },
+};
+
+struct device_match {
+	const struct da_disk	*disk;
+	int			 match;
+};
+
+static void
+device_match_one(const void *key, const void *value, void *context)
+{
+	struct device_match *m = context;
+	CFStringRef k = key;
+	size_t i;
+
+	if (!m->match)
+		return;
+	if (CFGetTypeID(k) != CFStringGetTypeID()) {
+		m->match = 0;
+		return;
+	}
+	for (i = 0; i < sizeof(device_alias) / sizeof(device_alias[0]); i++) {
+		char name[32];
+
+		if (CFStringGetCString(k, name, sizeof(name),
+		    kCFStringEncodingUTF8) &&
+		    strcmp(name, device_alias[i].iomedia) == 0) {
+			k = device_alias[i].key;
+			break;
+		}
+	}
+	m->match = desc_equal(m->disk, k, value);
+}
+
+/* IOServiceMatchPropertyTable over the description dictionary. */
+static int
+device_match(const struct da_disk *disk, CFDictionaryRef table)
+{
+	struct device_match m = { disk, 1 };
+
+	if (CFDictionaryGetCount(table) == 0)
+		return (0);
+	CFDictionaryApplyFunction(table, device_match_one, &m);
+	return (m.match);
+}
+
+/* The gDAMountMapList1 scan of Apple's DAMountWithArguments. */
+static CFDictionaryRef
+mount_map_find(const struct da_disk *disk, const char *kind)
+{
+	CFIndex count, index;
+	CFStringRef k;
+
+	if (gDAMountMapList1 == NULL)
+		return (NULL);
+	k = CFStringCreateWithCString(kCFAllocatorDefault, kind,
+	    kCFStringEncodingUTF8);
+	if (k == NULL)
+		return (NULL);
+	count = CFArrayGetCount(gDAMountMapList1);
+	for (index = 0; index < count; index++) {
+		CFDictionaryRef map;
+		CFTypeRef id, filter;
+
+		map = CFArrayGetValueAtIndex(gDAMountMapList1, index);
+		id = CFDictionaryGetValue(map, kDAMountMapProbeIDKey);
+		filter = CFDictionaryGetValue(map, kDAMountMapProbeKindKey);
+		if (id == NULL || (filter != NULL && !CFEqual(filter, k)))
+			continue;
+		if (CFGetTypeID(id) == CFUUIDGetTypeID()) {
+			if (desc_equal(disk, kDADiskDescriptionVolumeUUIDKey,
+			    id) || desc_equal(disk,
+			    kDADiskDescriptionMediaUUIDKey, id))
+				break;
+		} else if (CFGetTypeID(id) == CFStringGetTypeID()) {
+			if (desc_equal(disk, kDADiskDescriptionVolumeNameKey,
+			    id))
+				break;
+		} else if (CFGetTypeID(id) == CFDictionaryGetTypeID()) {
+			if (device_match(disk, id))
+				break;
+		}
+	}
+	CFRelease(k);
+	return (index < count ?
+	    CFArrayGetValueAtIndex(gDAMountMapList1, index) : NULL);
+}
+
+static void
+map_cstring(CFDictionaryRef map, CFStringRef key, char *buf, size_t len)
+{
+	CFTypeRef v = CFDictionaryGetValue(map, key);
+
+	buf[0] = '\0';
+	if (v != NULL && CFGetTypeID(v) == CFStringGetTypeID() &&
+	    !CFStringGetCString(v, buf, (CFIndex)len, kCFStringEncodingUTF8))
+		buf[0] = '\0';
+}
+
+/* Drop every `option` token from a comma-separated list. */
+static void
+option_remove(char *list, size_t len, const char *option)
+{
+	char *copy, *s, *w;
+
+	if ((copy = strdup(list)) == NULL)
+		return;
+	list[0] = '\0';
+	s = copy;
+	while ((w = strsep(&s, ",")) != NULL)
+		if (strcmp(w, option) != 0)
+			(void)DAMountOptionAppend(list, len, w);
+	free(copy);
+}
+
 /* --- the mount ------------------------------------------------------------ */
 
 struct da_mount_context {
@@ -449,6 +623,10 @@ DAMountWithArguments(struct da_disk *disk, const char *mountpoint,
 	struct da_mount_context *ctx = NULL;
 	struct xvfsconf vfc;
 	char on[MNAMELEN], prog[MAXPATHLEN + 16], mountprog[MAXPATHLEN];
+	char user[sizeof(args.options)], mapopt[sizeof(args.options)];
+	char mappath[MAXPATHLEN], spec[1024];
+	CFDictionaryRef map;
+	CFTypeRef mapauto = NULL;
 	const char *vfs;
 	int status = 0, force = 0, trusted, decided;
 	uid_t uid;
@@ -468,7 +646,11 @@ DAMountWithArguments(struct da_disk *disk, const char *mountpoint,
 		goto out;
 	}
 
-	/* Caller's options; "force" is Apple's argument, not mount's. */
+	/*
+	 * Caller's options; "force" is Apple's argument, not mount's. They
+	 * go after the helper and trust defaults below, as on Apple.
+	 */
+	user[0] = '\0';
 	if (options != NULL) {
 		char *copy = strdup(options), *s = copy, *w;
 
@@ -476,16 +658,47 @@ DAMountWithArguments(struct da_disk *disk, const char *mountpoint,
 			if (strcmp(w, "force") == 0)
 				force = 1;
 			else
-				(void)DAMountOptionAppend(args.options,
-				    sizeof(args.options), w);
+				(void)DAMountOptionAppend(user, sizeof(user),
+				    w);
 		}
 		free(copy);
 	}
 
-	/* #196: the /etc/fstab map is consulted here. */
+	/* The /etc/fstab mount map (Apple's gDAMountMapList1 scan). */
+	map = mount_map_find(disk, fs->kind);
+	if (map != NULL) {
+		map_cstring(map, kDAMountMapSpecKey, spec, sizeof(spec));
+		map_cstring(map, kDAMountMapMountOptionsKey, mapopt,
+		    sizeof(mapopt));
+		map_cstring(map, kDAMountMapMountPathKey, mappath,
+		    sizeof(mappath));
+		if (automatic) {
+			mapauto = CFDictionaryGetValue(map,
+			    kDAMountMapMountAutomaticKey);
+			if (mapauto == kCFBooleanTrue)
+				disk->state |= _kDADiskStateMountAutomatic |
+				    _kDADiskStateMountAutomaticNoDefer;
+		}
+		/* Apple inserts the map's options in front of the caller's. */
+		if (mapopt[0] != '\0')
+			(void)DAMountOptionPrepend(user, sizeof(user), mapopt);
+		if (mountpoint == NULL && mappath[0] != '\0')
+			mountpoint = mappath;
+		DALog("DA-FSTAB: %s matches %s entry %s%s%s%s%s", disk->id,
+		    _PATH_FSTAB, spec, mapauto == kCFBooleanTrue ? ", auto" :
+		    mapauto == kCFBooleanFalse ? ", noauto" : "",
+		    mapopt[0] != '\0' ? ", options " : "", mapopt,
+		    mountpoint == mappath ? ", mount point from fstab" : "");
+	}
 
 	/* 1-2: may this mount happen automatically now? */
 	if (automatic) {
+		if (mapauto == kCFBooleanFalse) {
+			DALog("DA-MOUNT: %s not mounted automatically: %s says "
+			    "noauto", disk->id, _PATH_FSTAB);
+			status = ECANCELED;
+			goto out;
+		}
 		decided = -1;
 		if ((disk->state & _kDADiskStateMountAutomatic) == 0)
 			decided = 0;
@@ -543,8 +756,12 @@ DAMountWithArguments(struct da_disk *disk, const char *mountpoint,
 			    sizeof(mountprog));
 	}
 
-	/* 3-4: read-only media, trust, filesystem options. */
+	/*
+	 * 3-4: read-only media, trust, filesystem options; then the fstab
+	 * map's and the caller's, which win under mount(8)'s last-wins rule.
+	 */
 	DAMountHelperOptions(fs->kind, disk->user_uid, disk->user_gid, &args);
+	(void)DAMountOptionAppend(args.options, sizeof(args.options), user);
 	trusted = DAMountGetPreference(disk, kDAMountPreferenceTrust);
 	if (!trusted) {
 		if (DAPreferenceGetBool(kDAPreferenceMountNoExecuteUntrustedKey,
@@ -573,6 +790,8 @@ DAMountWithArguments(struct da_disk *disk, const char *mountpoint,
 			(void)DAMountOptionPrepend(args.options,
 			    sizeof(args.options), "ro");
 		}
+		/* A fstab or caller "rw" after it would undo the "ro". */
+		option_remove(args.options, sizeof(args.options), "rw");
 		DALog("DA-MOUNT: %s RequireRepair: the volume is dirty and is "
 		    "not repaired automatically; mounting it read-only",
 		    disk->id);

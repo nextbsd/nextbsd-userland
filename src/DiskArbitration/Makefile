@@ -6,7 +6,8 @@
 # #193), the bundle probe stage (DAFileSystem.c, DAProbe.c; #194; the
 # bundles' <name>.util helper is fsutil/), and the stage machine and mount
 # executor (DAStage.c, DAMount.c, DAMountHelper.c, DACommand.c,
-# DASupport.c; #195). The MIG server for DiskArbitration.framework clients
+# DASupport.c; #195), and the /etc/fstab mount map (DASupport.c over
+# fstab.c, Apple's vendored getfsent copy; #196). The MIG server for DiskArbitration.framework clients
 # comes with #197.
 #
 # Build:   cd src/DiskArbitration && make SYSROOT=/path/to/rootfs
@@ -18,7 +19,7 @@ PROG=		diskarbitrationd
 MAN=		diskarbitrationd.8
 SRCS=		diskarbitrationd.c da_iokit_subscribe.c DADisk.c DAGeom.c DAVolume.c \
 		DAFileSystem.c DAProbe.c DACommand.c DAMount.c DAMountHelper.c \
-		DAStage.c DASupport.c
+		DAStage.c DASupport.c fstab.c
 
 # WARNS=0: da_iokit_subscribe.c pulls <IOKit/IOKitLib.h>, which drags in the
 # whole CoreFoundation + dispatch public header tree (the IONotificationPort /
