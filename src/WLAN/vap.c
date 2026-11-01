@@ -53,16 +53,14 @@ vap_enumerate_phys(struct wlan_phy *out, size_t max)
 	 */
 	if (sysctlbyname("net.wlan.devices", NULL, &len, NULL, 0) != 0) {
 		/*
-		 * ENOENT here means net80211 is not in the kernel at all. On
-		 * arm64 that is expected and permanent (arm64 GENERIC never sets
-		 * `device wlan` — nextbsd-kernel#53), so it is not an error
-		 * worth shouting about; wland simply has nothing to do.
+		 * ENOENT here means net80211 is not loaded: it is Wlan.kext,
+		 * which a Wi-Fi driver kext pulls in when it matches hardware.
+		 * That is "no radio yet", not an error, and the caller asks
+		 * again when a radio appears, so say nothing here; wland logs
+		 * it once.
 		 */
-		if (errno == ENOENT) {
-			xlog("net.wlan.devices absent — no net80211 in this "
-			    "kernel; nothing to do");
+		if (errno == ENOENT)
 			return (VAP_NO_NET80211);
-		}
 		xlog("sysctlbyname(net.wlan.devices) size: %s", strerror(errno));
 		return (-1);
 	}

@@ -34,6 +34,18 @@
      ipconfigd would DHCP onto an unauthenticated port and every packet would be
      dropped.
 
+  HOW WLAND FINDS RADIOS
+
+  net80211 (Wlan.kext) publishes each radio in the IORegistry as an
+  IO80211Controller entry when it attaches and retires it when it goes (a kext
+  unload, a USB radio unplugged). wland follows that class with
+  IOServiceAddMatchingNotification, first-match and terminated, and brings the
+  radio up or releases it. With no radio it blocks and does not poll; without
+  /dev/ioregistry it rescans net.wlan.devices every 2 s instead
+  (nextbsd-userland#502). launchd LaunchEvents (com.apple.iokit.matching) would
+  let launchd start wland only when a radio appears, but libxpc's event
+  streams are not there yet, so the job still runs at load.
+
   RunAtLoad + KeepAlive: starts at PID-1 launchd boot and respawns on crash.
   There is NO launchd service ordering in this port (no StartAfter, no Requires,
   and the plist directory scan is not even sorted), so wland must NOT assume

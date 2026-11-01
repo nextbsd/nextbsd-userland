@@ -56,6 +56,7 @@
  */
 #include "wland.h"
 #include "airport.h"
+#include "iokit_watch.h"
 #include "mach_service.h"
 #include "supplicant.h"
 #include "vap.h"
@@ -83,6 +84,13 @@ static pthread_mutex_t	g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct wlan_if	g_ifs[WLAN_MAX_PHY];
 static struct airport	*g_air;
 
+/*
+ * Self-pipe that wakes the event loop: the IORegistry callbacks
+ * (iokit_watch.c) and the signal handler each write a byte to [1]; the loop
+ * polls [0]. Lets the loop block with no timeout while there is no radio.
+ */
+static int		g_wake[2] = { -1, -1 };
+
 #define	WPA_SUPPLICANT		"/usr/sbin/wpa_supplicant"
 #define	WPA_CTRL_DIR		"/var/run/wpa_supplicant"
 #define	WLAND_RUN_DIR		"/var/run/wland"
@@ -91,12 +99,17 @@ static struct airport	*g_air;
 #define	AUTOJOIN_INTERVAL_SEC	15
 
 /*
- * How often to re-scan net.wlan.devices for a radio that showed up after we
- * started. The 802.11 driver commonly finishes attaching several seconds into
- * boot — AFTER launchd has already started wland — so a one-shot enumeration at
- * startup races it and leaves the machine with no wlan0. See adopt_phys().
+ * How often to re-scan net.wlan.devices when the IORegistry cannot tell us
+ * about radios (no /dev/ioregistry), and how often to retry a radio whose
+ * bring-up failed. The 802.11 driver commonly finishes attaching several
+ * seconds into boot — AFTER launchd has already started wland — so a one-shot
+ * enumeration at startup races it. See adopt_phys().
  */
 #define	PHY_RESCAN_INTERVAL_SEC	2
+
+/* Size of a net.wlan.devices read: more than WLAN_MAX_PHY, so a radio we
+ * manage is never cut off the end of the list and mistaken for gone. */
+#define	PHY_LIST_MAX		(WLAN_MAX_PHY * 4)
 
 static void
 xlog(const char *fmt, ...)
@@ -121,7 +134,13 @@ xlog(const char *fmt, ...)
 static void
 on_signal(int sig)
 {
+	int saved = errno;
+
 	wland_got_term = sig;
+	/* Wake a poll() that is blocked with no timeout. */
+	if (g_wake[1] >= 0)
+		(void)write(g_wake[1], "", 1);
+	errno = saved;
 }
 
 void
@@ -420,31 +439,29 @@ try_autojoin(struct wlan_if *w)
 
 /*
  * Bring up every radio in net.wlan.devices we are not already managing. Called
- * once at startup AND on a timer from the event loop.
+ * once at startup, whenever an IO80211Controller entry appears in the
+ * IORegistry (iokit_watch.c), and, without /dev/ioregistry, on a timer.
  *
- * The rescan is the whole point: the 802.11 driver often finishes attaching
- * AFTER launchd has started wland (the iwlwifi LinuxKPI port spends several
- * seconds loading firmware), and a PHY is not an ifnet so there is no
- * RTM_IFANNOUNCE and no launchd ordering that can make us wait for it.
- * Enumerating only at startup therefore raced the driver and left the box with
- * no wlan0. Re-scanning closes the race and, as a bonus, adopts a USB radio
- * hot-plugged later. Idempotent: a radio already in the table is skipped.
+ * Why it has to run after startup at all: the 802.11 driver often finishes
+ * attaching AFTER launchd has started wland (the iwlwifi LinuxKPI port spends
+ * several seconds loading firmware), and a PHY is not an ifnet, so there is no
+ * RTM_IFANNOUNCE for it. net80211 publishes IO80211Controller once the radio is
+ * listed in net.wlan.devices, which is what wakes us. A USB radio hot-plugged
+ * later arrives the same way. Idempotent: a radio already in the table is
+ * skipped, and vap_create() adopts a VAP that already exists.
  *
- * (Radio *removal* is intentionally not handled — a hot-unplug leaves a stale
- * slot until wland restarts. That is a separate concern from the boot race.)
- *
- * Returns vap_enumerate_phys()'s value, so the caller can stop polling when
- * net80211 is not in the kernel at all (VAP_NO_NET80211).
+ * Returns the number of listed radios that could not be brought up, which the
+ * caller retries on a timer.
  */
 static int
 adopt_phys(void)
 {
-	struct wlan_phy phys[WLAN_MAX_PHY];
-	int nphys, i;
+	struct wlan_phy phys[PHY_LIST_MAX];
+	int nphys, i, failed = 0;
 
-	nphys = vap_enumerate_phys(phys, WLAN_MAX_PHY);
+	nphys = vap_enumerate_phys(phys, PHY_LIST_MAX);
 	if (nphys <= 0)
-		return (nphys);
+		return (0);			/* none yet, or not loaded */
 
 	for (i = 0; i < nphys; i++) {
 		struct wlan_if *w;
@@ -462,11 +479,82 @@ adopt_phys(void)
 			continue;
 		}
 		xlog("found 802.11 PHY: %s", phys[i].phy);
-		if (!bring_up_phy(w, phys[i].phy))
+		if (!bring_up_phy(w, phys[i].phy)) {
 			xlog("%s: could not bring up (will retry)", phys[i].phy);
+			failed++;
+		}
 		wland_unlock();
 	}
-	return (nphys);
+	return (failed);
+}
+
+/*
+ * Release every radio that has gone away: its driver kext was unloaded, or a
+ * USB radio was unplugged. Called when an IO80211Controller entry is retired,
+ * and with the timed rescan without /dev/ioregistry.
+ *
+ * A slot is gone when net.wlan.devices no longer lists its PHY, or when its
+ * VAP no longer exists. net80211 destroys a radio's VAPs before it takes the
+ * radio off the list and retires the entry, so the VAP check also catches a
+ * radio that was unloaded and loaded again before we got here (same name,
+ * new radio). The VAP is already gone, so it is not destroyed here: clear the
+ * AirPort key (otherwise ipconfigd would keep a stale Authenticated:true),
+ * stop and reap the wpa_supplicant, and free the slot.
+ */
+static void
+release_departed_phys(void)
+{
+	struct wlan_phy phys[PHY_LIST_MAX];
+	pid_t reap[WLAN_MAX_PHY];
+	int nphys, nreap = 0, i, j;
+
+	nphys = vap_enumerate_phys(phys, PHY_LIST_MAX);
+	if (nphys == VAP_NO_NET80211)
+		nphys = 0;			/* Wlan.kext unloaded: all gone */
+	else if (nphys < 0)
+		return;				/* cannot tell; keep everything */
+
+	wland_lock();
+	for (i = 0; i < WLAN_MAX_PHY; i++) {
+		struct wlan_if *w = &g_ifs[i];
+		bool listed = false;
+
+		if (!w->active)
+			continue;
+		for (j = 0; j < nphys && !listed; j++)
+			listed = (strcmp(phys[j].phy, w->phy) == 0);
+		if (listed && if_nametoindex(w->vap) != 0)
+			continue;
+
+		xlog("%s: 802.11 PHY %s is gone — releasing", w->vap, w->phy);
+		if (g_air != NULL)
+			(void)airport_remove(g_air, w->vap);
+		if (w->supplicant_pid > 0) {
+			(void)kill(w->supplicant_pid, SIGTERM);
+			reap[nreap++] = w->supplicant_pid;
+		}
+		supplicant_detach(w->supp);
+		w->supp = NULL;
+		w->supplicant_pid = -1;
+		w->phy[0] = '\0';
+		w->vap[0] = '\0';
+		w->active = false;
+	}
+	wland_unlock();
+
+	/* Outside the lock, so a slow exit does not stall the Mach service. */
+	for (i = 0; i < nreap; i++)
+		(void)waitpid(reap[i], NULL, 0);
+}
+
+/* Empty the self-pipe after a wake-up. */
+static void
+drain_wake_pipe(void)
+{
+	char buf[64];
+
+	while (read(g_wake[0], buf, sizeof(buf)) > 0)
+		;
 }
 
 int
@@ -475,8 +563,8 @@ main(int argc, char **argv)
 	struct sigaction sa;
 	time_t last_autojoin = 0;
 	time_t last_rescan = 0;
-	bool phy_watch;
-	int i;
+	bool iokit;
+	int failed, have, i;
 
 	(void)argc;
 	(void)argv;
@@ -491,6 +579,12 @@ main(int argc, char **argv)
 	(void)sigaction(SIGHUP, &sa, NULL);
 	/* Do not die when a wpa_supplicant we spawned exits. */
 	(void)signal(SIGPIPE, SIG_IGN);
+
+	/* Before anything can write to it: the signal handler checks for -1. */
+	if (pipe2(g_wake, O_CLOEXEC | O_NONBLOCK) != 0) {
+		xlog("pipe2: %s — radios found by rescan only", strerror(errno));
+		g_wake[0] = g_wake[1] = -1;
+	}
 
 	/* Best-effort at startup; bring_up_phy() re-creates these on every retry
 	 * so a /var/run that is not ready this early does not wedge us forever. */
@@ -515,36 +609,49 @@ main(int argc, char **argv)
 		xlog("configd not reachable yet — will retry on first publish");
 
 	/*
-	 * Bring up whatever radios exist right now. On a cold boot there usually
-	 * are none yet — the driver is still attaching — so this commonly finds
-	 * nothing, and the event loop's periodic rescan is what actually adopts
-	 * the radio a few seconds later. phy_watch stays true as long as there is
-	 * a net80211 kernel to watch; it goes false only if net80211 is absent
-	 * entirely (arm64), so we do not spin re-reading a sysctl that will never
-	 * exist.
+	 * Follow radios through the IORegistry: net80211 publishes an
+	 * IO80211Controller entry per radio and retires it when the radio goes.
+	 * Without /dev/ioregistry (or the self-pipe), fall back to rescanning
+	 * net.wlan.devices every PHY_RESCAN_INTERVAL_SEC.
 	 */
-	phy_watch = (adopt_phys() != VAP_NO_NET80211);
-	if (phy_watch) {
-		int have;
+	iokit = (g_wake[0] >= 0 && iokit_watch_start(g_wake[1]) == 0);
 
-		wland_lock();
-		have = wland_if_count_locked();
-		wland_unlock();
-		if (have == 0)
-			xlog("no 802.11 radios up yet — watching "
-			    "net.wlan.devices");
+	/*
+	 * Bring up whatever radios exist right now. On a cold boot there usually
+	 * are none yet: net80211 (Wlan.kext) is loaded with the first Wi-Fi
+	 * driver kext, and the driver may still be loading firmware. Say so once.
+	 */
+	failed = adopt_phys();
+	wland_lock();
+	have = wland_if_count_locked();
+	wland_unlock();
+	if (have == 0 && failed == 0) {
+		if (iokit)
+			xlog("no 802.11 radio yet — waiting for "
+			    "IO80211Controller");
+		else
+			xlog("no 802.11 radio yet — no /dev/ioregistry, "
+			    "rescanning net.wlan.devices every %ds",
+			    PHY_RESCAN_INTERVAL_SEC);
 	}
+	last_rescan = time(NULL);
 
 	/*
 	 * Event loop. Poll every interface's wpa_supplicant event socket; on any
 	 * association-state change, republish AirPort — which is what releases
-	 * ipconfigd's DHCP gate. A 1s tick also drives autojoin retries and
-	 * reaps a wpa_supplicant that died.
+	 * ipconfigd's DHCP gate. Also poll the self-pipe, which the IORegistry
+	 * callbacks and the signal handler write to.
+	 *
+	 * While an interface exists, a 1s tick drives autojoin retries and reaps
+	 * a wpa_supplicant that died. With none, the loop blocks with no timeout
+	 * until a radio appears or a signal arrives, unless it has to rescan
+	 * (no /dev/ioregistry) or retry a radio whose bring-up failed.
 	 */
 	while (!wland_got_term) {
-		struct pollfd pfd[WLAN_MAX_PHY];
+		struct pollfd pfd[WLAN_MAX_PHY + 1];
 		struct wlan_if *w[WLAN_MAX_PHY];
-		int nfd = 0, rc;
+		int nfd = 0, npfd, rc, timeout;
+		bool matched = false, terminated = false;
 		time_t now;
 
 		wland_lock();
@@ -562,9 +669,25 @@ main(int argc, char **argv)
 			w[nfd] = &g_ifs[i];
 			nfd++;
 		}
+		have = wland_if_count_locked();
 		wland_unlock();
 
-		rc = poll(nfd > 0 ? pfd : NULL, (nfds_t)nfd, 1000);
+		npfd = nfd;
+		if (g_wake[0] >= 0) {
+			pfd[npfd].fd = g_wake[0];
+			pfd[npfd].events = POLLIN;
+			pfd[npfd].revents = 0;
+			npfd++;
+		}
+
+		if (have > 0)
+			timeout = 1000;
+		else if (!iokit || failed > 0)
+			timeout = PHY_RESCAN_INTERVAL_SEC * 1000;
+		else
+			timeout = -1;		/* idle: wait for a radio */
+
+		rc = poll(npfd > 0 ? pfd : NULL, (nfds_t)npfd, timeout);
 		if (rc < 0 && errno != EINTR) {
 			xlog("poll: %s", strerror(errno));
 			break;
@@ -579,7 +702,11 @@ main(int argc, char **argv)
 					publish_state(w[i]);
 			}
 			wland_unlock();
+			if (npfd > nfd && (pfd[nfd].revents & POLLIN) != 0)
+				drain_wake_pipe();
 		}
+		if (wland_got_term)
+			break;
 
 		/* Reap any wpa_supplicant that exited. */
 		for (;;) {
@@ -600,7 +727,29 @@ main(int argc, char **argv)
 			wland_unlock();
 		}
 
+		/*
+		 * Radios that went or came. adopt_phys() and
+		 * release_departed_phys() do their own locking, so they are
+		 * called with no lock held. A departure is handled first, so a
+		 * radio that was unloaded and loaded again is released and then
+		 * adopted afresh.
+		 */
 		now = time(NULL);
+		if (iokit)
+			iokit_watch_take(&matched, &terminated);
+		if (!iokit && now - last_rescan >= PHY_RESCAN_INTERVAL_SEC) {
+			matched = terminated = true;	/* timed rescan */
+			last_rescan = now;
+		} else if (iokit && failed > 0 &&
+		    now - last_rescan >= PHY_RESCAN_INTERVAL_SEC) {
+			matched = true;			/* retry a bring-up */
+			last_rescan = now;
+		}
+		if (terminated)
+			release_departed_phys();
+		if (matched)
+			failed = adopt_phys();
+
 		if (now - last_autojoin >= AUTOJOIN_INTERVAL_SEC) {
 			last_autojoin = now;
 			wland_lock();
@@ -609,19 +758,6 @@ main(int argc, char **argv)
 					try_autojoin(&g_ifs[i]);
 			}
 			wland_unlock();
-		}
-
-		/*
-		 * Adopt a radio that appeared after we started (the boot race),
-		 * or one hot-plugged since. adopt_phys() does its own locking, so
-		 * it must be called with no lock held. Stop once we learn there is
-		 * no net80211 in this kernel at all — nothing will ever appear.
-		 */
-		if (phy_watch &&
-		    now - last_rescan >= PHY_RESCAN_INTERVAL_SEC) {
-			last_rescan = now;
-			if (adopt_phys() == VAP_NO_NET80211)
-				phy_watch = false;
 		}
 	}
 

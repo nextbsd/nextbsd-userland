@@ -21,6 +21,9 @@ PROG=		wland
 MAN=		wland.8 wlan.8
 SRCS=		wland.c vap.c wpa_ctrl.c supplicant.c
 SRCS+=		airport.c mach_service.c wland_mig.c
+# iokit_watch.c: IO80211Controller first-match / terminated notifications
+# through libIOKit (nextbsd-userland#502).
+SRCS+=		iokit_watch.c
 
 # wlanServer.c — MIG-generated server stub for wlan.defs. build-userland.sh runs
 # host mig and passes MIGOUT=; a bare standalone build without it fails at the
@@ -50,6 +53,13 @@ CFLAGS+=	-O2 -pipe -fblocks
 CFLAGS+=	-Wall -Wextra -Wshadow -Wstrict-prototypes
 CFLAGS+=	-Wmissing-prototypes -Wpointer-arith
 
+# Resolve <IOKit/IOKitLib.h> straight to libIOKit's REAL source header, ahead
+# of the freebsd-shims IOKit stub (IOKitWaitQuiet-only, for launchctl), which
+# lacks IONotificationPortRef / IOServiceAddMatchingNotification. The matching
+# libIOKit.so is still linked from the sysroot (-lIOKit). Same as
+# DiskArbitration.
+CFLAGS+=	-I${.CURDIR}/../libIOKit
+
 # <servers/bootstrap.h> (bootstrap_check_in + the bootstrap_port global) comes
 # from liblaunch; its bootstrap.h pulls Apple shim headers from
 # launchd/freebsd-shims. Same -I pair ipconfigd / configd use.
@@ -72,14 +82,19 @@ LDFLAGS+=	-Wl,--allow-shlib-undefined
 #   -lCoreFoundation  CFDictionary / CFString / CFNumber, the dict shape
 #                     airport.c builds for State:/.../AirPort
 #   -lsystem_dispatch, -l:libsystem_blocks.so  pulled transitively by the SC
-#                     umbrella header.
+#                     umbrella header, and the serial queue iokit_watch.c
+#                     takes its IONotificationPort callbacks on
+#   -lIOKit           IONotificationPort / IOServiceAddMatchingNotification:
+#                     IO80211Controller arrivals and departures (iokit_watch.c).
+#                     Built before WLAN in build-userland.sh, as for
+#                     DiskArbitration.
 #
 # NOT -ldispatch and NOT -lBlocksRuntime: those names no longer exist in base.
 # They now belong to Gershwin's separate stock copies, and linking them is what
 # caused the rtld collision that crashed launchctl / dbus / sshd (#378). Use the
 # system_* names, and the exact-file -l: form for blocks.
 LDADD+=		-llaunch -lsystem_kernel
-LDADD+=		-lSystemConfiguration -lCoreFoundation
+LDADD+=		-lSystemConfiguration -lIOKit -lCoreFoundation
 LDADD+=		-lsystem_dispatch -l:libsystem_blocks.so
 
 # /System/Library holds DATA only (plists, kexts) — never executables. Daemons
