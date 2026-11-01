@@ -14,9 +14,9 @@
  *     the daemon applies the same rule to the caller's audit token.
  *   - No block variants, no _DAServerSessionQueueRequestWithUserToken and
  *     no FSKit calls.
- *   - The daemon serves mount requests today. Unmount, eject, rename and
- *     claim are sent the same way and come back with a kDAReturnUnsupported
- *     dissenter until the daemon implements them (#198 for unmount/eject).
+ *   - The daemon serves mount, unmount and eject requests (#197, #198).
+ *     Rename and claim are sent the same way and come back with a
+ *     kDAReturnUnsupported dissenter until the daemon implements them.
  *   - A request the daemon refuses outright drops its callback table entry
  *     (Apple leaves it behind).
  */

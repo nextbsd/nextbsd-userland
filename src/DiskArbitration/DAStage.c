@@ -20,6 +20,9 @@
  *             clean siblings mount first (Apple's rule);
  *   Appeared  DADiskAppearedCallback to every session (#197).
  *
+ * After the disks, the request list (DARequest.c, #198): clients' unmount
+ * and eject requests run once their disk has appeared and is not busy.
+ *
  * When no disk has anything left to do the daemon is idle (gDAIdle) and
  * sessions that have not been told so get DAIdleCallback (#197).
  *
@@ -282,6 +285,10 @@ stage_dispatch(void *ctx __unused)
 			continue;
 		quiet = 0;
 	}
+
+	/* Apple's request loop: unmount and eject requests (#198). */
+	if (DARequestListDispatch())
+		quiet = 0;
 
 	if (!quiet) {
 		gDAIdle = 0;

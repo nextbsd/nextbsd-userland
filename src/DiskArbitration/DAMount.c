@@ -224,6 +224,18 @@ DAMountPointListRefresh(const char *const *mounted, int count)
 	}
 }
 
+void
+DAMountRemoveMountPoint(const char *path)
+{
+	struct da_mount_point *mp;
+
+	if (path == NULL)
+		return;
+	mp = mount_point_find(path);
+	if (mp != NULL && !mp->inflight)
+		mount_point_remove(mp);
+}
+
 /* --- /Volumes ------------------------------------------------------------- */
 
 void

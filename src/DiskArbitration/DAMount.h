@@ -67,6 +67,13 @@ void	DAMountPointFolderCreate(void);
  */
 void	DAMountPointListRefresh(const char *const *mounted, int count);
 
+/*
+ * Apple's DAMountRemoveMountPoint after a client's unmount (#198): rmdir
+ * `path` if this daemon made it under /Volumes. A mount point from the
+ * /etc/fstab map, or any directory the daemon did not create, is left.
+ */
+void	DAMountRemoveMountPoint(const char *path);
+
 /* --- per-filesystem helper table (DAMountHelper.c) ------------------------ */
 
 struct da_mount_args {

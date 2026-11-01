@@ -22,12 +22,13 @@
  * DiskArbitration clients (libDiskArbitration, #197) talk to it over the
  * DAServer.defs MIG protocol (DAServer.c): sessions, registered callbacks
  * pulled through a doorbell (DASession.c, DAQueue.c), disk descriptions
- * and mount requests (DARequest.c). The main thread runs the MIG receive
- * loop; the disk model, the stages and every routine run on one serial
- * queue.
+ * and mount, unmount and eject requests with their approval rounds
+ * (DARequest.c, #198; the blocking parts on DAThread.c workers, the
+ * FreeBSD process lookup and eject in DADevice.c). The main thread runs
+ * the MIG receive loop; the disk model, the stages and every routine run
+ * on one serial queue.
  *
  * Plan (E15, nextbsd/nextbsd#471):
- *   D2 #198 — unmount/eject with approval.
  *   D4 #199 — console user: deferred mounts, owner.
  */
 #include "da_iokit_subscribe.h"
@@ -39,6 +40,7 @@
 #include "DAQueue.h"
 #include "DAServer.h"
 #include "DAStage.h"
+#include "DAThread.h"
 #include "DAVolume.h"
 
 #include <dispatch/dispatch.h>
@@ -143,6 +145,7 @@ main(int argc, char **argv)
 		return (1);
 	{
 		DAQueueInit(da_queue);
+		DAThreadInit(da_queue);
 		DAStageInit(da_queue);
 		DAMountInit(da_queue);
 		DAGeomInit(da_queue);

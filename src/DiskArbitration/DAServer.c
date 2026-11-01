@@ -16,10 +16,12 @@
  *                                     alone fires at once when idle
  *   _DAServerSessionCopyCallbackQueue the whole queue in one reply
  *   _DAServerSessionQueueResponse     a peek/approval answer (DAQueue.c)
- *   _DAServerSessionQueueRequest      mount (DARequest.c); unmount, eject,
- *                                     rename, claim, probe and refresh
- *                                     answer kDAReturnUnsupported until
- *                                     #198 and later tickets bring them
+ *   _DAServerSessionQueueRequest      mount, unmount and eject
+ *                                     (DARequest.c, #197/#198), for the
+ *                                     disk's owner or root; rename, claim,
+ *                                     probe and refresh answer
+ *                                     kDAReturnUnsupported until later
+ *                                     tickets bring them
  *   _DAServerDiskCopyDescription      the disk's serialized description
  *   _DAServerDiskGetUserUID           the disk's owner
  *   _DAServerDiskGetOptions / IsClaimed / Unclaim
@@ -373,13 +375,14 @@ _DAServerSessionQueueRequest(mach_port_t _session, uint32_t _kind,
 	if (disk == NULL)
 		return (kDAReturnBadArgument);
 
-	if (_kind != _kDADiskMount) {
+	if (_kind != _kDADiskMount && _kind != _kDADiskUnmount &&
+	    _kind != _kDADiskEject) {
 		DALog("DA-REQUEST: %s %s for " DA_SESSION_FMT ": not supported "
 		    "yet", _DACallbackKindGetName(_kind), disk->id,
 		    DA_SESSION_ARGS(session));
 		return (kDAReturnUnsupported);
 	}
-	if (_argument1 & kDADiskMountOptionWhole) {
+	if (_kind == _kDADiskMount && (_argument1 & kDADiskMountOptionWhole)) {
 		DALog("DA-REQUEST: mount %s for " DA_SESSION_FMT ": "
 		    "kDADiskMountOptionWhole is not supported yet", disk->id,
 		    DA_SESSION_ARGS(session));
@@ -388,15 +391,37 @@ _DAServerSessionQueueRequest(mach_port_t _session, uint32_t _kind,
 
 	/*
 	 * Apple's DAAuthorize(_kDAAuthorizeOptionIsOwner): the disk's owner
-	 * or root. There are no Authorization Services rights to fall back
-	 * on, and no console user until #199.
+	 * or root, for mount, unmount and eject alike. There are no
+	 * Authorization Services rights to fall back on, and no console user
+	 * until #199.
 	 */
 	token_ids(_token, &pid, &uid, &gid);
 	if (uid != 0 && uid != disk->user_uid) {
-		DALog("DA-REQUEST: mount %s for " DA_SESSION_FMT ": uid %u is "
-		    "not the owner", disk->id, DA_SESSION_ARGS(session),
-		    (unsigned)uid);
+		DALog("DA-REQUEST: %s %s for " DA_SESSION_FMT ": uid %u is "
+		    "not the owner", _kind == _kDADiskMount ? "mount" :
+		    _kind == _kDADiskUnmount ? "unmount" : "eject", disk->id,
+		    DA_SESSION_ARGS(session), (unsigned)uid);
 		return (kDAReturnNotPrivileged);
+	}
+
+	if (_kind != _kDADiskMount) {
+		struct da_callback *callback;
+
+		callback = DACallbackCreate(session, _address, _context, _kind,
+		    0, NULL, NULL);
+		if (callback == NULL)
+			return (kDAReturnNoResources);
+		DALog("DA-REQUEST: %s %s for " DA_SESSION_FMT " (uid %u)%s%s",
+		    _kind == _kDADiskUnmount ? "unmount" : "eject", disk->id,
+		    DA_SESSION_ARGS(session), (unsigned)uid,
+		    _kind == _kDADiskUnmount &&
+		    (_argument1 & kDADiskUnmountOptionForce) ? " force" : "",
+		    _kind == _kDADiskUnmount &&
+		    (_argument1 & kDADiskUnmountOptionWhole) ? " whole" : "");
+		DAQueueRequest(_kind, disk,
+		    _kind == _kDADiskUnmount ? _argument1 : 0, uid, gid,
+		    callback);
+		return (kDAReturnSuccess);
 	}
 
 	if (_argument2 != 0) {
