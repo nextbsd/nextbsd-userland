@@ -34,10 +34,17 @@ after it ends.
 .Pp
 .Xr diskarbitrationd 8
 watches the key.
-While nobody is logged in, removable and external media are not mounted
-automatically; at a login they are mounted, owned by the console user,
-who may also unmount and eject them.
-At the logout the user's volumes are unmounted and their disks ejected.
+At a login, removable and external volumes mount owned by the console user,
+who may also unmount and eject them; at the logout the user's volumes are
+unmounted and their disks ejected.
+NextBSD ships
+.Pa /Local/Library/Preferences/SystemConfiguration/autodiskmount.plist
+with
+.Li AutomountDisksWithoutUserLogin
+set, so such media also mount, owned by root, while nobody is logged in.
+Removing that key once a login program runs
+.Nm
+gives Apple's behaviour: the media wait for a login.
 .Bl -tag -width "clear"
 .It Cm set Ar user
 Publish

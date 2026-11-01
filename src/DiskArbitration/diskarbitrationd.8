@@ -106,15 +106,23 @@ Internal media, volumes mounted before
 reached them (the root filesystem,
 .Pa /etc/fstab
 at boot) and disks carrying such a volume are left alone.
-Setting
 .Li AutomountDisksWithoutUserLogin
-to true in
-.Pa /Library/Preferences/SystemConfiguration/autodiskmount.plist
-mounts removable and external media without a login.
+set to true in
+.Pa /Local/Library/Preferences/SystemConfiguration/autodiskmount.plist
+mounts removable and external media without a login, owned by root.
+NextBSD ships the file with it set, together with
+.Li DAMountTrustExternal
+false so external media keep the untrusted mount options, because no
+login program publishes the console user yet.
+Once one runs
+.Xr consoleuser 8 ,
+removing the key restores Apple's defaults (removable and external
+media wait for a login); setting it to false defers removable media only
+and trusts external media, as on Apple.
 .Sh FILES
 .Bl -tag -width /etc/fstab -compact
 .It Pa /etc/fstab
-.It Pa /Library/Preferences/SystemConfiguration/autodiskmount.plist
+.It Pa /Local/Library/Preferences/SystemConfiguration/autodiskmount.plist
 .It Pa /var/log/diskarbitrationd.log
 .It Pa /var/run/diskarbitrationd.pid
 .It Pa /System/Library/LaunchDaemons/com.apple.diskarbitrationd.plist

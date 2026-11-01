@@ -21,11 +21,17 @@
 struct da_disk;
 
 /*
- * Apple's preference file (DABase.h ___PREFS_DEFAULT_DIR). The daemon
- * reads it, never writes it; a missing file means every default.
+ * Apple's preference file, autodiskmount.plist in SCPreferences'
+ * default directory (___PREFS_DEFAULT_DIR), which on NextBSD is the Local
+ * domain's /Local/Library/Preferences/SystemConfiguration (libSystem
+ * Configuration's PREFS_DEFAULT_DIR; NextBSD has no bare /Library). The
+ * daemon reads it, never writes it; a missing file means every Apple
+ * default. The base system ships one that sets
+ * AutomountDisksWithoutUserLogin (#199): nothing publishes the console
+ * user yet, so removable and external media mount without a login.
  */
 #define DA_PREFERENCE_FILE \
-	"/Library/Preferences/SystemConfiguration/autodiskmount.plist"
+	"/Local/Library/Preferences/SystemConfiguration/autodiskmount.plist"
 
 /* Apple's keys (DASupport.m). */
 #define kDAPreferenceMountDeferExternalKey	CFSTR("DAMountDeferExternal")

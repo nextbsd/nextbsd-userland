@@ -16,8 +16,10 @@
  *      DASupport.c); a deferred volume mounts when somebody logs in
  *      (_DAConfigurationCallback, DAServer.c). AutomountDisksWithoutUser
  *      Login in autodiskmount.plist, or an /etc/fstab "auto" entry, skips
- *      the wait. The volume belongs to the console user on removable and
- *      external media, to root otherwise.
+ *      the wait; NextBSD ships the plist with it set, since no login
+ *      program publishes the console user yet. The volume belongs to the
+ *      console user on removable and external media, to root otherwise
+ *      (and so to root whenever nobody is logged in).
  *   3. media not writable: "ro" (Apple's rdonly).
  *   4. untrusted (removable, or external): Apple's nosuid,noowners,nodev,
  *      mapped onto NextBSD's mount(8):

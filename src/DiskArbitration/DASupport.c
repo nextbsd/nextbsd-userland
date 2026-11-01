@@ -357,9 +357,9 @@ console_retry(void)
 /*
  * DAMain.c: SCDynamicStoreCreate(_kDADaemonName, _DAConfigurationCallback),
  * the console-user key as the notification key, the session on the daemon
- * queue. `context` is non-NULL on a retry, where the callback runs for
- * the state found (at startup there are no disks yet, and Apple only
- * reads the globals).
+ * queue. At startup Apple only reads the globals (there are no disks
+ * yet). `context` is non-NULL on a retry, where a console user already
+ * logged in runs the callback as a login.
  */
 static void
 console_connect(void *context)
@@ -392,9 +392,21 @@ console_connect(void *context)
 	g_console_store = store;
 
 	if (context != NULL) {
-		DALog("DA-CONSOLE: configd reachable again");
-		_DAConfigurationCallback(store, NULL, NULL);
-		return;
+		CFArrayRef list;
+
+		/*
+		 * configd answered late. Somebody already logged in is a
+		 * login (the callback mounts what was deferred); nobody is
+		 * no change from what the daemon assumed, so nothing is
+		 * unmounted.
+		 */
+		list = ___SCDynamicStoreCopyConsoleInformation(store);
+		if (list != NULL) {
+			CFRelease(list);
+			DALog("DA-CONSOLE: configd reachable again");
+			_DAConfigurationCallback(store, NULL, NULL);
+			return;
+		}
 	}
 	gDAConsoleUser = ___SCDynamicStoreCopyConsoleUser(store,
 	    &gDAConsoleUserUID, &gDAConsoleUserGID);

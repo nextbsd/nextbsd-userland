@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  diskarbitrationd preferences (nextbsd-userland#199).
+
+  Nothing on NextBSD publishes the console user yet (State:/Users/ConsoleUser,
+  /usr/libexec/consoleuser), so removable and external media mount without a
+  login, owned by root, as they did before the console-user port.
+  AutomountDisksWithoutUserLogin also marks external media trusted on Apple;
+  DAMountTrustExternal false keeps NextBSD's untrusted options (nosuid,
+  noatime) for them.
+
+  Once a login program runs "consoleuser set <user>" / "consoleuser clear",
+  delete AutomountDisksWithoutUserLogin (and DAMountTrustExternal) for Apple's
+  defaults: removable and external media wait for a login. Setting it to false
+  is Apple's other mode: removable media wait, external media mount at boot,
+  trusted. See diskarbitrationd(8).
+-->
+<plist version="1.0">
+<dict>
+	<key>AutomountDisksWithoutUserLogin</key>
+	<true/>
+	<key>DAMountTrustExternal</key>
+	<false/>
+</dict>
+</plist>
