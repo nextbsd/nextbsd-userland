@@ -280,6 +280,25 @@ for d in tmp var/run var/tmp var/log; do
 done
 progress 88
 
+# --- 5a. Swap lives in files, not a partition --------------------------------
+# NextBSD follows Darwin: there is no freebsd-swap partition and no swap sizing
+# at install time (neither layout above creates one). Swapfiles and the sleep
+# image live in /private/var/vm, managed at runtime by swapd
+# (nextbsd-userland#178). Darwin ships it root:wheel 0755. Created after the
+# clone so it exists on both a fresh install and an upgrade, under both the
+# mbr-fat and gpt layouts.
+#
+# TODO(ZFS, nextbsd-userland#179): on a ZFS root this becomes datasets created
+# early, while the pool is unfragmented (gang blocks break swapd's extent walk):
+#   zroot/private         mountpoint=/private canmount=off
+#   zroot/private/var     canmount=off
+#   zroot/private/var/vm  checksum=off compression=off dedup=off copies=1
+#                         recordsize=128K com.sun:auto-snapshot=false
+#   zroot/private/var/crash  exec=off setuid=off
+# The installer is UFS-only today, so only the directory is created here.
+status "Creating /private/var/vm"
+run install -d -o root -g wheel -m 0755 "$MNT/private/var/vm"
+
 # --- 5b. Point the cloned system at its OWN root label -----------------------
 # Root is found by vfs.root.mountfrom, never by an fstab line: the kernel's
 # baked ROOTDEVNAME=ufs/ROOTFS is only a fallback, and the target is labelled
