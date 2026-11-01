@@ -15,9 +15,11 @@
  * untrusted-media defaults (DAMount.c, DAMountHelper.c, DACommand.c).
  * Dirty volumes are never repaired automatically; they mount read-only.
  * The daemon owns /Volumes: it creates and sweeps it at startup.
+ * /etc/fstab, when an admin creates one, is a policy overlay on disks the
+ * daemon has found (UUID=, LABEL=, DEVICE= lines: mount point, options,
+ * auto/noauto; DASupport.c, #196), never a list of things to mount.
  *
  * Plan (E15, nextbsd/nextbsd#471):
- *   C6 #196 — /etc/fstab mount map.
  *   D1 #197 — DiskArbitration client library over MIG.
  *   D2 #198 — unmount/eject with approval.
  *   D4 #199 — console user: deferred mounts, owner.

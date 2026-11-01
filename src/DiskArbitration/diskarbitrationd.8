@@ -50,10 +50,39 @@ Each filesystem can be identified by its UUID or by its label,
 using the constructs ``UUID'' or ``LABEL'', respectively.
 For example:
 .Bd -literal -offset ind
-UUID=DF000C7E-AE0C-3B15-B730-DFD2EF15CB91 /export ufs   ro
-UUID=FAB060E9-79F7-33FF-BE85-E1D3ABD3EDEA none    hfs   rw,noauto
-LABEL=The\\040Volume\\040Name\\040Is\\040This none    msdos ro
+UUID=DF000C7E-AE0C-3B15-B730-DFD2EF15CB91 /export ufs     ro
+UUID=FAB060E9-79F7-33FF-BE85-E1D3ABD3EDEA none    msdosfs rw,noauto
+LABEL=The\\040Volume\\040Name\\040Is\\040This none    msdosfs ro
 .Ed
+.Pp
+On NextBSD the file is a policy overlay on disks the daemon has already
+found; it is never a list of things to mount, and lines naming a device
+path
+.Pq Pa /dev/da0p1 ,
+.Li tmpfs ,
+an NFS export or swap are ignored.
+The first line, in file order, that matches a volume wins.
+``UUID'' matches the volume UUID or the GPT partition UUID;
+``LABEL'' matches the volume name exactly;
+``DEVICE'', followed by an XML property list dictionary, matches when
+every key equals the disk's description value.
+The mount point
+.Li none
+means the default
+.Pa /Volumes/ Ns Ar name ;
+any other mount point must already exist.
+The filesystem type
+.Li auto
+matches any filesystem; anything else must equal the
+.Xr mount 8
+type
+.Pq Li msdosfs , ufs , cd9660 , udf , exfat , ntfs .
+.Li auto
+and
+.Li noauto
+turn the automatic mount on or off; every other option is passed to
+.Xr mount 8 .
+The file is re-read, when it has changed, at the next disk event.
 .Sh FILES
 .Bl -tag -width /etc/fstab -compact
 .It Pa /etc/fstab
