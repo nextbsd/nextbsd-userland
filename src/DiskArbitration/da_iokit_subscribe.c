@@ -24,6 +24,7 @@
  * the kernel is now the registry.
  */
 #include "da_iokit_subscribe.h"
+#include "DAGeom.h"
 
 #include <IOKit/IOKitLib.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -136,11 +137,11 @@ node_is_storage(const char *name, const char *klass)
 }
 
 /*
- * Drive DA's arrival/departure path for one matched storage device. iter 2's
- * surface is a log line (the same observable hwreg_subscribe emits) plus the
- * distinct DA-IOKIT marker the boot test greps to prove the event came through
- * /dev/ioregistry. Later iters hang libgeom enrichment + the DiskArbitration
- * framework callbacks off this point, exactly where the hwregd path fed them.
+ * Drive DA's arrival/departure path for one matched storage device: a log
+ * line plus the distinct DA-IOKIT marker the boot test greps to prove the
+ * event came through /dev/ioregistry, then a GEOM re-walk (#192). The
+ * registry names the newbus storage driver, not the GEOM providers, so
+ * DAGeom re-walks the whole tree and diffs it against the disk list.
  */
 static void
 da_handle_storage(const char *verb, const char *name, const char *klass)
@@ -157,6 +158,63 @@ da_handle_storage(const char *verb, const char *name, const char *klass)
 	if (strcmp(verb, "arrival") == 0)
 		xlog("DA-IOKIT: storage %s %s via /dev/ioregistry", name,
 		    klass[0] != '\0' ? klass : "");
+
+	DAGeomStorageChanged();
+}
+
+int
+da_iokit_copy_node_path(const char *nameunit, char *path, size_t len)
+{
+	CFMutableDictionaryRef match;
+	CFStringRef cfname;
+	io_iterator_t it = IO_OBJECT_NULL;
+	io_object_t obj;
+	char name[sizeof(io_name_t)];
+	size_t n;
+	int found = -1;
+
+	/* Node name is the nameunit without its unit digits ("vtblk0"). */
+	(void)strlcpy(name, nameunit, sizeof(name));
+	n = strlen(name);
+	while (n > 0 && name[n - 1] >= '0' && name[n - 1] <= '9')
+		name[--n] = '\0';
+	if (n == 0)
+		return (-1);
+
+	match = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
+	    &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+	cfname = CFStringCreateWithCString(kCFAllocatorDefault, name,
+	    kCFStringEncodingUTF8);
+	if (match == NULL || cfname == NULL) {
+		if (match != NULL)
+			CFRelease(match);
+		if (cfname != NULL)
+			CFRelease(cfname);
+		return (-1);
+	}
+	CFDictionarySetValue(match, CFSTR(kIONameMatchKey), cfname);
+	CFRelease(cfname);
+
+	/* Consumes `match`. */
+	if (IOServiceGetMatchingServices(kIOMainPortDefault, match, &it) !=
+	    KERN_SUCCESS)
+		return (-1);
+	while ((obj = IOIteratorNext(it)) != IO_OBJECT_NULL) {
+		io_string_t p;
+		const char *last;
+
+		if (found != 0 &&
+		    IORegistryEntryGetPath(obj, "IOService", p) == KERN_SUCCESS) {
+			last = strrchr(p, '/');
+			if (last != NULL && strcmp(last + 1, nameunit) == 0) {
+				(void)strlcpy(path, p, len);
+				found = 0;
+			}
+		}
+		IOObjectRelease(obj);
+	}
+	IOObjectRelease(it);
+	return (found);
 }
 
 /*
