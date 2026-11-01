@@ -83,13 +83,15 @@ enum {
 	_kDADiskStateMountAutomatic	= 0x00000010,
 	_kDADiskStateMountAutomaticNoDefer = 0x00000020,
 	/*
-	 * NextBSD: mounted by someone else before the mount stage reached
-	 * the disk (/etc/fstab at boot, the root filesystem, a hand mount
-	 * before the probe). Such a volume is the system's: it is never
-	 * deferred, and the whole disk it sits on is not given to the
-	 * console user (#199).
+	 * NextBSD: a system volume (#199). Either it was mounted by
+	 * someone else before the mount stage reached it (the root
+	 * filesystem, /etc/fstab at boot, the live ISO's boot media on
+	 * /media, a hand mount before the probe; DAVolume.c), or an
+	 * /etc/fstab line names it (the mount map, DAMount.c). It is never
+	 * deferred, and neither it nor any disk of its whole disk is given
+	 * to the console user, unmounted at logout or ejected.
 	 */
-	kDADiskStateMountAdopted	= 0x00000040,
+	kDADiskStateMountSystem		= 0x00000040,
 	kDADiskStateStagedProbe		= 0x00010000,
 	kDADiskStateStagedPeek		= 0x00020000,
 	kDADiskStateStagedApprove	= 0x00080000,

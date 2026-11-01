@@ -113,16 +113,21 @@ int		DAConsoleUserGet(uid_t *uid, gid_t *gid);
  * Whether `disk` is media the console user may own and act on: its whole
  * disk is removable, or not internal (DADeviceInternal false or unknown,
  * the media Apple defers until a login), and no volume of that whole disk
- * is a system mount (kDADiskStateMountAdopted). Mount-only disks never
+ * is a system mount (kDADiskStateMountSystem). Mount-only disks never
  * are.
  */
 int		DAConsoleUserMayOwn(const struct da_disk *disk);
 
 /*
- * Give a whole disk DAConsoleUserMayOwn accepts to the console user, or
- * back to root when nobody is logged in (the NextBSD counterpart of
- * Apple's /dev node chown at login and logout). Partitions and other
- * disks are left alone; a volume's owner is set when it mounts.
+ * Hand media DAConsoleUserMayOwn accepts to the console user (the NextBSD
+ * counterpart of Apple's /dev node chown at login and logout):
+ *   - a whole disk belongs to the console user, or to root when nobody is
+ *     logged in;
+ *   - a mounted volume that is root's (it mounted while nobody was logged
+ *     in) becomes the console user's. Its files keep the owner they were
+ *     mounted with until it is mounted again.
+ * Other disks are left alone; a volume's owner is otherwise set when it
+ * mounts (DAMount.c).
  */
 void		DAConsoleUserClaim(struct da_disk *disk);
 

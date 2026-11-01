@@ -682,6 +682,8 @@ DAMountWithArguments(struct da_disk *disk, const char *mountpoint,
 	/* The /etc/fstab mount map (Apple's gDAMountMapList1 scan). */
 	map = mount_map_find(disk, fs->kind);
 	if (map != NULL) {
+		/* A volume /etc/fstab names is the admin's, not the user's. */
+		disk->state |= kDADiskStateMountSystem;
 		map_cstring(map, kDAMountMapSpecKey, spec, sizeof(spec));
 		map_cstring(map, kDAMountMapMountOptionsKey, mapopt,
 		    sizeof(mapopt));

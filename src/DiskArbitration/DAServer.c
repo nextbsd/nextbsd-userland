@@ -689,9 +689,12 @@ session_uid(CFDictionaryRef session)
  *   logout   the previous user has no session left: unmount (Force) every
  *            volume they own, then eject (Force) every whole disk they own;
  *   login    somebody is logged in: the removable and external whole disks
- *            are theirs, and if nobody was before, every deferred volume is
- *            mounted (DARequestMount "automatic", so the mount approval
- *            round and the /etc/fstab map apply);
+ *            are theirs, so are such volumes that mounted root's while
+ *            nobody was logged in (AutomountDisksWithoutUserLogin), and if
+ *            nobody was logged in before, every deferred volume is mounted
+ *            (DARequestMount "automatic", so the mount approval round and
+ *            the /etc/fstab map apply). System volumes and their disks
+ *            (kDADiskStateMountSystem) are never handed over;
  *   nobody   the whole disks go back to root and every mounted volume that
  *            would have been deferred is unmounted.
  */

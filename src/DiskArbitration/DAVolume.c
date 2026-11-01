@@ -141,7 +141,7 @@ set_volume_keys(struct da_disk *disk, const struct statfs *fs)
 	 */
 	if (!disk->volume_only && (disk->state & (kDADiskStateStagedMount |
 	    kDADiskStateMountOngoing)) == 0)
-		disk->state |= kDADiskStateMountAdopted |
+		disk->state |= kDADiskStateMountSystem |
 		    _kDADiskStateMountAutomaticNoDefer;
 	/*
 	 * A mounted disk skips the mount stage (Apple's probe callback sets

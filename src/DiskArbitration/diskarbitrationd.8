@@ -97,7 +97,8 @@ which a login program publishes with
 .Xr consoleuser 8 .
 When somebody logs in, the deferred volumes are mounted, owned by the
 console user, who also owns the whole removable and external disks and
-may mount, unmount and eject them.
+the volumes on them that mounted while nobody was logged in, and may
+mount, unmount and eject them.
 When that user logs out, their volumes are unmounted and their disks
 ejected; with nobody logged in, mounted volumes that would have been
 deferred are unmounted.
@@ -105,7 +106,9 @@ Internal media, volumes mounted before
 .Nm
 reached them (the root filesystem,
 .Pa /etc/fstab
-at boot) and disks carrying such a volume are left alone.
+at boot, a live ISO's boot media), volumes an
+.Pa /etc/fstab
+line names, and disks carrying such a volume are left alone.
 .Li AutomountDisksWithoutUserLogin
 set to true in
 .Pa /Local/Library/Preferences/SystemConfiguration/autodiskmount.plist

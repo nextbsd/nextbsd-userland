@@ -296,7 +296,7 @@ DAConsoleUserMayOwn(const struct da_disk *disk)
 		return (0);
 	TAILQ_FOREACH(sub, &gDADiskList, link) {
 		if (!sub->volume_only && console_unit(sub) == unit &&
-		    (sub->state & kDADiskStateMountAdopted) != 0)
+		    (sub->state & kDADiskStateMountSystem) != 0)
 			return (0);
 	}
 	return (1);
@@ -307,18 +307,46 @@ DAConsoleUserClaim(struct da_disk *disk)
 {
 	uid_t uid;
 	gid_t gid;
+	int console;
 
-	if (disk->whole != NULL || disk->volume_only ||
-	    DADiskGetDescription(disk, kDADiskDescriptionMediaWholeKey) !=
-	    kCFBooleanTrue || !DAConsoleUserMayOwn(disk))
+	if (disk->volume_only)
 		return;
-	(void)DAConsoleUserGet(&uid, &gid);
-	if (disk->user_uid == uid && disk->user_gid == gid)
+	if (!DAConsoleUserMayOwn(disk)) {
+		/*
+		 * A whole disk only ever gets a user here; one that has
+		 * since become a system disk (an /etc/fstab volume mounted
+		 * on it) goes back to root.
+		 */
+		if (disk->whole == NULL && disk->user_uid != DA_UID_ROOT &&
+		    DADiskGetDescription(disk,
+		    kDADiskDescriptionMediaWholeKey) == kCFBooleanTrue) {
+			disk->user_uid = DA_UID_ROOT;
+			disk->user_gid = DA_GID_WHEEL;
+			DALog("DA-CONSOLE: %s carries a system volume; now "
+			    "owned by root", disk->id);
+		}
 		return;
-	disk->user_uid = uid;
-	disk->user_gid = gid;
-	DALog("DA-CONSOLE: %s now owned by %s (uid %u)", disk->id,
-	    uid != DA_UID_ROOT ? "the console user" : "root", (unsigned)uid);
+	}
+	console = DAConsoleUserGet(&uid, &gid);
+	if (disk->whole == NULL && DADiskGetDescription(disk,
+	    kDADiskDescriptionMediaWholeKey) == kCFBooleanTrue) {
+		if (disk->user_uid == uid && disk->user_gid == gid)
+			return;
+		disk->user_uid = uid;
+		disk->user_gid = gid;
+		DALog("DA-CONSOLE: %s now owned by %s (uid %u)", disk->id,
+		    console ? "the console user" : "root", (unsigned)uid);
+		return;
+	}
+	if (console && disk->user_uid == DA_UID_ROOT &&
+	    DADiskGetDescription(disk, kDADiskDescriptionVolumePathKey) !=
+	    NULL) {
+		disk->user_uid = uid;
+		disk->user_gid = gid;
+		DALog("DA-CONSOLE: %s (mounted while nobody was logged in) now "
+		    "owned by the console user (uid %u)", disk->id,
+		    (unsigned)uid);
+	}
 }
 
 static void
