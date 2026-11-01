@@ -106,6 +106,10 @@ struct da_disk {
 	/* GEOM bookkeeping for the walk/diff (DAGeom.c). */
 	char			*signature;	/* size|content|uuid at creation */
 	uint32_t		walk_gen;	/* last walk that saw this provider */
+
+	/* Mount bookkeeping (DAVolume.c, #193). */
+	int			volume_only;	/* made from a mount, no GEOM media */
+	uint32_t		volume_gen;	/* last mount refresh that saw it */
 };
 
 TAILQ_HEAD(da_disk_list, da_disk);
@@ -115,6 +119,8 @@ struct da_disk	*DADiskCreate(const char *id, const char *geom_class);
 void		 DADiskRelease(struct da_disk *disk);
 const char	*DADiskGetID(const struct da_disk *disk);
 struct da_disk	*DADiskListFind(const char *id);
+/* The GEOM disk whose ID or _deviceLink is `dev` ("/dev/ufs/ROOTFS"). */
+struct da_disk	*DADiskListFindMedia(const char *dev);
 
 CFTypeRef	 DADiskGetDescription(const struct da_disk *disk, CFStringRef key);
 /* String or CFUUID value as UTF-8 into buf; returns -1 (buf "") if absent. */
@@ -143,5 +149,8 @@ void		 DADiskLog(const struct da_disk *disk);
 
 /* Daemon log line (stderr, launchd routes it to diskarbitrationd.stderr). */
 void		 DALog(const char *fmt, ...) __printflike(1, 2);
+/* Same, only when the daemon runs with -d (diskarbitrationd(8)). */
+void		 DALogDebug(const char *fmt, ...) __printflike(1, 2);
+extern int	 gDALogDebug;
 
 #endif /* DISKARBITRATION_DADISK_H */

@@ -5,18 +5,21 @@
  * storage arrival/removal from the kernel registry (/dev/ioregistry,
  * da_iokit_subscribe.c) and keeps a disk model built from GEOM (DADisk.c,
  * DAGeom.c, #192): one DADisk per whole disk and per partition, each with
- * Apple's kDADiskDescription* dictionary, logged as DA-DISK lines. Nothing is
- * probed or mounted yet.
+ * Apple's kDADiskDescription* dictionary, logged as DA-DISK lines. Mounts it
+ * did not make are adopted from EVFILT_FS + getmntinfo (DAVolume.c, #193):
+ * each sets DAVolumePath on its media disk or becomes a disk of its own.
+ * Nothing is probed or mounted yet.
  *
  * Plan (E15, nextbsd/nextbsd#471):
- *   C3 #193 — adopt mounts made elsewhere (EVFILT_FS + getmntinfo).
  *   C4 #194 — filesystem bundles and probing.
  *   C5 #195 — stage machine and mount executor (/Volumes).
  *   D1 #197 — DiskArbitration client library over MIG.
  *   D2 #198 — unmount/eject with approval.
  */
 #include "da_iokit_subscribe.h"
+#include "DADisk.h"
 #include "DAGeom.h"
+#include "DAVolume.h"
 
 #include <dispatch/dispatch.h>
 
@@ -68,8 +71,9 @@ main(int argc, char **argv)
 	dispatch_queue_t da_queue;
 	kern_return_t kr;
 
-	(void)argc;
-	(void)argv;
+	/* -d: debug detail (diskarbitrationd(8)). */
+	if (argc > 1 && strcmp(argv[1], "-d") == 0)
+		gDALogDebug = 1;
 
 	xlog("starting");
 
@@ -98,13 +102,14 @@ main(int argc, char **argv)
 	    "(receive right=0x%x)", (unsigned)svc);
 
 	/*
-	 * One serial queue for the disk model: the GEOM walks run there, and
-	 * later stages (mount adoption, the MIG server) join it.
+	 * One serial queue for the disk model: the GEOM walks and the mount
+	 * refreshes (#193) run there, and the MIG server (#197) joins it.
 	 */
 	da_queue = dispatch_queue_create("org.nextbsd.diskarbitrationd", NULL);
-	if (da_queue != NULL)
+	if (da_queue != NULL) {
 		DAGeomInit(da_queue);
-	else
+		DAVolumeInit(da_queue);
+	} else
 		xlog("DA-GEOM-FAIL: dispatch_queue_create failed");
 
 	/*
