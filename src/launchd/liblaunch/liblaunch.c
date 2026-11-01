@@ -44,7 +44,12 @@
 #include <sys/syscall.h>
 #include <dlfcn.h>
 
-#ifdef __LP64__
+/*
+ * NextBSD: the kernel lays out control messages with the system's
+ * _ALIGN (8 bytes on LP64, so CMSG_DATA sits 16 bytes in), not
+ * Darwin's 4-byte alignment. Keep <sys/socket.h>'s CMSG_* macros.
+ */
+#if defined(__LP64__) && !defined(__FreeBSD__)
 /* workaround: 5723161 */
 #ifndef __DARWIN_ALIGN32
 #define	__DARWIN_ALIGN32(x)	(((size_t)(x) + 3) & ~3)
@@ -1287,9 +1292,17 @@ launchd_msg_recv(launch_t lh, void (*cb)(launch_data_t, void *), void *context)
 	}
 	lh->recvlen += r;
 	if (mh.msg_controllen > 0) {
-		lh->recvfds = reallocf(lh->recvfds, lh->recvfdcnt * sizeof(int) + mh.msg_controllen - sizeof(struct cmsghdr));
-		memcpy(lh->recvfds + lh->recvfdcnt, CMSG_DATA(cm), mh.msg_controllen - sizeof(struct cmsghdr));
-		lh->recvfdcnt += (mh.msg_controllen - sizeof(struct cmsghdr)) / sizeof(int);
+		/*
+		 * Count the fds from cmsg_len, not msg_controllen: the latter
+		 * includes CMSG_SPACE padding and, on NextBSD, the header is
+		 * padded to 16 bytes, so subtracting sizeof(struct cmsghdr)
+		 * (12) counted extra garbage fds.
+		 */
+		size_t fdbytes = cm->cmsg_len - CMSG_LEN(0);
+
+		lh->recvfds = reallocf(lh->recvfds, lh->recvfdcnt * sizeof(int) + fdbytes);
+		memcpy(lh->recvfds + lh->recvfdcnt, CMSG_DATA(cm), fdbytes);
+		lh->recvfdcnt += fdbytes / sizeof(int);
 	}
 
 	r = 0;
