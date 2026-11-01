@@ -361,10 +361,15 @@ mode_boot(void)
 	if (disk != NULL) {
 		d = DADiskCopyDescription(disk);
 		if (d == NULL) {
+			(void)printf("DA-CLIENT: no description for %s, the "
+			    "disk of /\n", DADiskGetBSDName(disk) != NULL ?
+			    DADiskGetBSDName(disk) : "(no BSD name)");
 			CFRelease(disk);
 			disk = NULL;
 		}
-	}
+	} else
+		(void)printf("DA-CLIENT: DADiskCreateFromVolumePath(/) "
+		    "found no disk\n");
 	if (disk == NULL) {
 		for (i = 0; i < n && disk == NULL; i++) {
 			DADiskRef each = (DADiskRef)CFArrayGetValueAtIndex(

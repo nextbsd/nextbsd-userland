@@ -311,6 +311,9 @@ DADiskCreateFromVolumePath(CFAllocatorRef allocator, DASessionRef session,
 	status = ___statfs(_path, &fs);
 	if (status != 0 && realpath(_path, real) != NULL)
 		status = ___statfs(real, &fs);
+	/* Not a mount point itself: the mount it lies on, as statfs(2) says. */
+	if (status != 0)
+		status = statfs(_path, &fs);
 	if (status != 0)
 		return (NULL);
 	/* Apple's _DAVolumeCopyID, as the daemon's DAVolume.c names mounts. */
