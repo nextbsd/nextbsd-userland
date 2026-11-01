@@ -363,8 +363,12 @@ console_log(const char *why)
 	    (long)CFArrayGetCount(gDAConsoleUserList) : 0L,
 	    gDAConsoleUserList != NULL &&
 	    CFArrayGetCount(gDAConsoleUserList) == 1 ? "" : "s",
-	    gDAConsoleUserList == NULL ? "; removable and external media "
-	    "wait for a login" : "");
+	    gDAConsoleUserList != NULL ? "" :
+	    DAPreferenceGetBool(kDAPreferenceMountDeferRemovableKey, 1) ||
+	    DAPreferenceGetBool(kDAPreferenceMountDeferExternalKey, 1) ?
+	    "; removable and external media wait for a login" :
+	    "; removable and external media mount owned by root "
+	    "(AutomountDisksWithoutUserLogin)");
 }
 
 static void	console_connect(void *context);
