@@ -25,7 +25,7 @@ SRCS+=		SCNetworkConfigurationInternal.c SCNetworkInterface.c
 SRCS+=		SCNetworkProtocol.c SCNetworkService.c SCNetworkSet.c
 SRCS+=		SCVLANInterface.c SCBondInterface.c SCBridgeInterface.c
 SRCS+=		SCDynamicStoreKeys.c SCDName.c SCPName.c SCDHostName.c
-SRCS+=		SCNetworkReachability.c
+SRCS+=		SCNetworkReachability.c SCDConsoleUser.c
 
 # configUser.c — MIG-generated config.defs client stubs (same file
 # configd's test clients link). config_wire.c — configd's shared
@@ -82,6 +82,9 @@ CFLAGS+=	-I${.CURDIR}/../launchd/liblaunch
 CFLAGS+=	-I${.CURDIR}/../launchd/freebsd-shims
 
 INCS=		SystemConfiguration/SCDynamicStore.h \
+		SystemConfiguration/SCDynamicStoreCopySpecific.h \
+		SystemConfiguration/SCDynamicStoreCopySpecificPrivate.h \
+		SystemConfiguration/SCDynamicStoreSetSpecificPrivate.h \
 		SystemConfiguration/SCNetworkConfiguration.h \
 		SystemConfiguration/SCNetworkReachability.h \
 		SystemConfiguration/SCPreferences.h \

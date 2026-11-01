@@ -18,7 +18,9 @@
  *   _DAServerSessionQueueResponse     a peek/approval answer (DAQueue.c)
  *   _DAServerSessionQueueRequest      mount, unmount and eject
  *                                     (DARequest.c, #197/#198), for the
- *                                     disk's owner or root; rename, claim,
+ *                                     disk's owner, root, or the console
+ *                                     user on removable and external
+ *                                     media (#199); rename, claim,
  *                                     probe and refresh answer
  *                                     kDAReturnUnsupported until later
  *                                     tickets bring them
@@ -42,9 +44,13 @@
 #include "DAQueue.h"
 #include "DARequest.h"
 #include "DASession.h"
+#include "DAMount.h"
 #include "DAStage.h"
+#include "DASupport.h"
 
 #include <DiskArbitration/DADissenter.h>
+
+#include <SystemConfiguration/SCDynamicStoreCopySpecificPrivate.h>
 
 #include "DAServerServer.h"	/* MIG: DAServer_server() + routine protos */
 
@@ -365,8 +371,8 @@ _DAServerSessionQueueRequest(mach_port_t _session, uint32_t _kind,
 	struct client_mount *request;
 	char *path = NULL, *options = NULL;
 	pid_t pid;
-	uid_t uid;
-	gid_t gid;
+	uid_t uid, cuid;
+	gid_t gid, cgid;
 
 	session = DASessionListGetSession(_session);
 	if (session == NULL)
@@ -391,12 +397,15 @@ _DAServerSessionQueueRequest(mach_port_t _session, uint32_t _kind,
 
 	/*
 	 * Apple's DAAuthorize(_kDAAuthorizeOptionIsOwner): the disk's owner
-	 * or root, for mount, unmount and eject alike. There are no
-	 * Authorization Services rights to fall back on, and no console user
-	 * until #199.
+	 * or root, for mount, unmount and eject alike. Apple then asks
+	 * Authorization Services for system.volume.<class>.<right>; NextBSD
+	 * has no authorization server, so in its place the console user
+	 * (#199) is allowed on the media DAConsoleUserMayOwn accepts:
+	 * removable or external disks that carry no system mount.
 	 */
 	token_ids(_token, &pid, &uid, &gid);
-	if (uid != 0 && uid != disk->user_uid) {
+	if (uid != 0 && uid != disk->user_uid && !(DAConsoleUserGet(&cuid,
+	    &cgid) && uid == cuid && DAConsoleUserMayOwn(disk))) {
 		DALog("DA-REQUEST: %s %s for " DA_SESSION_FMT ": uid %u is "
 		    "not the owner", _kind == _kDADiskMount ? "mount" :
 		    _kind == _kDADiskUnmount ? "unmount" : "eject", disk->id,
@@ -599,6 +608,206 @@ _DAServerSessionUnregisterCallback(mach_port_t _session,
 		}
 	}
 	return (kDAReturnSuccess);
+}
+
+/* --- the console user (#199) --------------------------------------------- */
+
+/* A deferred mount at login; the disk waits for it, as in the mount stage. */
+struct login_mount {
+	char		*id;
+	uint64_t	 serial;
+};
+
+static void
+login_mount_done(int32_t status, const char *mountpoint, void *context)
+{
+	struct login_mount *ctx = context;
+	struct da_disk *disk;
+
+	disk = DADiskListFind(ctx->id);
+	if (disk != NULL && disk->serial == ctx->serial)
+		disk->state &= ~kDADiskStateCommandActive;
+	if (status == 0)
+		DALog("DA-CONSOLE: deferred %s mounted on \"%s\"", ctx->id,
+		    mountpoint != NULL ? mountpoint : "?");
+	free(ctx->id);
+	free(ctx);
+	DAStageSignal();
+}
+
+static void
+login_mount(struct da_disk *disk)
+{
+	struct login_mount *ctx;
+
+	ctx = calloc(1, sizeof(*ctx));
+	if (ctx == NULL || (ctx->id = strdup(disk->id)) == NULL) {
+		free(ctx);
+		DALog("DA-CONSOLE: %s: out of memory for the deferred mount",
+		    disk->id);
+		return;
+	}
+	ctx->serial = disk->serial;
+	disk->state |= kDADiskStateCommandActive;
+	DALog("DA-CONSOLE: mounting deferred disk %s", disk->id);
+	DARequestMount(disk, NULL, 1, NULL, login_mount_done, ctx);
+}
+
+static int
+disk_mountable(const struct da_disk *disk)
+{
+	return (DADiskGetDescription(disk,
+	    kDADiskDescriptionVolumeMountableKey) == kCFBooleanTrue);
+}
+
+static int
+disk_mounted(const struct da_disk *disk)
+{
+	return (DADiskGetDescription(disk,
+	    kDADiskDescriptionVolumePathKey) != NULL);
+}
+
+/* The uid of a console session dictionary, or -1. */
+static long
+session_uid(CFDictionaryRef session)
+{
+	CFTypeRef value;
+
+	value = CFDictionaryGetValue(session, kSCConsoleSessionUID);
+	if (value == NULL || CFGetTypeID(value) != CFNumberGetTypeID())
+		return (-1);
+	return ((long)___CFNumberGetIntegerValue(value));
+}
+
+/*
+ * Apple's _DAConfigurationCallback (DAServer.c), less the SystemUIServer
+ * wait, the /dev node chmod/chown (NextBSD gives the whole disk to the
+ * console user instead, DAConsoleUserClaim), the encrypted-volume
+ * MountedByUserUID case, CoreStorage and the .SoftwareUpdateAtLogout
+ * cookie:
+ *
+ *   logout   the previous user has no session left: unmount (Force) every
+ *            volume they own, then eject (Force) every whole disk they own;
+ *   login    somebody is logged in: the removable and external whole disks
+ *            are theirs, so are such volumes that mounted root's while
+ *            nobody was logged in (AutomountDisksWithoutUserLogin), and if
+ *            nobody was logged in before, every deferred volume is mounted
+ *            (DARequestMount "automatic", so the mount approval round and
+ *            the /etc/fstab map apply). System volumes and their disks
+ *            (kDADiskStateMountSystem) are never handed over;
+ *   nobody   the whole disks go back to root and every mounted volume that
+ *            would have been deferred is unmounted.
+ */
+void
+_DAConfigurationCallback(SCDynamicStoreRef session, CFArrayRef keys __unused,
+    void *info __unused)
+{
+	CFStringRef previousUser;
+	CFArrayRef previousUserList;
+	uid_t previousUserUID;
+	struct da_disk *disk, *next;
+	CFDictionaryRef dictionary;
+	CFIndex count, index;
+	uid_t uid;
+	gid_t gid;
+
+	previousUser = gDAConsoleUser;
+	previousUserUID = gDAConsoleUserUID;
+	previousUserList = gDAConsoleUserList;
+
+	gDAConsoleUser = ___SCDynamicStoreCopyConsoleUser(session, &uid, &gid);
+	gDAConsoleUserUID = uid;
+	gDAConsoleUserGID = gid;
+	gDAConsoleUserList = ___SCDynamicStoreCopyConsoleInformation(session);
+	DAConsoleUserLog("State:/Users/ConsoleUser changed");
+
+	if (gDAConsoleUser == NULL) {
+		/* A console user has logged out: is any session still theirs? */
+		count = gDAConsoleUserList != NULL ?
+		    CFArrayGetCount(gDAConsoleUserList) : 0;
+		for (index = 0; index < count; index++) {
+			dictionary = CFArrayGetValueAtIndex(gDAConsoleUserList,
+			    index);
+			if (CFDictionaryGetValue(dictionary,
+			    CFSTR("kCGSSessionIsLoggingOutKey")) ==
+			    kCFBooleanTrue)
+				continue;
+			if (session_uid(dictionary) == (long)previousUserUID)
+				break;
+		}
+		if (index == count && previousUserUID != 0) {
+			TAILQ_FOREACH_SAFE(disk, &gDADiskList, link, next) {
+				if (!disk_mountable(disk) ||
+				    !disk_mounted(disk) ||
+				    disk->user_uid == 0 ||
+				    disk->user_uid != previousUserUID)
+					continue;
+				DALog("DA-CONSOLE: logout of uid %u: "
+				    "unmounting %s", (unsigned)previousUserUID,
+				    disk->id);
+				DAQueueRequest(_kDADiskUnmount, disk,
+				    kDADiskUnmountOptionForce, 0, 0, NULL);
+			}
+			TAILQ_FOREACH_SAFE(disk, &gDADiskList, link, next) {
+				if (DADiskGetDescription(disk,
+				    kDADiskDescriptionMediaWholeKey) !=
+				    kCFBooleanTrue || disk->volume_only ||
+				    disk->user_uid == 0 ||
+				    disk->user_uid != previousUserUID)
+					continue;
+				DALog("DA-CONSOLE: logout of uid %u: "
+				    "ejecting %s", (unsigned)previousUserUID,
+				    disk->id);
+				DAQueueRequest(_kDADiskEject, disk,
+				    kDADiskUnmountOptionForce, 0, 0, NULL);
+			}
+		}
+	}
+
+	if (gDAConsoleUserList != NULL) {
+		/* A console user is logged in. */
+		if (previousUserList == NULL)
+			DALog("DA-CONSOLE: console user change: start mounting "
+			    "disks");
+		TAILQ_FOREACH_SAFE(disk, &gDADiskList, link, next) {
+			DAConsoleUserClaim(disk);
+			if (previousUserList != NULL || disk->volume_only ||
+			    !disk_mountable(disk) || disk_mounted(disk) ||
+			    disk->filesystem == NULL ||
+			    (disk->state & kDADiskStateStagedMount) == 0 ||
+			    (disk->state & kDADiskStateCommandActive) != 0)
+				continue;
+			if (!DAMountGetPreference(disk,
+			    kDAMountPreferenceDisableAutoMount) &&
+			    DAMountGetPreference(disk,
+			    kDAMountPreferenceDefer))
+				login_mount(disk);
+		}
+	} else {
+		/* A console user is not logged in. */
+		DAPreferenceListRefresh();
+		TAILQ_FOREACH_SAFE(disk, &gDADiskList, link, next) {
+			DAConsoleUserClaim(disk);
+			if (!disk_mountable(disk) || !disk_mounted(disk) ||
+			    disk->volume_only)
+				continue;
+			if (DAMountGetPreference(disk,
+			    kDAMountPreferenceDefer) &&
+			    (disk->state & _kDADiskStateMountAutomaticNoDefer)
+			    == 0) {
+				DALog("DA-CONSOLE: no console user: unmounting "
+				    "%s", disk->id);
+				DAQueueRequest(_kDADiskUnmount, disk, 0, 0, 0,
+				    NULL);
+			}
+		}
+	}
+
+	if (previousUser != NULL)
+		CFRelease(previousUser);
+	if (previousUserList != NULL)
+		CFRelease(previousUserList);
+	DAStageSignal();
 }
 
 /* --- the receive loop ----------------------------------------------------- */

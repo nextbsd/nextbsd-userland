@@ -121,4 +121,17 @@
 #define kSCDynamicStorePropNetPrimaryService	CFSTR("PrimaryService")
 #define kSCDynamicStorePropNetPrimaryInterface	CFSTR("PrimaryInterface")
 
+/*
+ * State:/Users/ConsoleUser (Apple's kSCEntUsersConsoleUser and its
+ * kSCPropUsersConsoleUser* properties; SessionInfo is Apple's private
+ * kSCPropUsersConsoleSessionInfo). Written by the console-session owner
+ * (loginwindow on Apple, /usr/libexec/consoleuser here), read by
+ * diskarbitrationd (#199).
+ */
+#define kSCEntUsersConsoleUser			CFSTR("ConsoleUser")
+#define kSCPropUsersConsoleUserName		CFSTR("Name")
+#define kSCPropUsersConsoleUserUID		CFSTR("UID")
+#define kSCPropUsersConsoleUserGID		CFSTR("GID")
+#define kSCPropUsersConsoleSessionInfo		CFSTR("SessionInfo")
+
 #endif	/* _SCSCHEMADEFINITIONS_H */

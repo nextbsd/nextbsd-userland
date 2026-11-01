@@ -17,6 +17,8 @@
 
 #include <mach/mach.h>
 
+#include <SystemConfiguration/SCDynamicStore.h>
+
 #include <signal.h>
 
 /* The port set the receive loop serves; sessions add their ports to it. */
@@ -30,5 +32,13 @@ int	DAServerInit(mach_port_t service, dispatch_queue_t queue);
 
 /* Serve until *stop is set (checked at least once a second). */
 void	DAServerRun(volatile sig_atomic_t *stop);
+
+/*
+ * Apple's _DAConfigurationCallback (#199): State:/Users/ConsoleUser
+ * changed. Runs on the daemon queue (DASupport.c's session); `keys` and
+ * `info` are unused.
+ */
+void	_DAConfigurationCallback(SCDynamicStoreRef session, CFArrayRef keys,
+	    void *info);
 
 #endif /* DISKARBITRATION_DASERVER_H */

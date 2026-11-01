@@ -82,6 +82,16 @@ enum {
 	kDADiskStateRequireReprobe	= 0x00000008,
 	_kDADiskStateMountAutomatic	= 0x00000010,
 	_kDADiskStateMountAutomaticNoDefer = 0x00000020,
+	/*
+	 * NextBSD: a system volume (#199). Either it was mounted by
+	 * someone else before the mount stage reached it (the root
+	 * filesystem, /etc/fstab at boot, the live ISO's boot media on
+	 * /media, a hand mount before the probe; DAVolume.c), or an
+	 * /etc/fstab line names it (the mount map, DAMount.c). It is never
+	 * deferred, and neither it nor any disk of its whole disk is given
+	 * to the console user, unmounted at logout or ejected.
+	 */
+	kDADiskStateMountSystem		= 0x00000040,
 	kDADiskStateStagedProbe		= 0x00010000,
 	kDADiskStateStagedPeek		= 0x00020000,
 	kDADiskStateStagedApprove	= 0x00080000,
@@ -109,8 +119,8 @@ struct da_disk {
 	char			*ioreg_path;	/* registry node the media hangs off */
 	char			*bus_driver;	/* storage driver (vtblk, umass, ...) */
 	uint64_t		serial;		/* unique per DADiskCreate */
-	uid_t			user_uid;	/* mount owner: the console user */
-	gid_t			user_gid;	/* (root until #199) */
+	uid_t			user_uid;	/* owner: root, or the console user */
+	gid_t			user_gid;	/* for removable/external media (#199) */
 
 	/* GEOM bookkeeping for the walk/diff (DAGeom.c). */
 	char			*signature;	/* size|content|uuid at creation */

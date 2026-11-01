@@ -7,8 +7,14 @@
  * AutomountDisksWithoutUserLogin switch, and the daemon's own plist for the
  * DA* keys. NextBSD reads both sets from autodiskmount.plist, so there is
  * one file to edit and no com.apple-named preference file; the key names
- * and their meaning are Apple's. Plain CFPropertyList reads, so the daemon
- * does not link SystemConfiguration for a file read.
+ * and their meaning are Apple's. Plain CFPropertyList reads, not
+ * SCPreferences.
+ *
+ * The console user (#199) is Apple's DAMain.c session on configd and the
+ * DABase.c ___SCDynamicStoreCopyConsole* wrappers: State:/Users/ConsoleUser,
+ * which a login program publishes (/usr/libexec/consoleuser), watched on the
+ * daemon queue. The login and logout handling is _DAConfigurationCallback
+ * in DAServer.c, as on Apple.
  *
  * The /etc/fstab mount map (#196) is Apple's __DAMountMapCreate1 and
  * DAMountMapListRefresh1 (DASupport.m), read through the vendored fstab.c.
@@ -18,6 +24,10 @@
  */
 #include "DASupport.h"
 #include "DADisk.h"
+#include "DAServer.h"
+
+#include <SystemConfiguration/SCDynamicStoreCopySpecific.h>
+#include <SystemConfiguration/SCDynamicStoreCopySpecificPrivate.h>
 
 #include <sys/stat.h>
 
@@ -163,13 +173,292 @@ DAPreferenceGetBool(CFStringRef key, int fallback)
 	return (CFBooleanGetValue((CFBooleanRef)v) ? 1 : 0);
 }
 
+/* --- the console user (#199) --------------------------------------------- */
+
+CFStringRef		gDAConsoleUser;
+uid_t			gDAConsoleUserUID;
+gid_t			gDAConsoleUserGID;
+CFArrayRef		gDAConsoleUserList;
+
+static SCDynamicStoreRef	g_console_store;
+static dispatch_queue_t		g_console_queue;
+static int			g_console_retry_logged;
+
+/* Apple's ___UID_ROOT / ___GID_WHEEL. */
+#define DA_UID_ROOT	((uid_t)0)
+#define DA_GID_WHEEL	((gid_t)0)
+
+CFStringRef
+___SCDynamicStoreCopyConsoleUser(SCDynamicStoreRef store, uid_t *uid,
+    gid_t *gid)
+{
+	CFStringRef user;
+
+	if (gid != NULL)
+		*gid = DA_GID_WHEEL;
+	if (uid != NULL)
+		*uid = DA_UID_ROOT;
+	user = SCDynamicStoreCopyConsoleUser(store, uid, gid);
+	if (user != NULL && CFEqual(user, CFSTR("loginwindow"))) {
+		/* Apple: the login window itself is nobody. */
+		if (gid != NULL)
+			*gid = DA_GID_WHEEL;
+		if (uid != NULL)
+			*uid = DA_UID_ROOT;
+		CFRelease(user);
+		user = NULL;
+	}
+	return (user);
+}
+
+CFArrayRef
+___SCDynamicStoreCopyConsoleInformation(SCDynamicStoreRef store)
+{
+	CFMutableArrayRef list = NULL;
+	CFMutableDictionaryRef dictionary;
+	CFArrayRef sessions;
+	CFDictionaryRef session;
+	CFStringRef user;
+	CFIndex index;
+
+	sessions = SCDynamicStoreCopyConsoleInformation(store);
+	if (sessions != NULL) {
+		list = CFArrayCreateMutableCopy(kCFAllocatorDefault, 0,
+		    sessions);
+		CFRelease(sessions);
+		if (list == NULL)
+			return (NULL);
+		/* Sessions still logging in are not logged in yet. */
+		for (index = CFArrayGetCount(list) - 1; index > -1; index--) {
+			session = CFArrayGetValueAtIndex(list, index);
+			if (CFGetTypeID(session) != CFDictionaryGetTypeID() ||
+			    CFDictionaryGetValue(session,
+			    kSCConsoleSessionLoginDone) == kCFBooleanFalse)
+				CFArrayRemoveValueAtIndex(list, index);
+		}
+		if (CFArrayGetCount(list) == 0) {
+			CFRelease(list);
+			list = NULL;
+		}
+		return (list);
+	}
+
+	/* No session list: one session for the user, if there is one. */
+	user = ___SCDynamicStoreCopyConsoleUser(store, NULL, NULL);
+	if (user == NULL)
+		return (NULL);
+	dictionary = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
+	    &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+	if (dictionary != NULL) {
+		CFDictionarySetValue(dictionary, kSCConsoleSessionUserName,
+		    user);
+		list = CFArrayCreateMutable(kCFAllocatorDefault, 0,
+		    &kCFTypeArrayCallBacks);
+		if (list != NULL)
+			CFArrayAppendValue(list, dictionary);
+		CFRelease(dictionary);
+	}
+	CFRelease(user);
+	return (list);
+}
+
 int
 DAConsoleUserGet(uid_t *uid, gid_t *gid)
 {
-	/* #199: SCDynamicStoreCopyConsoleUser(State:/Users/ConsoleUser). */
-	*uid = 0;
-	*gid = 0;
+	if (gDAConsoleUserList == NULL) {
+		*uid = DA_UID_ROOT;
+		*gid = DA_GID_WHEEL;
+		return (0);
+	}
+	*uid = gDAConsoleUserUID;
+	*gid = gDAConsoleUserGID;
 	return (1);
+}
+
+/* The whole disk a volume sits on. */
+static const struct da_disk *
+console_unit(const struct da_disk *disk)
+{
+	return (disk->whole != NULL ? disk->whole : disk);
+}
+
+int
+DAConsoleUserMayOwn(const struct da_disk *disk)
+{
+	const struct da_disk *unit, *sub;
+
+	if (disk->volume_only)
+		return (0);
+	unit = console_unit(disk);
+	if (DADiskGetDescription(unit, kDADiskDescriptionMediaRemovableKey) !=
+	    kCFBooleanTrue && DADiskGetDescription(unit,
+	    kDADiskDescriptionDeviceInternalKey) == kCFBooleanTrue)
+		return (0);
+	TAILQ_FOREACH(sub, &gDADiskList, link) {
+		if (!sub->volume_only && console_unit(sub) == unit &&
+		    (sub->state & kDADiskStateMountSystem) != 0)
+			return (0);
+	}
+	return (1);
+}
+
+void
+DAConsoleUserClaim(struct da_disk *disk)
+{
+	uid_t uid;
+	gid_t gid;
+	int console;
+
+	if (disk->volume_only)
+		return;
+	if (!DAConsoleUserMayOwn(disk)) {
+		/*
+		 * A whole disk only ever gets a user here; one that has
+		 * since become a system disk (an /etc/fstab volume mounted
+		 * on it) goes back to root.
+		 */
+		if (disk->whole == NULL && disk->user_uid != DA_UID_ROOT &&
+		    DADiskGetDescription(disk,
+		    kDADiskDescriptionMediaWholeKey) == kCFBooleanTrue) {
+			disk->user_uid = DA_UID_ROOT;
+			disk->user_gid = DA_GID_WHEEL;
+			DALog("DA-CONSOLE: %s carries a system volume; now "
+			    "owned by root", disk->id);
+		}
+		return;
+	}
+	console = DAConsoleUserGet(&uid, &gid);
+	if (disk->whole == NULL && DADiskGetDescription(disk,
+	    kDADiskDescriptionMediaWholeKey) == kCFBooleanTrue) {
+		if (disk->user_uid == uid && disk->user_gid == gid)
+			return;
+		disk->user_uid = uid;
+		disk->user_gid = gid;
+		DALog("DA-CONSOLE: %s now owned by %s (uid %u)", disk->id,
+		    console ? "the console user" : "root", (unsigned)uid);
+		return;
+	}
+	if (console && disk->user_uid == DA_UID_ROOT &&
+	    DADiskGetDescription(disk, kDADiskDescriptionVolumePathKey) !=
+	    NULL) {
+		disk->user_uid = uid;
+		disk->user_gid = gid;
+		DALog("DA-CONSOLE: %s (mounted while nobody was logged in) now "
+		    "owned by the console user (uid %u)", disk->id,
+		    (unsigned)uid);
+	}
+}
+
+static void
+console_log(const char *why)
+{
+	char name[256];
+
+	if (gDAConsoleUser == NULL || !CFStringGetCString(gDAConsoleUser,
+	    name, sizeof(name), kCFStringEncodingUTF8))
+		(void)strlcpy(name, "none", sizeof(name));
+	DALog("DA-CONSOLE: %s: console user = %s [%u], %ld session%s%s", why,
+	    name, (unsigned)gDAConsoleUserUID,
+	    gDAConsoleUserList != NULL ?
+	    (long)CFArrayGetCount(gDAConsoleUserList) : 0L,
+	    gDAConsoleUserList != NULL &&
+	    CFArrayGetCount(gDAConsoleUserList) == 1 ? "" : "s",
+	    gDAConsoleUserList != NULL ? "" :
+	    DAPreferenceGetBool(kDAPreferenceMountDeferRemovableKey, 1) ||
+	    DAPreferenceGetBool(kDAPreferenceMountDeferExternalKey, 1) ?
+	    "; removable and external media wait for a login" :
+	    "; removable and external media mount owned by root "
+	    "(AutomountDisksWithoutUserLogin)");
+}
+
+static void	console_connect(void *context);
+
+static void
+console_retry(void)
+{
+	if (!g_console_retry_logged) {
+		g_console_retry_logged = 1;
+		DALog("DA-CONSOLE: configd is not reachable (%s); nobody is "
+		    "logged in until it is, retrying", SCErrorString(SCError()));
+	}
+	dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW,
+	    5 * (int64_t)NSEC_PER_SEC), g_console_queue, (void *)1,
+	    console_connect);
+}
+
+/*
+ * DAMain.c: SCDynamicStoreCreate(_kDADaemonName, _DAConfigurationCallback),
+ * the console-user key as the notification key, the session on the daemon
+ * queue. At startup Apple only reads the globals (there are no disks
+ * yet). `context` is non-NULL on a retry, where a console user already
+ * logged in runs the callback as a login.
+ */
+static void
+console_connect(void *context)
+{
+	SCDynamicStoreRef store;
+	CFStringRef key;
+	CFArrayRef keys;
+
+	store = SCDynamicStoreCreate(kCFAllocatorDefault,
+	    CFSTR("com.apple.DiskArbitration.diskarbitrationd"),
+	    _DAConfigurationCallback, NULL);
+	if (store == NULL) {
+		console_retry();
+		return;
+	}
+	key = SCDynamicStoreKeyCreateConsoleUser(kCFAllocatorDefault);
+	keys = key != NULL ? CFArrayCreate(kCFAllocatorDefault,
+	    (const void **)&key, 1, &kCFTypeArrayCallBacks) : NULL;
+	if (key != NULL)
+		CFRelease(key);
+	if (keys == NULL || !SCDynamicStoreSetNotificationKeys(store, keys,
+	    NULL) || !SCDynamicStoreSetDispatchQueue(store, g_console_queue)) {
+		if (keys != NULL)
+			CFRelease(keys);
+		CFRelease(store);
+		console_retry();
+		return;
+	}
+	CFRelease(keys);
+	g_console_store = store;
+
+	if (context != NULL) {
+		CFArrayRef list;
+
+		/*
+		 * configd answered late. Somebody already logged in is a
+		 * login (the callback mounts what was deferred); nobody is
+		 * no change from what the daemon assumed, so nothing is
+		 * unmounted.
+		 */
+		list = ___SCDynamicStoreCopyConsoleInformation(store);
+		if (list != NULL) {
+			CFRelease(list);
+			DALog("DA-CONSOLE: configd reachable again");
+			_DAConfigurationCallback(store, NULL, NULL);
+			return;
+		}
+	}
+	gDAConsoleUser = ___SCDynamicStoreCopyConsoleUser(store,
+	    &gDAConsoleUserUID, &gDAConsoleUserGID);
+	gDAConsoleUserList = ___SCDynamicStoreCopyConsoleInformation(store);
+	console_log("watching State:/Users/ConsoleUser");
+}
+
+void
+DAConsoleUserInit(dispatch_queue_t queue)
+{
+	g_console_queue = queue;
+	gDAConsoleUserUID = DA_UID_ROOT;
+	gDAConsoleUserGID = DA_GID_WHEEL;
+	console_connect(NULL);
+}
+
+void
+DAConsoleUserLog(const char *why)
+{
+	console_log(why);
 }
 
 /* --- the /etc/fstab mount map (#196) -------------------------------------- */

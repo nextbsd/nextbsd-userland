@@ -28,8 +28,11 @@
  * the MIG receive loop; the disk model, the stages and every routine run
  * on one serial queue.
  *
- * Plan (E15, nextbsd/nextbsd#471):
- *   D4 #199 — console user: deferred mounts, owner.
+ * The console user (#199) comes from configd's State:/Users/ConsoleUser
+ * (DASupport.c), which a login program publishes with
+ * /usr/libexec/consoleuser: removable and external media wait for a login,
+ * then mount owned by the console user, who may unmount and eject them;
+ * the logout unmounts and ejects them again (DAServer.c).
  */
 #include "da_iokit_subscribe.h"
 #include "DADisk.h"
@@ -40,6 +43,7 @@
 #include "DAQueue.h"
 #include "DAServer.h"
 #include "DAStage.h"
+#include "DASupport.h"
 #include "DAThread.h"
 #include "DAVolume.h"
 
@@ -152,6 +156,14 @@ main(int argc, char **argv)
 		DAVolumeInit(da_queue);
 		DAProbeInit(da_queue);
 	}
+
+	/*
+	 * Who is at the console (#199): configd's State:/Users/ConsoleUser,
+	 * read now and watched on the daemon queue (Apple's DAMain.c reads
+	 * it before the first disk too). Until somebody logs in, removable
+	 * and external media wait.
+	 */
+	DAConsoleUserInit(da_queue);
 
 	/*
 	 * Subscribe to storage device arrival/removal over the kernel notify

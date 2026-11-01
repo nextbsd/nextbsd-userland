@@ -83,12 +83,54 @@ and
 turn the automatic mount on or off; every other option is passed to
 .Xr mount 8 .
 The file is re-read, when it has changed, at the next disk event.
+An
+.Li auto
+line also mounts the volume before anybody logs in.
+.Ss Console user
+Removable and external media are not mounted automatically until a user
+is logged in at the console, as on a Mac at its login window.
+The console user is the
+.Li State:/Users/ConsoleUser
+key of
+.Xr configd 8 ,
+which a login program publishes with
+.Xr consoleuser 8 .
+When somebody logs in, the deferred volumes are mounted, owned by the
+console user, who also owns the whole removable and external disks and
+the volumes on them that mounted while nobody was logged in, and may
+mount, unmount and eject them.
+When that user logs out, their volumes are unmounted and their disks
+ejected; with nobody logged in, mounted volumes that would have been
+deferred are unmounted.
+Internal media, volumes mounted before
+.Nm
+reached them (the root filesystem,
+.Pa /etc/fstab
+at boot, a live ISO's boot media), volumes an
+.Pa /etc/fstab
+line names, and disks carrying such a volume are left alone.
+.Li AutomountDisksWithoutUserLogin
+set to true in
+.Pa /Local/Library/Preferences/SystemConfiguration/autodiskmount.plist
+mounts removable and external media without a login, owned by root.
+NextBSD ships the file with it set, together with
+.Li DAMountTrustExternal
+false so external media keep the untrusted mount options, because no
+login program publishes the console user yet.
+Once one runs
+.Xr consoleuser 8 ,
+removing the key restores Apple's defaults (removable and external
+media wait for a login); setting it to false defers removable media only
+and trusts external media, as on Apple.
 .Sh FILES
 .Bl -tag -width /etc/fstab -compact
 .It Pa /etc/fstab
+.It Pa /Local/Library/Preferences/SystemConfiguration/autodiskmount.plist
 .It Pa /var/log/diskarbitrationd.log
 .It Pa /var/run/diskarbitrationd.pid
 .It Pa /System/Library/LaunchDaemons/com.apple.diskarbitrationd.plist
 .El
 .Sh SEE ALSO
-.Xr fstab 5
+.Xr fstab 5 ,
+.Xr configd 8 ,
+.Xr consoleuser 8

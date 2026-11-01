@@ -83,6 +83,17 @@ SCDynamicStoreKeyCreateHostNames(CFAllocatorRef allocator)
 }
 
 /*
+ * SCDynamicStoreKeyCreateConsoleUser — "State:/Users/ConsoleUser", the
+ * console user's Name/UID/GID/SessionInfo dict (#199).
+ */
+CFStringRef
+SCDynamicStoreKeyCreateConsoleUser(CFAllocatorRef allocator)
+{
+	return (make_key(allocator, CFSTR("%@/%@/%@"),
+	    kSCDynamicStoreDomainState, kSCCompUsers, kSCEntUsersConsoleUser));
+}
+
+/*
  * SCDynamicStoreKeyCreateNetworkGlobalEntity — "<domain>:/Network/
  * Global/<entity>". The Global/IPv4 dict carries PrimaryService /
  * PrimaryInterface; published by ipconfigd on BOUND.

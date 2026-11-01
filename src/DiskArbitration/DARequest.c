@@ -848,7 +848,7 @@ DAQueueRequest(_DARequestKind kind, struct da_disk *disk, int32_t options,
 		CFDictionaryRef dissenter =
 		    DADissenterCreate(kDAReturnNoResources);
 
-		if (serialization != NULL)
+		if (serialization != NULL && callback != NULL)
 			DAQueueRequestCallback(callback, serialization,
 			    dissenter);
 		if (serialization != NULL)
@@ -880,8 +880,14 @@ DAQueueRequest(_DARequestKind kind, struct da_disk *disk, int32_t options,
 			/* An eject unmounts the disk itself too. */
 			if (sub == disk && kind != _kDADiskEject)
 				continue;
+			/*
+			 * An eject's unmounts take only Force, which the
+			 * daemon's own logout eject passes (Apple's
+			 * DADiskEject(disk, kDADiskUnmountOptionForce)).
+			 */
 			subrequest = request_create(_kDADiskUnmount, sub,
-			    kind == _kDADiskEject ? 0 : options &
+			    kind == _kDADiskEject ? options &
+			    kDADiskUnmountOptionForce : options &
 			    ~kDADiskUnmountOptionWhole, uid, gid, NULL);
 			if (subrequest == NULL)
 				continue;

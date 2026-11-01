@@ -42,8 +42,10 @@ void	DARequestMount(struct da_disk *disk, const char *mountpoint,
 /*
  * Queue a client's unmount or eject of `disk` (Apple's DARequestCreate +
  * DAQueueRequest): `kind` is _kDADiskUnmount or _kDADiskEject, `options`
- * the client's DADiskUnmountOptions (0 for eject), `callback` the
- * completion (taken over; freed when the request ends). An eject, and an
+ * the client's DADiskUnmountOptions (0 for a client's eject; the logout
+ * eject passes kDADiskUnmountOptionForce for the volumes' unmounts),
+ * `callback` the completion (taken over; freed when the request ends;
+ * NULL for the daemon's own requests, #199). An eject, and an
  * unmount with kDADiskUnmountOptionWhole, first unmount the other volumes
  * of the whole disk as linked subrequests. Answers through `callback`,
  * possibly before it returns.

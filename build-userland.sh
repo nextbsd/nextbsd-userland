@@ -1016,6 +1016,17 @@ test -x "$DESTDIR/usr/sbin/scutil" || { echo "FAIL: /usr/sbin/scutil not install
 needed_check "$DESTDIR/usr/sbin/scutil" "libSystemConfiguration"
 echo "==> scutil built"
 
+# ---- consoleuser ------------------------------------------------------------
+# /usr/libexec/consoleuser (#199): publishes State:/Users/ConsoleUser through
+# SCDynamicStoreSetConsoleInformation, what Apple's loginwindow does; a login
+# program runs "set <user>" / "clear". diskarbitrationd watches the key.
+comp "consoleuser(8)"
+mkdir -p "$DESTDIR/usr/libexec"
+run_buildenv "make -C $SRC/consoleuser DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/libexec/consoleuser" || { echo "FAIL: /usr/libexec/consoleuser not installed"; exit 1; }
+needed_check "$DESTDIR/usr/libexec/consoleuser" "libSystemConfiguration"
+echo "==> consoleuser built"
+
 # ---- cpdup + nextbsd-installer (the on-target installer) --------------------
 # The FTXUI TUI installer clones the running system onto the target disk with
 # cpdup. Both are vendored under src/ but were not previously built; wired in

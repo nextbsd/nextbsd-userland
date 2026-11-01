@@ -3,23 +3,35 @@
  * nextbsd-userland#195).
  *
  * The C counterpart of the preference half of Apple's DASupport.m
- * (DAPreferenceListRefresh, the kDAPreference* keys) plus the console-user
- * input DAMount.c asks for, and the /etc/fstab mount map (#196), which
- * Apple keeps in DASupport.m too.
+ * (DAPreferenceListRefresh, the kDAPreference* keys), the /etc/fstab mount
+ * map (#196), which Apple keeps in DASupport.m too, and the console user
+ * (#199), which Apple keeps in DAMain.c and DABase.c.
  */
 #ifndef DISKARBITRATION_DASUPPORT_H
 #define DISKARBITRATION_DASUPPORT_H
 
 #include <CoreFoundation/CoreFoundation.h>
 
+#include <SystemConfiguration/SCDynamicStore.h>
+
+#include <dispatch/dispatch.h>
+
 #include <sys/types.h>
 
+struct da_disk;
+
 /*
- * Apple's preference file (DABase.h ___PREFS_DEFAULT_DIR). The daemon
- * reads it, never writes it; a missing file means every default.
+ * Apple's preference file, autodiskmount.plist in SCPreferences'
+ * default directory (___PREFS_DEFAULT_DIR), which on NextBSD is the Local
+ * domain's /Local/Library/Preferences/SystemConfiguration (libSystem
+ * Configuration's PREFS_DEFAULT_DIR; NextBSD has no bare /Library). The
+ * daemon reads it, never writes it; a missing file means every Apple
+ * default. The base system ships one that sets
+ * AutomountDisksWithoutUserLogin (#199): nothing publishes the console
+ * user yet, so removable and external media mount without a login.
  */
 #define DA_PREFERENCE_FILE \
-	"/Library/Preferences/SystemConfiguration/autodiskmount.plist"
+	"/Local/Library/Preferences/SystemConfiguration/autodiskmount.plist"
 
 /* Apple's keys (DASupport.m). */
 #define kDAPreferenceMountDeferExternalKey	CFSTR("DAMountDeferExternal")
@@ -57,18 +69,70 @@ int		DAPreferenceGetBool(CFStringRef key, int fallback);
  */
 CFDictionaryRef	DAPropertyListCreateFromFile(const char *path);
 
+/* --- the console user (#199) --------------------------------------------- */
+
 /*
- * Who is at the console (Apple: gDAConsoleUserList from SCDynamicStore,
- * State:/Users/ConsoleUser). Returns 1 and the user's uid/gid when there
- * is one, 0 when nobody is logged in.
- *
- * NextBSD has no console-user source yet (#199). Until then this reports
- * root as the console user, so removable and external media mount when
- * they appear, owned by root. #199 replaces the body with the
- * SCDynamicStore read; DAMount.c's defer branch then takes effect with no
- * other change.
+ * Apple's console-user globals (DAMain.c), from configd's
+ * State:/Users/ConsoleUser: the user's name (NULL when nobody is logged
+ * in, or when the name is "loginwindow"), uid and gid (root:wheel without
+ * a user), and the console sessions whose login is done (NULL when there
+ * are none). gDAConsoleUserList is the "somebody is logged in" test the
+ * mount deferral uses, as on Apple.
+ */
+extern CFStringRef	gDAConsoleUser;
+extern uid_t		gDAConsoleUserUID;
+extern gid_t		gDAConsoleUserGID;
+extern CFArrayRef	gDAConsoleUserList;
+
+/*
+ * Open an SCDynamicStore session as Apple's DAMain.c does, read the
+ * console user once, and watch State:/Users/ConsoleUser on `queue`;
+ * each change runs _DAConfigurationCallback (DAServer.c). If configd
+ * cannot be reached the daemon carries on with nobody logged in and
+ * retries every few seconds; once it gets through, the callback runs
+ * for whatever it finds. Call once, before the first disk is staged.
+ */
+void		DAConsoleUserInit(dispatch_queue_t queue);
+
+/*
+ * Apple's DABase.c wrappers: the console user (NULL for "loginwindow")
+ * with uid/gid defaulting to root:wheel, and the sessions whose login is
+ * done, synthesized from the user name when the publisher sent none.
+ */
+CFStringRef	___SCDynamicStoreCopyConsoleUser(SCDynamicStoreRef store,
+		    uid_t *uid, gid_t *gid);
+CFArrayRef	___SCDynamicStoreCopyConsoleInformation(SCDynamicStoreRef store);
+
+/*
+ * Returns 1 and the console user's uid/gid when somebody is logged in
+ * (gDAConsoleUserList is set), 0 and root:wheel otherwise.
  */
 int		DAConsoleUserGet(uid_t *uid, gid_t *gid);
+
+/*
+ * Whether `disk` is media the console user may own and act on: its whole
+ * disk is removable, or not internal (DADeviceInternal false or unknown,
+ * the media Apple defers until a login), and no volume of that whole disk
+ * is a system mount (kDADiskStateMountSystem). Mount-only disks never
+ * are.
+ */
+int		DAConsoleUserMayOwn(const struct da_disk *disk);
+
+/*
+ * Hand media DAConsoleUserMayOwn accepts to the console user (the NextBSD
+ * counterpart of Apple's /dev node chown at login and logout):
+ *   - a whole disk belongs to the console user, or to root when nobody is
+ *     logged in;
+ *   - a mounted volume that is root's (it mounted while nobody was logged
+ *     in) becomes the console user's. Its files keep the owner they were
+ *     mounted with until it is mounted again.
+ * Other disks are left alone; a volume's owner is otherwise set when it
+ * mounts (DAMount.c).
+ */
+void		DAConsoleUserClaim(struct da_disk *disk);
+
+/* One DA-CONSOLE line with the console user and the session count. */
+void		DAConsoleUserLog(const char *why);
 
 /* --- the /etc/fstab mount map (#196) -------------------------------------- */
 
