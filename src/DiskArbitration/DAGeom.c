@@ -20,6 +20,7 @@
  */
 #include "DAGeom.h"
 #include "DADisk.h"
+#include "DAVolume.h"
 #include "da_iokit_subscribe.h"
 
 #include <sys/types.h>
@@ -45,6 +46,7 @@ static dispatch_queue_t	g_da_queue;
 static atomic_uint	g_event_gen;
 static uint32_t		g_walk_gen;
 static int		g_geom_ok_logged;
+static int		g_volumes_seeded;
 
 /*
  * Walk delays after the last storage event. The registry event is the
@@ -714,6 +716,17 @@ visit_provider(struct da_walk *w, struct gprovider *pp,
 	    rawuuid != NULL ? rawuuid : "", table == NULL);
 
 	disk = DADiskListFind(id);
+	if (disk != NULL && disk->volume_only) {
+		/*
+		 * A mount of this provider was adopted before the walk saw it
+		 * (#193). Drop the stand-in; the mount refresh after this walk
+		 * moves DAVolumePath onto the media disk.
+		 */
+		TAILQ_REMOVE(&gDADiskList, disk, link);
+		DALog("DA-VOLUME-GONE: %s (now media)", disk->id);
+		DADiskRelease(disk);
+		disk = NULL;
+	}
 	if (disk != NULL && (strcmp(disk->signature, sig) != 0 ||
 	    disk->whole != whole)) {
 		/* Same name, different media (new table, resized, swapped). */
@@ -791,6 +804,10 @@ da_geom_walk(void)
 	error = geom_gettree(&mesh);
 	if (error != 0) {
 		DALog("DA-GEOM-FAIL: geom_gettree: %s", strerror(error));
+		if (!g_volumes_seeded) {
+			g_volumes_seeded = 1;
+			DAVolumeRefresh();
+		}
 		return;
 	}
 
@@ -837,7 +854,8 @@ da_geom_walk(void)
 	/* Departures: partitions first, then whole disks. */
 restart_parts:
 	TAILQ_FOREACH(disk, &gDADiskList, link) {
-		if (disk->walk_gen != g_walk_gen && disk->whole != NULL) {
+		if (!disk->volume_only && disk->walk_gen != g_walk_gen &&
+		    disk->whole != NULL) {
 			remove_disk(disk);
 			w.removed++;
 			goto restart_parts;
@@ -845,7 +863,7 @@ restart_parts:
 	}
 restart_wholes:
 	TAILQ_FOREACH(disk, &gDADiskList, link) {
-		if (disk->walk_gen != g_walk_gen) {
+		if (!disk->volume_only && disk->walk_gen != g_walk_gen) {
 			remove_disk(disk);
 			w.removed++;
 			goto restart_wholes;
@@ -856,6 +874,8 @@ restart_wholes:
 
 	total = wholes = 0;
 	TAILQ_FOREACH(disk, &gDADiskList, link) {
+		if (disk->volume_only)
+			continue;
 		total++;
 		if (disk->whole == NULL)
 			wholes++;
@@ -866,6 +886,15 @@ restart_wholes:
 	if (!g_geom_ok_logged && wholes > 0) {
 		g_geom_ok_logged = 1;
 		DALog("DA-GEOM-OK: %d disks from libgeom", total);
+	}
+
+	/*
+	 * Mounts (#193): the first walk seeds them, so mounts of GEOM media
+	 * attach to their disk; later walks re-check them when disks changed.
+	 */
+	if (!g_volumes_seeded || w.created != 0 || w.removed != 0) {
+		g_volumes_seeded = 1;
+		DAVolumeRefresh();
 	}
 }
 

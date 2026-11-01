@@ -16,23 +16,44 @@
 
 struct da_disk_list gDADiskList = TAILQ_HEAD_INITIALIZER(gDADiskList);
 
-void
-DALog(const char *fmt, ...)
+int gDALogDebug;
+
+static void
+dalogv(const char *fmt, va_list ap)
 {
 	struct timespec ts;
 	struct tm tm;
 	char tbuf[32];
-	va_list ap;
 
 	(void)clock_gettime(CLOCK_REALTIME, &ts);
 	(void)gmtime_r(&ts.tv_sec, &tm);
 	(void)strftime(tbuf, sizeof(tbuf), "%Y-%m-%dT%H:%M:%SZ", &tm);
-	(void)fprintf(stderr, "diskarbitrationd[geom] %s ", tbuf);
-	va_start(ap, fmt);
+	(void)fprintf(stderr, "diskarbitrationd[disk] %s ", tbuf);
 	(void)vfprintf(stderr, fmt, ap);
-	va_end(ap);
 	(void)fputc('\n', stderr);
 	(void)fflush(stderr);
+}
+
+void
+DALog(const char *fmt, ...)
+{
+	va_list ap;
+
+	va_start(ap, fmt);
+	dalogv(fmt, ap);
+	va_end(ap);
+}
+
+void
+DALogDebug(const char *fmt, ...)
+{
+	va_list ap;
+
+	if (!gDALogDebug)
+		return;
+	va_start(ap, fmt);
+	dalogv(fmt, ap);
+	va_end(ap);
 }
 
 struct da_disk *
@@ -88,6 +109,25 @@ DADiskListFind(const char *id)
 	TAILQ_FOREACH(disk, &gDADiskList, link)
 		if (strcmp(disk->id, id) == 0)
 			return (disk);
+	return (NULL);
+}
+
+struct da_disk *
+DADiskListFindMedia(const char *dev)
+{
+	struct da_disk *disk;
+	int i;
+
+	TAILQ_FOREACH(disk, &gDADiskList, link) {
+		if (disk->volume_only)
+			continue;
+		if (strcmp(disk->id, dev) == 0)
+			return (disk);
+		for (i = 0; i < DA_DISK_LINK_MAX && disk->device_link[i] != NULL;
+		    i++)
+			if (strcmp(disk->device_link[i], dev) == 0)
+				return (disk);
+	}
 	return (NULL);
 }
 

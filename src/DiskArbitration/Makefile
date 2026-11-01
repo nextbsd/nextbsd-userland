@@ -2,8 +2,9 @@
 #
 # main + bootstrap_check_in for com.apple.DiskArbitration, the kernel
 # registry storage subscription (da_iokit_subscribe.c) and the GEOM disk
-# model (DADisk.c, DAGeom.c; #192). The MIG server for
-# DiskArbitration.framework clients comes with #197.
+# model (DADisk.c, DAGeom.c; #192) with adopted mounts (DAVolume.c;
+# #193). The MIG server for DiskArbitration.framework clients comes with
+# #197.
 #
 # Build:   cd src/DiskArbitration && make SYSROOT=/path/to/rootfs
 # Install: make DESTDIR=/path/to/rootfs install
@@ -12,7 +13,7 @@ PROG=		diskarbitrationd
 # Man page vendored from apple-oss-distributions/DiskArbitration @ DiskArbitration-535.120.1.0.1 (diskarbitrationd/diskarbitrationd.8).
 # bsd.prog.mk gzips + installs into MANDIR.
 MAN=		diskarbitrationd.8
-SRCS=		diskarbitrationd.c da_iokit_subscribe.c DADisk.c DAGeom.c
+SRCS=		diskarbitrationd.c da_iokit_subscribe.c DADisk.c DAGeom.c DAVolume.c
 
 # WARNS=0: da_iokit_subscribe.c pulls <IOKit/IOKitLib.h>, which drags in the
 # whole CoreFoundation + dispatch public header tree (the IONotificationPort /
