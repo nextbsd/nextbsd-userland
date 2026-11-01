@@ -3,7 +3,7 @@
 .\" NextBSD-original. There is no upstream page to vendor: Apple's counterpart
 .\" (wifid) is closed source and undocumented.
 .\"
-.Dd July 14, 2026
+.Dd October 31, 2026
 .Dt WLAND 8
 .Os NextBSD
 .Sh NAME
@@ -83,6 +83,41 @@ An interface with
 .Em no
 AirPort key is treated as ready, which is what keeps every wired NIC behaving
 exactly as it did before.
+.Sh RADIOS
+net80211 is
+.Pa Wlan.kext ,
+loaded with the first Wi-Fi driver kext that matches hardware.
+It publishes each radio in the IORegistry as an
+.Ql IO80211Controller
+entry, named after the radio
+.Pq Ql iwlwifi0 ,
+once the driver has attached it, and retires the entry when the radio goes
+away: its driver kext is unloaded or a USB radio is unplugged.
+.Nm
+follows that class with
+.Fn IOServiceAddMatchingNotification ,
+first-match and terminated, as Apple's
+.Ql wifid
+follows
+.Ql IO80211Controller .
+When an entry appears,
+.Nm
+clones the VAP and starts
+.Xr wpa_supplicant 8
+for every radio in
+.Va net.wlan.devices
+it does not manage yet.
+When one goes, it removes the AirPort key, stops the supplicant and forgets the
+interface; the VAP is already gone.
+With no radio,
+.Nm
+logs one line and blocks with no timer.
+.Pp
+On a kernel without
+.Pa /dev/ioregistry ,
+it rescans
+.Va net.wlan.devices
+every 2 seconds instead.
 .Sh ARCHITECTURE
 .Bd -literal -offset indent
 wland ──(wpa_ctrl socket)──▶ stock wpa_supplicant (from base)
@@ -165,6 +200,9 @@ If a keychain lands, this is the one thing that changes.
 .Bl -tag -width "/Local/Library/Preferences/SystemConfiguration/org.nextbsd.wland.plist" -compact
 .It Pa /usr/sbin/wland
 The daemon.
+.It Pa /dev/ioregistry
+The in-kernel IORegistry, where radios appear as
+.Ql IO80211Controller .
 .It Pa /System/Library/LaunchDaemons/org.nextbsd.wland.plist
 .Xr launchd 8
 job.
@@ -182,6 +220,7 @@ Known networks (plaintext passphrases).
 .El
 .Sh SEE ALSO
 .Xr configd 8 ,
+.Xr ioreg 8 ,
 .Xr ipconfigd 8 ,
 .Xr launchd 8 ,
 .Xr wlan 8 ,
@@ -199,14 +238,13 @@ is closed source; the only piece Apple ever published
 performs the EAP exchange and nothing else \(em no scanning, no association, no
 4-way handshake \(em so there was no seed to build from.
 .Sh CAVEATS
-802.11 is amd64-only.
-arm64
-.Dv GENERIC
-never sets
-.Ql device wlan ,
-so the entire net80211 stack is absent from that kernel and
+On a machine with no Wi-Fi hardware,
+.Pa Wlan.kext
+is never loaded,
+.Va net.wlan.devices
+does not exist, and
 .Nm
-will find no radios.
+waits for a radio that does not come.
 .Pp
 WPA-Enterprise (802.1X) is not implemented.
 It would come from

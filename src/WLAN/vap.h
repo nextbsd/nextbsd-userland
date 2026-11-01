@@ -33,12 +33,12 @@ struct wlan_phy {
 #define	WLAN_MAX_PHY	4
 
 /*
- * Sentinel returned by vap_enumerate_phys when net80211 is not in the kernel at
- * all — the net.wlan.devices sysctl node is absent (ENOENT). This is PERMANENT
- * (e.g. arm64 GENERIC never sets `device wlan`), so a caller that polls for a
- * radio to appear should stop polling on this value. It is deliberately distinct
- * from 0, which means "the node exists but lists no radios *yet*" — a driver may
- * still be attaching, so the caller should keep watching.
+ * Sentinel returned by vap_enumerate_phys when net80211 is not loaded — the
+ * net.wlan.devices sysctl node is absent (ENOENT). net80211 is Wlan.kext, which
+ * a Wi-Fi driver kext pulls in when it matches hardware, so this is NOT
+ * permanent: it means "no radio yet", like 0 ("the node exists but lists no
+ * radios"), and a caller watching for radios keeps watching. It stays distinct
+ * from 0 only so a caller can tell the two apart in a log.
  */
 #define	VAP_NO_NET80211	(-2)
 
@@ -49,8 +49,8 @@ struct wlan_phy {
  * getifaddrs at all.
  *
  * Fills up to `max` entries with the phy name and an EMPTY vap name. Returns the
- * count (>= 0), VAP_NO_NET80211 if net80211 is absent from the kernel, or -1 on
- * a transient failure.
+ * count (>= 0), VAP_NO_NET80211 if net80211 is not loaded (yet), or -1 on a
+ * transient failure.
  */
 int	vap_enumerate_phys(struct wlan_phy *out, size_t max);
 
