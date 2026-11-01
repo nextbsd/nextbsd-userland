@@ -284,6 +284,39 @@ disk_named(DASessionRef session, const char *name)
 	return (DADiskCreateFromBSDName(kCFAllocatorDefault, session, name));
 }
 
+/*
+ * Before a DA-BOOT-FAIL: the daemon's session lines, so the boot log says
+ * why (the harness stops reading at the marker).
+ */
+static void
+dump_daemon_log(void)
+{
+	char line[1024], *keep[20];
+	FILE *f;
+	int n = 0, i;
+
+	f = fopen("/var/log/diskarbitrationd.stderr", "r");
+	if (f == NULL)
+		return;
+	memset(keep, 0, sizeof(keep));
+	while (fgets(line, sizeof(line), f) != NULL) {
+		if (strstr(line, "DA-SESSION") == NULL &&
+		    strstr(line, "DA-SERVICE") == NULL &&
+		    strstr(line, "DA-STAGE: idle") == NULL)
+			continue;
+		free(keep[n % 20]);
+		keep[n % 20] = strdup(line);
+		n++;
+	}
+	(void)fclose(f);
+	for (i = n > 20 ? n - 20 : 0; i < n; i++)
+		if (keep[i % 20] != NULL)
+			(void)printf("DA-CLIENT-DIAG: %s", keep[i % 20]);
+	for (i = 0; i < 20; i++)
+		free(keep[i]);
+	(void)fflush(stdout);
+}
+
 static int
 mode_boot(void)
 {
@@ -301,6 +334,7 @@ mode_boot(void)
 		return (1);
 	}
 	if (!collect(session, 60)) {
+		dump_daemon_log();
 		(void)printf("DA-BOOT-FAIL: no DiskListComplete from %s within "
 		    "60 s\n", DA_SERVICE);
 		return (1);
@@ -356,6 +390,7 @@ mode_boot(void)
 		}
 	}
 	if (disk == NULL || d == NULL) {
+		dump_daemon_log();
 		(void)printf("DA-BOOT-FAIL: session up, but no root disk "
 		    "description (%ld disks listed)\n", (long)n);
 		return (1);

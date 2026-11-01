@@ -549,9 +549,7 @@ _DAServerSessionSetClientPort(mach_port_t _session, mach_port_t _client)
 
 	session = DASessionListGetSession(_session);
 	if (session == NULL) {
-		/* The send right is ours now; don't leak it. */
-		if (_client != MACH_PORT_NULL)
-			(void)mach_port_deallocate(mach_task_self(), _client);
+		/* serve_one destroys the request, and the right with it. */
 		return (kDAReturnBadArgument);
 	}
 	DASessionSetClientPort(session, _client);
@@ -632,11 +630,13 @@ serve_one(void *context)
 			    (unsigned)mr);
 			mach_msg_destroy(&m->rep.hdr);
 		}
-	} else if (!rejected) {
-		/* A simpleroutine: no reply, the request's reply right is ours. */
-		m->req.hdr.msgh_remote_port = MACH_PORT_NULL;
-		mach_msg_destroy(&m->req.hdr);
 	}
+	/*
+	 * A simpleroutine that succeeded has no reply right to dispose of,
+	 * and its routine owns whatever rights the request carried (the
+	 * client port _DAServerSessionSetClientPort keeps): leave the request
+	 * alone, as Apple's mach_msg_server does for MIG_NO_REPLY.
+	 */
 }
 
 int
