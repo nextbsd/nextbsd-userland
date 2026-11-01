@@ -12,8 +12,12 @@
  *      system partition): ECANCELED, nothing is mounted.
  *   2. automatic, and nobody is at the console: deferred for removable and
  *      external media (Apple's defaults; internal media mount at boot).
- *      NextBSD has no console-user source until #199, so DAConsoleUserGet
- *      reports root and nothing is deferred yet (DA-MOUNT-DEFER-NOOP).
+ *      The console user is configd's State:/Users/ConsoleUser (#199,
+ *      DASupport.c); a deferred volume mounts when somebody logs in
+ *      (_DAConfigurationCallback, DAServer.c). AutomountDisksWithoutUser
+ *      Login in autodiskmount.plist, or an /etc/fstab "auto" entry, skips
+ *      the wait. The volume belongs to the console user on removable and
+ *      external media, to root otherwise.
  *   3. media not writable: "ro" (Apple's rdonly).
  *   4. untrusted (removable, or external): Apple's nosuid,noowners,nodev,
  *      mapped onto NextBSD's mount(8):
@@ -73,8 +77,7 @@
  * front for the same effect). Its mount point is used only when the caller
  * gave none; like Apple, the daemon does not create it, so a missing
  * directory fails the mount. A dirty volume forced read-only also loses a
- * fstab "rw" (NextBSD's never-repair rule; Apple repairs first). #199 adds
- * the console user to step 2.
+ * fstab "rw" (NextBSD's never-repair rule; Apple repairs first).
  */
 #include "DAMount.h"
 #include "DACommand.h"
@@ -617,8 +620,6 @@ mount_done(int status, const char *output, void *context)
 	mount_finish(ctx, 0);
 }
 
-static int	g_defer_noop_logged;
-
 static void
 volume_refresh(void *ctx __unused)
 {
@@ -731,19 +732,17 @@ DAMountWithArguments(struct da_disk *disk, const char *mountpoint,
 			status = ECANCELED;
 			goto out;
 		}
-		if (decided < 0 && DAMountGetPreference(disk,
-		    kDAMountPreferenceDefer) && !g_defer_noop_logged) {
-			g_defer_noop_logged = 1;
-			DALog("DA-MOUNT-DEFER-NOOP: %s would wait for a console "
-			    "user; there is no console-user source yet (#199), "
-			    "so it mounts now, owned by root", disk->id);
-		}
 	}
-	/* The owner: Apple's DADiskGetUserUID, the console user. */
-	if (DAConsoleUserGet(&uid, &gid)) {
-		disk->user_uid = uid;
-		disk->user_gid = gid;
+	/*
+	 * The owner (#199): the console user on media they may own
+	 * (removable or external, no system mount on the disk), else root.
+	 */
+	if (!DAConsoleUserGet(&uid, &gid) || !DAConsoleUserMayOwn(disk)) {
+		uid = 0;
+		gid = 0;
 	}
+	disk->user_uid = uid;
+	disk->user_gid = gid;
 
 	/* The helper must exist; FUSE ports and some kernels lack theirs. */
 	vfs = fs->user_impl ? "fusefs" : fs->kind;

@@ -29,12 +29,13 @@
  * The console-user gate (#199) sits inside the Mount stage, in
  * DAMountWithArguments: a deferred mount returns ECANCELED and leaves the
  * disk staged with _kDADiskStateMountAutomatic still set, which is what
- * #199's login callback looks for when it mounts deferred disks (Apple's
- * _DAConfigurationCallback). Nothing here changes for it.
+ * the login callback (_DAConfigurationCallback, DAServer.c) looks for when
+ * it mounts deferred disks. Appeared hands removable and external whole
+ * disks to the console user, if there is one, before clients see them.
  *
  * Apple's busy timer (I/O Kit quiesce) and its unreadable/unrepairable
  * dialogs are not here: GEOM settles before the walk sees a disk, and the
- * dialogs are #199's agent.
+ * dialogs have no agent to show them yet (#199).
  */
 #include "DAStage.h"
 #include "DADisk.h"
@@ -245,6 +246,8 @@ stage_appeared(struct da_disk *disk)
 	char kind[32], path[16];
 
 	disk->state |= kDADiskStateStagedAppear;
+	/* Removable and external media are the console user's (#199). */
+	DAConsoleUserClaim(disk);
 	DADiskAppearedCallback(disk);
 	(void)DADiskGetDescriptionCString(disk, kDADiskDescriptionVolumeKindKey,
 	    kind, sizeof(kind));

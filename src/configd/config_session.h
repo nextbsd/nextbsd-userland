@@ -76,6 +76,13 @@ int session_close(mach_port_t port);
 int session_valid(mach_port_t port);
 
 /*
+ * session_has_root_access — 1 if `port` names a live session whose
+ * client's effective uid (from the configopen audit token) is 0, else 0.
+ * Apple's hasRootAccess (configd.tproj/session.c).
+ */
+int session_has_root_access(mach_port_t port);
+
+/*
  * session_set_notify_port — register `notify` (a send right configd
  * takes ownership of) as the session's change-notification port. Any
  * previously registered port is deallocated. Returns a kSCStatus code.

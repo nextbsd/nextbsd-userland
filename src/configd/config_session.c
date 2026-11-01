@@ -282,6 +282,19 @@ fail:
 }
 
 int
+session_has_root_access(mach_port_t port)
+{
+	struct session	*s = session_find(port);
+	uint32_t	euid = (uint32_t)-1;
+
+	if (s == NULL)
+		return 0;
+	audit_token_to_au32(s->audit_token, NULL, &euid, NULL, NULL, NULL,
+	    NULL, NULL, NULL);
+	return euid == 0;
+}
+
+int
 session_close(mach_port_t port)
 {
 	struct session *s = session_find(port);

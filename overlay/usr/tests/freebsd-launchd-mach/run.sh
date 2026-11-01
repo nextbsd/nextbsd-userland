@@ -2642,8 +2642,8 @@ da_iokit_gate()
     # log only:
     # these daemon lines start with "diskarbitrationd", so nb-tally does not
     # count them.
-    echo "=== diskarbitrationd disk model (DA-DISK/GEOM/VOLUME(S)/VFS/FS/PROBE/PREFS/STAGE/MOUNT/SERVICE/SESSION/REQUEST lines) ==="
-    grep -E 'DA-(DISK|GEOM|VOLUME|VFS|FS|PROBE|PREFS|STAGE|MOUNT|SERVICE|SESSION|REQUEST)' "$log" 2>/dev/null | tail -80
+    echo "=== diskarbitrationd disk model (DA-DISK/GEOM/VOLUME(S)/VFS/FS/PROBE/PREFS/STAGE/MOUNT/SERVICE/SESSION/REQUEST/CONSOLE lines) ==="
+    grep -E 'DA-(DISK|GEOM|VOLUME|VFS|FS|PROBE|PREFS|STAGE|MOUNT|SERVICE|SESSION|REQUEST|CONSOLE)' "$log" 2>/dev/null | tail -80
     echo "==="
 
     # A hard registration failure gates regardless of anything else.

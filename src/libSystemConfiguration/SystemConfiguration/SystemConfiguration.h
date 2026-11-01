@@ -28,6 +28,7 @@
 #define _SYSTEMCONFIGURATION_H
 
 #include <SystemConfiguration/SCDynamicStore.h>
+#include <SystemConfiguration/SCDynamicStoreCopySpecific.h>
 #include <SystemConfiguration/SCPreferences.h>
 #include <SystemConfiguration/SCPreferencesSetSpecific.h>
 #include <SystemConfiguration/SCNetworkConfiguration.h>

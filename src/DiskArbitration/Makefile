@@ -11,7 +11,8 @@
 # libDiskArbitration clients: sessions, callback queues and the mount
 # request (DAServer.c, DASession.c, DAQueue.c, DARequest.c, DAInternal.c,
 # which the library builds too; #197), and unmount/eject with their
-# approval rounds (DARequest.c, DAThread.c, DADevice.c; #198).
+# approval rounds (DARequest.c, DAThread.c, DADevice.c; #198), and the
+# console user from configd (DASupport.c, DAServer.c; #199).
 #
 # Build:   cd src/DiskArbitration && make SYSROOT=/path/to/rootfs MIGOUT=/path
 # Install: make DESTDIR=/path/to/rootfs install
@@ -115,6 +116,9 @@ LDFLAGS+=	-Wl,--allow-shlib-undefined
 # -lnotify: notify_post(com.apple.diskarbitrationd.launched) at startup,
 #   which keep-alive client sessions wait for (#197).
 LDADD+=		-llaunch -lsystem_kernel -lnotify
+# -lSystemConfiguration: the console user, State:/Users/ConsoleUser,
+#   watched through configd (DASupport.c, #199).
+LDADD+=		-lSystemConfiguration
 LDADD+=		-lIOKit -lCoreFoundation -lsystem_dispatch -l:libsystem_blocks.so
 
 BINDIR=		/usr/sbin

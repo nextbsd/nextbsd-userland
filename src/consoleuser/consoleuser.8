@@ -1,0 +1,65 @@
+.\" consoleuser(8) -- NextBSD (nextbsd-userland#199)
+.Dd November 1, 2026
+.Dt CONSOLEUSER 8
+.Os NextBSD
+.Sh NAME
+.Nm consoleuser
+.Nd publish the console user in the dynamic store
+.Sh SYNOPSIS
+.Nm /usr/libexec/consoleuser
+.Cm set Ar user
+.Nm /usr/libexec/consoleuser
+.Cm clear
+.Nm /usr/libexec/consoleuser
+.Cm show
+.Sh DESCRIPTION
+.Nm
+writes, removes or prints the
+.Li State:/Users/ConsoleUser
+key of the
+.Xr configd 8
+dynamic store: the user logged in at the console, with the
+.Li Name ,
+.Li UID ,
+.Li GID
+and
+.Li SessionInfo
+properties Apple's loginwindow publishes through
+.Fn SCDynamicStoreSetConsoleInformation .
+A login program runs
+.Cm set
+after the user's session opens and
+.Cm clear
+after it ends.
+.Pp
+.Xr diskarbitrationd 8
+watches the key.
+While nobody is logged in, removable and external media are not mounted
+automatically; at a login they are mounted, owned by the console user,
+who may also unmount and eject them.
+At the logout the user's volumes are unmounted and their disks ejected.
+.Bl -tag -width "clear"
+.It Cm set Ar user
+Publish
+.Ar user ,
+looked up with
+.Xr getpwnam 3 ,
+as the console user with one console session.
+Root only.
+.It Cm clear
+Remove the key; nobody is logged in.
+Root only.
+.It Cm show
+Print the console user's name, uid, gid and session count, or
+.Dq none .
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Sh SEE ALSO
+.Xr configd 8 ,
+.Xr diskarbitrationd 8 ,
+.Xr scutil 8
+.Sh HISTORY
+.Nm
+first appeared in NextBSD as the console-user publisher for
+.Xr diskarbitrationd 8 .

@@ -280,6 +280,15 @@ CFStringRef
 SCDynamicStoreKeyCreateHostNames	(CFAllocatorRef			allocator);
 
 /*!
+	@function SCDynamicStoreKeyCreateConsoleUser
+	@discussion Returns the SCDynamicStore key for the console user,
+		"State:/Users/ConsoleUser" (SCDynamicStoreCopySpecific.h
+		reads it). Caller releases the returned CFStringRef.
+ */
+CFStringRef
+SCDynamicStoreKeyCreateConsoleUser	(CFAllocatorRef			allocator);
+
+/*!
 	@function SCDynamicStoreKeyCreateNetworkGlobalEntity
 	@discussion Returns the SCDynamicStore key for
 		"<domain>/Network/Global/<entity>". e.g. with

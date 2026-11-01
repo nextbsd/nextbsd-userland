@@ -133,6 +133,17 @@ set_volume_keys(struct da_disk *disk, const struct statfs *fs)
 		DADiskSetDescriptionString(disk,
 		    kDADiskDescriptionVolumeNameKey, path_name(fs->f_mntonname));
 	/*
+	 * Media mounted before the mount stage reached it was mounted by
+	 * the system (/etc/fstab at boot, the root filesystem) or by hand:
+	 * never deferred, never unmounted when nobody is logged in, and its
+	 * whole disk is not the console user's (#199). Apple's
+	 * DADiskCreateFromVolumePath sets NoDefer the same way.
+	 */
+	if (!disk->volume_only && (disk->state & (kDADiskStateStagedMount |
+	    kDADiskStateMountOngoing)) == 0)
+		disk->state |= kDADiskStateMountAdopted |
+		    _kDADiskStateMountAutomaticNoDefer;
+	/*
 	 * A mounted disk skips the mount stage (Apple's probe callback sets
 	 * StagedMount when getmntinfo shows the disk). Media is still probed
 	 * for its kind, name and UUID; a mount-only disk has nothing to probe.
@@ -171,6 +182,9 @@ create_from_volume(const char *id, const struct statfs *fs)
 	disk->volume_only = 1;
 	disk->volume_gen = g_gen;
 	disk->user_uid = fs->f_owner;
+	/* Apple's DADiskCreateFromVolumePath: never deferred (#199). */
+	disk->state |= _kDADiskStateMountAutomatic |
+	    _kDADiskStateMountAutomaticNoDefer;
 	set_volume_keys(disk, fs);
 	/*
 	 * Apple takes major/minor from f_fsid; on NextBSD f_fsid is not a

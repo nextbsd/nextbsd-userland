@@ -67,6 +67,7 @@
 #define kSCStatusKeyExists		1005	/* key already defined */
 #define kSCStatusNoStoreSession		2001	/* no open store session */
 #define kSCStatusNotifierActive		2003	/* notifier already active */
+#define kSCStatusAccessError		5006	/* permission denied (libSC's value) */
 
 /*
  * Longest key or pattern configd will match as a POSIX regex: the

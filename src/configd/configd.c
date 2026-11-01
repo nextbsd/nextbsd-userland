@@ -236,6 +236,33 @@ ool_reply(const void *bytes, size_t len, xmlDataOut_t *out,
 }
 
 /*
+ * write_allowed — may the session on `server` change `key`? Apple's
+ * configd (session.c hasWriteAccess) refuses every write from a non-root
+ * client that lacks the SCDynamicStore write-access entitlement. This
+ * port has no entitlements and its daemons have long written as whatever
+ * uid launchd gives them, so for now only the keys that grant something
+ * are guarded: State:/Users/ (State:/Users/ConsoleUser names the console
+ * user, which diskarbitrationd gives removable media to; #199) is
+ * root-only, as on Apple. A write that does not arrive on a session
+ * (configopen) carries no identity and is refused for those keys too.
+ */
+#define CONFIG_USERS_PREFIX	"State:/Users/"
+
+static int
+write_allowed(mach_port_t server, const void *key, size_t klen)
+{
+	if (klen < sizeof(CONFIG_USERS_PREFIX) - 1 ||
+	    memcmp(key, CONFIG_USERS_PREFIX,
+	    sizeof(CONFIG_USERS_PREFIX) - 1) != 0)
+		return 1;
+	if (session_has_root_access(server))
+		return 1;
+	clog("refused a non-root write to %.*s", (int)klen,
+	    (const char *)key);
+	return 0;
+}
+
+/*
  * MIG routine handlers — config_server() dispatches to these. An
  * xmlData_t argument is out-of-line memory the handler releases with
  * ool_release() before returning; an xmlDataOut_t reply is built with
@@ -360,11 +387,12 @@ _configadd(mach_port_t server, xmlData_t key, mach_msg_type_number_t keyCnt,
 	const void	*val;
 	size_t		vlen;
 
-	(void)server;
 	*newInstance = 0;
 
 	if (keyCnt == 0) {
 		*status = kSCStatusInvalidArgument;
+	} else if (!write_allowed(server, key, keyCnt)) {
+		*status = kSCStatusAccessError;
 	} else if (store_get(key, keyCnt, &val, &vlen) == 0) {
 		/* key already defined — add must not clobber it */
 		*status = kSCStatusKeyExists;
@@ -411,12 +439,13 @@ _configset(mach_port_t server, xmlData_t key, mach_msg_type_number_t keyCnt,
     xmlData_t data, mach_msg_type_number_t dataCnt, int instance,
     int *newInstance, int *status)
 {
-	(void)server;
 	(void)instance;		/* the "instance" generation count is unused */
 	*newInstance = 0;
 
 	if (keyCnt == 0) {
 		*status = kSCStatusInvalidArgument;
+	} else if (!write_allowed(server, key, keyCnt)) {
+		*status = kSCStatusAccessError;
 	} else if (store_set(key, keyCnt, data, dataCnt) != 0) {
 		*status = kSCStatusFailed;
 	} else {
@@ -433,10 +462,10 @@ kern_return_t
 _configremove(mach_port_t server, xmlData_t key,
     mach_msg_type_number_t keyCnt, int *status)
 {
-	(void)server;
-
 	if (keyCnt == 0) {
 		*status = kSCStatusInvalidArgument;
+	} else if (!write_allowed(server, key, keyCnt)) {
+		*status = kSCStatusAccessError;
 	} else if (store_remove(key, keyCnt) != 0) {
 		*status = kSCStatusNoKey;
 	} else {
@@ -588,8 +617,25 @@ _configset_m(mach_port_t server, xmlData_t data,
 	const void	*k, *v;
 	size_t		kl, vl;
 
-	(void)server;
 	*status = kSCStatusOK;
+
+	/* Every key the batch changes must be writable, or none is. */
+	cur = (const uint8_t *)data;
+	end = cur + dataCnt;
+	while (wire_kvmap_next(&cur, end, &k, &kl, &v, &vl)) {
+		if (kl != 0 && !write_allowed(server, k, kl)) {
+			*status = kSCStatusAccessError;
+			goto done;
+		}
+	}
+	cur = (const uint8_t *)removeData;
+	end = cur + removeCnt;
+	while (wire_keylist_next(&cur, end, &k, &kl)) {
+		if (kl != 0 && !write_allowed(server, k, kl)) {
+			*status = kSCStatusAccessError;
+			goto done;
+		}
+	}
 
 	/* Set each key/value pair. */
 	cur = (const uint8_t *)data;
