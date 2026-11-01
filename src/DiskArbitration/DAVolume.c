@@ -16,7 +16,8 @@
  *     NextBSD adds unionfs, its live-media root), becomes a disk of its
  *     own (DADiskCreateFromVolumePath);
  *   - when a mount goes away, its stand-alone disk is removed, or the media
- *     disk loses DAVolumePath.
+ *     disk loses DAVolumePath, and a /Volumes mount point the daemon made
+ *     for it is removed (DAMount.c, #195).
  *
  * libdispatch has DISPATCH_SOURCE_TYPE_VFS only in its private headers and
  * built without VQ_UPDATE, so the daemon owns a kqueue with the EVFILT_FS
@@ -30,6 +31,8 @@
  */
 #include "DAVolume.h"
 #include "DADisk.h"
+#include "DAMount.h"
+#include "DAStage.h"
 
 #include <sys/param.h>
 #include <sys/event.h>
@@ -129,8 +132,14 @@ set_volume_keys(struct da_disk *disk, const struct statfs *fs)
 	if (DADiskGetDescription(disk, kDADiskDescriptionVolumeNameKey) == NULL)
 		DADiskSetDescriptionString(disk,
 		    kDADiskDescriptionVolumeNameKey, path_name(fs->f_mntonname));
-	disk->state |= kDADiskStateStagedProbe | kDADiskStateStagedPeek |
-	    kDADiskStateStagedMount;
+	/*
+	 * A mounted disk skips the mount stage (Apple's probe callback sets
+	 * StagedMount when getmntinfo shows the disk). Media is still probed
+	 * for its kind, name and UUID; a mount-only disk has nothing to probe.
+	 */
+	disk->state |= kDADiskStateStagedMount;
+	if (disk->volume_only)
+		disk->state |= kDADiskStateStagedProbe | kDADiskStateStagedPeek;
 }
 
 static void
@@ -247,12 +256,29 @@ restart:
 		}
 		if (DADiskGetDescription(disk,
 		    kDADiskDescriptionVolumePathKey) != NULL) {
+			/*
+			 * StagedMount stays set, as on Apple: a volume the
+			 * user unmounted is not mounted again behind their
+			 * back. It mounts again when the media reappears.
+			 */
 			DADiskSetDescription(disk,
 			    kDADiskDescriptionVolumePathKey, NULL);
-			disk->state &= ~kDADiskStateStagedMount;
 			DALog("DA-VOLUME-UNMOUNTED: %s", disk->id);
 		}
 	}
+
+	/* Mount points the daemon made (#195) go with their mount. */
+	{
+		const char **on = calloc((size_t)n + 1, sizeof(*on));
+
+		if (on != NULL) {
+			for (i = 0; i < n; i++)
+				on[i] = list[i].f_mntonname;
+			DAMountPointListRefresh(on, n);
+			free(on);
+		}
+	}
+	DAStageSignal();
 }
 
 /* On the daemon queue: one batch of EVFILT_FS fflags from the watch thread. */

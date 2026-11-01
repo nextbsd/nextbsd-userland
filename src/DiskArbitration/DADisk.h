@@ -69,14 +69,18 @@
 
 /*
  * Disk state bits, named after Apple's diskarbitrationd/DADisk.h. The values
- * are daemon-internal (never on the wire). Nothing sets them yet (C2 is
- * log-only); the stage machine (#195) drives them.
+ * are daemon-internal (never on the wire). The stage machine (DAStage.c,
+ * #195) drives the Staged* bits; DAMount.c reads the _kDADiskStateMount*
+ * pair, which Apple's DADiskCreateFromIOMedia sets for every disk and the
+ * probe clears when the matching bundle entry says autodiskmount=false.
  */
 enum {
 	kDADiskStateCommandActive	= 0x00000001,
 	kDADiskStateRequireRepair	= 0x00000002,
 	kDADiskStateRequireRepairQuotas	= 0x00000004,
 	kDADiskStateRequireReprobe	= 0x00000008,
+	_kDADiskStateMountAutomatic	= 0x00000010,
+	_kDADiskStateMountAutomaticNoDefer = 0x00000020,
 	kDADiskStateStagedProbe		= 0x00010000,
 	kDADiskStateStagedPeek		= 0x00020000,
 	kDADiskStateStagedApprove	= 0x00080000,
@@ -84,8 +88,11 @@ enum {
 	kDADiskStateStagedMount		= 0x00200000,
 	kDADiskStateStagedAppear	= 0x00400000,
 	kDADiskStateStagedUnrepairable	= 0x00800000,
+	kDADiskStateMountOngoing	= 0x01000000,
 	kDADiskStateZombie		= 0x10000000
 };
+
+struct da_probe_candidate;	/* DAFileSystem.h */
 
 /* Aliases a LABEL-class geom publishes for one provider (gpt/, ufs/, ...). */
 #define DA_DISK_LINK_MAX	4
@@ -100,8 +107,9 @@ struct da_disk {
 	char			*geom_class;	/* "DISK" | "PART" */
 	char			*ioreg_path;	/* registry node the media hangs off */
 	char			*bus_driver;	/* storage driver (vtblk, umass, ...) */
-	uid_t			user_uid;	/* mount owner (#195); 0 for now */
-	gid_t			user_gid;
+	uint64_t		serial;		/* unique per DADiskCreate */
+	uid_t			user_uid;	/* mount owner: the console user */
+	gid_t			user_gid;	/* (root until #199) */
 
 	/* GEOM bookkeeping for the walk/diff (DAGeom.c). */
 	char			*signature;	/* size|content|uuid at creation */
@@ -112,9 +120,10 @@ struct da_disk {
 	uint32_t		volume_gen;	/* last mount refresh that saw it */
 
 	/* Probe bookkeeping (DAProbe.c, #194). */
-	int			needs_probe;	/* new media, probe after the walk */
 	uint64_t		probe_token;	/* matches the probe in flight */
 	int			autodiskmount;	/* 0: the bundle says never auto-mount */
+	/* The bundle entry that recognised the volume (DADiskGetFileSystem). */
+	struct da_probe_candidate *filesystem;
 };
 
 TAILQ_HEAD(da_disk_list, da_disk);

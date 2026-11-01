@@ -17,17 +17,20 @@
  * The helpers run on a serial background queue so a slow device never
  * stalls the daemon queue; the result is applied on the daemon queue if the
  * disk is still the one the probe was started for (probe_token).
+ *
+ * The stage machine (DAStage.c, #195) starts each probe with the disk
+ * marked kDADiskStateCommandActive; applying the result clears it, keeps
+ * the winning bundle entry on the disk for the mount stage (Apple's
+ * DADiskSetFileSystem) and signals the next stage.
  */
 #include "DAProbe.h"
+#include "DACommand.h"
 #include "DAFileSystem.h"
+#include "DAStage.h"
 #include "loadable_fs.h"
 
 #include <sys/param.h>
-#include <sys/wait.h>
 
-#include <errno.h>
-#include <limits.h>
-#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -66,80 +69,19 @@ job_free(struct da_probe_job *job)
 	free(job);
 }
 
-static void
-trim(char *s)
-{
-	size_t n = strlen(s);
-	char *p = s;
-
-	while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r' ||
-	    s[n - 1] == ' ' || s[n - 1] == '\t'))
-		s[--n] = '\0';
-	while (*p == ' ' || *p == '\t')
-		p++;
-	if (p != s)
-		memmove(s, p, strlen(p) + 1);
-}
-
-/*
- * Run a helper, capture the first `len` bytes of its stdout (first line,
- * trimmed) and return its exit status as (signed char), as Apple's
- * DACommandExecute reads it. INT_MIN if it could not run or was killed.
- */
+/* A bundle helper's status and first output line (DACommandRun). */
 static int
 run_helper(char *const argv[], const char *media_uuid, char *out, size_t len)
 {
-	posix_spawn_file_actions_t fa;
-	char envuuid[160], *env[3], *nl;
-	size_t got = 0;
-	ssize_t n;
-	pid_t pid;
-	int pfd[2], status, i = 0;
+	char envuuid[160];
 
-	env[i++] = "PATH=/sbin:/bin:/usr/sbin:/usr/bin";
-	if (media_uuid != NULL) {
-		(void)snprintf(envuuid, sizeof(envuuid), "DA_PARTITION_UUID=%s",
-		    media_uuid);
-		env[i++] = envuuid;
-	}
-	env[i] = NULL;
-
-	out[0] = '\0';
-	if (pipe(pfd) != 0)
-		return (INT_MIN);
-	posix_spawn_file_actions_init(&fa);
-	posix_spawn_file_actions_adddup2(&fa, pfd[1], STDOUT_FILENO);
-	posix_spawn_file_actions_addclose(&fa, pfd[0]);
-	posix_spawn_file_actions_addclose(&fa, pfd[1]);
-	if (posix_spawn(&pid, argv[0], &fa, NULL, argv, env) != 0) {
-		posix_spawn_file_actions_destroy(&fa);
-		(void)close(pfd[0]);
-		(void)close(pfd[1]);
-		return (INT_MIN);
-	}
-	posix_spawn_file_actions_destroy(&fa);
-	(void)close(pfd[1]);
-	while (got < len - 1 &&
-	    (n = read(pfd[0], out + got, len - 1 - got)) > 0)
-		got += (size_t)n;
-	out[got] = '\0';
-	/* Drain the rest so the helper never blocks on a full pipe. */
-	{
-		char sink[256];
-
-		while (read(pfd[0], sink, sizeof(sink)) > 0)
-			;
-	}
-	(void)close(pfd[0]);
-	while (waitpid(pid, &status, 0) < 0)
-		if (errno != EINTR)
-			return (INT_MIN);
-	if ((nl = strchr(out, '\n')) != NULL)
-		*nl = '\0';
-	trim(out);
-	if (!WIFEXITED(status))
-		return (INT_MIN);
-	return ((signed char)WEXITSTATUS(status));
+	if (media_uuid == NULL)
+		return (DACommandRun(argv, NULL, kDACommandExecuteOptionDefault,
+		    out, len));
+	(void)snprintf(envuuid, sizeof(envuuid), "DA_PARTITION_UUID=%s",
+	    media_uuid);
+	return (DACommandRun(argv, envuuid, kDACommandExecuteOptionDefault,
+	    out, len));
 }
 
 /* Split FSProbeArguments ("-p", possibly "-p -x") into argv words. */
@@ -235,19 +177,26 @@ apply_result(void *ctx)
 	if (disk == NULL || disk->volume_only ||
 	    disk->probe_token != job->token) {
 		job_free(job);			/* the disk went or changed */
+		DAStageSignal();
 		return;
 	}
 	disk->state |= kDADiskStateStagedProbe;
+	disk->state &= ~kDADiskStateCommandActive;
 	if (!job->recognized) {
 		/* No candidate at all (a disk with a table): debug only. */
 		(job->ncands != 0 ? DALog : DALogDebug)(
 		    "DA-PROBE: %s unrecognized (%zu candidates)", disk->id,
 		    job->ncands);
+		disk->state |= kDADiskStateRequireReprobe;
 		job_free(job);
+		DAStageSignal();
 		return;
 	}
 
 	c = &job->cands[job->which];
+	disk->state &= ~kDADiskStateRequireReprobe;
+	DAFileSystemCandidatesFree(disk->filesystem, 1);
+	disk->filesystem = DAFileSystemCandidateCopy(c);
 	DADiskSetDescriptionString(disk, kDADiskDescriptionVolumeKindKey,
 	    c->kind);
 	if (job->label[0] != '\0')
@@ -268,6 +217,10 @@ apply_result(void *ctx)
 	else
 		disk->state |= kDADiskStateRequireRepair;
 	disk->autodiskmount = c->autodiskmount;
+	/* Apple's DAProbe: autodiskmount=false clears the automatic bits. */
+	if (!c->autodiskmount)
+		disk->state &= ~(_kDADiskStateMountAutomatic |
+		    _kDADiskStateMountAutomaticNoDefer);
 
 	DALog("DA-PROBE: %s kind=%s name=\"%s\" uuid=%s clean=%d "
 	    "autodiskmount=%d bundle=%s", disk->id, c->kind, job->label,
@@ -281,6 +234,7 @@ apply_result(void *ctx)
 		    strrchr(c->bundle, '/') + 1);
 	}
 	job_free(job);
+	DAStageSignal();
 }
 
 void
@@ -291,7 +245,7 @@ DAProbeInit(dispatch_queue_t queue)
 	    NULL);
 }
 
-void
+int
 DAProbeDisk(struct da_disk *disk)
 {
 	struct da_probe_job *job;
@@ -299,17 +253,17 @@ DAProbeDisk(struct da_disk *disk)
 	CFTypeRef w;
 
 	if (g_probe_queue == NULL || disk->volume_only)
-		return;
+		return (-1);
 	DAFileSystemListRefresh();
 
 	job = calloc(1, sizeof(*job));
 	if (job == NULL)
-		return;
+		return (-1);
 	job->cands = DAFileSystemCopyCandidates(disk, &job->ncands);
 	if (DADiskGetDescriptionCString(disk, kDADiskDescriptionMediaBSDNameKey,
 	    name, sizeof(name)) != 0 || job->cands == NULL) {
 		job_free(job);
-		return;
+		return (-1);
 	}
 	job->id = strdup(disk->id);
 	job->bsdname = strdup(name);
@@ -324,7 +278,8 @@ DAProbeDisk(struct da_disk *disk)
 	job->token = disk->probe_token = ++g_next_token;
 	if (job->id == NULL || job->bsdname == NULL) {
 		job_free(job);
-		return;
+		return (-1);
 	}
 	dispatch_async_f(g_probe_queue, job, run_probe);
+	return (0);
 }

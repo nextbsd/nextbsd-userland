@@ -19,6 +19,8 @@ struct da_probe_candidate {
 	char		*probe_exec;	/* absolute path of FSProbeExecutable */
 	char		*probe_args;	/* FSProbeArguments, "-p" */
 	char		*repair_exec;	/* first personality's FSRepairExecutable */
+	char		*mount_exec;	/* first personality's FSMountExecutable */
+	int		user_impl;	/* FSImplementation says "user" (FUSE) */
 	int		order;		/* FSProbeOrder */
 	int		autodiskmount;	/* 0 when the entry says autodiskmount=false */
 	CFDictionaryRef	properties;	/* FSMediaProperties */
@@ -37,5 +39,13 @@ void	DAFileSystemListRefresh(void);
 struct da_probe_candidate *DAFileSystemCopyCandidates(
 	    const struct da_disk *disk, size_t *count);
 void	DAFileSystemCandidatesFree(struct da_probe_candidate *c, size_t count);
+
+/*
+ * One malloc'd copy of `c` (free with DAFileSystemCandidatesFree(copy, 1)):
+ * the probe keeps the winning entry on the disk, as Apple's
+ * DADiskSetFileSystem does, for the mount stage.
+ */
+struct da_probe_candidate *DAFileSystemCandidateCopy(
+	    const struct da_probe_candidate *c);
 
 #endif /* DISKARBITRATION_DAFILESYSTEM_H */
