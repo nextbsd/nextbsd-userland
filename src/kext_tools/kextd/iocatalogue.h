@@ -52,6 +52,10 @@
 #define	IOCAT_PROVIDER_IOHIDUSAGE	7
 #define	IOCAT_PROVIDER_IOVIRTIODEVICE	8
 #define	IOCAT_VMBUS_PREFIX		"vmbus:"
+/* nextbsd-kernel#364 -- keep in step with the kernel's <sys/iocatalogue.h>.
+ * IOMedia: Content Mask strings (GEOM metadata magic such as "GEOM::ELI", or a
+ * GPT type GUID in upper case) on the string path, prefixed "media:". */
+#define	IOCAT_MEDIA_PREFIX		"media:"
 
 /* Longest FDT compatible string we will store, including NUL. */
 #define	IOCAT_COMPAT_MAX		128
