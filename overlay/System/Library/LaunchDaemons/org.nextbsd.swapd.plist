@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  org.nextbsd.swapd.plist
+
+  swapd, NextBSD's dynamic pager (nextbsd/nextbsd-userland#178). It grows and
+  reclaims /private/var/vm/swapfile<N> when the kernel sends a
+  default_pager_space_alert (macx_triggers, nextbsd-kernel#218), and it is the
+  only thing that turns swap on at boot. Darwin's job is
+  com.apple.dynamic_pager (system_cmds-597.1.1); swapd is a NextBSD daemon with
+  its own name, so the label is org.nextbsd.*, as for wland.
+
+  KeepAlive / SuccessfulExit=false: launchd restarts swapd if it fails, but not
+  when it exits 0 because there is nothing for it to do (/private/var/vm is not
+  on UFS, or the kernel has no macx_triggers). A restarted swapd adopts the swap
+  files that are still active.
+
+  dynamic_pager's job also set HopefullyExitsLast; launchd-842 deprecates that
+  key, and the kernel turns all swap off at shutdown anyway, so it is left out.
+
+  Small disks: swapd never takes more than 1/8 of the free space on the volume
+  for a swap file (dynamic_pager's limit), so on an image with little free space
+  (the CI images) it logs once and creates nothing.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.nextbsd.swapd</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/sbin/swapd</string>
+        <string>-F</string>
+        <string>/private/var/vm/swapfile</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/var/log/swapd.stderr</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/swapd.stderr</string>
+</dict>
+</plist>

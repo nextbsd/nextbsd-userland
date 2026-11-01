@@ -14,6 +14,7 @@
 #     ${DESTDIR}/usr/include/mach/message.h
 #     ${DESTDIR}/usr/include/mach/task_special_ports.h
 #     ${DESTDIR}/usr/include/mach/host_special_ports.h
+#     ${DESTDIR}/usr/include/default_pager/default_pager_types.h
 #     ${DESTDIR}/usr/libdata/pkgconfig/libsystem_kernel.pc
 
 LIB=		system_kernel
@@ -107,9 +108,13 @@ INCS=		include/mach/mach.h \
 		include/mach/std_types.defs \
 		include/mach/mach_types.defs \
 		include/mach/machine_types.defs
-INCSGROUPS=	INCS MACHDEBUGINCS
+INCSGROUPS=	INCS MACHDEBUGINCS DEFPAGERINCS
 MACHDEBUGINCS=	include/mach_debug/ipc_info.h
 MACHDEBUGINCSDIR=	${PREFIX}/include/mach_debug
+# <default_pager/default_pager_types.h>: the macx_triggers() flags swapd
+# passes (nextbsd/nextbsd-userland#178), where Darwin installs them.
+DEFPAGERINCS=	include/default_pager/default_pager_types.h
+DEFPAGERINCSDIR=	${PREFIX}/include/default_pager
 INCSDIR=	${PREFIX}/include/mach
 LIBDIR=		${PREFIX}/lib/system
 

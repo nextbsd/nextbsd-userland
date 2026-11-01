@@ -87,6 +87,23 @@ kern_return_t task_name_for_pid(mach_port_name_t target_task,
     int pid, mach_port_name_t *t);
 
 /*
+ * macx_triggers() — register for default pager space alerts (xnu-2422
+ * mach_traps.h; nextbsd/nextbsd-userland#178). Backed by the
+ * mach.syscall.macx_triggers trap (nextbsd-kernel#218). alert_port is a
+ * receive right in the caller's space; for each of HI_WAT_ALERT and
+ * LO_WAT_ALERT in flags the kernel sends it one default_pager_space_alert
+ * (msgh_id 2295) when free swap crosses that threshold, and the caller
+ * registers again after each alert. hi_water / low_water are byte
+ * thresholds (free swap below which HI_WAT_ALERT fires, and above which
+ * LO_WAT_ALERT fires); 0 keeps the kernel's current one. Flag values are in
+ * <default_pager/default_pager_types.h>. Needs superuser. Returns the
+ * kernel's value as xnu does (0, EINVAL, EPERM), or ENOSYS if the trap is
+ * not registered (an older kernel, or mach.ko not loaded).
+ */
+kern_return_t macx_triggers(int hi_water, int low_water, int flags,
+    mach_port_name_t alert_port);
+
+/*
  * thread_switch() — Apple's Mach trap that voluntarily yields the
  * current thread, optionally directing the scheduler to run a
  * specific thread next. libdispatch's shims/yield.h + shims/lock.c

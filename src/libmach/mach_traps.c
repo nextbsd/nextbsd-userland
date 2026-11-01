@@ -1690,6 +1690,34 @@ task_name_for_pid(mach_port_name_t target_task, int pid,
 	return (rv);
 }
 
+/*
+ * macx_triggers() — register a receive right for default_pager_space_alert
+ * (nextbsd/nextbsd-userland#178).
+ *
+ * Calls the mach.syscall.macx_triggers trap (nextbsd-kernel#218). As in
+ * xnu-2422 it is a trap only and returns the kernel's value itself (0,
+ * EINVAL, EPERM), not -1/errno. If the trap is not registered (an older
+ * kernel, or mach.ko not loaded) this returns ENOSYS, as
+ * task_importance_assertion_np() does; swapd treats that as "no dynamic
+ * paging on this kernel".
+ */
+kern_return_t
+macx_triggers(int hi_water, int low_water, int flags,
+    mach_port_name_t alert_port)
+{
+	static int num = SYSCALL_UNRESOLVED;
+	int sc = resolve_syscall_once(&num, "macx_triggers");
+	kern_return_t rv;
+
+	if (sc == NO_SYSCALL)
+		return (ENOSYS);
+	rv = (kern_return_t)syscall(sc, hi_water, low_water, flags,
+	    alert_port);
+	if (rv == -1)		/* the syscall itself failed: errno, not a value */
+		return (errno);
+	return (rv);
+}
+
 kern_return_t
 mach_port_get_context(mach_port_name_t task, mach_port_name_t name,
     mach_port_context_t *context)

@@ -1,0 +1,142 @@
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" swapd(8) -- NextBSD's dynamic pager (nextbsd/nextbsd-userland#178).
+.\" A NextBSD-original page; the daemon is modelled on Darwin's
+.\" dynamic_pager(8), whose options it keeps.
+.Dd November 1, 2026
+.Dt SWAPD 8
+.Os NextBSD
+.Sh NAME
+.Nm swapd
+.Nd grow and reclaim swap files under memory pressure
+.Sh SYNOPSIS
+.Nm
+.Op Fl F Ar filename
+.Op Fl S Ar filesize
+.Op Fl H Ar high-water-trigger
+.Op Fl L Ar low-water-trigger
+.Op Fl P Ar priority
+.Sh DESCRIPTION
+.Nm
+manages a pool of swap files, adding one when the kernel runs short of swap
+and removing one when it is no longer needed.
+It is NextBSD's form of Darwin's
+.Nm dynamic_pager ,
+and it is started by
+.Xr launchd 8
+from
+.Pa /System/Library/LaunchDaemons/org.nextbsd.swapd.plist .
+.Pp
+.Nm
+registers a Mach port with the kernel through
+.Fn macx_triggers .
+The kernel sends that port one
+.Fn default_pager_space_alert
+per registration: HI_WAT_ALERT when free swap falls below
+.Va vm.nswap_lowat ,
+and LO_WAT_ALERT when it rises back above
+.Va vm.nswap_hiwat .
+.Nm
+registers again after every alert.
+.Pp
+On HI_WAT_ALERT
+.Nm
+turns on the preallocated spare file if there is one, otherwise it creates the
+next file
+.Ar filename Ns Ar N
+and turns it on with
+.Xr swapon 2 .
+Files are preallocated, never sparse.
+The first two are 256 MiB, then each size doubles up to 1 GiB, and no file is
+larger than physical memory.
+A file is not created if it would take more than one eighth of the free space
+on the volume, or if total swap would pass half of
+.Va vm.swap_maxpages
+(all of it once
+.Va kern.maxswzone
+has been raised).
+After a file is added,
+.Nm
+preallocates one spare file, so that the next addition is only a
+.Xr swapon 2 .
+.Pp
+While more than one file is in use,
+.Nm
+checks free swap every minute.
+The newest file is removed only if free swap would stay above
+.Va vm.nswap_hiwat
+without it, and that has held for five minutes.
+It is turned off with
+.Xr swapoff 2
+without
+.Dv SWAPOFF_FORCE ;
+if that fails with
+.Er ENOMEM
+the file is kept and tried again later.
+The removed file becomes the spare.
+The oldest file in use is never removed.
+.Pp
+At start
+.Nm
+turns on
+.Ar filename Ns 0
+if it exists and removes the other files, as
+.Nm dynamic_pager
+empties its directory.
+Files that are still in use for swap, after
+.Nm
+was restarted, are kept.
+If
+.Pa /etc/fstab
+lists swap,
+.Nm
+runs
+.Ql swapon -a
+once.
+.Pp
+Swap files need UFS.
+If the directory is on another file system, such as ZFS,
+.Nm
+logs that and exits with status 0.
+.Pp
+The options are those of
+.Nm dynamic_pager :
+.Bl -tag -width indent
+.It Fl F Ar filename
+The base name of the swap files.
+The default is
+.Pa /private/var/vm/swapfile .
+.It Fl S Ar filesize
+Use files of this fixed size, in bytes, instead of the growing sizes.
+.It Fl H Ar high-water-trigger
+Add a file when less than this many bytes of swap are free.
+This sets
+.Va vm.nswap_lowat .
+The default leaves the kernel's threshold, about 10% of the configured swap.
+.It Fl L Ar low-water-trigger
+Consider removing a file when more than this many bytes of swap are free.
+This sets
+.Va vm.nswap_hiwat .
+The default leaves the kernel's threshold, about 25% of the configured swap.
+.It Fl P Ar priority
+Accepted and ignored, as in
+.Nm dynamic_pager .
+.El
+.Sh FILES
+.Bl -tag -width "/var/log/swapd.stderr" -compact
+.It Pa /private/var/vm/swapfile*
+swap files
+.It Pa /var/log/swapd.stderr
+log
+.El
+.Sh SEE ALSO
+.Xr swapoff 2 ,
+.Xr swapon 2 ,
+.Xr launchd 8 ,
+.Xr swapinfo 8
+.Sh HISTORY
+.Nm
+first appeared in NextBSD.
+Darwin's
+.Nm dynamic_pager
+first appeared in Mac OS X.
