@@ -25,7 +25,8 @@
  * NextBSD: Apple's public header from apple-oss-distributions/DiskArbitration
  * @ DiskArbitration-535.120.1.0.1, installed as
  * /usr/include/DiskArbitration/DADisk.h by libDiskArbitration
- * (nextbsd-userland#197). The two I/O Kit entry points, DADiskCreateFromIOMedia and
+ * (nextbsd-userland#197). Apple's __nullable spelling is _Nullable here: NextBSD's
+ * <sys/cdefs.h> does not define __nullable. The two I/O Kit entry points, DADiskCreateFromIOMedia and
  * DADiskCopyIOMedia, are left out: NextBSD disks are GEOM providers, not
  * IOMedia objects, and the library does not link libIOKit.
  */
@@ -118,7 +119,7 @@ extern CFTypeID DADiskGetTypeID( void ) API_AVAILABLE(macos(10.4));
  * with CFRelease().
  */
 
-extern DADiskRef __nullable DADiskCreateFromBSDName( CFAllocatorRef __nullable allocator, DASessionRef session, const char * name ) API_AVAILABLE(macos(10.4));
+extern DADiskRef _Nullable DADiskCreateFromBSDName( CFAllocatorRef _Nullable allocator, DASessionRef session, const char * name ) API_AVAILABLE(macos(10.4));
 
 /*!
  * @function   DADiskCreateFromVolumePath
@@ -133,7 +134,7 @@ extern DADiskRef __nullable DADiskCreateFromBSDName( CFAllocatorRef __nullable a
  * with CFRelease().
  */
 
-extern DADiskRef __nullable DADiskCreateFromVolumePath( CFAllocatorRef __nullable allocator, DASessionRef session, CFURLRef path ) API_AVAILABLE(macos(10.7));
+extern DADiskRef _Nullable DADiskCreateFromVolumePath( CFAllocatorRef _Nullable allocator, DASessionRef session, CFURLRef path ) API_AVAILABLE(macos(10.7));
 
 /*!
  * @function   DADiskGetBSDName
@@ -144,7 +145,7 @@ extern DADiskRef __nullable DADiskCreateFromVolumePath( CFAllocatorRef __nullabl
  * The BSD device name can be used with opendev() to open the BSD device.
  */
 
-extern const char * __nullable DADiskGetBSDName( DADiskRef disk ) API_AVAILABLE(macos(10.4));
+extern const char * _Nullable DADiskGetBSDName( DADiskRef disk ) API_AVAILABLE(macos(10.4));
 
 /*!
  * @function   DADiskCopyDescription
@@ -162,7 +163,7 @@ extern const char * __nullable DADiskGetBSDName( DADiskRef disk ) API_AVAILABLE(
  * with CFRelease().
  */
 
-extern CFDictionaryRef __nullable DADiskCopyDescription( DADiskRef disk ) API_AVAILABLE(macos(10.4));
+extern CFDictionaryRef _Nullable DADiskCopyDescription( DADiskRef disk ) API_AVAILABLE(macos(10.4));
 
 /*!
  * @function   DADiskCopyWholeDisk
@@ -175,7 +176,7 @@ extern CFDictionaryRef __nullable DADiskCopyDescription( DADiskRef disk ) API_AV
  * with CFRelease().
  */
 
-extern DADiskRef __nullable DADiskCopyWholeDisk( DADiskRef disk ) API_AVAILABLE(macos(10.4));
+extern DADiskRef _Nullable DADiskCopyWholeDisk( DADiskRef disk ) API_AVAILABLE(macos(10.4));
 
 #endif /* !__DISKARBITRATIOND__ */
 

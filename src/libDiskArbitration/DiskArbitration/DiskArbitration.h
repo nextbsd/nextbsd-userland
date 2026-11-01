@@ -25,7 +25,8 @@
  * NextBSD: Apple's public header from apple-oss-distributions/DiskArbitration
  * @ DiskArbitration-535.120.1.0.1, installed as
  * /usr/include/DiskArbitration/DiskArbitration.h by libDiskArbitration
- * (nextbsd-userland#197). <os/availability.h> is not included; CoreFoundation's
+ * (nextbsd-userland#197). Apple's __nullable spelling is _Nullable here: NextBSD's
+ * <sys/cdefs.h> does not define __nullable. <os/availability.h> is not included; CoreFoundation's
  * CFAvailability.h supplies API_AVAILABLE and friends.
  */
 
@@ -180,7 +181,7 @@ extern CFArrayRef kDADiskDescriptionWatchVolumePath API_AVAILABLE(macos(10.4));
  * @param      context The user-defined context parameter given to the registration function.
  */
 
-typedef void ( *DADiskAppearedCallback )( DADiskRef disk, void * __nullable context ) API_AVAILABLE(macos(10.4));
+typedef void ( *DADiskAppearedCallback )( DADiskRef disk, void * _Nullable context ) API_AVAILABLE(macos(10.4));
 /*!
  * @function   DARegisterDiskAppearedCallback
  * @abstract   Registers a callback function to be called whenever a disk has appeared.
@@ -191,9 +192,9 @@ typedef void ( *DADiskAppearedCallback )( DADiskRef disk, void * __nullable cont
  */
 
 extern void DARegisterDiskAppearedCallback( DASessionRef               session,
-                                            CFDictionaryRef __nullable match,
+                                            CFDictionaryRef _Nullable match,
                                             DADiskAppearedCallback     callback,
-                                           void * __nullable          context ) API_AVAILABLE(macos(10.4));
+                                           void * _Nullable          context ) API_AVAILABLE(macos(10.4));
 
 /*!
  * @typedef    DADiskDescriptionChangedCallback
@@ -203,7 +204,7 @@ extern void DARegisterDiskAppearedCallback( DASessionRef               session,
  * @param      context The user-defined context parameter given to the registration function.
  */
 
-typedef void ( *DADiskDescriptionChangedCallback )( DADiskRef disk, CFArrayRef keys, void * __nullable context ) API_AVAILABLE(macos(10.4));
+typedef void ( *DADiskDescriptionChangedCallback )( DADiskRef disk, CFArrayRef keys, void * _Nullable context ) API_AVAILABLE(macos(10.4));
 /*!
  * @function   DARegisterDiskDescriptionChangedCallback
  * @abstract   Registers a callback function to be called whenever a disk description has changed.
@@ -215,10 +216,10 @@ typedef void ( *DADiskDescriptionChangedCallback )( DADiskRef disk, CFArrayRef k
  */
 
 extern void DARegisterDiskDescriptionChangedCallback( DASessionRef                     session,
-                                                      CFDictionaryRef __nullable       match,
-                                                      CFArrayRef __nullable            watch,
+                                                      CFDictionaryRef _Nullable       match,
+                                                      CFArrayRef _Nullable            watch,
                                                       DADiskDescriptionChangedCallback callback,
-                                                     void * __nullable                context ) API_AVAILABLE(macos(10.4));
+                                                     void * _Nullable                context ) API_AVAILABLE(macos(10.4));
 /*!
  * @typedef    DADiskDisappearedCallback
  * @abstract   Type of the callback function used by DARegisterDiskDisappearedCallback().
@@ -226,7 +227,7 @@ extern void DARegisterDiskDescriptionChangedCallback( DASessionRef              
  * @param      context The user-defined context parameter given to the registration function.
  */
 
-typedef void ( *DADiskDisappearedCallback )( DADiskRef disk, void * __nullable context ) API_AVAILABLE(macos(10.4));
+typedef void ( *DADiskDisappearedCallback )( DADiskRef disk, void * _Nullable context ) API_AVAILABLE(macos(10.4));
 
 /*!
  * @function   DARegisterDiskDisappearedCallback
@@ -238,9 +239,9 @@ typedef void ( *DADiskDisappearedCallback )( DADiskRef disk, void * __nullable c
  */
 
 extern void DARegisterDiskDisappearedCallback( DASessionRef               session,
-                                               CFDictionaryRef __nullable match,
+                                               CFDictionaryRef _Nullable match,
                                                DADiskDisappearedCallback  callback,
-                                              void * __nullable          context ) API_AVAILABLE(macos(10.4));
+                                              void * _Nullable          context ) API_AVAILABLE(macos(10.4));
 /*!
  * @typedef    DADiskMountCallback
  * @abstract   Type of the callback function used by DADiskMount().
@@ -251,7 +252,7 @@ extern void DARegisterDiskDisappearedCallback( DASessionRef               sessio
  * If the disk is already mounted, then status code in the dissenter object will be set to kDAReturnBusy
  */
 
-typedef void ( *DADiskMountCallback )( DADiskRef disk, DADissenterRef __nullable dissenter, void * __nullable context ) API_AVAILABLE(macos(10.4));
+typedef void ( *DADiskMountCallback )( DADiskRef disk, DADissenterRef _Nullable dissenter, void * _Nullable context ) API_AVAILABLE(macos(10.4));
 
 /*!
  * @function   DADiskMount
@@ -264,10 +265,10 @@ typedef void ( *DADiskMountCallback )( DADiskRef disk, DADissenterRef __nullable
  */
 
 extern void DADiskMount( DADiskRef                      disk,
-                         CFURLRef __nullable            path,
+                         CFURLRef _Nullable            path,
                          DADiskMountOptions             options,
-                         DADiskMountCallback __nullable callback,
-                        void * __nullable              context ) API_AVAILABLE(macos(10.4));
+                         DADiskMountCallback _Nullable callback,
+                        void * _Nullable              context ) API_AVAILABLE(macos(10.4));
 
 /*!
  * @function   DADiskMountWithArguments
@@ -281,11 +282,11 @@ extern void DADiskMount( DADiskRef                      disk,
  */
 
 extern void DADiskMountWithArguments( DADiskRef                      disk,
-                                      CFURLRef __nullable            path,
+                                      CFURLRef _Nullable            path,
                                       DADiskMountOptions             options,
-                                      DADiskMountCallback __nullable callback,
-                                      void * __nullable              context,
-                                     CFStringRef __nullable         arguments[_Nullable] ) API_AVAILABLE(macos(10.4));
+                                      DADiskMountCallback _Nullable callback,
+                                      void * _Nullable              context,
+                                     CFStringRef _Nullable         arguments[_Nullable] ) API_AVAILABLE(macos(10.4));
 
 /*!
  * @typedef    DADiskMountApprovalCallback
@@ -299,7 +300,7 @@ extern void DADiskMountWithArguments( DADiskRef                      disk,
  * with CFRelease().
  */
 
-typedef DADissenterRef __nullable ( *DADiskMountApprovalCallback )( DADiskRef disk, void * __nullable context ) API_AVAILABLE(macos(10.4));
+typedef DADissenterRef _Nullable ( *DADiskMountApprovalCallback )( DADiskRef disk, void * _Nullable context ) API_AVAILABLE(macos(10.4));
 /*!
  * @function   DARegisterDiskMountApprovalCallback
  * @abstract   Registers a callback function to be called whenever a volume is to be mounted.
@@ -310,9 +311,9 @@ typedef DADissenterRef __nullable ( *DADiskMountApprovalCallback )( DADiskRef di
  */
 
 extern void DARegisterDiskMountApprovalCallback( DASessionRef                session,
-                                                 CFDictionaryRef __nullable  match,
+                                                 CFDictionaryRef _Nullable  match,
                                                  DADiskMountApprovalCallback callback,
-                                                void * __nullable           context )API_AVAILABLE(macos(10.4));
+                                                void * _Nullable           context )API_AVAILABLE(macos(10.4));
 
 /*!
  * @typedef    DADiskRenameCallback
@@ -322,7 +323,7 @@ extern void DARegisterDiskMountApprovalCallback( DASessionRef                ses
  * @param      context   The user-defined context parameter given to the rename function.
  */
 
-typedef void ( *DADiskRenameCallback )( DADiskRef disk, DADissenterRef __nullable dissenter, void * __nullable context ) API_AVAILABLE(macos(10.4));
+typedef void ( *DADiskRenameCallback )( DADiskRef disk, DADissenterRef _Nullable dissenter, void * _Nullable context ) API_AVAILABLE(macos(10.4));
 
 /*!
  * @function   DADiskRename
@@ -336,8 +337,8 @@ typedef void ( *DADiskRenameCallback )( DADiskRef disk, DADissenterRef __nullabl
 extern void DADiskRename( DADiskRef                       disk,
                           CFStringRef                     name,
                           DADiskRenameOptions             options,
-                          DADiskRenameCallback __nullable callback,
-                         void * __nullable               context ) API_AVAILABLE(macos(10.4));
+                          DADiskRenameCallback _Nullable callback,
+                         void * _Nullable               context ) API_AVAILABLE(macos(10.4));
 
 /*!
  * @typedef    DADiskUnmountCallback
@@ -347,7 +348,7 @@ extern void DADiskRename( DADiskRef                       disk,
  * @param      context   The user-defined context parameter given to the unmount function.
  */
 
-typedef void ( *DADiskUnmountCallback )( DADiskRef disk, DADissenterRef __nullable dissenter, void * __nullable context ) API_AVAILABLE(macos(10.4));
+typedef void ( *DADiskUnmountCallback )( DADiskRef disk, DADissenterRef _Nullable dissenter, void * _Nullable context ) API_AVAILABLE(macos(10.4));
 /*!
  * @function   DADiskUnmount
  * @abstract   Unmounts the volume at the specified disk object.
@@ -359,8 +360,8 @@ typedef void ( *DADiskUnmountCallback )( DADiskRef disk, DADissenterRef __nullab
 
 extern void DADiskUnmount( DADiskRef                        disk,
                            DADiskUnmountOptions             options,
-                           DADiskUnmountCallback __nullable callback,
-                          void * __nullable                context ) API_AVAILABLE(macos(10.4));
+                           DADiskUnmountCallback _Nullable callback,
+                          void * _Nullable                context ) API_AVAILABLE(macos(10.4));
 
 /*!
  * @typedef    DADiskUnmountApprovalCallback
@@ -374,7 +375,7 @@ extern void DADiskUnmount( DADiskRef                        disk,
  * with CFRelease().
  */
 
-typedef DADissenterRef __nullable ( *DADiskUnmountApprovalCallback )( DADiskRef disk, void * __nullable context ) API_AVAILABLE(macos(10.4));
+typedef DADissenterRef _Nullable ( *DADiskUnmountApprovalCallback )( DADiskRef disk, void * _Nullable context ) API_AVAILABLE(macos(10.4));
 
 /*!
  * @function   DARegisterDiskUnmountApprovalCallback
@@ -386,9 +387,9 @@ typedef DADissenterRef __nullable ( *DADiskUnmountApprovalCallback )( DADiskRef 
  */
 
 extern void DARegisterDiskUnmountApprovalCallback( DASessionRef                  session,
-                                                   CFDictionaryRef __nullable    match,
+                                                   CFDictionaryRef _Nullable    match,
                                                    DADiskUnmountApprovalCallback callback,
-                                                  void * __nullable             context ) API_AVAILABLE(macos(10.4));
+                                                  void * _Nullable             context ) API_AVAILABLE(macos(10.4));
 /*!
  * @typedef    DADiskEjectCallback
  * @abstract   Type of the callback function used by DADiskEject().
@@ -397,7 +398,7 @@ extern void DARegisterDiskUnmountApprovalCallback( DASessionRef                 
  * @param      context   The user-defined context parameter given to the eject function.
  */
 
-typedef void ( *DADiskEjectCallback )( DADiskRef disk, DADissenterRef __nullable dissenter, void * __nullable context ) API_AVAILABLE(macos(10.4));
+typedef void ( *DADiskEjectCallback )( DADiskRef disk, DADissenterRef _Nullable dissenter, void * _Nullable context ) API_AVAILABLE(macos(10.4));
 
 /*!
  * @function   DADiskEject
@@ -410,8 +411,8 @@ typedef void ( *DADiskEjectCallback )( DADiskRef disk, DADissenterRef __nullable
 
 extern void DADiskEject( DADiskRef                      disk,
                          DADiskEjectOptions             options,
-                         DADiskEjectCallback __nullable callback,
-                        void * __nullable              context ) API_AVAILABLE(macos(10.4));
+                         DADiskEjectCallback _Nullable callback,
+                        void * _Nullable              context ) API_AVAILABLE(macos(10.4));
 
 /*!
  * @typedef    DADiskEjectApprovalCallback
@@ -425,7 +426,7 @@ extern void DADiskEject( DADiskRef                      disk,
  * with CFRelease().
  */
 
-typedef DADissenterRef __nullable ( *DADiskEjectApprovalCallback )( DADiskRef disk, void * __nullable context ) API_AVAILABLE(macos(10.4));
+typedef DADissenterRef _Nullable ( *DADiskEjectApprovalCallback )( DADiskRef disk, void * _Nullable context ) API_AVAILABLE(macos(10.4));
 
 /*!
  * @function   DARegisterDiskEjectApprovalCallback
@@ -437,9 +438,9 @@ typedef DADissenterRef __nullable ( *DADiskEjectApprovalCallback )( DADiskRef di
  */
 
 extern void DARegisterDiskEjectApprovalCallback( DASessionRef                session,
-                                                 CFDictionaryRef __nullable  match,
+                                                 CFDictionaryRef _Nullable  match,
                                                  DADiskEjectApprovalCallback callback,
-                                                void * __nullable           context )API_AVAILABLE(macos(10.4));
+                                                void * _Nullable           context )API_AVAILABLE(macos(10.4));
 
 /*!
  * @typedef    DADiskClaimCallback
@@ -449,7 +450,7 @@ extern void DARegisterDiskEjectApprovalCallback( DASessionRef                ses
  * @param      context   The user-defined context parameter given to the claim function.
  */
 
-typedef void ( *DADiskClaimCallback )( DADiskRef disk, DADissenterRef __nullable dissenter, void * __nullable context ) API_AVAILABLE(macos(10.4));
+typedef void ( *DADiskClaimCallback )( DADiskRef disk, DADissenterRef _Nullable dissenter, void * _Nullable context ) API_AVAILABLE(macos(10.4));
 
 /*!
  * @typedef    DADiskClaimReleaseCallback
@@ -463,7 +464,7 @@ typedef void ( *DADiskClaimCallback )( DADiskRef disk, DADissenterRef __nullable
  * with CFRelease().
  */
 
-typedef DADissenterRef __nullable ( *DADiskClaimReleaseCallback )( DADiskRef disk, void * __nullable context ) API_AVAILABLE(macos(10.4));
+typedef DADissenterRef _Nullable ( *DADiskClaimReleaseCallback )( DADiskRef disk, void * _Nullable context ) API_AVAILABLE(macos(10.4));
 /*!
  * @function   DADiskClaim
  * @abstract   Claims the specified disk object for exclusive use.
@@ -477,10 +478,10 @@ typedef DADissenterRef __nullable ( *DADiskClaimReleaseCallback )( DADiskRef dis
 
 extern void DADiskClaim( DADiskRef                             disk,
                          DADiskClaimOptions                    options,
-                         DADiskClaimReleaseCallback __nullable release,
-                         void * __nullable                     releaseContext,
-                         DADiskClaimCallback __nullable        callback,
-                        void * __nullable                     callbackContext ) API_AVAILABLE(macos(10.4));
+                         DADiskClaimReleaseCallback _Nullable release,
+                         void * _Nullable                     releaseContext,
+                         DADiskClaimCallback _Nullable        callback,
+                        void * _Nullable                     callbackContext ) API_AVAILABLE(macos(10.4));
 
 /*!
  * @function   DADiskIsClaimed
@@ -510,7 +511,7 @@ extern void DADiskUnclaim( DADiskRef disk ) API_AVAILABLE(macos(10.4));
  * could be used here to set up options on the disk object.
  */
 
-typedef void ( *DADiskPeekCallback )( DADiskRef disk, void * __nullable context ) API_AVAILABLE(macos(10.4));
+typedef void ( *DADiskPeekCallback )( DADiskRef disk, void * _Nullable context ) API_AVAILABLE(macos(10.4));
 
 /*!
  * @function   DARegisterDiskPeekCallback
@@ -523,10 +524,10 @@ typedef void ( *DADiskPeekCallback )( DADiskRef disk, void * __nullable context 
  */
 
 extern void DARegisterDiskPeekCallback( DASessionRef               session,
-                                        CFDictionaryRef __nullable match,
+                                        CFDictionaryRef _Nullable match,
                                         CFIndex                    order,
                                         DADiskPeekCallback         callback,
-                                       void * __nullable          context ) API_AVAILABLE(macos(10.4));
+                                       void * _Nullable          context ) API_AVAILABLE(macos(10.4));
 
 /*!
  * @function   DADiskGetOptions
@@ -556,7 +557,7 @@ extern DAReturn DADiskSetOptions( DADiskRef disk, DADiskOptions options, Boolean
  * @param      context  The user-defined context parameter.
  */
 
-extern void DAUnregisterCallback( DASessionRef session, void * callback, void * __nullable context ) API_AVAILABLE(macos(10.4));
+extern void DAUnregisterCallback( DASessionRef session, void * callback, void * _Nullable context ) API_AVAILABLE(macos(10.4));
 
 /*
  * @function   DAUnregisterApprovalCallback
@@ -566,7 +567,7 @@ extern void DAUnregisterCallback( DASessionRef session, void * callback, void * 
  * @param      context  The user-defined context parameter.
  */
 
-extern void DAUnregisterApprovalCallback( DASessionRef session, void * callback, void * __nullable context ) CF_SWIFT_UNAVAILABLE( "Use DAUnregisterCallback instead" ) API_AVAILABLE(macCatalyst(13.1)) API_UNAVAILABLE(ios, tvos, watchos);
+extern void DAUnregisterApprovalCallback( DASessionRef session, void * callback, void * _Nullable context ) CF_SWIFT_UNAVAILABLE( "Use DAUnregisterCallback instead" ) API_AVAILABLE(macCatalyst(13.1)) API_UNAVAILABLE(ios, tvos, watchos);
 
 #endif /* !__DISKARBITRATIOND__ */
 

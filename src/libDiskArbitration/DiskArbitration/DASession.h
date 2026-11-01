@@ -25,7 +25,8 @@
  * NextBSD: Apple's public header from apple-oss-distributions/DiskArbitration
  * @ DiskArbitration-535.120.1.0.1, installed as
  * /usr/include/DiskArbitration/DASession.h by libDiskArbitration
- * (nextbsd-userland#197). <dispatch/dispatch.h> is included for dispatch_queue_t,
+ * (nextbsd-userland#197). Apple's __nullable spelling is _Nullable here: NextBSD's
+ * <sys/cdefs.h> does not define __nullable. <dispatch/dispatch.h> is included for dispatch_queue_t,
  * which Apple's CoreFoundation.h pulls in on its own.
  */
 
@@ -67,7 +68,7 @@ extern CFTypeID DASessionGetTypeID( void ) API_AVAILABLE(macos(10.4));
  * caller also implicitly retains the object and is responsible for releasing it.
  */
 
-extern DASessionRef __nullable DASessionCreate( CFAllocatorRef __nullable allocator ) API_AVAILABLE(macos(10.4));
+extern DASessionRef _Nullable DASessionCreate( CFAllocatorRef _Nullable allocator ) API_AVAILABLE(macos(10.4));
 
 /*!
  * @function   DASessionScheduleWithRunLoop
@@ -96,7 +97,7 @@ extern void DASessionUnscheduleFromRunLoop( DASessionRef session, CFRunLoopRef r
  * @param      queue   The dispatch queue on which the session should be scheduled.  Pass NULL to unschedule.
  */
 
-extern void DASessionSetDispatchQueue( DASessionRef session, dispatch_queue_t __nullable queue ) API_AVAILABLE(macos(10.7));
+extern void DASessionSetDispatchQueue( DASessionRef session, dispatch_queue_t _Nullable queue ) API_AVAILABLE(macos(10.7));
 
 /*
  * @typedef   DAApprovalSessionRef
@@ -121,7 +122,7 @@ extern CFTypeID DAApprovalSessionGetTypeID( void ) CF_SWIFT_UNAVAILABLE( "Use DA
  * caller also implicitly retains the object and is responsible for releasing it.
  */
 
-extern DAApprovalSessionRef __nullable DAApprovalSessionCreate( CFAllocatorRef __nullable allocator ) CF_SWIFT_UNAVAILABLE( "Use DASessionCreate instead" ) API_AVAILABLE(macCatalyst(13.1)) API_UNAVAILABLE(ios, tvos, watchos);
+extern DAApprovalSessionRef _Nullable DAApprovalSessionCreate( CFAllocatorRef _Nullable allocator ) CF_SWIFT_UNAVAILABLE( "Use DASessionCreate instead" ) API_AVAILABLE(macCatalyst(13.1)) API_UNAVAILABLE(ios, tvos, watchos);
 
 /*
  * @function   DAApprovalSessionScheduleWithRunLoop

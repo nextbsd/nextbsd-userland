@@ -25,7 +25,8 @@
  * NextBSD: Apple's public header from apple-oss-distributions/DiskArbitration
  * @ DiskArbitration-535.120.1.0.1, installed as
  * /usr/include/DiskArbitration/DADissenter.h by libDiskArbitration
- * (nextbsd-userland#197). Unchanged apart from this note.
+ * (nextbsd-userland#197). Apple's __nullable spelling is _Nullable here: NextBSD's
+ * <sys/cdefs.h> does not define __nullable. Unchanged apart from this note.
  */
 
 #ifndef __DISKARBITRATION_DADISSENTER__
@@ -85,7 +86,7 @@ typedef const struct CF_BRIDGED_TYPE( id ) __DADissenter * DADissenterRef;
  * @result     A reference to a new DADissenter.
  */
 
-extern DADissenterRef DADissenterCreate( CFAllocatorRef __nullable allocator, DAReturn status, CFStringRef __nullable string ) API_AVAILABLE(macos(10.4));
+extern DADissenterRef DADissenterCreate( CFAllocatorRef _Nullable allocator, DAReturn status, CFStringRef _Nullable string ) API_AVAILABLE(macos(10.4));
 
 
 /*!
@@ -105,7 +106,7 @@ extern DAReturn DADissenterGetStatus( DADissenterRef dissenter ) API_AVAILABLE(m
  * @result     The return code string.
  */
 
-extern CFStringRef __nullable DADissenterGetStatusString( DADissenterRef dissenter ) API_AVAILABLE(macos(10.4));
+extern CFStringRef _Nullable DADissenterGetStatusString( DADissenterRef dissenter ) API_AVAILABLE(macos(10.4));
 
 
 #endif /* !__DISKARBITRATIOND__ */
