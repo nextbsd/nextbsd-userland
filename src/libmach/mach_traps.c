@@ -1235,6 +1235,17 @@ mig_deallocate(vm_address_t addr, vm_size_t size)
 	return mach_ool_unmap(addr, size);
 }
 
+/*
+ * mig_strncpy — copy a c_string argument into a MIG message.
+ *
+ * Returns the number of bytes copied INCLUDING the terminating NUL, as
+ * Apple's libsyscall mig_strncpy does: MIG stubs use the result as the
+ * string's count and size the message with _WALIGN_(count), and the
+ * receiving side's __MigTypeCheck looks for the NUL inside the message.
+ * Returning strlen() instead left the NUL outside the message whenever
+ * strlen() was a multiple of four, and the server answered
+ * MIG_BAD_ARGUMENTS ("/dev/vtbd0p3" to diskarbitrationd, #197).
+ */
 int
 mig_strncpy(char *dst, const char *src, int len)
 {
@@ -1245,7 +1256,7 @@ mig_strncpy(char *dst, const char *src, int len)
 		n = len - 1;
 	memcpy(dst, src, (size_t)n);
 	dst[n] = '\0';
-	return n;
+	return n + 1;
 }
 
 /*
