@@ -20,9 +20,13 @@
  *
  * libdispatch has DISPATCH_SOURCE_TYPE_VFS only in its private headers and
  * built without VQ_UPDATE, so the daemon owns a kqueue with the EVFILT_FS
- * knote and reads it through a public DISPATCH_SOURCE_TYPE_READ source. The
- * NextBSD kernel posts VQ_UPDATE on MNT_UPDATE (nextbsd-kernel patch 0064,
- * the event launchd's /var check uses), so remounts are seen too.
+ * knote. A dedicated thread blocks in kevent(2) on it and hands each batch
+ * of events to the daemon queue. (With a DISPATCH_SOURCE_TYPE_READ source on
+ * the kqueue fd, a CI boot showed one VQ_UPDATE but not the NFS gate's later
+ * mount and unmount, although vfs_domount_first() and dounmount() signal
+ * both.) The NextBSD kernel posts
+ * VQ_UPDATE on MNT_UPDATE (nextbsd-kernel patch 0064, the event launchd's
+ * /var check uses), so remounts are seen too.
  */
 #include "DAVolume.h"
 #include "DADisk.h"
@@ -34,6 +38,7 @@
 
 #include <errno.h>
 #include <paths.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,7 +49,7 @@
 #endif
 
 static dispatch_queue_t		g_queue;
-static dispatch_source_t	g_source;
+static pthread_t		g_thread;
 static int			g_kq = -1;
 static int			g_ready;	/* first refresh has run */
 static uint32_t			g_gen;
@@ -250,26 +255,51 @@ restart:
 	}
 }
 
+/* On the daemon queue: one batch of EVFILT_FS fflags from the watch thread. */
 static void
-kq_ready(void *ctx __unused)
+vfs_event(void *ctx)
 {
-	struct kevent ev[8];
-	struct timespec zero = { 0, 0 };
-	u_int fflags = 0;
-	int i, n;
+	u_int fflags = (u_int)(uintptr_t)ctx;
 
-	while ((n = kevent(g_kq, NULL, 0, ev, (int)nitems(ev), &zero)) > 0)
-		for (i = 0; i < n; i++)
-			if (ev[i].filter == EVFILT_FS)
-				fflags |= ev[i].fflags;
-	if (fflags == 0)
-		return;
 	DALog("DA-VFS: fflags=0x%x%s%s%s", fflags,
 	    (fflags & VQ_MOUNT) ? " VQ_MOUNT" : "",
 	    (fflags & VQ_UNMOUNT) ? " VQ_UNMOUNT" : "",
 	    (fflags & VQ_UPDATE) ? " VQ_UPDATE" : "");
 	if (g_ready)
 		DAVolumeRefresh();
+}
+
+/*
+ * The watch thread: block for the next event, then drain whatever else is
+ * already queued, so a mount + unmount pair costs one refresh.
+ */
+static void *
+vfs_watch_thread(void *arg __unused)
+{
+	struct kevent ev[8];
+	struct timespec zero = { 0, 0 };
+	u_int fflags;
+	int i, n;
+
+	for (;;) {
+		n = kevent(g_kq, NULL, 0, ev, (int)nitems(ev), NULL);
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			DALog("DA-VFS-FAIL: kevent wait: %s", strerror(errno));
+			return (NULL);
+		}
+		fflags = 0;
+		do {
+			for (i = 0; i < n; i++)
+				if (ev[i].filter == EVFILT_FS)
+					fflags |= ev[i].fflags;
+		} while ((n = kevent(g_kq, NULL, 0, ev, (int)nitems(ev),
+		    &zero)) > 0);
+		if (fflags != 0)
+			dispatch_async_f(g_queue, (void *)(uintptr_t)fflags,
+			    vfs_event);
+	}
 }
 
 void
@@ -292,16 +322,12 @@ DAVolumeInit(dispatch_queue_t queue)
 		g_kq = -1;
 		return;
 	}
-	g_source = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ,
-	    (uintptr_t)g_kq, 0, g_queue);
-	if (g_source == NULL) {
-		DALog("DA-VFS-FAIL: dispatch_source_create");
+	if (pthread_create(&g_thread, NULL, vfs_watch_thread, NULL) != 0) {
+		DALog("DA-VFS-FAIL: pthread_create");
 		(void)close(g_kq);
 		g_kq = -1;
 		return;
 	}
-	dispatch_set_context(g_source, NULL);
-	dispatch_source_set_event_handler_f(g_source, kq_ready);
-	dispatch_resume(g_source);
+	(void)pthread_detach(g_thread);
 	DALog("DA-VFS-ARMED: EVFILT_FS VQ_MOUNT|VQ_UNMOUNT|VQ_UPDATE");
 }

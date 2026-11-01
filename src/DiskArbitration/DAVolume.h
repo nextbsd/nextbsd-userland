@@ -6,8 +6,8 @@
  * clients see NFS, tmpfs, nullfs and hand-made mounts as well as its own
  * (DAServer.c _DAVolumeMountedCallback / _DAVolumeUnmountedCallback,
  * DADisk.c DADiskCreateFromVolumePath). The trigger is the embedded build's
- * EVFILT_FS source; here it is a kqueue registered for EVFILT_FS and read
- * through a dispatch source on the daemon queue.
+ * EVFILT_FS source; here it is a kqueue registered for EVFILT_FS, read by a
+ * dedicated thread that hands events to the daemon queue.
  */
 #ifndef DISKARBITRATION_DAVOLUME_H
 #define DISKARBITRATION_DAVOLUME_H
