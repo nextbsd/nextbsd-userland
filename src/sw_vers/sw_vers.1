@@ -1,0 +1,76 @@
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" Copyright (c) 2026 Joseph Maloney
+.\"
+.Dd November 1, 2026
+.Dt SW_VERS 1
+.Os NextBSD
+.Sh NAME
+.Nm sw_vers
+.Nd print the operating system version
+.Sh SYNOPSIS
+.Nm
+.Nm
+.Fl productName
+.Nm
+.Fl productVersion
+.Nm
+.Fl buildVersion
+.Sh DESCRIPTION
+.Nm
+prints the name, version and build of the installed operating system.
+With no option it prints all three, one per line, each after a label and a
+tab:
+.Bd -literal -offset indent
+ProductName:	NextBSD
+ProductVersion:	27.0.0
+BuildVersion:	42
+.Ed
+.Pp
+The options print one value alone:
+.Bl -tag -width "-productVersion"
+.It Fl productName
+The product name,
+.Ql NextBSD .
+.It Fl productVersion
+The product version, which matches the kernel's
+.Ql uname -r .
+.It Fl buildVersion
+The build number of the installed
+.Li NextBSD-everything
+package.
+.El
+.Pp
+The installed packages are versioned
+.Ar version . Ns Ar build ,
+so
+.Ql pkg info NextBSD-everything
+shows the same two values.
+.Sh FILES
+.Bl -tag -width indent
+.It Pa /System/Library/CoreServices/SystemVersion.plist
+Where the values come from:
+.Li ProductName ,
+.Li ProductVersion
+and
+.Li ProductBuildVersion .
+The
+.Li NextBSD-everything
+package installs it, and
+.Ql pkg upgrade
+replaces it.
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Nm
+fails, with a message on standard error, when the property list is missing
+(a system installed before it was introduced), cannot be read, or lacks one of
+the keys.
+.Sh SEE ALSO
+.Xr nextbsd-fetch 1 ,
+.Xr uname 1 ,
+.Xr pkg 8
+.Sh HISTORY
+.Nm
+first appeared in Mac OS X.
+The NextBSD version is ported from Darwin's DarwinTools.

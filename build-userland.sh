@@ -1163,6 +1163,17 @@ run_buildenv "make -C $SRC/vm_stat DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install
 test -x "$DESTDIR/usr/bin/vm_stat" || { echo "FAIL: /usr/bin/vm_stat not installed"; exit 1; }
 echo "==> vm_stat built"
 
+# ---- sw_vers (nextbsd/nextbsd#536) -----------------------------------------
+# Darwin's sw_vers(1), ported from DarwinTools-1: the product name, version
+# and build from /System/Library/CoreServices/SystemVersion.plist, which
+# nextbsd-pkg writes into NextBSD-everything. Links libCoreFoundation.
+comp "sw_vers(1)"
+mkdir -p "$DESTDIR/usr/bin"
+run_buildenv "make -C $SRC/sw_vers DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/bin/sw_vers" || { echo "FAIL: /usr/bin/sw_vers not installed"; exit 1; }
+needed_check "$DESTDIR/usr/bin/sw_vers" "libCoreFoundation"
+echo "==> sw_vers built"
+
 # ---- nss_directory_services (nextbsd/nextbsd-userland#249, E18 U3) ---------
 # The `directory_services` source for passwd and group: users and groups
 # straight from /Local (or /Network) Library/DirectoryServices/{Users,Groups}
