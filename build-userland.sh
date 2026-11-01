@@ -946,13 +946,38 @@ echo "==> mDNSResponder + libdns_sd + dns-sd built"
 # notify channel). Built AFTER libIOKit so -lIOKit resolves from the staged
 # /usr/lib/system. build.sh asserted libIOKit resolution with chroot ldd ->
 # replace with cross DT_NEEDED check.
+# DAServer.defs (#197) is the client <-> daemon protocol: one mig run, the
+# server stub into the daemon, the user stub (header DAServerUser.h: the
+# daemon has a DAServer.h of its own) into libDiskArbitration below.
 comp "diskarbitrationd"
 mkdir -p "$DESTDIR/usr/sbin"
-run_buildenv "make -C $SRC/DiskArbitration DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+DA_MIG="$MIGROOT/diskarbitration"
+rm -rf "$DA_MIG"; mkdir -p "$DA_MIG"
+run_mig "$DA_MIG" -I"$SRC/libmach/include" -I"$SRC/DiskArbitration" \
+    -header DAServerUser.h -user DAServerUser.c \
+    -server DAServerServer.c -sheader DAServerServer.h \
+    "$SRC/DiskArbitration/DAServer.defs" \
+    || { echo "FAIL: mig could not process DAServer.defs"; exit 1; }
+test -s "$DA_MIG/DAServerServer.c" || { echo "FAIL: mig produced no DAServerServer.c"; exit 1; }
+test -s "$DA_MIG/DAServerUser.c" || { echo "FAIL: mig produced no DAServerUser.c"; exit 1; }
+run_buildenv "make -C $SRC/DiskArbitration DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$DA_MIG all install"
 test -x "$DESTDIR/usr/sbin/diskarbitrationd" || { echo "FAIL: /usr/sbin/diskarbitrationd not installed"; exit 1; }
 needed_check "$DESTDIR/usr/sbin/diskarbitrationd" "libIOKit"
 echo "==> diskarbitrationd built"
-# DROPPED: datest (host-exec).
+
+# libDiskArbitration (#197): the client library, flat like SC and IOKit.
+comp "libDiskArbitration"
+mkdir -p "$DESTDIR/usr/include/DiskArbitration"
+run_buildenv "make -C $SRC/libDiskArbitration DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$DA_MIG all install"
+sync_sysroot
+test -f "$DESTDIR/usr/lib/system/libDiskArbitration.so.1" \
+    || { echo "FAIL: libDiskArbitration.so.1 not installed"; exit 1; }
+for h in DiskArbitration DADisk DASession DADissenter DiskArbitrationPrivate; do
+    test -f "$DESTDIR/usr/include/DiskArbitration/$h.h" \
+        || { echo "FAIL: /usr/include/DiskArbitration/$h.h not installed"; exit 1; }
+done
+needed_check "$DESTDIR/usr/lib/system/libDiskArbitration.so.1" "libCoreFoundation"
+echo "==> libDiskArbitration built"
 
 # Filesystem bundles (#194): fsutil, the <name>.util probe/verify helper,
 # installed once and symlinked into each bundle. The Info.plists come from
@@ -1689,7 +1714,10 @@ $TCC -fblocks $TUNDEF -I"$SRC/libIOKit" -o "$TESTDIR/iokitnotifyrt" "$SRC/libIOK
 comp "mDNS / DiskArbitration tests"
 $TCC $TUNDEF $LAUNCHINC -o "$TESTDIR/mdnstest" "$SRC/mDNSResponder/mdnstest.c" -llaunch -lsystem_kernel
 $TCC $TUNDEF -o "$TESTDIR/dnssdtest" "$SRC/mDNSResponder/dnssdtest.c" -ldns_sd
-$TCC $TUNDEF $LAUNCHINC -o "$TESTDIR/datest" "$SRC/DiskArbitration/datest.c" -llaunch -lsystem_kernel
+# datest is a DiskArbitration client (#197): libDiskArbitration and its closure.
+$TCC -fblocks $TUNDEF -o "$TESTDIR/datest" "$SRC/DiskArbitration/datest.c" \
+    -lDiskArbitration -lCoreFoundation -lsystem_dispatch -lsystem_blocks \
+    -lsystem_kernel -llaunch -lnotify -lpthread
 
 comp "IPConfiguration tests (reuse MIG ipconfigUser.c from \$IPCFG_MIG)"
 $TCC $TUNDEF $LAUNCHINC -o "$TESTDIR/ipconfigtest" "$SRC/IPConfiguration/ipconfigtest.c" -llaunch -lsystem_kernel

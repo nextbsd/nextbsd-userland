@@ -22,9 +22,10 @@
 #include <stdint.h>
 
 /*
- * Apple's description keys (DiskArbitration/DADisk.h). The framework (#197)
- * exports them as `extern const CFStringRef`; inside the daemon they are
- * macros so no file-scope CFSTR() initialiser is needed.
+ * Apple's description keys (DiskArbitration/DADisk.h). The framework
+ * (libDiskArbitration, #197) exports them as `extern const CFStringRef`;
+ * inside the daemon they are macros so no file-scope CFSTR() initialiser is
+ * needed. The daemon never includes the framework's DADisk.h.
  */
 #define kDADiskDescriptionVolumeKindKey		CFSTR("DAVolumeKind")
 #define kDADiskDescriptionVolumeMountableKey	CFSTR("DAVolumeMountable")
@@ -124,6 +125,9 @@ struct da_disk {
 	int			autodiskmount;	/* 0: the bundle says never auto-mount */
 	/* The bundle entry that recognised the volume (DADiskGetFileSystem). */
 	struct da_probe_candidate *filesystem;
+
+	/* Client bookkeeping (#197). */
+	CFMutableArrayRef	changed;	/* keys not yet sent (DAQueue.c) */
 };
 
 TAILQ_HEAD(da_disk_list, da_disk);
@@ -131,6 +135,12 @@ extern struct da_disk_list gDADiskList;
 
 struct da_disk	*DADiskCreate(const char *id, const char *geom_class);
 void		 DADiskRelease(struct da_disk *disk);
+/*
+ * Take `disk` off gDADiskList and release it. A disk clients have seen
+ * appear is reported to them as disappeared first (DADiskDisappearedCallback,
+ * #197); use this, not TAILQ_REMOVE + DADiskRelease, for listed disks.
+ */
+void		 DADiskListRemove(struct da_disk *disk);
 const char	*DADiskGetID(const struct da_disk *disk);
 struct da_disk	*DADiskListFind(const char *id);
 /* The GEOM disk whose ID or _deviceLink is `dev` ("/dev/ufs/ROOTFS"). */
@@ -153,6 +163,17 @@ void		 DADiskSetDescriptionInt64(struct da_disk *disk, CFStringRef key,
 		    int64_t value);
 void		 DADiskSetDescriptionDouble(struct da_disk *disk, CFStringRef key,
 		    double value);
+
+/*
+ * Apple's DADiskMatch: every key of `match` is in the description with an
+ * equal value.
+ */
+int		 DADiskMatch(const struct da_disk *disk, CFDictionaryRef match);
+/*
+ * The description as clients receive it (Apple's DADiskGetSerialization):
+ * a binary property list with the disk ID under DADiskID. Caller releases.
+ */
+CFDataRef	 DADiskCopySerialization(const struct da_disk *disk);
 
 /* Replace the _deviceLink aliases; returns 1 if they changed. */
 int		 DADiskSetDeviceLinks(struct da_disk *disk, char *const *links,

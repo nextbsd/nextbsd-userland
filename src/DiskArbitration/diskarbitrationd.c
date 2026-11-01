@@ -1,7 +1,8 @@
 /*
  * diskarbitrationd — NextBSD DiskArbitration daemon.
  *
- * The daemon claims the com.apple.DiskArbitration Mach service, learns of
+ * The daemon claims the com.apple.DiskArbitration.diskarbitrationd Mach
+ * service (Apple's _kDADaemonName, DAInternal.h), learns of
  * storage arrival/removal from the kernel registry (/dev/ioregistry,
  * da_iokit_subscribe.c) and keeps a disk model built from GEOM (DADisk.c,
  * DAGeom.c, #192): one DADisk per whole disk and per partition, each with
@@ -18,17 +19,25 @@
  * /etc/fstab, when an admin creates one, is a policy overlay on disks the
  * daemon has found (UUID=, LABEL=, DEVICE= lines: mount point, options,
  * auto/noauto; DASupport.c, #196), never a list of things to mount.
+ * DiskArbitration clients (libDiskArbitration, #197) talk to it over the
+ * DAServer.defs MIG protocol (DAServer.c): sessions, registered callbacks
+ * pulled through a doorbell (DASession.c, DAQueue.c), disk descriptions
+ * and mount requests (DARequest.c). The main thread runs the MIG receive
+ * loop; the disk model, the stages and every routine run on one serial
+ * queue.
  *
  * Plan (E15, nextbsd/nextbsd#471):
- *   D1 #197 — DiskArbitration client library over MIG.
  *   D2 #198 — unmount/eject with approval.
  *   D4 #199 — console user: deferred mounts, owner.
  */
 #include "da_iokit_subscribe.h"
 #include "DADisk.h"
 #include "DAGeom.h"
+#include "DAInternal.h"
 #include "DAMount.h"
 #include "DAProbe.h"
+#include "DAQueue.h"
+#include "DAServer.h"
 #include "DAStage.h"
 #include "DAVolume.h"
 
@@ -36,6 +45,8 @@
 
 #include <mach/mach.h>
 #include <servers/bootstrap.h>
+
+#include <notify.h>
 
 #include <errno.h>
 #include <signal.h>
@@ -100,17 +111,17 @@ main(int argc, char **argv)
 	 * receive right for the service port that launchd's plist-
 	 * declared MachServices broker has set up. Once we hold the
 	 * right, peer bootstrap_look_up calls route through launchd to
-	 * our receive port — even before we serve real RPC, the lookup
-	 * succeeds, which is what the iter-1 DA-BOOT marker proves.
+	 * our receive port. The name is Apple's, because clients look it up
+	 * by that name (DASessionCreate).
 	 */
-	kr = bootstrap_check_in(bootstrap_port, "com.apple.DiskArbitration",
-	    &svc);
+	kr = bootstrap_check_in(bootstrap_port, _kDADaemonName, &svc);
 	if (kr != KERN_SUCCESS || svc == MACH_PORT_NULL) {
-		xlog("DA-BOOT-FAIL: bootstrap_check_in: 0x%x", (unsigned)kr);
+		xlog("DA-SERVICE-FAIL: bootstrap_check_in(%s): 0x%x",
+		    _kDADaemonName, (unsigned)kr);
 		return (1);
 	}
-	xlog("DA-BOOT-OK: com.apple.DiskArbitration registered "
-	    "(receive right=0x%x)", (unsigned)svc);
+	xlog("DA-SERVICE: %s checked in (receive right=0x%x)",
+	    _kDADaemonName, (unsigned)svc);
 
 	/*
 	 * /Volumes before anything can mount on it (Apple's
@@ -124,14 +135,20 @@ main(int argc, char **argv)
 	 * MIG server (#197) joins it.
 	 */
 	da_queue = dispatch_queue_create("org.nextbsd.diskarbitrationd", NULL);
-	if (da_queue != NULL) {
+	if (da_queue == NULL) {
+		xlog("DA-GEOM-FAIL: dispatch_queue_create failed");
+		return (1);
+	}
+	if (DAServerInit(svc, da_queue) != 0)
+		return (1);
+	{
+		DAQueueInit(da_queue);
 		DAStageInit(da_queue);
 		DAMountInit(da_queue);
 		DAGeomInit(da_queue);
 		DAVolumeInit(da_queue);
 		DAProbeInit(da_queue);
-	} else
-		xlog("DA-GEOM-FAIL: dispatch_queue_create failed");
+	}
 
 	/*
 	 * Subscribe to storage device arrival/removal over the kernel notify
@@ -157,11 +174,11 @@ main(int argc, char **argv)
 	DAGeomStorageChanged();
 
 	/*
-	 * Hold-alive loop; the work happens on the dispatch queues. SIGTERM /
-	 * SIGHUP short-circuit. #197 replaces this with the MIG server.
+	 * Tell keep-alive sessions of an earlier daemon to come back (Apple's
+	 * DAMain.c posts the same name), then serve clients until a signal.
 	 */
-	while (!got_term)
-		(void)sleep(60);
+	(void)notify_post(_kDADaemonLaunchedNotification);
+	DAServerRun(&got_term);
 
 	xlog("exiting on signal %d", (int)got_term);
 	return (0);

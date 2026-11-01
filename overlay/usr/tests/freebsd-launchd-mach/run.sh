@@ -2588,8 +2588,12 @@ else
     "$dnssdtest" || true	# marker gates in boot-test.sh
 fi
 
-# DA-BOOT — DiskArbitration iter 1 liveness. datest verifies the
-# Mach service (DA-BOOT-OK) via bootstrap_look_up.
+# DA-BOOT — DiskArbitration client check (#197). datest is a
+# libDiskArbitration client: DASessionCreate on
+# com.apple.DiskArbitration.diskarbitrationd, the appeared-disk stream up to
+# DiskListComplete (one DA-CLIENT-DISK line per disk, for the boot log), then
+# DADiskCopyDescription of the root disk. DA-BOOT-OK only if all of that
+# worked; DA-BOOT-FAIL (exit 1) when the service is absent or silent.
 datest=/usr/tests/freebsd-launchd-mach/datest
 if [ ! -x "$datest" ]; then
     echo "DA-BOOT-FAIL: $datest missing"
@@ -2632,12 +2636,14 @@ da_iokit_gate()
     echo "=== diskarbitrationd.stderr (tail -40) ==="
     tail -40 "$log" 2>/dev/null
     echo "==="
-    # The disk model (#192), adopted mounts (#193), probes (#194) and the
-    # stage machine, mounts and /Volumes (#195), for the boot log only:
+    # The disk model (#192), adopted mounts (#193), probes (#194), the
+    # stage machine, mounts and /Volumes (#195) and client sessions (#197:
+    # datest's session, its single queue pull per doorbell), for the boot
+    # log only:
     # these daemon lines start with "diskarbitrationd", so nb-tally does not
     # count them.
-    echo "=== diskarbitrationd disk model (DA-DISK/GEOM/VOLUME(S)/VFS/FS/PROBE/PREFS/STAGE/MOUNT lines) ==="
-    grep -E 'DA-(DISK|GEOM|VOLUME|VFS|FS|PROBE|PREFS|STAGE|MOUNT)' "$log" 2>/dev/null | tail -80
+    echo "=== diskarbitrationd disk model (DA-DISK/GEOM/VOLUME(S)/VFS/FS/PROBE/PREFS/STAGE/MOUNT/SERVICE/SESSION/REQUEST lines) ==="
+    grep -E 'DA-(DISK|GEOM|VOLUME|VFS|FS|PROBE|PREFS|STAGE|MOUNT|SERVICE|SESSION|REQUEST)' "$log" 2>/dev/null | tail -80
     echo "==="
 
     # A hard registration failure gates regardless of anything else.

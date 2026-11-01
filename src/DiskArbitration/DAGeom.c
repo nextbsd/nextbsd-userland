@@ -611,16 +611,14 @@ remove_disk(struct da_disk *disk)
 restart:
 		TAILQ_FOREACH(d, &gDADiskList, link) {
 			if (d->whole == disk) {
-				TAILQ_REMOVE(&gDADiskList, d, link);
 				DALog("DA-DISK-GONE: %s", d->id);
-				DADiskRelease(d);
+				DADiskListRemove(d);
 				goto restart;
 			}
 		}
 	}
-	TAILQ_REMOVE(&gDADiskList, disk, link);
 	DALog("DA-DISK-GONE: %s", disk->id);
-	DADiskRelease(disk);
+	DADiskListRemove(disk);
 }
 
 /* The PART geom consuming `pp`, if `pp` carries a partition table. */
@@ -724,9 +722,8 @@ visit_provider(struct da_walk *w, struct gprovider *pp,
 		 * (#193). Drop the stand-in; the mount refresh after this walk
 		 * moves DAVolumePath onto the media disk.
 		 */
-		TAILQ_REMOVE(&gDADiskList, disk, link);
 		DALog("DA-VOLUME-GONE: %s (now media)", disk->id);
-		DADiskRelease(disk);
+		DADiskListRemove(disk);
 		disk = NULL;
 	}
 	if (disk != NULL && (strcmp(disk->signature, sig) != 0 ||

@@ -1,16 +1,18 @@
 # diskarbitrationd — freebsd-launchd-mach DiskArbitration daemon.
 #
-# main + bootstrap_check_in for com.apple.DiskArbitration, the kernel
-# registry storage subscription (da_iokit_subscribe.c) and the GEOM disk
+# main + bootstrap_check_in for com.apple.DiskArbitration.diskarbitrationd,
+# the kernel registry storage subscription (da_iokit_subscribe.c) and the GEOM disk
 # model (DADisk.c, DAGeom.c; #192) with adopted mounts (DAVolume.c;
 # #193), the bundle probe stage (DAFileSystem.c, DAProbe.c; #194; the
 # bundles' <name>.util helper is fsutil/), and the stage machine and mount
 # executor (DAStage.c, DAMount.c, DAMountHelper.c, DACommand.c,
 # DASupport.c; #195), and the /etc/fstab mount map (DASupport.c over
-# fstab.c, Apple's vendored getfsent copy; #196). The MIG server for DiskArbitration.framework clients
-# comes with #197.
+# fstab.c, Apple's vendored getfsent copy; #196), and the MIG server for
+# libDiskArbitration clients: sessions, callback queues and the mount
+# request (DAServer.c, DASession.c, DAQueue.c, DARequest.c, DAInternal.c,
+# which the library builds too; #197).
 #
-# Build:   cd src/DiskArbitration && make SYSROOT=/path/to/rootfs
+# Build:   cd src/DiskArbitration && make SYSROOT=/path/to/rootfs MIGOUT=/path
 # Install: make DESTDIR=/path/to/rootfs install
 
 PROG=		diskarbitrationd
@@ -19,7 +21,31 @@ PROG=		diskarbitrationd
 MAN=		diskarbitrationd.8
 SRCS=		diskarbitrationd.c da_iokit_subscribe.c DADisk.c DAGeom.c DAVolume.c \
 		DAFileSystem.c DAProbe.c DACommand.c DAMount.c DAMountHelper.c \
-		DAStage.c DASupport.c fstab.c
+		DAStage.c DASupport.c fstab.c \
+		DAInternal.c DASession.c DAQueue.c DAServer.c DARequest.c
+
+# DAServerServer.c — MIG-generated server stub for DAServer.defs.
+# build-userland.sh runs host mig and passes MIGOUT=; a bare standalone
+# build without it fails at the generated #include "DAServerServer.h",
+# the same way configd / wland do. -w on the generated TU: MIG output is
+# not warning-clean. -Wno-macro-redefined: <mach/notify.h> redefines the
+# MACH_NOTIFY_* macros <mach/message.h> also defines (identical values).
+MIGOUT?=
+.if !empty(MIGOUT)
+.PATH:				${MIGOUT}
+SRCS+=				DAServerServer.c
+CFLAGS+=			-I${MIGOUT}
+CFLAGS.DAServerServer.c+=	-w
+.endif
+# The generated stubs import "DAServer.defs.h" from this directory.
+CFLAGS+=			-I${.CURDIR}
+CFLAGS+=			-Wno-macro-redefined
+
+# <DiskArbitration/DADissenter.h> (the kDAReturn* codes) from the
+# library's source tree, as Apple's daemon includes the framework header
+# with __DISKARBITRATIOND__ defined. libDiskArbitration builds after the
+# daemon.
+CFLAGS+=	-I${.CURDIR}/../libDiskArbitration
 
 # WARNS=0: da_iokit_subscribe.c pulls <IOKit/IOKitLib.h>, which drags in the
 # whole CoreFoundation + dispatch public header tree (the IONotificationPort /
@@ -66,6 +92,9 @@ CFLAGS+=	-I${SYSROOT}/usr/include
 # pair hwregd / configd / ipconfigd / mDNSResponder use.
 CFLAGS+=	-I${.CURDIR}/../launchd/liblaunch
 CFLAGS+=	-I${.CURDIR}/../launchd/freebsd-shims
+# <notify.h> includes os/base.h from the libnotify shims (configd takes the
+# same -I).
+CFLAGS+=	-I${.CURDIR}/../Libnotify/freebsd-shims
 
 .if !empty(SYSROOT)
 LDFLAGS+=	-L${SYSROOT}/usr/lib/system
@@ -81,7 +110,9 @@ LDFLAGS+=	-Wl,--allow-shlib-undefined
 #   object model libIOKit's API consumes. -lsystem_dispatch + -lsystem_blocks: the
 #   dispatch queue DA delivers notification callbacks on
 #   (IONotificationPortSetDispatchQueue) + the -fblocks runtime CF/dispatch pull.
-LDADD+=		-llaunch -lsystem_kernel
+# -lnotify: notify_post(com.apple.diskarbitrationd.launched) at startup,
+#   which keep-alive client sessions wait for (#197).
+LDADD+=		-llaunch -lsystem_kernel -lnotify
 LDADD+=		-lIOKit -lCoreFoundation -lsystem_dispatch -l:libsystem_blocks.so
 
 BINDIR=		/usr/sbin
