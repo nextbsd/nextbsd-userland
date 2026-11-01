@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  cd9660.fs: the NextBSD cd9660 filesystem bundle (nextbsd-userland#194).
+  Apple's bundle layout. CFBundleName is the NextBSD vfs type, which
+  diskarbitrationd uses as DAVolumeKind and passes to mount -t.
+  Contents/Resources/cd9660.util is a symlink to /usr/libexec/fsutil.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>English</string>
+	<key>CFBundleIdentifier</key>
+	<string>org.nextbsd.filesystems.cd9660</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>cd9660</string>
+	<key>CFBundlePackageType</key>
+	<string>fs  </string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1.0</string>
+	<key>FSImplementation</key>
+	<array>
+		<string>kernel</string>
+	</array>
+	<key>FSMediaTypes</key>
+	<dict>
+		<key>Partitionless</key>
+		<dict>
+			<key>FSMediaProperties</key>
+			<dict>
+				<key>Leaf</key>
+				<true/>
+				<key>Whole</key>
+				<true/>
+			</dict>
+			<key>FSProbeArguments</key>
+			<string>-p</string>
+			<key>FSProbeExecutable</key>
+			<string>cd9660.util</string>
+			<key>FSProbeOrder</key>
+			<integer>3000</integer>
+		</dict>
+	</dict>
+	<key>FSPersonalities</key>
+	<dict>
+		<key>ISO 9660</key>
+		<dict>
+			<key>FSName</key>
+			<string>ISO 9660</string>
+			<key>FSMountExecutable</key>
+			<string>/sbin/mount_cd9660</string>
+			<key>FSMountArguments</key>
+			<string></string>
+			<key>FSRepairExecutable</key>
+			<string>cd9660.util</string>
+			<key>FSRepairArguments</key>
+			<string>-y</string>
+		</dict>
+	</dict>
+</dict>
+</plist>

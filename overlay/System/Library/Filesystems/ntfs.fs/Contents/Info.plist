@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  ntfs.fs: the NextBSD ntfs filesystem bundle (nextbsd-userland#194).
+  Apple's bundle layout. CFBundleName is the NextBSD vfs type, which
+  diskarbitrationd uses as DAVolumeKind and passes to mount -t.
+  Contents/Resources/ntfs.util is a symlink to /usr/libexec/fsutil.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>English</string>
+	<key>CFBundleIdentifier</key>
+	<string>org.nextbsd.filesystems.ntfs</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>ntfs</string>
+	<key>CFBundlePackageType</key>
+	<string>fs  </string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1.0</string>
+	<key>FSImplementation</key>
+	<array>
+		<string>user</string>
+	</array>
+	<key>FSMediaTypes</key>
+	<dict>
+		<key>EBD0A0A2-B9E5-4433-87C0-68B6B72699C7</key>
+		<dict>
+			<key>FSMediaProperties</key>
+			<dict>
+				<key>Content Hint</key>
+				<string>EBD0A0A2-B9E5-4433-87C0-68B6B72699C7</string>
+				<key>Leaf</key>
+				<true/>
+			</dict>
+			<key>FSProbeArguments</key>
+			<string>-p</string>
+			<key>FSProbeExecutable</key>
+			<string>ntfs.util</string>
+			<key>FSProbeOrder</key>
+			<integer>2000</integer>
+		</dict>
+		<key>Windows_NTFS</key>
+		<dict>
+			<key>FSMediaProperties</key>
+			<dict>
+				<key>Content Hint</key>
+				<string>Windows_NTFS</string>
+				<key>Leaf</key>
+				<true/>
+			</dict>
+			<key>FSProbeArguments</key>
+			<string>-p</string>
+			<key>FSProbeExecutable</key>
+			<string>ntfs.util</string>
+			<key>FSProbeOrder</key>
+			<integer>1000</integer>
+		</dict>
+		<key>Partitionless</key>
+		<dict>
+			<key>FSMediaProperties</key>
+			<dict>
+				<key>Leaf</key>
+				<true/>
+				<key>Whole</key>
+				<true/>
+			</dict>
+			<key>FSProbeArguments</key>
+			<string>-p</string>
+			<key>FSProbeExecutable</key>
+			<string>ntfs.util</string>
+			<key>FSProbeOrder</key>
+			<integer>4000</integer>
+		</dict>
+	</dict>
+	<key>FSPersonalities</key>
+	<dict>
+		<key>NTFS</key>
+		<dict>
+			<key>FSName</key>
+			<string>Windows NT Filesystem</string>
+			<key>FSMountExecutable</key>
+			<string>/usr/local/bin/ntfs-3g</string>
+			<key>FSMountArguments</key>
+			<string></string>
+			<key>FSRepairExecutable</key>
+			<string>ntfs.util</string>
+			<key>FSRepairArguments</key>
+			<string>-y</string>
+			<key>FSFormatExecutable</key>
+			<string>/usr/local/sbin/mkntfs</string>
+			<key>FSFormatArguments</key>
+			<string>-Q</string>
+			<key>FSFormatContentMask</key>
+			<string>EBD0A0A2-B9E5-4433-87C0-68B6B72699C7</string>
+		</dict>
+	</dict>
+</dict>
+</plist>

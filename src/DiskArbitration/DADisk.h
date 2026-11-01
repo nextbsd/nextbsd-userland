@@ -110,6 +110,11 @@ struct da_disk {
 	/* Mount bookkeeping (DAVolume.c, #193). */
 	int			volume_only;	/* made from a mount, no GEOM media */
 	uint32_t		volume_gen;	/* last mount refresh that saw it */
+
+	/* Probe bookkeeping (DAProbe.c, #194). */
+	int			needs_probe;	/* new media, probe after the walk */
+	uint64_t		probe_token;	/* matches the probe in flight */
+	int			autodiskmount;	/* 0: the bundle says never auto-mount */
 };
 
 TAILQ_HEAD(da_disk_list, da_disk);
