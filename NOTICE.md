@@ -40,6 +40,7 @@ provenance; it does not relicense anything.
 | `curl` (+ libcurl) | apple-oss-distributions/curl (`curl-166.0.0.0.1`, curl 8.7.1); NextBSD security patches in `src/curl/patches` | curl (MIT-style), `src/curl/dist/COPYING` |
 | `nss_directory_services` | Joseph Maloney; adapted from his Gershwin DirectoryServices NSS module (gershwin-desktop/gershwin-components) for NextBSD | BSD-2-Clause |
 | `nss_mdns` | NextBSD; lookup flow modelled on Libinfo's `mdns_module.c` (apple-oss-distributions/Libinfo), no code copied | BSD-2-Clause |
+| `swapd` | NextBSD; modelled on dynamic_pager (apple-oss-distributions/system_cmds `system_cmds-597.1.1`), no code copied. `default_pager_alerts.defs` vendored from apple-oss-distributions/xnu `xnu-2422.1.72` | BSD-2-Clause (`swapd.c`, `swapd.8`); APSL-2.0 (`default_pager_alerts.defs`) |
 | `accounts/createhomedir` | NextBSD | BSD-2-Clause |
 | `accounts/autologin-user` | NextBSD | BSD-2-Clause |
 | `accounts/adduser`, `passwd`, `rmuser` | NextBSD | BSD-2-Clause |

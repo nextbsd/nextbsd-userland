@@ -272,6 +272,7 @@ above; `/System/Library` and `~/Library` paths are kept as-is.
 | cpdup | `man cpdup` (1) | filesystem copy / mirror utility |
 | WLAN | `man wlan` (8) | WLAN command-line client |
 | WLAN | `man wland` (8) | 802.11 management daemon |
+| swapd | `man swapd` (8) | swap file manager (NextBSD's dynamic_pager) |
 | libxml2 | `man xmllint` (1), `man xmlcatalog` (1) | XML parser / validator, catalog tool |
 | libxml2 | `man libxml` (3) | libxml2 library overview |
 | libxslt | `man xsltproc` (1) | XSLT processor |
@@ -284,6 +285,8 @@ does not build — there is no daemon page), and `hostnamed` / `kextdeps`
 NextBSD-originals with no upstream page — but unlike those, they ship
 *original* pages written for them, because `wlan` is a CLI users actually type
 and there is no `scutil` to fall back on. Writing our own page for our own tool
-is not the same as fabricating an Apple one. `mig` / `migcom` ship man pages upstream
+is not the same as fabricating an Apple one. `swapd` likewise ships its own
+page: it is NextBSD's daemon, modelled on `dynamic_pager`, and its page
+describes what NextBSD's version does rather than reusing Apple's. `mig` / `migcom` ship man pages upstream
 but are host-only build tools not installed into the target userland, so their
 pages are not shipped.

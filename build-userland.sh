@@ -381,10 +381,12 @@ done
 comp "libmach (libsystem_kernel) — installs mach/* headers into sysroot first"
 # bsd.lib.mk does NOT auto-create INCSDIR, hence the pre-creation here.
 # mach_debug/ joins the list for <mach_debug/ipc_info.h>, which the generated
-# mach_port MIG client needs (#83).
+# mach_port MIG client needs (#83). default_pager/ is for
+# <default_pager/default_pager_types.h>, the macx_triggers() flags (#178).
 mkdir -p "$DESTDIR/usr/lib/system" \
          "$DESTDIR/usr/include/mach" \
          "$DESTDIR/usr/include/mach_debug" \
+         "$DESTDIR/usr/include/default_pager" \
          "$DESTDIR/usr/libdata/pkgconfig"
 run_buildenv "make -C $SRC/libmach DESTDIR=$DESTDIR PREFIX=/usr MIGOUT=$LIBMACH_MIG all install"
 # Headers also need to be visible in the SYSROOT (not just DESTDIR) for the
@@ -396,6 +398,7 @@ if [ "$SYSROOT" != "$DESTDIR" ]; then
     mkdir -p "$SYSROOT/usr/include" "$SYSROOT/usr/lib/system" "$SYSROOT/usr/libdata/pkgconfig"
     cp -a "$DESTDIR/usr/include/mach"        "$SYSROOT/usr/include/" 2>/dev/null || true
     cp -a "$DESTDIR/usr/include/mach_debug"  "$SYSROOT/usr/include/" 2>/dev/null || true
+    cp -a "$DESTDIR/usr/include/default_pager" "$SYSROOT/usr/include/" 2>/dev/null || true
     cp -a "$DESTDIR/usr/lib/system/."        "$SYSROOT/usr/lib/system/" 2>/dev/null || true
     cp -a "$DESTDIR/usr/libdata/pkgconfig/." "$SYSROOT/usr/libdata/pkgconfig/" 2>/dev/null || true
 fi
@@ -1173,6 +1176,25 @@ run_buildenv "make -C $SRC/sw_vers DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install
 test -x "$DESTDIR/usr/bin/sw_vers" || { echo "FAIL: /usr/bin/sw_vers not installed"; exit 1; }
 needed_check "$DESTDIR/usr/bin/sw_vers" "libCoreFoundation"
 echo "==> sw_vers built"
+
+# ---- swapd (nextbsd/nextbsd-userland#178, E14 U1) --------------------------
+# NextBSD's dynamic_pager: grows and reclaims /private/var/vm/swapfile<N> on the
+# kernel's default_pager_space_alert (macx_triggers, nextbsd-kernel#218). The
+# server stub comes from xnu's default_pager_alerts.defs, as dynamic_pager's
+# does. Plain libc + libsystem_kernel: no CF, no dispatch.
+comp "swapd"
+mkdir -p "$DESTDIR/usr/sbin"
+SWAPD_MIG="$MIGROOT/swapd"
+rm -rf "$SWAPD_MIG"; mkdir -p "$SWAPD_MIG"
+run_mig "$SWAPD_MIG" -I"$SRC/libmach/include" \
+    -header default_pager_alerts.h -user default_pager_alertsUser.c \
+    -server default_pager_alertsServer.c -sheader default_pager_alertsServer.h \
+    "$SRC/swapd/default_pager_alerts.defs" \
+    || { echo "FAIL: mig could not process default_pager_alerts.defs"; exit 1; }
+test -s "$SWAPD_MIG/default_pager_alertsServer.c" || { echo "FAIL: mig produced no default_pager_alertsServer.c"; exit 1; }
+run_buildenv "make -C $SRC/swapd DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$SWAPD_MIG all install"
+test -x "$DESTDIR/usr/sbin/swapd" || { echo "FAIL: /usr/sbin/swapd not installed"; exit 1; }
+echo "==> swapd built"
 
 # ---- nss_directory_services (nextbsd/nextbsd-userland#249, E18 U3) ---------
 # The `directory_services` source for passwd and group: users and groups
