@@ -37,6 +37,10 @@ void	DADiskDisappearedCallback(struct da_disk *disk);
 void	DADiskDescriptionChangedCallback(struct da_disk *disk, CFArrayRef keys);
 void	DADiskMountApprovalCallback(struct da_disk *disk,
 	    DAResponseCallback response, void *context);
+void	DADiskUnmountApprovalCallback(struct da_disk *disk,
+	    DAResponseCallback response, void *context);
+void	DADiskEjectApprovalCallback(struct da_disk *disk,
+	    DAResponseCallback response, void *context);
 void	DADiskPeekCallback(struct da_disk *disk, struct da_callback *callback,
 	    DAResponseCallback response, void *context);
 void	DAIdleCallback(void);
@@ -76,5 +80,7 @@ void	DAQueueDescriptionChanged(struct da_disk *disk, CFStringRef key);
 
 /* A dissenter dictionary for `status` (Apple's daemon DADissenterCreate). */
 CFDictionaryRef	DADissenterCreate(int32_t status);
+/* Name the process that dissented (a dissenter DADissenterCreate made). */
+void		DADissenterSetProcessID(CFDictionaryRef dissenter, pid_t pid);
 
 #endif /* DISKARBITRATION_DAQUEUE_H */

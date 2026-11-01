@@ -10,7 +10,8 @@
 # fstab.c, Apple's vendored getfsent copy; #196), and the MIG server for
 # libDiskArbitration clients: sessions, callback queues and the mount
 # request (DAServer.c, DASession.c, DAQueue.c, DARequest.c, DAInternal.c,
-# which the library builds too; #197).
+# which the library builds too; #197), and unmount/eject with their
+# approval rounds (DARequest.c, DAThread.c, DADevice.c; #198).
 #
 # Build:   cd src/DiskArbitration && make SYSROOT=/path/to/rootfs MIGOUT=/path
 # Install: make DESTDIR=/path/to/rootfs install
@@ -22,7 +23,8 @@ MAN=		diskarbitrationd.8
 SRCS=		diskarbitrationd.c da_iokit_subscribe.c DADisk.c DAGeom.c DAVolume.c \
 		DAFileSystem.c DAProbe.c DACommand.c DAMount.c DAMountHelper.c \
 		DAStage.c DASupport.c fstab.c \
-		DAInternal.c DASession.c DAQueue.c DAServer.c DARequest.c
+		DAInternal.c DASession.c DAQueue.c DAServer.c DARequest.c \
+		DAThread.c DADevice.c
 
 # DAServerServer.c — MIG-generated server stub for DAServer.defs.
 # build-userland.sh runs host mig and passes MIGOUT=; a bare standalone
@@ -120,5 +122,7 @@ BINDIR=		/usr/sbin
 # FreeBSD base libs: releng/15.1 src.libnames.mk requires LIBADD, not LDADD+=-lfoo.
 # geom: DAGeom.c walks the GEOM tree with libgeom (#192); src.libnames.mk
 # pulls in its bsdxml + sbuf dependencies.
-LIBADD+=	pthread geom
+# procstat: DADevice.c finds the process keeping a volume busy, fuser -c's
+# way (#198). cam: DADevice.c's START STOP UNIT eject for da(4) (#198).
+LIBADD+=	pthread geom procstat cam
 .include <bsd.prog.mk>

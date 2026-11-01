@@ -20,6 +20,21 @@
  *                              /dev/da0) or a mount point (/, /Volumes/X)
  *   datest --mount <name> [<path>]
  *                              DADiskMount, then the mount callback
+ *   datest --unmount <name> [--force] [--whole]
+ *                              DADiskUnmount, then the unmount callback
+ *                              (the dissenter's status, process ID and
+ *                              string when refused) and, on success, the
+ *                              DescriptionChanged that drops DAVolumePath
+ *   datest --eject <name>      DADiskEject, then the eject callback
+ *   datest --approve | --dissent [<string>] | --stall
+ *                              register unmount and eject approval
+ *                              callbacks and run until interrupted:
+ *                              approve each, dissent with
+ *                              kDAReturnNotPermitted and <string>, or
+ *                              stall 30 s without answering (the daemon
+ *                              gives up after 10 s + 1 s)
+ *
+ * --unmount and --eject exit 0 on success, 1 when refused.
  *
  * --verbose adds the whole description dictionary to --list / --describe.
  */
@@ -31,6 +46,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define DA_SERVICE	"com.apple.DiskArbitration.diskarbitrationd"
 
@@ -43,6 +59,10 @@ static int			g_listing;
 static int			g_verbose;
 static int			g_watch;
 static unsigned long		g_events;
+static int			g_result;	/* request mode exit status */
+static dispatch_semaphore_t	g_changed;
+static const char		*g_dissent;	/* --dissent string */
+static int			g_approval;	/* 'a', 'd' or 's' */
 
 static const char *
 cstr(CFTypeRef v, char *buf, size_t len)
@@ -227,6 +247,121 @@ mounted(DADiskRef disk, DADissenterRef dissenter, void *context __unused)
 	}
 	(void)fflush(stdout);
 	dispatch_semaphore_signal(g_done);
+}
+
+static const char *
+bsd_name(DADiskRef disk)
+{
+	const char *name = disk != NULL ? DADiskGetBSDName(disk) : NULL;
+
+	return (name != NULL ? name : "?");
+}
+
+/* One line for a request's completion; sets the exit status. */
+static void
+report(const char *what, DADiskRef disk, DADissenterRef dissenter)
+{
+	CFStringRef string;
+	char text[512];
+
+	if (dissenter == NULL) {
+		(void)printf("DA-CLIENT %s %s: ok\n", what, bsd_name(disk));
+		g_result = 0;
+	} else {
+		text[0] = '\0';
+		string = DADissenterGetStatusString(dissenter);
+		if (string != NULL)
+			(void)CFStringGetCString(string, text, sizeof(text),
+			    kCFStringEncodingUTF8);
+		(void)printf("DA-CLIENT %s %s: refused, status 0x%08x pid %d%s%s"
+		    "%s\n", what, bsd_name(disk),
+		    (unsigned)DADissenterGetStatus(dissenter),
+		    (int)DADissenterGetProcessID(dissenter),
+		    text[0] != '\0' ? " string \"" : "", text,
+		    text[0] != '\0' ? "\"" : "");
+		g_result = 1;
+	}
+	(void)fflush(stdout);
+}
+
+static void
+unmounted(DADiskRef disk, DADissenterRef dissenter, void *context __unused)
+{
+	report("unmount", disk, dissenter);
+	dispatch_semaphore_signal(g_done);
+}
+
+static void
+ejected(DADiskRef disk, DADissenterRef dissenter, void *context __unused)
+{
+	report("eject", disk, dissenter);
+	dispatch_semaphore_signal(g_done);
+}
+
+static void
+path_changed(DADiskRef disk, CFArrayRef keys __unused, void *context __unused)
+{
+	CFDictionaryRef d;
+	char buf[1024];
+
+	d = DADiskCopyDescription(disk);
+	(void)printf("DA-CLIENT description changed: %s DAVolumePath=%s\n",
+	    bsd_name(disk), d != NULL && cstr(CFDictionaryGetValue(d,
+	    kDADiskDescriptionVolumePathKey), buf, sizeof(buf)) != NULL ?
+	    buf : "(none)");
+	if (d != NULL)
+		CFRelease(d);
+	(void)fflush(stdout);
+	dispatch_semaphore_signal(g_changed);
+}
+
+/* --approve / --dissent / --stall. */
+static DADissenterRef
+approval(const char *what, DADiskRef disk)
+{
+	CFStringRef string;
+	DADissenterRef dissenter;
+
+	switch (g_approval) {
+	case 'd':
+		string = CFStringCreateWithCString(kCFAllocatorDefault,
+		    g_dissent != NULL ? g_dissent : "datest dissents",
+		    kCFStringEncodingUTF8);
+		dissenter = DADissenterCreate(kCFAllocatorDefault,
+		    kDAReturnNotPermitted, string);
+		if (string != NULL)
+			CFRelease(string);
+		(void)printf("DA-CLIENT %s approval %s: dissent\n", what,
+		    bsd_name(disk));
+		(void)fflush(stdout);
+		return (dissenter);
+	case 's':
+		(void)printf("DA-CLIENT %s approval %s: stalling 30 s\n",
+		    what, bsd_name(disk));
+		(void)fflush(stdout);
+		(void)sleep(30);
+		(void)printf("DA-CLIENT %s approval %s: approving late\n",
+		    what, bsd_name(disk));
+		(void)fflush(stdout);
+		return (NULL);
+	default:
+		(void)printf("DA-CLIENT %s approval %s: approve\n", what,
+		    bsd_name(disk));
+		(void)fflush(stdout);
+		return (NULL);
+	}
+}
+
+static DADissenterRef
+unmount_approval(DADiskRef disk, void *context __unused)
+{
+	return (approval("unmount", disk));
+}
+
+static DADissenterRef
+eject_approval(DADiskRef disk, void *context __unused)
+{
+	return (approval("eject", disk));
 }
 
 /* --- modes ---------------------------------------------------------------- */
@@ -514,6 +649,83 @@ mode_mount(const char *name, const char *path)
 	return (0);
 }
 
+static int
+mode_unmount(const char *name, DADiskUnmountOptions options)
+{
+	DASessionRef session;
+	DADiskRef disk;
+
+	session = session_open();
+	if (session == NULL) {
+		(void)fprintf(stderr, "datest: DASessionCreate failed\n");
+		return (1);
+	}
+	disk = disk_named(session, name);
+	if (disk == NULL) {
+		(void)fprintf(stderr, "datest: no disk %s\n", name);
+		return (1);
+	}
+	DARegisterDiskDescriptionChangedCallback(session, NULL,
+	    kDADiskDescriptionWatchVolumePath, path_changed, NULL);
+	g_result = 1;
+	DADiskUnmount(disk, options, unmounted, NULL);
+	/* An approval session may take 10 s + 1 s per silent client. */
+	if (!wait_for(g_done, 120)) {
+		(void)fprintf(stderr, "datest: no unmount callback in 120 s\n");
+		return (1);
+	}
+	if (g_result == 0 && !wait_for(g_changed, 5))
+		(void)printf("DA-CLIENT: no DAVolumePath change within 5 s\n");
+	return (g_result);
+}
+
+static int
+mode_eject(const char *name)
+{
+	DASessionRef session;
+	DADiskRef disk;
+
+	session = session_open();
+	if (session == NULL) {
+		(void)fprintf(stderr, "datest: DASessionCreate failed\n");
+		return (1);
+	}
+	disk = disk_named(session, name);
+	if (disk == NULL) {
+		(void)fprintf(stderr, "datest: no disk %s\n", name);
+		return (1);
+	}
+	g_result = 1;
+	DADiskEject(disk, kDADiskEjectOptionDefault, ejected, NULL);
+	if (!wait_for(g_done, 300)) {
+		(void)fprintf(stderr, "datest: no eject callback in 300 s\n");
+		return (1);
+	}
+	return (g_result);
+}
+
+static int
+mode_approval(void)
+{
+	DASessionRef session;
+
+	session = session_open();
+	if (session == NULL) {
+		(void)fprintf(stderr, "datest: DASessionCreate failed\n");
+		return (1);
+	}
+	DARegisterDiskUnmountApprovalCallback(session, NULL, unmount_approval,
+	    NULL);
+	DARegisterDiskEjectApprovalCallback(session, NULL, eject_approval,
+	    NULL);
+	(void)printf("DA-CLIENT: answering unmount and eject approvals (%s)\n",
+	    g_approval == 'd' ? "dissent" : g_approval == 's' ? "stall" :
+	    "approve");
+	(void)fflush(stdout);
+	dispatch_main();
+	/* NOTREACHED */
+}
+
 static void
 usage(void)
 {
@@ -522,7 +734,11 @@ usage(void)
 	    "       datest [--verbose] --list\n"
 	    "       datest --watch [--keepalive]\n"
 	    "       datest [--verbose] --describe <bsdname | mount point>\n"
-	    "       datest --mount <bsdname> [<path>]\n");
+	    "       datest --mount <bsdname> [<path>]\n"
+	    "       datest --unmount <bsdname | mount point> [--force] "
+	    "[--whole]\n"
+	    "       datest --eject <bsdname>\n"
+	    "       datest --approve | --dissent [<string>] | --stall\n");
 	exit(2);
 }
 
@@ -530,6 +746,7 @@ int
 main(int argc, char **argv)
 {
 	int i, keepalive = 0;
+	DADiskUnmountOptions unmount_options = kDADiskUnmountOptionDefault;
 	const char *mode = NULL, *arg = NULL, *arg2 = NULL;
 
 	for (i = 1; i < argc; i++) {
@@ -537,11 +754,27 @@ main(int argc, char **argv)
 			g_verbose = 1;
 		else if (strcmp(argv[i], "--keepalive") == 0)
 			keepalive = 1;
+		else if (strcmp(argv[i], "--force") == 0)
+			unmount_options |= kDADiskUnmountOptionForce;
+		else if (strcmp(argv[i], "--whole") == 0)
+			unmount_options |= kDADiskUnmountOptionWhole;
+		else if (strcmp(argv[i], "--approve") == 0 ||
+		    strcmp(argv[i], "--stall") == 0) {
+			mode = "--approval";
+			g_approval = argv[i][2];
+		} else if (strcmp(argv[i], "--dissent") == 0) {
+			mode = "--approval";
+			g_approval = 'd';
+			if (i + 1 < argc && argv[i + 1][0] != '-')
+				g_dissent = argv[++i];
+		}
 		else if (strcmp(argv[i], "--list") == 0 ||
 		    strcmp(argv[i], "--watch") == 0)
 			mode = argv[i];
 		else if (strcmp(argv[i], "--describe") == 0 ||
-		    strcmp(argv[i], "--mount") == 0) {
+		    strcmp(argv[i], "--mount") == 0 ||
+		    strcmp(argv[i], "--unmount") == 0 ||
+		    strcmp(argv[i], "--eject") == 0) {
 			mode = argv[i];
 			if (++i >= argc)
 				usage();
@@ -557,6 +790,7 @@ main(int argc, char **argv)
 	g_list_complete = dispatch_semaphore_create(0);
 	g_idle = dispatch_semaphore_create(0);
 	g_done = dispatch_semaphore_create(0);
+	g_changed = dispatch_semaphore_create(0);
 
 	if (mode == NULL)
 		return (mode_boot());
@@ -566,5 +800,11 @@ main(int argc, char **argv)
 		return (mode_watch(keepalive));
 	if (strcmp(mode, "--describe") == 0)
 		return (mode_describe(arg));
+	if (strcmp(mode, "--unmount") == 0)
+		return (mode_unmount(arg, unmount_options));
+	if (strcmp(mode, "--eject") == 0)
+		return (mode_eject(arg));
+	if (strcmp(mode, "--approval") == 0)
+		return (mode_approval());
 	return (mode_mount(arg, arg2));
 }

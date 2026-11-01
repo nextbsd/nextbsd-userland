@@ -9,7 +9,8 @@
  * (__DAResponseTimerRefresh: 10 s plus 1 s of grace, a session that misses
  * it is logged "not responding" and skipped for responses until it pulls
  * its queue again; a timeout is not a dissent). The request half of
- * Apple's file (DAQueueRequest and the unmount/eject machinery) is #198.
+ * Apple's file (DAQueueRequest, the kDADiskUnmountOptionWhole expansion)
+ * is in DARequest.c (#198).
  *
  * Apple keeps the round on the disk (DADiskSetContextRe) and references
  * disks by CF retain; here the round is its own allocation and names its
@@ -70,6 +71,14 @@ DADissenterCreate(int32_t status)
 		___CFDictionarySetIntegerValue(dissenter, _kDADissenterStatusKey,
 		    (SInt64)(uint32_t)status);
 	return (dissenter);
+}
+
+void
+DADissenterSetProcessID(CFDictionaryRef dissenter, pid_t pid)
+{
+	/* DADissenterCreate's dictionaries are mutable. */
+	___CFDictionarySetIntegerValue((CFMutableDictionaryRef)dissenter,
+	    _kDADissenterProcessIDKey, (SInt64)pid);
 }
 
 /* --- the response round --------------------------------------------------- */
@@ -464,6 +473,28 @@ DADiskMountApprovalCallback(struct da_disk *disk, DAResponseCallback response,
 	if (g_round == NULL)
 		return;
 	queue_all(_kDADiskMountApprovalCallback, disk, NULL);
+	round_complete();
+}
+
+void
+DADiskUnmountApprovalCallback(struct da_disk *disk,
+    DAResponseCallback response, void *context)
+{
+	round_prepare(disk, response, context);
+	if (g_round == NULL)
+		return;
+	queue_all(_kDADiskUnmountApprovalCallback, disk, NULL);
+	round_complete();
+}
+
+void
+DADiskEjectApprovalCallback(struct da_disk *disk, DAResponseCallback response,
+    void *context)
+{
+	round_prepare(disk, response, context);
+	if (g_round == NULL)
+		return;
+	queue_all(_kDADiskEjectApprovalCallback, disk, NULL);
 	round_complete();
 }
 
