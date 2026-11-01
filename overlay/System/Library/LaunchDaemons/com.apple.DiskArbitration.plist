@@ -3,20 +3,22 @@
 <!--
   com.apple.DiskArbitration.plist
 
-  Boot-time launchd plist for diskarbitrationd (freebsd-launchd-mach
-  DiskArbitration daemon).
+  Boot-time launchd plist for diskarbitrationd, NextBSD's DiskArbitration
+  daemon.
 
-  iter 1 is the daemon skeleton: diskarbitrationd claims the
-  com.apple.DiskArbitration Mach service via bootstrap_check_in and
-  sleeps until SIGTERM. iter 2 subscribes to hwregd's storage device
-  class events (ATTACH/DETACH for ada0/da0/nvd0/cd0); iter 3 adds
-  libgeom enrichment (partition table, UUID, label, FS-type); iter 4+
-  serves the DiskArbitration.framework client API via the da.defs
-  MIG IDL. RunAtLoad + KeepAlive so it starts at PID-1 launchd boot
-  and respawns on crash. StandardErrorPath / StandardOutPath route
-  the daemon's log to /var/log/diskarbitrationd.stderr — same
-  convention hwregd / configd / ipconfigd / mDNSResponder use; the
-  CI boot test dumps the file post-boot for verification.
+  diskarbitrationd checks in for Apple's Mach service name,
+  com.apple.DiskArbitration.diskarbitrationd (_kDADaemonName), which
+  libDiskArbitration's DASessionCreate looks up (nextbsd-userland#197).
+  It learns of storage from the kernel registry (/dev/ioregistry; hwregd is
+  retired), models disks from GEOM, probes and mounts them on /Volumes,
+  and serves client sessions over the DAServer.defs MIG protocol.
+
+  The Label stays com.apple.DiskArbitration (the CI harness keys on it);
+  Apple's is com.apple.diskarbitrationd. RunAtLoad + KeepAlive: the daemon
+  must exist before anything is mounted (Apple has KeepAlive only), and a
+  respawn posts com.apple.diskarbitrationd.launched so keep-alive client
+  sessions reconnect. StandardErrorPath / StandardOutPath route the log to
+  /var/log/diskarbitrationd.stderr, which the CI boot test dumps.
 -->
 <plist version="1.0">
 <dict>
@@ -32,7 +34,7 @@
     <true/>
     <key>MachServices</key>
     <dict>
-        <key>com.apple.DiskArbitration</key>
+        <key>com.apple.DiskArbitration.diskarbitrationd</key>
         <true/>
     </dict>
     <key>StandardOutPath</key>

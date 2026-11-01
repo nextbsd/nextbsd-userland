@@ -147,7 +147,10 @@ fi
 #                              directly. Installing notifyutil would close the
 #                              single biggest hole here.
 #   com.apple.configd          needs scutil, not yet ported (see #64).
-#   com.apple.DiskArbitration  no client tool on the image.
+#   com.apple.DiskArbitration  (service com.apple.DiskArbitration.diskarbitrationd)
+#                              exercised by run.sh's DA-BOOT check, whose
+#                              datest is a DiskArbitration client (#197);
+#                              not probed here.
 #   com.apple.hostnamed        no Mach client tool; hostname(1) reads the
 #                              kernel value, which does not exercise its port.
 #   org.nextbsd.wland          no client tool.

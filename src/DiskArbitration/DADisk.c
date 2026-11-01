@@ -8,6 +8,8 @@
  */
 #include "DADisk.h"
 #include "DAFileSystem.h"
+#include "DAInternal.h"
+#include "DAQueue.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -96,6 +98,8 @@ DADiskRelease(struct da_disk *disk)
 		return;
 	if (disk->description != NULL)
 		CFRelease(disk->description);
+	if (disk->changed != NULL)
+		CFRelease(disk->changed);
 	DAFileSystemCandidatesFree(disk->filesystem, 1);
 	for (i = 0; i < DA_DISK_LINK_MAX; i++)
 		free(disk->device_link[i]);
@@ -105,6 +109,16 @@ DADiskRelease(struct da_disk *disk)
 	free(disk->bus_driver);
 	free(disk->signature);
 	free(disk);
+}
+
+void
+DADiskListRemove(struct da_disk *disk)
+{
+	TAILQ_REMOVE(&gDADiskList, disk, link);
+	if (disk->state & kDADiskStateStagedAppear)
+		DADiskDisappearedCallback(disk);
+	disk->state |= kDADiskStateZombie;
+	DADiskRelease(disk);
 }
 
 const char *
@@ -152,10 +166,70 @@ DADiskGetDescription(const struct da_disk *disk, CFStringRef key)
 void
 DADiskSetDescription(struct da_disk *disk, CFStringRef key, CFTypeRef value)
 {
+	CFTypeRef old = CFDictionaryGetValue(disk->description, key);
+
+	if (old == value || (old != NULL && value != NULL &&
+	    CFEqual(old, value)))
+		return;
 	if (value != NULL)
 		CFDictionarySetValue(disk->description, key, value);
 	else
 		CFDictionaryRemoveValue(disk->description, key);
+	/*
+	 * Clients learn of changes to a disk they have seen appear; before
+	 * that the description is still being built and the appearance
+	 * carries it whole (#197).
+	 */
+	if (disk->state & kDADiskStateStagedAppear)
+		DAQueueDescriptionChanged(disk, key);
+}
+
+struct match_ctx {
+	const struct da_disk	*disk;
+	int			 match;
+};
+
+static void
+match_one(const void *key, const void *value, void *context)
+{
+	struct match_ctx *ctx = context;
+	CFTypeRef have;
+
+	if (!ctx->match)
+		return;
+	have = CFDictionaryGetValue(ctx->disk->description, key);
+	if (have == NULL || !CFEqual(value, have))
+		ctx->match = 0;
+}
+
+int
+DADiskMatch(const struct da_disk *disk, CFDictionaryRef match)
+{
+	struct match_ctx ctx = { disk, 1 };
+
+	CFDictionaryApplyFunction(match, match_one, &ctx);
+	return (ctx.match);
+}
+
+CFDataRef
+DADiskCopySerialization(const struct da_disk *disk)
+{
+	CFMutableDictionaryRef copy;
+	CFDataRef id, data;
+
+	copy = CFDictionaryCreateMutableCopy(kCFAllocatorDefault, 0,
+	    disk->description);
+	if (copy == NULL)
+		return (NULL);
+	id = CFDataCreate(kCFAllocatorDefault, (const UInt8 *)disk->id,
+	    (CFIndex)strlen(disk->id) + 1);
+	if (id != NULL) {
+		CFDictionarySetValue(copy, _kDADiskIDKey, id);
+		CFRelease(id);
+	}
+	data = _DASerializeDiskDescription(kCFAllocatorDefault, copy);
+	CFRelease(copy);
+	return (data);
 }
 
 void

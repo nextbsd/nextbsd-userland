@@ -249,9 +249,8 @@ restart:
 		if (disk->volume_gen == g_gen)
 			continue;
 		if (disk->volume_only) {
-			TAILQ_REMOVE(&gDADiskList, disk, link);
 			DALog("DA-VOLUME-GONE: %s", disk->id);
-			DADiskRelease(disk);
+			DADiskListRemove(disk);
 			goto restart;
 		}
 		if (DADiskGetDescription(disk,

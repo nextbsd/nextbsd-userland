@@ -11,6 +11,13 @@
 
 #include <dispatch/dispatch.h>
 
+/*
+ * Set while no disk has a stage left to run (Apple's gDAIdle). A session
+ * that registers for appearances or idle while it is set is told so at once
+ * (DAServer.c).
+ */
+extern int	gDAIdle;
+
 /* Set the daemon queue the stages run on. Call once, first. */
 void	DAStageInit(dispatch_queue_t queue);
 

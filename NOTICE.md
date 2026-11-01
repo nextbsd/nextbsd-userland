@@ -30,6 +30,7 @@ provenance; it does not relicense anything.
 | `IPConfiguration` | apple-oss-distributions/IPConfiguration (bootp) | APSL-2.0 |
 | `mDNSResponder` (+ libdns_sd) | apple-oss-distributions/mDNSResponder | Apache-2.0 |
 | `DiskArbitration` | apple-oss-distributions/DiskArbitration | APSL-2.0 |
+| `libDiskArbitration` | apple-oss-distributions/DiskArbitration (`DiskArbitration-535.120.1.0.1`, the framework) | APSL-2.0 |
 | `hostnamed` | NextBSD (Apple-shape) | APSL-2.0 *(component header)* |
 | `scutil` | apple-oss-distributions/configd (`scutil.tproj`) | APSL-2.0 |
 | `caffeinate` | apple-oss-distributions/PowerManagement | APSL-2.0 |

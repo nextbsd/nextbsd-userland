@@ -9,16 +9,19 @@
  *             first probe after idle re-reads the bundles, the preferences
  *             and the /etc/fstab mount map (#196), each only if its file
  *             changed;
- *   Peek      clients' DARegisterDiskPeekCallback (#197); until sessions
- *             exist the stage only marks itself done;
- *   Mount     DAMountWithArguments(..., "automatic") unless the
- *             DAAutoMountDisable preference is set; a dirty volume waits
+ *   Peek      every session's DARegisterDiskPeekCallback, one at a time
+ *             in callback order, each answered before the next is asked
+ *             (or timed out, DAQueue.c) (#197);
+ *   Mount     the mount request (DARequest.c: approval, then
+ *             DAMountWithArguments(..., "automatic")) unless the
+ *             DAAutoMountDisable preference is set; the disk waits for it,
+ *             so the appearance carries DAVolumePath; a dirty volume waits
  *             until every other volume of its disk is probed and staged, so
  *             clean siblings mount first (Apple's rule);
- *   Appeared  DADiskAppearedCallback to clients (#197); logged for now.
+ *   Appeared  DADiskAppearedCallback to every session (#197).
  *
- * When no disk has anything left to do the daemon is idle (gDAIdle;
- * #197's DAIdleCallback goes there).
+ * When no disk has anything left to do the daemon is idle (gDAIdle) and
+ * sessions that have not been told so get DAIdleCallback (#197).
  *
  * The console-user gate (#199) sits inside the Mount stage, in
  * DAMountWithArguments: a deferred mount returns ECANCELED and leaves the
@@ -35,15 +38,19 @@
 #include "DAFileSystem.h"
 #include "DAMount.h"
 #include "DAProbe.h"
+#include "DAQueue.h"
+#include "DARequest.h"
+#include "DASession.h"
 #include "DASupport.h"
 
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 
 static dispatch_queue_t	g_queue;
 static int		g_pending;
 static int		g_fresh = 1;
-static int		gDAIdle;
+int			gDAIdle;
 
 /* The whole disk a volume sits on (Apple compares DADiskGetBSDUnit). */
 static const struct da_disk *
@@ -69,12 +76,93 @@ stage_probe(struct da_disk *disk)
 	}
 }
 
+/* A disk's peek: the candidates, in order, and the next one to ask. */
+struct da_peek {
+	struct da_callback	**candidates;	/* copies; each holds its session */
+	int			 count;
+	int			 next;
+};
+
+static void
+peek_free(struct da_peek *peek)
+{
+	int i;
+
+	for (i = 0; i < peek->count; i++)
+		DACallbackFree(peek->candidates[i]);
+	free(peek->candidates);
+	free(peek);
+}
+
+static int
+peek_compare(const void *a, const void *b)
+{
+	const struct da_callback *ca = *(struct da_callback *const *)a;
+	const struct da_callback *cb = *(struct da_callback *const *)b;
+
+	return (ca->order < cb->order ? -1 : ca->order > cb->order);
+}
+
+/* __DAStagePeekCallback: ask the next candidate, or end the stage. */
+static void
+peek_next(struct da_disk *disk, CFTypeRef response __unused, void *context)
+{
+	struct da_peek *peek = context;
+
+	if (disk != NULL && peek->next < peek->count) {
+		DADiskPeekCallback(disk, peek->candidates[peek->next++],
+		    peek_next, peek);
+		return;
+	}
+	if (disk != NULL)
+		disk->state &= ~kDADiskStateCommandActive;
+	peek_free(peek);
+	DAStageSignal();
+}
+
+/* __DAStagePeek. */
 static void
 stage_peek(struct da_disk *disk)
 {
-	/* #197: walk the sessions' peek callbacks in order, CommandActive. */
+	struct da_session *session;
+	struct da_callback *callback;
+	struct da_peek *peek;
+	int n = 0;
+
 	disk->state |= kDADiskStateStagedPeek;
-	DAStageSignal();
+	TAILQ_FOREACH(session, &gDASessionList, link)
+		TAILQ_FOREACH(callback, &session->callbacks, link)
+			if (callback->kind == _kDADiskPeekCallback)
+				n++;
+	if (n == 0) {
+		DAStageSignal();
+		return;
+	}
+	peek = calloc(1, sizeof(*peek));
+	if (peek == NULL ||
+	    (peek->candidates = calloc((size_t)n, sizeof(*peek->candidates))) ==
+	    NULL) {
+		free(peek);
+		DALog("DA-STAGE: %s: out of memory for the peek", disk->id);
+		DAStageSignal();
+		return;
+	}
+	TAILQ_FOREACH(session, &gDASessionList, link)
+		TAILQ_FOREACH(callback, &session->callbacks, link) {
+			if (callback->kind != _kDADiskPeekCallback ||
+			    peek->count >= n)
+				continue;
+			peek->candidates[peek->count] = DACallbackCreate(
+			    session, callback->address, callback->context,
+			    callback->kind, callback->order, callback->match,
+			    callback->watch);
+			if (peek->candidates[peek->count] != NULL)
+				peek->count++;
+		}
+	qsort(peek->candidates, (size_t)peek->count,
+	    sizeof(*peek->candidates), peek_compare);
+	disk->state |= kDADiskStateCommandActive;
+	peek_next(disk, NULL, peek);
 }
 
 /* A dirty volume mounts after its disk's other volumes are staged. */
@@ -97,15 +185,51 @@ repair_wait(const struct da_disk *disk)
 	return (0);
 }
 
+/* The disk the mount stage waits for, by ID and serial. */
+struct da_stage_mount {
+	char		*id;
+	uint64_t	 serial;
+};
+
+static void
+stage_mount_done(int32_t status __unused, const char *mountpoint __unused,
+    void *context)
+{
+	struct da_stage_mount *ctx = context;
+	struct da_disk *disk;
+
+	disk = DADiskListFind(ctx->id);
+	if (disk != NULL && disk->serial == ctx->serial)
+		disk->state &= ~kDADiskStateCommandActive;
+	free(ctx->id);
+	free(ctx);
+	DAStageSignal();
+}
+
 static void
 stage_mount(struct da_disk *disk)
 {
+	struct da_stage_mount *ctx;
+
 	disk->state |= kDADiskStateStagedMount;
 	if (!DAMountGetPreference(disk, kDAMountPreferenceDisableAutoMount)) {
 		if (disk->filesystem != NULL &&
 		    DADiskGetDescription(disk,
-		    kDADiskDescriptionVolumePathKey) == NULL)
-			DAMountWithArguments(disk, NULL, 1, NULL, NULL, NULL);
+		    kDADiskDescriptionVolumePathKey) == NULL) {
+			ctx = calloc(1, sizeof(*ctx));
+			if (ctx == NULL || (ctx->id = strdup(disk->id)) ==
+			    NULL) {
+				free(ctx);
+				DALog("DA-STAGE: %s: out of memory for the "
+				    "mount", disk->id);
+			} else {
+				ctx->serial = disk->serial;
+				disk->state |= kDADiskStateCommandActive;
+				DARequestMount(disk, NULL, 1, NULL,
+				    stage_mount_done, ctx);
+				return;
+			}
+		}
 	} else if (disk->filesystem != NULL)
 		DALog("DA-MOUNT: %s not mounted: DAAutoMountDisable is set",
 		    disk->id);
@@ -118,7 +242,7 @@ stage_appeared(struct da_disk *disk)
 	char kind[32], path[16];
 
 	disk->state |= kDADiskStateStagedAppear;
-	/* #197: DADiskAppearedCallback(disk). */
+	DADiskAppearedCallback(disk);
 	(void)DADiskGetDescriptionCString(disk, kDADiskDescriptionVolumeKindKey,
 	    kind, sizeof(kind));
 	path[0] = '\0';
@@ -167,7 +291,7 @@ stage_dispatch(void *ctx __unused)
 	if (gDAIdle)
 		return;
 	gDAIdle = 1;
-	/* #197: DAIdleCallback(). */
+	DAIdleCallback();
 	TAILQ_FOREACH(disk, &gDADiskList, link) {
 		if (disk->volume_only)
 			continue;

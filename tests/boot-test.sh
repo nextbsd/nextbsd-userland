@@ -1398,21 +1398,22 @@ expect {
     }
 }
 
-# DA-BOOT — DiskArbitration iter 1 liveness. bootstrap_look_up for
-# com.apple.DiskArbitration via datest. Iter 1 ships just the daemon
-# skeleton (no libgeom / framework yet); the kernel notify-channel
-# storage subscription (C1.3, #218) is wired in da_iokit_subscribe.c.
+# DA-BOOT — DiskArbitration client check (#197). datest, a libDiskArbitration
+# client, prints DA-BOOT-OK only after DASessionCreate on
+# com.apple.DiskArbitration.diskarbitrationd, the appeared-disk replay up to
+# DiskListComplete, and DADiskCopyDescription of the root disk succeeded;
+# DA-BOOT-FAIL when the service is absent or does not answer.
 expect {
     timeout {
         puts "\nFAIL: DA-BOOT marker not seen"
         exit 1
     }
     "DA-BOOT-FAIL" {
-        puts "\nFAIL: diskarbitrationd did not register its Mach service"
+        puts "\nFAIL: DiskArbitration client check failed (no session, no disk list, or no root disk description)"
         exit 1
     }
     "DA-BOOT-OK" {
-        puts "\nOK: diskarbitrationd Mach service up (com.apple.DiskArbitration registered)"
+        puts "\nOK: DiskArbitration client: session created and root disk described"
     }
 }
 
