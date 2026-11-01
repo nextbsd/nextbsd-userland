@@ -10,13 +10,11 @@
  *     receives a message; the userland half of launchd's MIG server
  *     loop on Apple.
  *
- * FreeBSD's EVFILT_PROC delivers no exit-detail bits and there is no
- * Mach-port kqueue filter. This shim pulls in the base header via
- * #include_next and then appends placeholder values so launchd
- * compiles; the corresponding code paths run but the extra info /
- * the EVFILT_MACHPORT registration is silently inert. A proper port
- * would route Mach-port readiness through libdispatch's existing
- * Mach receive plumbing rather than kqueue.
+ * FreeBSD's EVFILT_PROC delivers no exit-detail bits. This shim pulls
+ * in the base header via #include_next and then appends placeholder
+ * values so launchd compiles; the corresponding code paths run without
+ * the extra info. EVFILT_MACHPORT is real on NextBSD: the kernel
+ * provides it natively (see below).
  */
 #ifndef _FREEBSD_SHIM_SYS_EVENT_H_
 #define _FREEBSD_SHIM_SYS_EVENT_H_
@@ -65,12 +63,17 @@
 #endif
 
 /*
- * EVFILT_MACHPORT — macOS-only kqueue filter (negative-numbered).
- * FreeBSD uses -1..-13 for its filters; pick -14 so the registration
- * fails cleanly (EINVAL) and core.c's existing error path handles it.
+ * EVFILT_MACHPORT — the NextBSD kernel's native Mach port-set filter.
+ * nextbsd-kernel patch 0003 reserves it as -16 in the kernel's
+ * <sys/sys/event.h> and mach registers it with kqueue_add_filteropts().
+ * Use the system header's definition when it carries one; the base
+ * sysroot's <sys/event.h> does not yet, so fall back to the kernel's
+ * value. (-14 is EVFILT_JAIL on FreeBSD 15.) This must be defined
+ * before <mach/dispatch_kevent.h> supplies libmach's -22 sentinel,
+ * which only libmach's kevent_qos() wrapper understands.
  */
 #ifndef EVFILT_MACHPORT
-#define EVFILT_MACHPORT		(-14)
+#define EVFILT_MACHPORT		(-16)
 #endif
 
 /*
