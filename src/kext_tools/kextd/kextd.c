@@ -156,7 +156,7 @@ parse_match(CFDictionaryRef d, uint32_t **out)
 }
 
 /*
- * Parse IONameMatch into a freshly malloc'd fixed-width string table
+ * Parse IONameMatch (or `key`, #364) into a freshly malloc'd fixed-width string table
  * (ncompat * IOCAT_COMPAT_MAX), which is what IOCATIOCADDCOMPAT expects.
  *
  * IONameMatch is Apple's key for matching a device-tree node, and on a real
@@ -169,7 +169,8 @@ parse_match(CFDictionaryRef d, uint32_t **out)
  * Returns the count (0 on none/absent); *out is the table (caller frees).
  */
 static uint32_t
-parse_name_match(CFDictionaryRef d, char **out, const char *prefix)
+parse_name_match(CFDictionaryRef d, CFStringRef key, char **out,
+    const char *prefix)
 {
 	CFTypeRef v;
 	char *tbl;
@@ -177,7 +178,7 @@ parse_name_match(CFDictionaryRef d, char **out, const char *prefix)
 	size_t pl = prefix != NULL ? strlen(prefix) : 0;
 
 	*out = NULL;
-	v = CFDictionaryGetValue(d, CFSTR("IONameMatch"));
+	v = CFDictionaryGetValue(d, key);
 	if (v == NULL)
 		return (0);
 
@@ -230,14 +231,20 @@ static int
 push_platform_personality(int fd, CFDictionaryRef p, const char *bundle_id,
     const char *prefix)
 {
+	bool media = prefix != NULL && strcmp(prefix, IOCAT_MEDIA_PREFIX) == 0;
 	struct iocat_add_compat add;
 	char *tbl;
 	uint32_t n;
 	int rc;
 
-	n = parse_name_match(p, &tbl, prefix);
+	/*
+	 * IOMedia (nextbsd-kernel#364) matches Darwin's Content Mask, the key
+	 * CoreStorage and AppleRAID use, instead of IONameMatch.
+	 */
+	n = parse_name_match(p, media ? CFSTR("Content Mask") :
+	    CFSTR("IONameMatch"), &tbl, prefix);
 	if (n == 0)
-		return (0);	/* no IONameMatch -> nothing to match on */
+		return (0);	/* nothing to match on */
 
 	memset(&add, 0, sizeof(add));
 	strlcpy(add.bundle_id, bundle_id, sizeof(add.bundle_id));
@@ -255,7 +262,8 @@ push_platform_personality(int fd, CFDictionaryRef p, const char *bundle_id,
 		printf("kextd: pushed %s (%s, score %d, %u name(s))\n",
 		    add.bundle_id, prefix == NULL ? "IOPlatformDevice" :
 		    strcmp(prefix, IOCAT_VMBUS_PREFIX) == 0 ? "IOVMBusDevice" :
-		    "IOACPIPlatformDevice", add.probe_score, n);
+		    media ? "IOMedia" : "IOACPIPlatformDevice",
+		    add.probe_score, n);
 	return (1);
 }
 
@@ -486,6 +494,13 @@ push_personality(int fd, CFDictionaryRef p)
 		/* VMBus class GUIDs: the string path, prefixed (#360). */
 		return (push_platform_personality(fd, p, add.bundle_id,
 		    IOCAT_VMBUS_PREFIX));
+	else if (strcmp(provider, "IOMedia") == 0)
+		/*
+		 * Disk content (nextbsd-kernel#364): the string path,
+		 * prefixed, as CoreStorage and AppleRAID match on Darwin.
+		 */
+		return (push_platform_personality(fd, p, add.bundle_id,
+		    IOCAT_MEDIA_PREFIX));
 	else
 		add.provider_class = IOCAT_PROVIDER_UNKNOWN;
 
