@@ -21,6 +21,8 @@
 #ifndef DISKARBITRATION_DA_IOKIT_SUBSCRIBE_H
 #define DISKARBITRATION_DA_IOKIT_SUBSCRIBE_H
 
+#include <stddef.h>
+
 /*
  * Start the kernel-notify storage subscription via libIOKit. Returns 0 when the
  * kernel notify channel is present and both arrival + departure notifications
@@ -30,5 +32,16 @@
  * the daemon keeps its Mach service registered regardless.
  */
 int da_iokit_subscribe_start(void);
+
+/*
+ * Registry path ("IOService:/nexus0/.../vtblk0") of the live newbus node
+ * whose name+unit is `nameunit` ("vtblk0", "ahcich1", "umass0"). Looked up
+ * with IOServiceGetMatchingServices on the node name (IONameMatch), then
+ * matched on the path's last component. Returns 0 on success, -1 if there is
+ * no such node or no /dev/ioregistry. Used by DAGeom.c for DAMediaPath,
+ * DADevicePath and DABusPath (Apple reads the same from the IOMedia's
+ * registry ancestors).
+ */
+int da_iokit_copy_node_path(const char *nameunit, char *path, size_t len);
 
 #endif /* DISKARBITRATION_DA_IOKIT_SUBSCRIBE_H */

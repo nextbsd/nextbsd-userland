@@ -1,31 +1,24 @@
 /*
- * diskarbitrationd — freebsd-launchd-mach DiskArbitration daemon.
+ * diskarbitrationd — NextBSD DiskArbitration daemon.
  *
- * iter 1: daemon skeleton. main + signal handling +
- * bootstrap_check_in for the com.apple.DiskArbitration Mach service
- * + a sleep loop that holds the service port until SIGTERM. No
- * storage subscription yet, no libgeom enrichment, no DA framework
- * surface — iter 2+ wires those.
+ * The daemon claims the com.apple.DiskArbitration Mach service, learns of
+ * storage arrival/removal from the kernel registry (/dev/ioregistry,
+ * da_iokit_subscribe.c) and keeps a disk model built from GEOM (DADisk.c,
+ * DAGeom.c, #192): one DADisk per whole disk and per partition, each with
+ * Apple's kDADiskDescription* dictionary, logged as DA-DISK lines. Nothing is
+ * probed or mounted yet.
  *
- * Same shape as ipconfigd / configd / mDNSResponder iter 1:
- * stand the daemon up first, prove the Mach plumbing + launchd
- * MachServices broker + plist + build infra all work, THEN bring in
- * real subsystem code. iter-1 marker DA-BOOT-OK is emitted by the
- * separate `datest` client (bootstrap_look_up against the service).
- *
- * Architecture (per the refactored plan,
- * pkgdemon.github.io/freebsd-disk-arbitration-plan.html):
- *   iter 2  — subscribe to storage device arrival/removal over the
- *             kernel notify channel (ada0/da0/nvd0/cd0 ATTACH /
- *             DETACH), log them.
- *   iter 3  — libgeom enrichment: partition table, UUID, label,
- *             FS-type detection.
- *   iter 4  — DiskArbitration.framework + da.defs MIG IDL serving
- *             DARegisterDisk*Callback / DADiskClaim / DADiskMount /
- *             DADiskUnmount / DADiskEject.
- *   iter 5+ — mount-policy arbitration, per-user agent.
+ * Plan (E15, nextbsd/nextbsd#471):
+ *   C3 #193 — adopt mounts made elsewhere (EVFILT_FS + getmntinfo).
+ *   C4 #194 — filesystem bundles and probing.
+ *   C5 #195 — stage machine and mount executor (/Volumes).
+ *   D1 #197 — DiskArbitration client library over MIG.
+ *   D2 #198 — unmount/eject with approval.
  */
 #include "da_iokit_subscribe.h"
+#include "DAGeom.h"
+
+#include <dispatch/dispatch.h>
 
 #include <mach/mach.h>
 #include <servers/bootstrap.h>
@@ -72,12 +65,13 @@ main(int argc, char **argv)
 {
 	struct sigaction sa;
 	mach_port_t svc = MACH_PORT_NULL;
+	dispatch_queue_t da_queue;
 	kern_return_t kr;
 
 	(void)argc;
 	(void)argv;
 
-	xlog("starting (iter 1 — daemon skeleton, no libgeom enrichment yet)");
+	xlog("starting");
 
 	(void)memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = on_signal;
@@ -104,6 +98,16 @@ main(int argc, char **argv)
 	    "(receive right=0x%x)", (unsigned)svc);
 
 	/*
+	 * One serial queue for the disk model: the GEOM walks run there, and
+	 * later stages (mount adoption, the MIG server) join it.
+	 */
+	da_queue = dispatch_queue_create("org.nextbsd.diskarbitrationd", NULL);
+	if (da_queue != NULL)
+		DAGeomInit(da_queue);
+	else
+		xlog("DA-GEOM-FAIL: dispatch_queue_create failed");
+
+	/*
 	 * Subscribe to storage device arrival/removal over the kernel notify
 	 * channel (C1.3, #218): libIOKit's IOServiceAddMatchingNotification
 	 * registers DA's recv port with the in-kernel registry via IOREGIOCWATCH
@@ -120,9 +124,15 @@ main(int argc, char **argv)
 	(void)da_iokit_subscribe_start();
 
 	/*
-	 * iter-1 hold-alive loop. Spin on sleep(60) — SIGTERM/SIGHUP
-	 * short-circuit. iter 3+ replaces this with a Mach receive loop
-	 * demuxing the da.defs MIG IDL (DARegisterDisk*Callback etc.).
+	 * Walk once at startup even if the registry channel is missing; with
+	 * it, the initial-match drain above has already asked for this walk
+	 * and the two coalesce.
+	 */
+	DAGeomStorageChanged();
+
+	/*
+	 * Hold-alive loop; the work happens on the dispatch queues. SIGTERM /
+	 * SIGHUP short-circuit. #197 replaces this with the MIG server.
 	 */
 	while (!got_term)
 		(void)sleep(60);
