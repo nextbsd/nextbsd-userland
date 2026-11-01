@@ -143,9 +143,11 @@ tone(enum depth d, const char *t)
 /* ------------------------------------------------------------- the readings */
 
 /*
- * PRETTY_NAME from /etc/os-release: "NextBSD <IMG_DATE>". build.sh writes it
- * from the same variable as /bin/nextbsd-version, so the two agree by
- * construction and this needs no fork at every login.
+ * PRETTY_NAME from /etc/os-release: "NextBSD 27.0.0 (<build>)". It is
+ * generated from /System/Library/CoreServices/SystemVersion.plist (nextbsd's
+ * build.sh for an image, NextBSD-everything's post-install script on every
+ * upgrade; nextbsd/nextbsd#536), the file /bin/nextbsd-version and sw_vers(1)
+ * read, so they agree and this needs no fork at every login.
  */
 static void
 os_name(char *out, size_t len)
