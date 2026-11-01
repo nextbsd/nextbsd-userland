@@ -1155,6 +1155,14 @@ run_buildenv "make -C $SRC/banner DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
 test -x "$DESTDIR/usr/bin/nextbsd-fetch" || { echo "FAIL: /usr/bin/nextbsd-fetch not installed"; exit 1; }
 echo "==> nextbsd-fetch built"
 
+# ---- vm_stat (nextbsd/nextbsd-userland#180, E14 U3) ------------------------
+# Darwin-format VM statistics from FreeBSD's vm.stats.* sysctls (no Mach VM).
+# pagesize(1) itself is FreeBSD's, which already reads hw.pagesize.
+comp "vm_stat(1)"
+run_buildenv "make -C $SRC/vm_stat DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/bin/vm_stat" || { echo "FAIL: /usr/bin/vm_stat not installed"; exit 1; }
+echo "==> vm_stat built"
+
 # ---- nss_directory_services (nextbsd/nextbsd-userland#249, E18 U3) ---------
 # The `directory_services` source for passwd and group: users and groups
 # straight from /Local (or /Network) Library/DirectoryServices/{Users,Groups}
