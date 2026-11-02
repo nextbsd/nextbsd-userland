@@ -89,6 +89,15 @@ void	sdp_client_apply(const struct sdp_device_info *info,
 	    struct bt_bond *b);
 
 /*
+ * The RFCOMM server channel (1..30) of `peer`'s first record of class
+ * `service` (Handsfree 0x111E for the hands-free gateway), and its
+ * SupportedFeatures (0x0311; 0 when absent). Returns 0, ENOENT when there is
+ * no such record, or an errno as sdp_client_query.
+ */
+int	sdp_client_rfcomm_service(const struct bt_addr *peer, uint16_t service,
+	    uint8_t *channel, uint16_t *features);
+
+/*
  * Query and apply, synchronously. The caller saves the bond. Returns 0 or an
  * errno as sdp_client_query.
  */

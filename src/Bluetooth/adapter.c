@@ -20,6 +20,7 @@
 #include "engine.h"
 #include "hci.h"
 #include "hci_compat.h"
+#include "hfp.h"
 #include "hid_host.h"
 #include "ngstack.h"
 #include "pairing.h"
@@ -507,9 +508,13 @@ adapter_bringup(struct bt_adapter *a)
 	/* The HID host's listeners (PSM 0x11/0x13), likewise. */
 	if (err == NULL && hid_host_start() < 0)
 		xlog("%s: HID listeners not started", node);
-	/* AVRCP's listener and records; the A2DP sink's, if on. */
+	/*
+	 * AVRCP's listener and records, the hands-free gateway's (RFCOMM
+	 * channel 13 and SCO), and the A2DP sink's, if on.
+	 */
 	if (err == NULL) {
 		avrcp_start();
+		hfp_start();
 		a2dp_sink_prefs_changed();
 	}
 	if (err == NULL) {

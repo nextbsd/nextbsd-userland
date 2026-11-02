@@ -45,8 +45,11 @@
 #include <stdbool.h>
 #include <string.h>
 
-/* The 80- and 40-tap prototype filters (A2DP 1.3, Tables 12.23, 12.24). */
-static const double proto8[80] = {
+/*
+ * The 80- and 40-tap prototype filters (A2DP 1.3, Tables 12.23, 12.24). The
+ * 8-band one is also the mSBC encoder's analysis window (msbc.c).
+ */
+const double sbc_proto8[80] = {
 	0.00000000e+00, 1.56575398e-04, 3.43256425e-04, 5.54620202e-04,
 	8.23919506e-04, 1.13992507e-03, 1.47640169e-03, 1.78371725e-03,
 	2.01182542e-03, 2.10371989e-03, 1.99454554e-03, 1.61656283e-03,
@@ -110,7 +113,7 @@ tables_init(void)
 	int i, k;
 
 	for (i = 0; i < 80; i++)
-		coeffs8[i] = (float)proto8[i];
+		coeffs8[i] = (float)sbc_proto8[i];
 	for (i = 0; i < 40; i++)
 		coeffs4[i] = (float)proto4[i];
 	for (i = 0; i < 8; i++) {
@@ -151,7 +154,10 @@ load_bits(struct sbc_dec *d, uint32_t numbits)
 	return (value);
 }
 
-/* The bit allocation (A2DP 1.3, §12.6.3): sbc_encode.c's calc_bitneed. */
+/*
+ * The bit allocation (A2DP 1.3, §12.6.3): sbc_encode.c's calc_bitneed. The
+ * mSBC encoder (msbc.c) runs it too, through sbc_bit_alloc().
+ */
 static void
 calc_bitneed(struct sbc_dec *d)
 {
@@ -398,26 +404,18 @@ synthesise(struct sbc_dec *d, int16_t *pcm)
 	}
 }
 
-size_t
-sbc_dec_frame(struct sbc_dec *d, const uint8_t *buf, size_t len,
-    int16_t *pcm, int *nframes)
+void
+sbc_bit_alloc(struct sbc_dec *d)
 {
-	uint8_t config;
-	int block, chan, sb, i, j;
+	calc_bitneed(d);
+}
 
-	*nframes = 0;
-	if (len < 4 || buf[0] != SBC_SYNCWORD)
-		return (0);
-	config = buf[1];
-	d->freq = (config >> 6) & 3;
-	d->rate = rates[d->freq];
-	d->blocks = 4 * (((config >> 4) & 3) + 1);
-	d->mode = (config >> 2) & 3;
-	d->alloc = (config >> 1) & 1;
-	d->bands = (config & 1) ? 8 : 4;
-	d->channels = (d->mode == SBC_MODE_MONO) ? 1 : 2;
-	d->bitpool = buf[2];
-	/* buf[3] is the CRC; virtual_oss does not check it either. */
+/* Everything after the 4-byte header, which set up `d`. */
+static size_t
+decode_body(struct sbc_dec *d, const uint8_t *buf, size_t len, int16_t *pcm,
+    int *nframes)
+{
+	int block, chan, sb, i, j;
 
 	d->p = buf;
 	d->truncated = false;
@@ -454,4 +452,45 @@ sbc_dec_frame(struct sbc_dec *d, const uint8_t *buf, size_t len,
 	synthesise(d, pcm);
 	*nframes = d->blocks * d->bands;
 	return ((d->off + 7) / 8);
+}
+
+size_t
+sbc_dec_frame(struct sbc_dec *d, const uint8_t *buf, size_t len,
+    int16_t *pcm, int *nframes)
+{
+	uint8_t config;
+
+	*nframes = 0;
+	if (len < 4 || buf[0] != SBC_SYNCWORD)
+		return (0);
+	config = buf[1];
+	d->freq = (config >> 6) & 3;
+	d->rate = rates[d->freq];
+	d->blocks = 4 * (((config >> 4) & 3) + 1);
+	d->mode = (config >> 2) & 3;
+	d->alloc = (config >> 1) & 1;
+	d->bands = (config & 1) ? 8 : 4;
+	d->channels = (d->mode == SBC_MODE_MONO) ? 1 : 2;
+	d->bitpool = buf[2];
+	/* buf[3] is the CRC; virtual_oss does not check it either. */
+	return (decode_body(d, buf, len, pcm, nframes));
+}
+
+size_t
+sbc_dec_msbc(struct sbc_dec *d, const uint8_t *buf, size_t len,
+    int16_t *pcm, int *nframes)
+{
+	*nframes = 0;
+	if (len < MSBC_FRAME_LEN || buf[0] != MSBC_SYNCWORD)
+		return (0);
+	/* HFP 1.8, 5.7.4: the configuration the header no longer carries. */
+	d->freq = 0;
+	d->rate = 16000;
+	d->blocks = MSBC_BLOCKS;
+	d->mode = SBC_MODE_MONO;
+	d->alloc = 0;
+	d->bands = 8;
+	d->channels = 1;
+	d->bitpool = MSBC_BITPOOL;
+	return (decode_body(d, buf, MSBC_FRAME_LEN, pcm, nframes));
 }

@@ -40,6 +40,11 @@ SRCS+=		connections.c hid_host.c
 # the child supervisor (child.c); AVRCP into IOHIDUserDevice media keys
 # (avrcp.c); the A2DP sink with its AVDTP acceptor and SBC decoder.
 SRCS+=		audio.c child.c avrcp.c a2dp_sink.c avdtp.c sbc_decode.c
+# The hands-free gateway (#525): the AG's RFCOMM and AT layer, SCO setup and
+# routing (hfp.c); the SCO link as /dev/btscoN for the mixer, served through
+# cuse (sco_bridge.c); the mSBC encoder (msbc.c; the decoder is
+# sbc_decode.c's).
+SRCS+=		hfp.c sco_bridge.c msbc.c
 # Firmware download for bootloader-mode controllers (#202): the device half
 # (firmware.c), the id tables (fw_ids.c) and the iwmbtfw / rtlbtfw ports.
 SRCS+=		firmware.c fw_ids.c fw_intel.c fw_rtl.c
@@ -135,6 +140,9 @@ BINDIR=		/usr/sbin
 #   usb       libusb: firmware download over the ugen node, as iwmbtfw and
 #             rtlbtfw do
 #   crypto    libcrypto: AES-128, AES-CMAC and P-256 ECDH for LE pairing
-#   m         cosf: the SBC decoder's synthesis tables (sbc_decode.c)
-LIBADD+=	pthread netgraph usb crypto m
+#   m         cosf: the SBC decoder's synthesis tables (sbc_decode.c), and
+#             the mSBC encoder's and the SCO bridge's filters
+#   cuse      libcuse: the SCO bridge's /dev/btscoN (sco_bridge.c), as
+#             virtual_oss serves its own devices
+LIBADD+=	pthread netgraph usb crypto m cuse
 .include <bsd.prog.mk>

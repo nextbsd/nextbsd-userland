@@ -61,6 +61,15 @@
 .Ar level
 .Nm
 .Cm audio
+.Ar device
+.Cm hfp
+.Op Cm cvsd
+.Nm
+.Cm audio
+.Ar device
+.Cm a2dp
+.Nm
+.Cm audio
 .Cm autoswitch | sink
 .Cm on | off
 .Nm
@@ -234,6 +243,22 @@ plays to a paired headset when it connects (on by default).
 Off stops a mixer that runs.
 .It Cm audio Ar device Cm volume Ar level
 Set a headset's volume, 0\(en127, with AVRCP absolute volume.
+.It Cm audio Ar device Cm hfp Op Cm cvsd
+Open a headset's microphone: switch it to the Hands-Free Profile, so its
+.Pa /dev/dsp.btN
+(and
+.Pa /dev/dsp ,
+when it owns it) records from the headset, for a call.
+Speech is wide band (mSBC) when the headset and the controller allow it,
+narrowband (CVSD) otherwise;
+.Cm cvsd
+holds it to narrowband.
+Playback on HFP is speech quality.
+Returns at once;
+.Cm audio
+shows when the microphone is on.
+.It Cm audio Ar device Cm a2dp
+Close the microphone and go back to stereo (A2DP).
 .It Cm audio Cm autoswitch Cm on | off
 Whether a headset that connects takes
 .Pa /dev/dsp

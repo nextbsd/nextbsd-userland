@@ -262,6 +262,7 @@ channels, as initiator for a device's first session after pairing and as a
 listener on every controller for a device that reconnects itself.
 .Pp
 Each connected HID device becomes one
+.Xr cuse 3 ,
 .Xr IOHIDUserDevice 3 ,
 built from the report descriptor cached at pairing time, with the device's
 vendor and product from its PnP ID, transport
@@ -356,10 +357,69 @@ one stream at a time.
 PSM 0x19 is shared with the source role: a device known to be a sink that
 opens AVDTP is refused, and the mixer connects to it instead.
 Off by default, since it advertises the machine to everything nearby.
+.Ss Hands-free (HFP)
+.Nm
+is a Hands-Free Profile 1.8 Audio Gateway, so a headset's microphone works in
+calls.
+It publishes the Hands-Free Audio Gateway record on RFCOMM channel 13 with
+wide band speech, adds the Audio and Telephony bits to the Class of Device,
+and listens on that channel for any paired device.
+A paired headset whose service records list Hands-Free and whose
+.Ql Audio
+switch is on gets the service level connection from
+.Nm
+three seconds after its link comes up, if it has not opened it itself.
+There are no calls: the indicators report service and no call, and the AT
+commands a headset sends to set up the connection, report its battery
+(Apple's
+.Ql AT+XAPL
+and
+.Ql AT+IPHONEACCEV )
+or set its gains are answered; anything else gets
+.Ql ERROR .
+.Pp
+The microphone is opened with
+.Ql bluetooth audio Ar device Cm hfp ,
+or when the headset asks for audio
+.Pq Ql AT+BCC , ATA
+or opens a SCO link itself.
+With codec negotiation on both sides
+.Nm
+offers mSBC (wide band, 16 kHz) when the headset lists it, else CVSD (8 kHz),
+and then opens an eSCO link, trying the HFP parameter sets in order
+(T2 and T1 for mSBC; S4, S3, S1 and then D1 for CVSD).
+An mSBC link the controller refuses falls back to CVSD for the session;
+.Ql hfp cvsd
+holds a headset to CVSD.
+The link is carried through
+.Pa /dev/btscoN ,
+a device
+.Nm
+serves through
+.Xr cuse 3
+in the headset mixer's own format, and the mixer records from and plays to
+it: the same
+.Pa /dev/dsp.btN
+(and
+.Pa /dev/dsp ,
+when the headset owns it) gains the headset's microphone.
+The microphone closes with
+.Ql bluetooth audio Ar device Cm a2dp ,
+when the headset hangs up
+.Pq Ql AT+CHUP
+or closes the link, and with the connection; the mixer then goes back to
+A2DP.
+Opening a device for recording does not by itself switch a headset to HFP:
+.Xr virtual_oss 8
+tells nobody when a program starts recording.
+A headset with no A2DP mixer (one without A2DP, or with its
+.Ql Audio
+switch off) gets no microphone.
 .Ss Profile switching
 A device's audio is carried by one profile at a time.
-The hands-free gateway moves it to HFP by pointing the mixer at
-.Pa /dev/null
+The hands-free gateway moves it to HFP by pointing the mixer's record and
+play sides at
+.Pa /dev/btscoN
 through its control device, which closes the A2DP stream while
 .Pa /dev/dsp.btN
 stays open for programs, and back again afterwards.
@@ -460,10 +520,17 @@ A device's audio while it has any:
 .Pq Ql Source : we play to it; Ql Sink : it plays to us ,
 .Ql Route
 .Pq Ql A2DP | HFP ,
-.Ql Active , Codec , Node , DefaultOutput , AVRCP
-and
+.Ql Active , Codec
+.Pq Ql SBC ; on HFP Ql CVSD | mSBC ,
+.Ql Node , DefaultOutput , AVRCP ,
 .Ql Volume
-(0\(en127).
+(0\(en127),
+.Ql HandsFree
+(the HFP connection is up),
+.Ql Microphone
+(its audio link is up) and
+.Ql Battery
+(percent, while the headset reports it).
 .It Ql State:/Bluetooth/Adapter/<node>/A2DPSink
 .Ql Enabled ,
 and
@@ -521,6 +588,8 @@ The in-kernel IORegistry, where controllers appear as
 job.
 .It Pa /var/log/bluetoothd.stderr
 Log.
+.It Pa /dev/btsco0 , /dev/btsco1 , ...
+A headset's hands-free audio link, for its mixer only (root, 0600).
 .It Pa /Local/Library/Preferences/SystemConfiguration/
 .Pa org.nextbsd.Bluetooth.plist
 (policy and paired devices) and
@@ -528,6 +597,7 @@ Log.
 (plaintext keys).
 .El
 .Sh SEE ALSO
+.Xr cuse 3 ,
 .Xr IOHIDUserDevice 3 ,
 .Xr notify 3 ,
 .Xr bluetooth 8 ,

@@ -253,6 +253,11 @@ bt_state_publish_audio(const char *key, const struct audio_status *s)
 	btcf_set_bool(d, CFSTR("AVRCP"), s->avrcp);
 	if (s->volume >= 0)
 		btcf_set_int(d, CFSTR("Volume"), s->volume);
+	/* The hands-free gateway (#525): connected, and the mic live. */
+	btcf_set_bool(d, CFSTR("HandsFree"), s->hfp);
+	btcf_set_bool(d, CFSTR("Microphone"), s->hfp_audio);
+	if (s->battery >= 0)
+		btcf_set_int(d, CFSTR("Battery"), s->battery);
 	return (set_value(key, d));
 }
 

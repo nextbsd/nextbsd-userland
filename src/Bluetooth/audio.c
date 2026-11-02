@@ -14,6 +14,7 @@
 #include "btstore.h"
 #include "child.h"
 #include "connections.h"
+#include "hfp.h"
 
 #include <sys/types.h>
 #include <sys/ioctl.h>
@@ -65,7 +66,14 @@ struct adev {
 	int			backoff_ms;
 	audio_route_t		route;
 
-	/* AVRCP and the sink, as their modules report them. */
+	/* HFP: where the mixer points while on HFP, and its codec. */
+	char			hfp_dev[32];	/* "/dev/btsco0"; "": /dev/null */
+	char			hfp_codec[8];	/* "CVSD", "mSBC" */
+
+	/* AVRCP, the sink and HFP, as their modules report them. */
+	bool			hfp;		/* service level connection */
+	bool			hfp_audio;	/* SCO up */
+	int			battery;	/* percent; -1 unknown */
 	bool			avrcp;
 	int			volume;
 	bool			sink;
@@ -80,6 +88,7 @@ struct snap {
 };
 
 static dispatch_queue_t	g_q;
+static dispatch_queue_t	g_ctlq;		/* retargets, in order */
 static pthread_once_t	g_q_once = PTHREAD_ONCE_INIT;
 static struct adev	g_devs[DEV_MAX];
 static bool		g_slots[AUDIO_MAX];
@@ -123,6 +132,8 @@ static void
 q_init(void)
 {
 	g_q = dispatch_queue_create("org.nextbsd.bluetoothd.audio", NULL);
+	g_ctlq = dispatch_queue_create("org.nextbsd.bluetoothd.audio.ctl",
+	    NULL);
 }
 
 dispatch_queue_t
@@ -141,14 +152,18 @@ fill_status(const struct adev *d, struct audio_status *st)
 	st->peer = d->peer;
 	st->volume = d->volume;
 	st->avrcp = d->avrcp;
+	st->hfp = d->hfp;
+	st->hfp_audio = d->hfp_audio;
+	st->battery = d->battery;
 	if (d->mixer != NULL) {
 		st->role = AUDIO_ROLE_SOURCE;
 		st->route = d->route;
-		st->active = (d->route == AUDIO_ROUTE_A2DP);
+		st->active = (d->route == AUDIO_ROUTE_A2DP) || d->hfp_audio;
 		st->default_out = d->default_out;
 		(void)snprintf(st->node, sizeof(st->node), "dsp.bt%d",
 		    d->slot);
-		(void)strlcpy(st->codec, "SBC", sizeof(st->codec));
+		(void)strlcpy(st->codec, d->route == AUDIO_ROUTE_HFP ?
+		    d->hfp_codec : "SBC", sizeof(st->codec));
 	} else if (d->sink) {
 		st->role = AUDIO_ROLE_SINK;
 		st->route = AUDIO_ROUTE_A2DP;
@@ -161,7 +176,7 @@ fill_status(const struct adev *d, struct audio_status *st)
 static bool
 has_audio(const struct adev *d)
 {
-	return (d->mixer != NULL || d->sink || d->avrcp);
+	return (d->mixer != NULL || d->sink || d->avrcp || d->hfp);
 }
 
 /* Record what `d` looks like now; the main loop publishes it. */
@@ -299,6 +314,7 @@ dev_add(const struct bt_addr *peer)
 	    sizeof(d->addr));
 	d->slot = -1;
 	d->volume = -1;
+	d->battery = -1;
 	d->gen = ++g_gen;
 	d->route = AUDIO_ROUTE_A2DP;
 	d->backoff_ms = AUDIO_RESTART_MIN_MS;
@@ -309,7 +325,7 @@ dev_add(const struct bt_addr *peer)
 static void
 dev_gc(struct adev *d)
 {
-	if (d->link || d->mixer != NULL || d->sink || d->avrcp ||
+	if (d->link || d->mixer != NULL || d->sink || d->avrcp || d->hfp ||
 	    d->start_pending)
 		return;
 	d->used = false;
@@ -547,6 +563,9 @@ mixer_start(struct adev *d)
 	snap_update(d);
 	if (!d->avrcp)
 		tick_after(d, AUDIO_AVRCP_WAIT_MS, avrcp_check);
+	/* A mixer restarted under a call starts on A2DP: HFP re-points it. */
+	if (d->hfp_audio)
+		hfp_mixer_started(&d->peer);
 }
 
 static void
@@ -673,8 +692,10 @@ link_ev(void *arg)
 		d->link = true;
 		(void)strlcpy(d->node, e->node, sizeof(d->node));
 		consider(d);
+		hfp_link_up(&e->peer);
 		break;
 	case EV_DOWN:
+		hfp_link_down(&e->peer);
 		d = dev_find(&e->peer);
 		if (d == NULL)
 			break;
@@ -686,6 +707,7 @@ link_ev(void *arg)
 		consider(d);
 		break;
 	case EV_BOND:
+		hfp_bond_updated(&e->peer);
 		d = dev_find(&e->peer);
 		if (d != NULL)
 			consider(d);
@@ -696,6 +718,7 @@ link_ev(void *arg)
 			if (!d->used || !d->link ||
 			    strcmp(d->node, e->node) != 0)
 				continue;
+			hfp_link_down(&d->peer);
 			d->link = false;
 			d->gen = ++g_gen;
 			d->start_pending = false;
@@ -792,6 +815,47 @@ audio_sink_changed(const struct bt_addr *peer, bool up, const char *codec)
 		dev_gc(d);
 }
 
+struct hfp_ev {
+	struct bt_addr	peer;
+	bool		slc;
+	bool		sco;
+	int		battery;
+};
+
+static void
+hfp_ev(void *arg)
+{
+	struct hfp_ev *e = arg;
+	struct adev *d = e->slc ? dev_add(&e->peer) : dev_find(&e->peer);
+
+	if (d != NULL) {
+		if (d->hfp != e->slc)
+			report(d, BT_PROFILE_HFP, e->slc);
+		d->hfp = e->slc;
+		d->hfp_audio = e->slc && e->sco;
+		d->battery = e->slc ? e->battery : -1;
+		snap_update(d);
+		if (!e->slc)
+			dev_gc(d);
+	}
+	free(e);
+}
+
+void
+audio_hfp_changed(const struct bt_addr *peer, bool slc, bool sco,
+    int battery)
+{
+	struct hfp_ev *e = calloc(1, sizeof(*e));
+
+	if (e == NULL)
+		return;
+	e->peer = *peer;
+	e->slc = slc;
+	e->sco = sco;
+	e->battery = battery;
+	dispatch_async_f(audio_queue(), e, hfp_ev);
+}
+
 /* ---- the RPCs ---------------------------------------------------------- */
 
 struct call {
@@ -879,7 +943,8 @@ struct retarget {
 
 /*
  * Send one command line to a mixer's control device. Off the audio queue:
- * the ioctl is served by the mixer, which may be busy in a page.
+ * the ioctl is served by the mixer, which may be busy in a page. On a queue
+ * of its own, so two switches in a row reach the mixer in order.
  */
 static void
 retarget_io(void *arg)
@@ -901,10 +966,19 @@ retarget_io(void *arg)
 	free(r);
 }
 
+struct route_call {
+	struct bt_addr	peer;
+	audio_route_t	route;
+	char		dev[32];
+	char		codec[8];
+	bool		force;		/* resend: the mixer restarted */
+	bt_status_t	st;
+};
+
 static void
 route_q(void *arg)
 {
-	struct call *c = arg;
+	struct route_call *c = arg;
 	struct adev *d = dev_find(&c->peer);
 	struct retarget *r;
 
@@ -913,7 +987,8 @@ route_q(void *arg)
 		return;
 	}
 	c->st = bt_status_success_e;
-	if (d->route == (audio_route_t)c->arg)
+	if (!c->force && d->route == c->route &&
+	    (c->route != AUDIO_ROUTE_HFP || strcmp(d->hfp_dev, c->dev) == 0))
 		return;
 	r = calloc(1, sizeof(*r));
 	if (r == NULL) {
@@ -922,30 +997,51 @@ route_q(void *arg)
 	}
 	(void)snprintf(r->ctl, sizeof(r->ctl), "/dev/dsp.bt%d.ctl", d->slot);
 	(void)strlcpy(r->addr, d->addr, sizeof(r->addr));
-	if (c->arg == AUDIO_ROUTE_A2DP)
+	if (c->route == AUDIO_ROUTE_A2DP)
 		(void)snprintf(r->opts, sizeof(r->opts),
-		    "-P /dev/bluetooth/%s", d->addr);
+		    "-R /dev/null -P /dev/bluetooth/%s", d->addr);
+	else if (c->dev[0] != '\0')
+		/* The hands-free bridge: the mic in, the earpiece out. */
+		(void)snprintf(r->opts, sizeof(r->opts), "-R %s -P %s",
+		    c->dev, c->dev);
 	else
 		(void)strlcpy(r->opts, "-P /dev/null", sizeof(r->opts));
-	d->route = (audio_route_t)c->arg;
-	xlog("%s: audio now over %s", d->addr,
-	    d->route == AUDIO_ROUTE_A2DP ? "A2DP" : "HFP");
-	dispatch_async_f(dispatch_get_global_queue(
-	    DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), r, retarget_io);
+	d->route = c->route;
+	(void)strlcpy(d->hfp_dev, c->route == AUDIO_ROUTE_HFP ? c->dev : "",
+	    sizeof(d->hfp_dev));
+	(void)strlcpy(d->hfp_codec, c->codec, sizeof(d->hfp_codec));
+	xlog("%s: audio now over %s%s%s", d->addr,
+	    d->route == AUDIO_ROUTE_A2DP ? "A2DP" : "HFP",
+	    d->route == AUDIO_ROUTE_HFP && c->dev[0] != '\0' ? " via " : "",
+	    d->route == AUDIO_ROUTE_HFP ? c->dev : "");
+	dispatch_async_f(g_ctlq, r, retarget_io);
 	snap_update(d);
+}
+
+bt_status_t
+audio_route_to(const struct bt_addr *peer, audio_route_t route,
+    const char *dev, const char *codec, bool force)
+{
+	struct route_call c;
+
+	if (route != AUDIO_ROUTE_A2DP && route != AUDIO_ROUTE_HFP)
+		return (bt_status_invalid_parameter_e);
+	(void)memset(&c, 0, sizeof(c));
+	c.peer = *peer;
+	c.route = route;
+	c.force = force;
+	if (dev != NULL)
+		(void)strlcpy(c.dev, dev, sizeof(c.dev));
+	if (codec != NULL)
+		(void)strlcpy(c.codec, codec, sizeof(c.codec));
+	dispatch_sync_f(audio_queue(), &c, route_q);
+	return (c.st);
 }
 
 bt_status_t
 audio_route(const struct bt_addr *peer, audio_route_t route)
 {
-	struct call c;
-
-	if (route != AUDIO_ROUTE_A2DP && route != AUDIO_ROUTE_HFP)
-		return (bt_status_invalid_parameter_e);
-	c.peer = *peer;
-	c.arg = (int)route;
-	dispatch_sync_f(audio_queue(), &c, route_q);
-	return (c.st);
+	return (audio_route_to(peer, route, NULL, NULL, false));
 }
 
 /* ---- shutdown ---------------------------------------------------------- */
@@ -969,5 +1065,7 @@ shutdown_q(void *arg)
 void
 audio_shutdown(void)
 {
+	/* First, and not from the audio queue: HFP syncs onto it. */
+	hfp_shutdown();
 	dispatch_sync_f(audio_queue(), NULL, shutdown_q);
 }

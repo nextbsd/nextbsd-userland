@@ -53,6 +53,7 @@
 #include "adapter.h"
 #include "a2dp_sink.h"
 #include "audio.h"
+#include "hfp.h"
 #include "avrcp.h"
 #include "btstate.h"
 #include "btstore.h"
@@ -418,9 +419,13 @@ main(int argc, char **argv)
 	(void)sdp_server_start();
 	(void)hid_host_start();
 
-	/* Audio: mixers a crashed daemon left, then AVRCP and the sink. */
+	/*
+	 * Audio: mixers a crashed daemon left, then AVRCP, the hands-free
+	 * gateway and the sink.
+	 */
 	audio_init();
 	avrcp_start();
+	hfp_start();
 	a2dp_sink_prefs_changed();
 
 	/* State:/Bluetooth/Device/<addr> for every paired device. */
