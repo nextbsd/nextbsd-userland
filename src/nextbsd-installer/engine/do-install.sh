@@ -178,6 +178,29 @@ run() {
 	if [ "${NEXTBSD_DRYRUN:-0}" = 1 ]; then echo "DRYRUN: $*"; else "$@"; fi
 }
 
+# --- 0. Unmount the target disk ----------------------------------------------
+# The live system may already have the disk mounted: diskarbitrationd mounts
+# every volume it finds when the medium boots, so a disk holding an old
+# install arrives mounted under /Volumes, and gpart cannot replace a table
+# whose partitions are open. Unmount every partition of it first, as the
+# Gershwin installer this engine replaced does (umount_disk_partitions).
+umount_disk_partitions() {
+	mount | while read -r line; do
+		dev=$(echo "$line" | cut -d' ' -f1)
+		case "$dev" in
+		"/dev/$DISK"|"/dev/${DISK}p"*|"/dev/${DISK}s"*)
+			mp=$(echo "$line" | sed 's/^[^ ]* on \(.*\) (.*)/\1/')
+			if [ -n "$mp" ] && [ "$mp" != "/" ]; then
+				status "Unmounting $mp"
+				run umount -f "$mp" 2>/dev/null || true
+			fi
+			;;
+		esac
+	done
+}
+
+umount_disk_partitions
+
 # --- 1. Partition (skipped on upgrade — keep the existing layout) ------------
 if [ "$UPGRADE" = 0 ]; then
 	if [ "$LAYOUT" = mbr-fat ]; then
