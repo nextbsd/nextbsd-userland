@@ -26,7 +26,10 @@
  *     way wland follows radios: no polling, no devd;
  *   - the pairing store and policy live in SCPreferences (btstore.c,
  *     keystore.c), and the daemon's state in the SCDynamicStore (btstate.c);
- *   - each controller gets the engines of engine.h, Classic and LE.
+ *   - each controller is brought up (adapter.c: kexts, netgraph graph, HCI
+ *     init, power) and gets the engines of engine.h, Classic and LE;
+ *   - a controller that boots into a loader gets its firmware first
+ *     (firmware.c, on IOUSBHostDevice arrivals).
  *
  * With no controller it blocks with no timer and loads nothing: the upper
  * kernel stack is loaded when the first controller arrives (#207), so a
@@ -42,9 +45,12 @@
  *              ──MIG org.nextbsd.bluetooth─▶ bluetooth(8) ──▶ Gershwin
  */
 #include "bluetoothd.h"
+#include "adapter.h"
 #include "btstate.h"
 #include "btstore.h"
 #include "engine.h"
+#include "firmware.h"
+#include "hci.h"
 #include "iokit_watch.h"
 #include "mach_service.h"
 #include "sdp_server.h"
@@ -122,6 +128,16 @@ bluetoothd_unlock(void)
 	(void)pthread_mutex_unlock(&g_lock);
 }
 
+void
+bluetoothd_wake(void)
+{
+	int saved = errno;
+
+	if (g_wake[1] >= 0)
+		(void)write(g_wake[1], "", 1);
+	errno = saved;
+}
+
 int
 bluetoothd_adapter_count_locked(void)
 {
@@ -164,6 +180,26 @@ bluetoothd_adapter_by_node_locked(const char *node)
 			return (&g_adapters[i]);
 	}
 	return (NULL);
+}
+
+struct bt_adapter *
+bluetoothd_adapter_pick_locked(const char *node)
+{
+	if (node != NULL && node[0] != '\0')
+		return (bluetoothd_adapter_by_node_locked(node));
+	return (bluetoothd_adapter_at_locked(0));
+}
+
+void
+bluetoothd_prefs_update_locked(const struct bt_prefs *p)
+{
+	g_prefs = *p;
+}
+
+bool
+bluetoothd_discoverable_pref_locked(void)
+{
+	return (g_prefs.discoverable);
 }
 
 bt_daemon_state_t
@@ -219,9 +255,8 @@ publish_state(void)
 
 /*
  * A controller appeared: an IOBluetoothHostController entry matched. Record
- * it, with the power state it should come up in. Bringing it up (loading the
- * upper kernel stack, building the netgraph graph, HCI init, attaching the
- * engines) is the adapter lifecycle's job (#207); it starts from here.
+ * it, with the power state it should come up in, then bring it up (adapter.c:
+ * the upper kexts, the netgraph graph, HCI init, the engines).
  */
 static void
 adapter_arrived(const struct bt_iokit_event *ev)
@@ -249,32 +284,37 @@ adapter_arrived(const struct bt_iokit_event *ev)
 	(void)memset(a, 0, sizeof(*a));
 	a->active = true;
 	a->entry_id = ev->entry_id;
+	a->hci_fd = -1;
 	(void)strlcpy(a->node, ev->node, sizeof(a->node));
 	(void)strlcpy(a->transport,
 	    ev->transport[0] != '\0' ? ev->transport : "USB",
 	    sizeof(a->transport));
+	(void)strlcpy(a->ugen, ev->ugen, sizeof(a->ugen));
 	a->vendor = ev->vendor;
 	a->product = ev->product;
-	a->state = bt_adapter_arrived_e;
+	a->state = bt_adapter_initializing_e;
 	a->want_power = (g_prefs.power_state != 0);
+	a->dirty = true;
 
-	xlog("controller %s arrived (%s %04x:%04x, registry id %llu); "
+	xlog("controller %s arrived (%s %04x:%04x, %s, registry id %llu); "
 	    "power %s per ControllerPowerState", a->node, a->transport,
-	    a->vendor, a->product, (unsigned long long)a->entry_id,
-	    a->want_power ? "on" : "off");
+	    a->vendor, a->product, a->ugen[0] != '\0' ? a->ugen : "-",
+	    (unsigned long long)a->entry_id, a->want_power ? "on" : "off");
 	bluetoothd_unlock();
+
+	/* Blocks on kextd and netgraph: outside the lock. */
+	adapter_bringup(a);
 }
 
 /*
  * A controller went away: its entry was retired (unplugged, or its kext
- * unloaded). Detach its engines and free the slot. The netgraph nodes went
- * with the device.
+ * unloaded). Detach its engines, shut its graph down, take its key out of the
+ * store and free the slot.
  */
 static void
 adapter_departed(const struct bt_iokit_event *ev)
 {
 	struct bt_adapter *a;
-	int i;
 
 	bluetoothd_lock();
 	a = adapter_by_entry_locked(ev->entry_id);
@@ -283,12 +323,9 @@ adapter_departed(const struct bt_iokit_event *ev)
 		return;
 	}
 	xlog("controller %s departed", a->node);
-	for (i = 0; i < BT_ENGINE_MAX; i++) {
-		if (a->engines[i] != NULL && bt_engines[i]->detach != NULL)
-			bt_engines[i]->detach(a->engines[i]);
-		a->engines[i] = NULL;
-	}
+	adapter_teardown_locked(a);
 	(void)memset(a, 0, sizeof(*a));
+	a->hci_fd = -1;
 	bluetoothd_unlock();
 }
 
@@ -376,23 +413,37 @@ main(int argc, char **argv)
 	publish_state();
 
 	/*
-	 * Event loop. Poll the self-pipe and every attached engine's event
-	 * fd. With nothing attached the loop blocks with no timeout until a
-	 * controller arrives or a signal does.
+	 * Event loop. Poll the self-pipe, every controller's raw HCI socket and
+	 * every engine's own fd. The timeout is the earliest controller or
+	 * engine timer; with none (no controller, nothing pending) the loop
+	 * blocks until a controller arrives, an RPC wakes it or a signal does.
 	 */
 	while (!bluetoothd_got_term) {
-		struct pollfd pfd[BT_MAX_ADAPTERS * BT_ENGINE_MAX + 1];
-		struct bt_engine *pe[BT_MAX_ADAPTERS * BT_ENGINE_MAX];
-		int peidx[BT_MAX_ADAPTERS * BT_ENGINE_MAX];
-		int nfd = 0, npfd, rc;
+		struct pollfd pfd[BT_MAX_ADAPTERS * (BT_ENGINE_MAX + 1) + 1];
+		struct bt_adapter *pa[BT_MAX_ADAPTERS * (BT_ENGINE_MAX + 1)];
+		struct bt_engine *pe[BT_MAX_ADAPTERS * (BT_ENGINE_MAX + 1)];
+		int peidx[BT_MAX_ADAPTERS * (BT_ENGINE_MAX + 1)];
+		uint64_t next, now;
+		int nfd = 0, npfd, rc, timeout;
 		bool changed = false;
 
 		bluetoothd_lock();
 		for (i = 0; i < BT_MAX_ADAPTERS; i++) {
-			if (!g_adapters[i].active)
+			struct bt_adapter *a = &g_adapters[i];
+
+			if (!a->active)
 				continue;
+			if (a->hci_fd >= 0) {
+				pfd[nfd].fd = a->hci_fd;
+				pfd[nfd].events = POLLIN;
+				pfd[nfd].revents = 0;
+				pa[nfd] = a;
+				pe[nfd] = NULL;
+				peidx[nfd] = -1;
+				nfd++;
+			}
 			for (j = 0; j < BT_ENGINE_MAX; j++) {
-				struct bt_engine *e = g_adapters[i].engines[j];
+				struct bt_engine *e = a->engines[j];
 				int fd;
 
 				if (e == NULL || bt_engines[j]->event_fd == NULL)
@@ -403,11 +454,13 @@ main(int argc, char **argv)
 				pfd[nfd].fd = fd;
 				pfd[nfd].events = POLLIN;
 				pfd[nfd].revents = 0;
+				pa[nfd] = a;
 				pe[nfd] = e;
 				peidx[nfd] = j;
 				nfd++;
 			}
 		}
+		next = adapter_next_timer_locked();
 		bluetoothd_unlock();
 
 		npfd = nfd;
@@ -418,46 +471,77 @@ main(int argc, char **argv)
 			npfd++;
 		}
 
-		rc = poll(npfd > 0 ? pfd : NULL, (nfds_t)npfd,
-		    g_wake[0] >= 0 ? -1 : 1000);
+		timeout = (g_wake[0] >= 0) ? -1 : 1000;
+		if (next != 0) {
+			now = bt_now_ms();
+			timeout = next <= now ? 0 :
+			    (next - now > 60000 ? 60000 : (int)(next - now));
+		}
+
+		rc = poll(npfd > 0 ? pfd : NULL, (nfds_t)npfd, timeout);
 		if (rc < 0 && errno != EINTR) {
 			xlog("poll: %s", strerror(errno));
 			break;
 		}
-		if (rc > 0) {
-			bluetoothd_lock();
-			for (i = 0; i < nfd; i++) {
-				if ((pfd[i].revents & (POLLIN | POLLHUP)) == 0)
-					continue;
-				if (bt_engines[peidx[i]]->pump != NULL &&
-				    bt_engines[peidx[i]]->pump(pe[i]))
-					changed = true;
-			}
-			bluetoothd_unlock();
-			if (npfd > nfd && (pfd[nfd].revents & POLLIN) != 0)
-				drain_wake_pipe();
-		}
 		if (bluetoothd_got_term)
 			break;
 
-		/* Controllers that came or went, in the order they did. */
+		bluetoothd_lock();
+		if (rc > 0) {
+			for (i = 0; i < nfd; i++) {
+				if ((pfd[i].revents &
+				    (POLLIN | POLLHUP | POLLERR)) == 0)
+					continue;
+				/* The slot may have been reused meanwhile. */
+				if (!pa[i]->active)
+					continue;
+				if (pe[i] == NULL) {
+					if (pa[i]->hci_fd == pfd[i].fd)
+						adapter_input_locked(pa[i]);
+				} else if (bt_engines[peidx[i]]->pump != NULL &&
+				    pa[i]->engines[peidx[i]] == pe[i] &&
+				    bt_engines[peidx[i]]->pump(pe[i]))
+					changed = true;
+			}
+		}
+		adapter_timers_locked(bt_now_ms());
+		bluetoothd_unlock();
+		if (rc > 0 && npfd > nfd && (pfd[nfd].revents & POLLIN) != 0)
+			drain_wake_pipe();
+
+		/* Controllers and USB devices that came or went, in order. */
 		while (iokit_watch_next(&ev)) {
-			if (ev.kind == BT_IOKIT_ARRIVED)
+			switch (ev.kind) {
+			case BT_IOKIT_ARRIVED:
 				adapter_arrived(&ev);
-			else
+				changed = true;
+				break;
+			case BT_IOKIT_DEPARTED:
 				adapter_departed(&ev);
-			changed = true;
+				changed = true;
+				break;
+			case BT_IOKIT_USB_ARRIVED:
+				firmware_usb_arrived(&ev);
+				break;
+			}
 		}
 
+		adapter_publish();
+		firmware_publish();
 		if (changed)
 			publish_state();
 	}
 
 	xlog("bluetoothd exiting on signal %d", (int)bluetoothd_got_term);
 
-	/* Detach every engine, and take the daemon's key out of the store. */
+	/*
+	 * Detach every engine and take the keys out of the store. The netgraph
+	 * graphs stay: a restarted bluetoothd adopts them.
+	 */
 	bluetoothd_lock();
 	for (i = 0; i < BT_MAX_ADAPTERS; i++) {
+		char key[128];
+
 		if (!g_adapters[i].active)
 			continue;
 		for (j = 0; j < BT_ENGINE_MAX; j++) {
@@ -466,6 +550,12 @@ main(int argc, char **argv)
 				bt_engines[j]->detach(g_adapters[i].engines[j]);
 			g_adapters[i].engines[j] = NULL;
 		}
+		if (g_adapters[i].hci_fd >= 0)
+			(void)close(g_adapters[i].hci_fd);
+		g_adapters[i].hci_fd = -1;
+		(void)snprintf(key, sizeof(key), "%s%s",
+		    BT_STATE_ADAPTER_PREFIX, g_adapters[i].node);
+		(void)bt_state_remove(key);
 		g_adapters[i].active = false;
 	}
 	bluetoothd_unlock();

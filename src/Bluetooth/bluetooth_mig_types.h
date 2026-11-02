@@ -55,6 +55,12 @@ typedef char	BTTransportName[16];
 #define	BT_SDP_LINE_MAX	256
 typedef char	BTSDPLine[BT_SDP_LINE_MAX];
 
+/* A legacy PIN: 1..16 characters, plus a NUL. */
+typedef char	BTPinString[17];
+
+/* A USB device node, as the IORegistry names it: "ugen0.3". */
+typedef char	BTUSBDeviceName[32];
+
 /* Daemon state, as `bluetooth status` and State:/Bluetooth report it. */
 typedef enum {
 	bt_daemon_idle_e		= 0,	/* running, no controller */
@@ -100,6 +106,34 @@ typedef enum {
 	bt_pair_passkey_display_e	= 4,	/* show 6 digits; type them on the peer */
 	bt_pair_pin_e			= 5	/* legacy PIN, 1..16 characters */
 } bt_pair_method_t;
+
+/*
+ * Where a pairing has got to, for bt_pair_status. A finished pairing stays
+ * reported (succeeded or failed, with its status) for a while, so a client
+ * that polls slowly still sees how it ended.
+ */
+typedef enum {
+	bt_pair_state_none_e		= 0,	/* no pairing with this device */
+	bt_pair_state_pending_e		= 1,	/* connecting, authenticating */
+	bt_pair_state_waiting_e		= 2,	/* a prompt waits for the user */
+	bt_pair_state_succeeded_e	= 3,
+	bt_pair_state_failed_e		= 4
+} bt_pair_state_t;
+
+/* Firmware download for a controller in its bootloader (Intel, Realtek). */
+typedef enum {
+	bt_firmware_none_e		= 0,	/* not looked at */
+	bt_firmware_checking_e		= 1,	/* reading the boot state */
+	bt_firmware_downloading_e	= 2,
+	bt_firmware_done_e		= 3,	/* downloaded; re-enumerating */
+	bt_firmware_operational_e	= 4,	/* needed none */
+	bt_firmware_failed_e		= 5
+} bt_firmware_state_t;
+
+/* Controller capability bits, as bt_adapter_flags reports them. */
+#define	BT_ADAPTER_FEAT_SSP	0x1	/* Secure Simple Pairing */
+#define	BT_ADAPTER_FEAT_LE	0x2	/* Low Energy */
+#define	BT_ADAPTER_FEAT_EIR	0x4	/* Extended Inquiry Response */
 
 /*
  * Status codes. Shape follows wlan_status_t / ipconfig_status_t so the CLI's

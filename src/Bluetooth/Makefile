@@ -17,10 +17,19 @@ PROG=		bluetoothd
 # bsd.prog.mk built.
 MAN=		bluetoothd.8 bluetooth.8
 SRCS=		bluetoothd.c mach_service.c bluetoothd_mig.c
-# iokit_watch.c: IOBluetoothHostController first-match / terminated.
+# iokit_watch.c: IOBluetoothHostController first-match / terminated, and
+# IOUSBHostDevice first-match for controllers that need firmware.
 SRCS+=		iokit_watch.c
-# The engine contract (engine.h) and the two engines behind it.
-SRCS+=		engine.c classic_engine.c le_engine.c
+# The controller lifecycle (#207): kexts and netgraph graph (ngstack.c), the
+# raw HCI socket (hci.c), bring-up and power (adapter.c), the discovery cache
+# (discovery.c) and the pairing prompts (pairing.c).
+SRCS+=		adapter.c ngstack.c hci.c discovery.c pairing.c
+# The engine contract (engine.h) and the two engines behind it; the Classic
+# engine's security manager (#209) is security.c.
+SRCS+=		engine.c classic_engine.c security.c le_engine.c
+# Firmware download for bootloader-mode controllers (#202): the device half
+# (firmware.c), the id tables (fw_ids.c) and the iwmbtfw / rtlbtfw ports.
+SRCS+=		firmware.c fw_ids.c fw_intel.c fw_rtl.c
 # CoreFoundation modules: the pairing store and policy (btstore.c), the
 # secrets (keystore.c), the SCDynamicStore publication (btstate.c), and their
 # shared helpers (btcf.c).
@@ -59,9 +68,16 @@ CFLAGS+=	-Wmissing-prototypes -Wpointer-arith
 # freebsd-shims IOKit stub, which lacks IONotificationPortRef. Same as wland.
 CFLAGS+=	-I${.CURDIR}/../libIOKit
 
+# <IOKit/kext/KextManager.h> (installed into the sysroot by the libIOKit
+# step) needs <libkern/OSReturn.h>; the compat copy is searched last, so the
+# sysroot's own wins. Same as libIOKit's IOHIDUserDevice.c.
+CFLAGS+=	-idirafter ${.CURDIR}/../kext_tools/compat
+
 # <servers/bootstrap.h> from liblaunch, with its Apple shim headers.
 CFLAGS+=	-I${.CURDIR}/../launchd/liblaunch
 CFLAGS+=	-I${.CURDIR}/../launchd/freebsd-shims
+# <notify.h> includes os/base.h from the libnotify shims, as ipconfigd's.
+CFLAGS+=	-I${.CURDIR}/../Libnotify/freebsd-shims
 
 SYSROOT?=
 .if !empty(SYSROOT)
@@ -81,16 +97,24 @@ LDFLAGS+=	-Wl,--allow-shlib-undefined
 #   -lCoreFoundation  the dictionaries both of the above take
 #   -lsystem_dispatch, -l:libsystem_blocks.so  the serial queue the IOKit
 #                     callbacks run on, and what the SC header pulls
+#   -lnotify          notify_post(org.nextbsd.bluetooth.*) after a change
+#                     to State:/Bluetooth
+#   (libIOKit also carries KextManagerLoadKextWithIdentifier: the upper
+#   Bluetooth kexts and NgUbt are loaded through kextd.)
 #
 # NOT -ldispatch and NOT -lBlocksRuntime: those names belong to Gershwin's
 # separate copies, and linking them caused the rtld collision of #378.
 LDADD+=		-llaunch -lsystem_kernel
 LDADD+=		-lSystemConfiguration -lIOKit -lCoreFoundation
 LDADD+=		-lsystem_dispatch -l:libsystem_blocks.so
+LDADD+=		-lnotify
 
 # Daemons go in /usr/sbin; /System/Library holds data only.
 BINDIR=		/usr/sbin
 
 # FreeBSD base libs: releng/15.1 src.libnames.mk requires LIBADD.
-LIBADD+=	pthread
+#   netgraph  libnetgraph: the control socket the graph is built through
+#   usb       libusb: firmware download over the ugen node, as iwmbtfw and
+#             rtlbtfw do
+LIBADD+=	pthread netgraph usb
 .include <bsd.prog.mk>

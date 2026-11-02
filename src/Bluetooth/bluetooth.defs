@@ -59,11 +59,15 @@ type bt_name		= array[249] of char ctype: BTDeviceName;
 type bt_profiles	= array[128] of char ctype: BTProfileList;
 type bt_transport	= array[16] of char ctype: BTTransportName;
 type bt_sdp_line		= array[256] of char ctype: BTSDPLine;
+type bt_pin		= array[17] of char ctype: BTPinString;
+type bt_usb_device	= array[32] of char ctype: BTUSBDeviceName;
 type bt_daemon_state	= MACH_MSG_TYPE_INTEGER_32 ctype: bt_daemon_state_t;
 type bt_adapter_state	= MACH_MSG_TYPE_INTEGER_32 ctype: bt_adapter_state_t;
 type bt_device_state	= MACH_MSG_TYPE_INTEGER_32 ctype: bt_device_state_t;
 type bt_pair_method	= MACH_MSG_TYPE_INTEGER_32 ctype: bt_pair_method_t;
 type bt_status_code	= MACH_MSG_TYPE_INTEGER_32 ctype: bt_status_t;
+type bt_pair_state	= MACH_MSG_TYPE_INTEGER_32 ctype: bt_pair_state_t;
+type bt_firmware_state	= MACH_MSG_TYPE_INTEGER_32 ctype: bt_firmware_state_t;
 
 /* ---- 31000-31009: daemon and controllers -------------------------------- */
 
@@ -106,10 +110,61 @@ routine bt_adapter_info(
 	out status	: bt_status_code
 );
 
-skip;	/* 31003 */
-skip;	/* 31004 */
-skip;	/* 31005 */
-skip;	/* 31006 */
+/*
+ * 31003 bt_adapter_power — power a controller on or off (an empty node means
+ * the first). Off disconnects every link and stops page and inquiry scan.
+ * The choice is persisted as ControllerPowerState and applies to every
+ * controller that arrives later.
+ */
+routine bt_adapter_power(
+	server		: mach_port_t;
+	node		: bt_node;
+	on		: int;
+	out status	: bt_status_code
+);
+
+/*
+ * 31004 bt_adapter_discoverable — inquiry scan on or off. With seconds > 0
+ * it turns itself off again after that long and is not persisted; with 0 it
+ * is persisted as DiscoverableState.
+ */
+routine bt_adapter_discoverable(
+	server		: mach_port_t;
+	node		: bt_node;
+	on		: int;
+	seconds		: int;
+	out status	: bt_status_code
+);
+
+/*
+ * 31005 bt_adapter_flags — one controller's live policy, by index, and what
+ * it can do (BT_ADAPTER_FEAT_*).
+ */
+routine bt_adapter_flags(
+	server		: mach_port_t;
+	index		: int;
+	out powered	: int;
+	out discoverable : int;
+	out connectable	: int;
+	out scanning	: int;
+	out features	: int;
+	out status	: bt_status_code
+);
+
+/*
+ * 31006 bt_firmware_info — one USB device the firmware loader looked at, by
+ * index (#202). index_out_of_range past the end.
+ */
+routine bt_firmware_info(
+	server		: mach_port_t;
+	index		: int;
+	out device	: bt_usb_device;
+	out vendor	: int;
+	out product	: int;
+	out state	: bt_firmware_state;
+	out status	: bt_status_code
+);
+
 skip;	/* 31007 */
 skip;	/* 31008 */
 skip;	/* 31009 */
@@ -140,7 +195,16 @@ routine bt_paired_entry(
 	out status	: bt_status_code
 );
 
-skip;	/* 31012 */
+/*
+ * 31012 bt_unpair — forget a paired device: its keys, the controller's copy,
+ * its PairedDevices entry, and its link if it is connected.
+ */
+routine bt_unpair(
+	server		: mach_port_t;
+	address		: bt_address;
+	out status	: bt_status_code
+);
+
 skip;	/* 31013 */
 skip;	/* 31014 */
 skip;	/* 31015 */
@@ -151,9 +215,49 @@ skip;	/* 31019 */
 
 /* ---- 31020-31029: discovery --------------------------------------------- */
 
-skip;	/* 31020 */
-skip;	/* 31021 */
-skip;	/* 31022 */
+/*
+ * 31020 bt_scan — start discovery for `seconds` (clamped to 1..60; 0 means
+ * 10) and return at once. A scan already running is joined. Results collect
+ * in the controller's cache, names included, and
+ * org.nextbsd.bluetooth.scan is posted as they change.
+ */
+routine bt_scan(
+	server		: mach_port_t;
+	node		: bt_node;
+	seconds		: int;
+	out status	: bt_status_code
+);
+
+/* 31021 bt_scan_count — entries in the cache, and whether a scan runs. */
+routine bt_scan_count(
+	server		: mach_port_t;
+	node		: bt_node;
+	out count	: int;
+	out scanning	: int;
+	out status	: bt_status_code
+);
+
+/*
+ * 31022 bt_scan_entry — one cached device, by index. Holds Classic and LE
+ * results alike: `transports` is a BT_TRANSPORT_* mask, `class_of_device`
+ * is Classic, `appearance` is LE. `rssi` is in dBm, 127 when unknown; `age`
+ * is seconds since the device was last seen.
+ */
+routine bt_scan_entry(
+	server		: mach_port_t;
+	node		: bt_node;
+	index		: int;
+	out address	: bt_address;
+	out name	: bt_name;
+	out class_of_device : int;
+	out rssi	: int;
+	out transports	: int;
+	out appearance	: int;
+	out paired	: int;
+	out age		: int;
+	out status	: bt_status_code
+);
+
 skip;	/* 31023 */
 skip;	/* 31024 */
 skip;	/* 31025 */
@@ -164,9 +268,47 @@ skip;	/* 31029 */
 
 /* ---- 31030-31039: pairing ----------------------------------------------- */
 
-skip;	/* 31030 */
-skip;	/* 31031 */
-skip;	/* 31032 */
+/*
+ * 31030 bt_pair — start pairing with `address`, with a legacy PIN or "".
+ * Returns once it has started; bt_pair_status follows it.
+ */
+routine bt_pair(
+	server		: mach_port_t;
+	address		: bt_address;
+	pin		: bt_pin;
+	out status	: bt_status_code
+);
+
+/*
+ * 31031 bt_pair_status — where the pairing with `address` is. While `state`
+ * is waiting, `method` and `passkey` say what the user must do and
+ * `expires_in` how many seconds are left; once it has ended, `result` says
+ * how.
+ */
+routine bt_pair_status(
+	server		: mach_port_t;
+	address		: bt_address;
+	out state	: bt_pair_state;
+	out method	: bt_pair_method;
+	out passkey	: int;
+	out expires_in	: int;
+	out result	: bt_status_code;
+	out status	: bt_status_code
+);
+
+/*
+ * 31032 bt_pair_confirm — answer the waiting prompt: accept or not, the
+ * passkey for passkey entry, the PIN for a legacy PIN request.
+ */
+routine bt_pair_confirm(
+	server		: mach_port_t;
+	address		: bt_address;
+	accept		: int;
+	passkey		: int;
+	pin		: bt_pin;
+	out status	: bt_status_code
+);
+
 skip;	/* 31033 */
 skip;	/* 31034 */
 skip;	/* 31035 */

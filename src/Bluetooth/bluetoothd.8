@@ -69,6 +69,60 @@ no controller can be seen;
 stays up to answer
 .Xr bluetooth 8
 and reports itself as blind.
+.Pp
+When a controller arrives,
+.Nm
+brings it up:
+.Bl -enum -compact
+.It
+The first controller loads the upper kernel stack,
+.Pa NgSocket.kext ,
+.Pa NgL2cap.kext
+and
+.Pa NgBtsocket.kext ,
+through
+.Fn KextManagerLoadKextWithIdentifier .
+.It
+It builds the netgraph graph over the driver's node: an HCI node
+.Pq Ql ubt0hci ,
+an L2CAP node
+.Pq Ql ubt0l2cap ,
+and their hooks to the raw HCI, L2CAP and SCO socket nodes.
+A graph that outlived a restart of
+.Nm
+is adopted as it is.
+.It
+It initialises the controller over a raw HCI socket: reset, address,
+features, buffer sizes (Classic and LE), event masks, Secure Simple Pairing,
+inquiry mode, class of device, and a local name taken from the computer name.
+.It
+It powers the controller on (page scan, and inquiry scan if discoverable),
+unless
+.Ql ControllerPowerState
+says off.
+.El
+.Pp
+When the controller goes away, its graph is shut down and its dynamic store
+key removed.
+.Sh FIRMWARE
+Intel and Realtek controllers start in a boot loader and need firmware before
+the driver attaches; until then they are only an
+.Ql IOUSBHostDevice
+in the IORegistry.
+.Nm
+watches those by vendor id, and for one with no driver downloads the
+firmware itself, from
+.Pa /System/Library/Extensions/NgUbt.kext/Contents/Resources/firmware ,
+then resets the device so that it comes back as a controller.
+The download protocol is ported from FreeBSD's
+.Nm iwmbtfw
+and
+.Nm rtlbtfw ;
+neither program is run.
+The outcome is logged, shown by
+.Ql bluetooth status ,
+and published as
+.Ql State:/Bluetooth/Firmware/<ugen> .
 .Sh ARCHITECTURE
 .Bd -literal -offset indent
 NgUbt.kext ──IOBluetoothHostController──▶ bluetoothd
@@ -119,6 +173,19 @@ parks the request and a client fetches and answers it
 .Pq the pull model .
 A prompt is one of: confirm (just works), numeric comparison, passkey entry,
 passkey display, or a legacy PIN.
+It is published as
+.Ql State:/Bluetooth/Pairing/<addr>
+with a
+.Ql org.nextbsd.bluetooth.pairing
+notification, and expires after 60 seconds.
+.Pp
+Only pairings started here
+.Pq Ql bluetooth pair
+are accepted; a pairing a remote device starts is refused and logged.
+A device with no input and no output, such as headphones, is accepted
+without a question.
+A paired device's link key is answered from the store, so it reconnects
+after a restart; a new key is saved the moment the controller reports it.
 .Sh PAIRING STORE
 Two files under
 .Pa /Local/Library/Preferences/SystemConfiguration ,
@@ -183,10 +250,28 @@ or
 .Ql PairedDevices ,
 and the policy keys above.
 .It Ql State:/Bluetooth/Adapter/<node>
-One controller.
+One controller:
+.Ql Address , Name , Transport , VendorID , ProductID , State , Powered ,
+.Ql Discoverable , Connectable
+and
+.Ql Scanning .
 .It Ql State:/Bluetooth/Device/<addr>
-One paired or connected device.
+One paired device.
+.It Ql State:/Bluetooth/Pairing/<addr>
+A pairing prompt waiting for the user.
+.It Ql State:/Bluetooth/Firmware/<ugen>
+A firmware download.
 .El
+.Pp
+Each change is announced with
+.Xr notify_post 3
+on
+.Ql org.nextbsd.bluetooth.adapter ,
+.Ql .scan ,
+.Ql .pairing ,
+.Ql .device
+or
+.Ql .firmware .
 .Pp
 Lists do not go in the store; they are served over the Mach service.
 .Xr scutil 8
@@ -210,9 +295,11 @@ Log.
 (plaintext keys).
 .El
 .Sh SEE ALSO
+.Xr notify 3 ,
 .Xr bluetooth 8 ,
 .Xr configd 8 ,
 .Xr ioreg 8 ,
+.Xr kextd 8 ,
 .Xr launchd 8 ,
 .Xr scutil 8 ,
 .Xr wland 8
