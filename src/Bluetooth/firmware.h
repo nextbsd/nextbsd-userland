@@ -25,6 +25,8 @@
  *
  * Every USB transfer has a timeout (2 s for a command, 5 s for the load
  * complete), so a wedged controller fails the download, never the daemon.
+ * An Intel controller that does not answer identify at all (left wedged by a
+ * warm reboot, #539) gets one USB reset and one more try.
  * Downloads run one at a time. The outcome is logged and published as
  * State:/Bluetooth/Firmware/<ugen>, with State "firmware-failed" on failure.
  *
@@ -52,6 +54,7 @@
 #define	FW_RESULT_DOWNLOADED	0
 #define	FW_RESULT_FAILED	1
 #define	FW_RESULT_OPERATIONAL	2	/* it needed none */
+#define	FW_RESULT_NO_REPLY	3	/* Intel: no answer to identify */
 
 /* An IOUSBHostDevice arrival (main loop). Starts a worker if it is ours. */
 void	firmware_usb_arrived(const struct bt_iokit_event *ev);

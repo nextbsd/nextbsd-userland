@@ -43,6 +43,9 @@
  *     must not abort the daemon.
  *   - "Already downloaded" is FW_RESULT_OPERATIONAL, not 0, so firmware.c
  *     can tell a download from a controller that needed none.
+ *   - A controller that does not answer identify at all (a USB timeout) is
+ *     FW_RESULT_NO_REPLY, so firmware.c can reset it and try once more
+ *     (#539); any other failure is FW_RESULT_FAILED.
  *
  * Generations (fw_ids.c has the PIDs):
  *   7260/7265  manufacturer mode, a .bseq patch (ibt-hw-*.bseq)
@@ -1036,7 +1039,8 @@ iwmbt_read_version_tlv(struct libusb_device_handle *hdl,
 		 iwmbt_debug("Can't get version: code=%d, size=%d",
 		     ret,
 		     transferred);
-		 return (-1);
+		 /* NextBSD: the libusb error, so a timeout can be told apart. */
+		 return (ret < 0 ? ret : -1);
 	}
 
 	event = (struct iwmbt_hci_event_cmd_compl *)buf;
@@ -1282,8 +1286,13 @@ iwmbt_dump_version_tlv(struct iwmbt_version_tlv *ver)
 		    ver->build_num);
 }
 
+/*
+ * NextBSD: `noreply` is set when the controller did not answer at all (a USB
+ * timeout), rather than answering with something unsupported.
+ */
 static enum iwmbt_device
-iwmbt_identify(libusb_device_handle *hdl, enum iwmbt_device device)
+iwmbt_identify(libusb_device_handle *hdl, enum iwmbt_device device,
+    bool *noreply)
 {
 	uint8_t data[255];
 	uint8_t datalen, hw_platform, hw_variant;
@@ -1295,6 +1304,7 @@ iwmbt_identify(libusb_device_handle *hdl, enum iwmbt_device device)
 		r = iwmbt_bt_reset(hdl);
 		if (r < 0) {
 			iwmbt_debug("iwmbt_bt_reset() failed!");
+			*noreply = (r == LIBUSB_ERROR_TIMEOUT);
 			return (IWMBT_DEVICE_UNKNOWN);
 		}
 	}
@@ -1303,6 +1313,7 @@ iwmbt_identify(libusb_device_handle *hdl, enum iwmbt_device device)
 	r = iwmbt_read_version_tlv(hdl, data, &datalen);
 	if (r < 0) {
 		iwmbt_debug("iwmbt_read_version_tlv() failed");
+		*noreply = (r == LIBUSB_ERROR_TIMEOUT);
 		return (IWMBT_DEVICE_UNKNOWN);
 	}
 
@@ -1722,6 +1733,7 @@ fw_intel_run(libusb_device_handle *hdl, enum fw_intel_gen gen,
     const char *firmware_dir)
 {
 	enum iwmbt_device dev;
+	bool noreply = false;
 	char *dir;
 	int r;
 
@@ -1733,10 +1745,11 @@ fw_intel_run(libusb_device_handle *hdl, enum fw_intel_gen gen,
 	}
 
 	/* What the controller says it is beats what its PID suggests. */
-	dev = iwmbt_identify(hdl, dev);
+	dev = iwmbt_identify(hdl, dev, &noreply);
 	if (dev == IWMBT_DEVICE_UNKNOWN) {
-		iwmbt_err("Failed to identify device");
-		return (FW_RESULT_FAILED);
+		iwmbt_err("Failed to identify device%s",
+		    noreply ? ": no reply" : "");
+		return (noreply ? FW_RESULT_NO_REPLY : FW_RESULT_FAILED);
 	}
 
 	dir = strdup(firmware_dir);
