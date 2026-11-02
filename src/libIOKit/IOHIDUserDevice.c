@@ -42,6 +42,8 @@
 #include <IOKit/hid/IOHIDUserDevice.h>
 
 #include "vhid.h"		/* mirror of the kext's ABI */
+/* KextManager.h uses the AVAILABLE_MAC_OS_X_* macros without including them. */
+#include <AvailabilityMacros.h>
 #include "KextManager.h"	/* kext_tools/kext.subproj, linked in whole */
 
 #include <CoreFoundation/CFRuntime.h>
