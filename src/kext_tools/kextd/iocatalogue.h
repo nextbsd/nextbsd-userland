@@ -52,6 +52,12 @@
 #define	IOCAT_PROVIDER_IOHIDUSAGE	7
 #define	IOCAT_PROVIDER_IOVIRTIODEVICE	8
 #define	IOCAT_VMBUS_PREFIX		"vmbus:"
+/* nextbsd-kernel#393 -- keep in step with the kernel's <sys/iocatalogue.h>.
+ * IOUSBInterfaceVendor: an IOUSBHostInterface personality that also names
+ *   idVendor (not idProduct). match[] = (vendor, value, mask) triples: idVendor
+ *   in the low 16 bits, then the IOUSBHostInterface (value, mask) pair. The
+ *   kernel prefers it to a plain IOUSBHostInterface match. */
+#define	IOCAT_PROVIDER_IOUSBINTERFACEVENDOR 9
 /* nextbsd-kernel#364 -- keep in step with the kernel's <sys/iocatalogue.h>.
  * IOMedia: Content Mask strings (GEOM metadata magic such as "GEOM::ELI", or a
  * GPT type GUID in upper case) on the string path, prefixed "media:". */

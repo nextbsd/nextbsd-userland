@@ -333,7 +333,8 @@ parse_class_match(CFDictionaryRef d, uint32_t **out)
  * A USB personality (#329), in Darwin's keys: IOUSBHostDevice matches
  * idVendor + idProduct; IOUSBHostInterface matches idVendor + idProduct when
  * both are given, otherwise any of bInterfaceClass / bInterfaceSubClass /
- * bInterfaceProtocol (the ones present are significant, the rest masked out).
+ * bInterfaceProtocol (the ones present are significant, the rest masked out),
+ * restricted to one vendor when idVendor is given too (nextbsd-kernel#393).
  */
 static int
 push_usb_personality(int fd, CFDictionaryRef p, const char *bundle_id,
@@ -362,6 +363,17 @@ push_usb_personality(int fd, CFDictionaryRef p, const char *bundle_id,
 	if (proto >= 0) { val |= (uint32_t)proto & 0xff; mask |= 0xff; }
 	if (mask == 0)
 		return (0);
+	if (vid >= 0) {
+		/* (vendor, value, mask): the device must have this idVendor. */
+		if ((w = calloc(3, sizeof(*w))) == NULL)
+			return (-1);
+		w[0] = (uint32_t)vid & 0xffff;
+		w[1] = val;
+		w[2] = mask;
+		return (push_words(fd, bundle_id,
+		    IOCAT_PROVIDER_IOUSBINTERFACEVENDOR, score, w, 3,
+		    "IOUSBHostInterface vendor"));
+	}
 	if ((w = calloc(2, sizeof(*w))) == NULL)
 		return (-1);
 	w[0] = val;
