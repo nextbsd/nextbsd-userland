@@ -554,8 +554,8 @@ skip;	/* 31077 */
 skip;	/* 31078 */
 skip;	/* 31079 */
 /*
- * 31080-31084 audio (#218, #219, #220). 31085-31089 stay free for the
- * hands-free gateway (#525).
+ * 31080-31084 audio (#218, #219, #220). 31085-31089 the hands-free
+ * gateway (#525).
  *
  * 31080 bt_audio_count — devices with audio right now: a headset we play to
  * (A2DP source), a phone playing to us (A2DP sink), or an AVRCP session.
@@ -624,8 +624,42 @@ routine bt_audio_policy(
 	out a2dp_sink_now : int;
 	out status	: bt_status_code
 );
-skip;	/* 31085 */
-skip;	/* 31086 */
+
+/*
+ * 31085 bt_audio_route — carry a headset's audio over A2DP (1) or HFP (2:
+ * open its microphone; 3: the same, held to CVSD for the session). Returns
+ * at once: not_connected without a hands-free connection; bt_hfp_status
+ * follows the switch.
+ */
+routine bt_audio_route(
+	server		: mach_port_t;
+	address		: bt_address;
+	route		: int;
+	out status	: bt_status_code
+);
+
+/*
+ * 31086 bt_hfp_status — a headset's hands-free state: `connected` (the
+ * service level connection), `audio` (its SCO link: the microphone is live)
+ * and `pending` (a codec or audio setup in flight), the codec ("CVSD",
+ * "mSBC") and bridge device ("/dev/btsco0") while audio is up, the headset's
+ * AT+BRSF features, its speaker and microphone gains (0-15, -1 unknown) and
+ * battery (percent, -1). not_connected when it has no hands-free channel.
+ */
+routine bt_hfp_status(
+	server		: mach_port_t;
+	address		: bt_address;
+	out connected	: int;
+	out audio	: int;
+	out pending	: int;
+	out codec	: bt_transport;
+	out device	: bt_node;
+	out features	: int;
+	out speaker_gain : int;
+	out mic_gain	: int;
+	out battery	: int;
+	out status	: bt_status_code
+);
 skip;	/* 31087 */
 skip;	/* 31088 */
 skip;	/* 31089 */

@@ -30,12 +30,13 @@
  * ROUTING (the hook HFP uses)
  *
  *   A device's audio goes over one profile at a time: AUDIO_ROUTE_A2DP (the
- *   mixer plays to the headset) or AUDIO_ROUTE_HFP (the mixer is pointed at
- *   /dev/null through its control device, which closes the AVDTP stream, and
- *   the hands-free gateway owns the SCO link). audio_route() switches; the
- *   mixer keeps running and keeps /dev/dsp.btN (and /dev/dsp), so programs
- *   that have it open are not disturbed, and switching back re-opens the
- *   stream. See HANDOFF.md, "audio routing".
+ *   mixer plays to the headset, -R /dev/null -P /dev/bluetooth/<addr>) or
+ *   AUDIO_ROUTE_HFP (the hands-free gateway, hfp.c, owns the SCO link and
+ *   the mixer records from and plays to its bridge, -R/-P /dev/btscoN,
+ *   sco_bridge.h; the AVDTP stream closes). audio_route_to() switches
+ *   through the mixer's control device; the mixer keeps running and keeps
+ *   /dev/dsp.btN (and /dev/dsp), so programs that have it open are not
+ *   disturbed: on HFP the same device simply gains a microphone.
  *
  * A2DP SINK (the peer is a phone: its bond has A2DPSource) is a2dp_sink.c.
  * Both roles share PSM 0x19 by the rule there.
@@ -88,8 +89,11 @@ struct audio_status {
 	bool		avrcp;		/* the AVRCP session is up */
 	bool		default_out;	/* this mixer owns /dev/dsp */
 	int		volume;		/* 0..127; -1 unknown */
+	bool		hfp;		/* hands-free service level connection */
+	bool		hfp_audio;	/* ...and its SCO link: the mic is live */
+	int		battery;	/* percent, from the headset; -1 */
 	char		node[32];	/* "dsp.bt0"; "" when none */
-	char		codec[8];	/* "SBC" */
+	char		codec[8];	/* "SBC"; on HFP "CVSD" or "mSBC" */
 };
 
 /* The serial queue every audio module runs on. Created on first use. */
@@ -130,11 +134,17 @@ void		audio_prefs_changed(void);
 /* ---- the routing hook (HFP, #525) ------------------------------------- */
 
 /*
- * Carry `peer`'s audio over `route`. AUDIO_ROUTE_HFP points the mixer at
- * /dev/null (the AVDTP stream closes); AUDIO_ROUTE_A2DP points it back at
- * the headset. Returns not_connected when there is no mixer for `peer`.
- * Any thread, no lock.
+ * Carry `peer`'s audio over `route`. AUDIO_ROUTE_HFP points the mixer's
+ * record and play sides at `dev` (the SCO bridge; NULL: play to /dev/null),
+ * with `codec` ("CVSD", "mSBC") for the status; AUDIO_ROUTE_A2DP points it
+ * back at the headset. `force` resends an unchanged route (a restarted
+ * mixer). Returns not_connected when there is no mixer for `peer`. Any
+ * thread except the audio queue, no lock: it waits for the audio queue.
  */
+bt_status_t	audio_route_to(const struct bt_addr *peer, audio_route_t route,
+		    const char *dev, const char *codec, bool force);
+
+/* audio_route_to(peer, route, NULL, NULL, false). */
 bt_status_t	audio_route(const struct bt_addr *peer, audio_route_t route);
 
 /* ---- from avrcp.c and a2dp_sink.c (audio queue) ------------------------ */
@@ -143,6 +153,13 @@ void		audio_avrcp_changed(const struct bt_addr *peer, bool up);
 void		audio_volume_changed(const struct bt_addr *peer, int volume);
 void		audio_sink_changed(const struct bt_addr *peer, bool up,
 		    const char *codec);
+
+/*
+ * From hfp.c (any thread; queued): the service level connection is up or
+ * down, its SCO link up or down, the headset's battery (percent, -1).
+ */
+void		audio_hfp_changed(const struct bt_addr *peer, bool slc,
+		    bool sco, int battery);
 
 /* Is `peer` a device we play to (its bond has A2DPSink)? Any thread. */
 bool		audio_peer_is_sink(const struct bt_addr *peer);

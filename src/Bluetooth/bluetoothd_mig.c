@@ -23,6 +23,7 @@
 #include "discovery.h"
 #include "engine.h"
 #include "firmware.h"
+#include "hfp.h"
 #include "pairing.h"
 
 #include <mach/mach.h>
@@ -598,7 +599,7 @@ _bt_disconnect(mach_port_t server, BTAddressString address_in,
 	return (KERN_SUCCESS);
 }
 
-/* ---- 31080-31084: audio ------------------------------------------------- */
+/* ---- 31080-31086: audio and the hands-free gateway ------------------- */
 
 kern_return_t
 _bt_audio_count(mach_port_t server, int *count, bt_status_t *status)
@@ -676,6 +677,60 @@ _bt_audio_volume(mach_port_t server, BTAddressString address_in, int volume,
 		return (KERN_SUCCESS);
 	}
 	*status = audio_set_volume(&a, volume);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_bt_audio_route(mach_port_t server, BTAddressString address_in, int route,
+    bt_status_t *status)
+{
+	BTAddressString address;
+	struct bt_addr a;
+
+	(void)server;
+	WIRE_STR(address, address_in);
+	if (!bt_addr_aton(address, &a)) {
+		*status = bt_status_invalid_parameter_e;
+		return (KERN_SUCCESS);
+	}
+	*status = hfp_set_route(&a, route);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_bt_hfp_status(mach_port_t server, BTAddressString address_in,
+    int *connected, int *audio, int *pending, BTTransportName codec,
+    BTNodeName device, int *features, int *speaker_gain, int *mic_gain,
+    int *battery, bt_status_t *status)
+{
+	BTAddressString address;
+	struct hfp_status hs;
+	struct bt_addr a;
+
+	(void)server;
+	WIRE_STR(address, address_in);
+	(void)memset(codec, 0, sizeof(BTTransportName));
+	(void)memset(device, 0, sizeof(BTNodeName));
+	*connected = *audio = *pending = *features = 0;
+	*speaker_gain = *mic_gain = *battery = -1;
+	if (!bt_addr_aton(address, &a)) {
+		*status = bt_status_invalid_parameter_e;
+		return (KERN_SUCCESS);
+	}
+	if (!hfp_status(&a, &hs)) {
+		*status = bt_status_not_connected_e;
+		return (KERN_SUCCESS);
+	}
+	*connected = hs.slc ? 1 : 0;
+	*audio = hs.audio ? 1 : 0;
+	*pending = hs.pending ? 1 : 0;
+	(void)strlcpy(codec, hs.codec, sizeof(BTTransportName));
+	(void)strlcpy(device, hs.device, sizeof(BTNodeName));
+	*features = (int)hs.hf_features;
+	*speaker_gain = hs.speaker_gain;
+	*mic_gain = hs.mic_gain;
+	*battery = hs.battery;
+	*status = bt_status_success_e;
 	return (KERN_SUCCESS);
 }
 

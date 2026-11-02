@@ -727,6 +727,72 @@ sdp_client_apply(const struct sdp_device_info *info, struct bt_bond *b)
 	}
 }
 
+/* The RFCOMM server channel in a protocol descriptor list, or 0. */
+static uint8_t
+proto_rfcomm(const struct sdp_de *list)
+{
+	struct sdp_iter it, it2;
+	struct sdp_de d, u, ch;
+	uint32_t uuid;
+	uint64_t v;
+
+	if (!sdp_iter_init(&it, list))
+		return (0);
+	while (sdp_iter_next(&it, &d)) {
+		if (!sdp_iter_init(&it2, &d) || !sdp_iter_next(&it2, &u))
+			continue;
+		if (!sdp_de_uuid32(&u, &uuid) || uuid != SDP_UUID_RFCOMM)
+			continue;
+		if (sdp_iter_next(&it2, &ch) && sdp_de_uint(&ch, &v) &&
+		    v >= 1 && v <= 30)
+			return ((uint8_t)v);
+	}
+	return (0);
+}
+
+int
+sdp_client_rfcomm_service(const struct bt_addr *peer, uint16_t service,
+    uint8_t *channel, uint16_t *features)
+{
+	const uint16_t uuids[1] = { service };
+	static const struct sdp_qrange want[] = {
+		{ SDP_ATTR_SERVICE_CLASS_ID_LIST, SDP_ATTR_SERVICE_CLASS_ID_LIST },
+		{ SDP_ATTR_PROTOCOL_DESC_LIST, SDP_ATTR_PROTOCOL_DESC_LIST },
+		{ SDP_ATTR_SUPPORTED_FEATURES, SDP_ATTR_SUPPORTED_FEATURES },
+	};
+	struct sdp_wbuf ans;
+	struct sdp_de outer, rec, list;
+	struct sdp_iter it;
+	uint32_t classes[8];
+	uint64_t v;
+	int err, i, n;
+
+	*channel = 0;
+	*features = 0;
+	(void)memset(&ans, 0, sizeof(ans));
+	err = query(peer, uuids, 1, want, 3, &ans, &outer);
+	if (err == 0) {
+		(void)sdp_iter_init(&it, &outer);
+		while (*channel == 0 && sdp_iter_next(&it, &rec)) {
+			if (rec.type != SDP_DE_SEQ)
+				continue;
+			n = rec_classes(&rec, classes, 8);
+			for (i = 0; i < n && classes[i] != service; i++)
+				;
+			if (i == n || !rec_attr(&rec,
+			    SDP_ATTR_PROTOCOL_DESC_LIST, &list))
+				continue;
+			*channel = proto_rfcomm(&list);
+			if (rec_uint(&rec, SDP_ATTR_SUPPORTED_FEATURES, &v))
+				*features = (uint16_t)v;
+		}
+		if (*channel == 0)
+			err = ENOENT;
+	}
+	sdp_wbuf_free(&ans);
+	return (err);
+}
+
 int
 sdp_client_update_bond(const struct bt_addr *peer, struct bt_bond *b)
 {

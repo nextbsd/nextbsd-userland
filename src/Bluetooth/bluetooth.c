@@ -16,6 +16,8 @@
  *   bluetooth audio                         audio policy and devices
  *   bluetooth audio <device> on|off         play to a headset or not
  *   bluetooth audio <device> volume <0-127>
+ *   bluetooth audio <device> hfp [cvsd]     open its microphone (hands-free)
+ *   bluetooth audio <device> a2dp           close it: back to stereo
  *   bluetooth audio autoswitch on|off       a headset takes /dev/dsp
  *   bluetooth audio sink on|off             be a Bluetooth speaker
  *   bluetooth info [node]                   controller version, buffers, links
@@ -1357,6 +1359,34 @@ cmd_sdp(mach_port_t svc, int argc, char **argv)
 	return (EXIT_OK);
 }
 
+/* A headset's hands-free line, under its audio line; nothing without one. */
+static void
+print_hfp(mach_port_t svc, BTAddressString addr, const char *node)
+{
+	BTTransportName codec;
+	BTNodeName device;
+	bt_status_t st;
+	int conn, audio, pending, feat, vgs, vgm, batt;
+
+	if (bt_hfp_status(svc, addr, &conn, &audio, &pending, codec, device,
+	    &feat, &vgs, &vgm, &batt, &st) != KERN_SUCCESS ||
+	    st != bt_status_success_e)
+		return;
+	(void)printf("      hands-free %s", !conn ? "connecting" :
+	    audio ? "microphone on" : pending ? "opening the microphone" :
+	    "connected, microphone off");
+	if (audio)
+		(void)printf(" (%s, record from /dev/%s)", codec,
+		    node[0] != '\0' ? node : "dsp");
+	if (batt >= 0)
+		(void)printf(", battery %d%%", batt);
+	(void)printf("\n");
+	(void)device;
+	(void)feat;
+	(void)vgs;
+	(void)vgm;
+}
+
 /* The audio devices and policy, as `status` and `audio` print them. */
 static int
 print_audio(mach_port_t svc, bool header)
@@ -1401,6 +1431,7 @@ print_audio(mach_port_t svc, bool header)
 		if (volume >= 0)
 			(void)printf(", volume %d/127", volume);
 		(void)printf("\n");
+		print_hfp(svc, addr, node);
 	}
 	return (EXIT_OK);
 }
@@ -1437,6 +1468,17 @@ cmd_audio(mach_port_t svc, int argc, char **argv)
 		return (rc);
 	if (argc == 3 && (on = parse_onoff(argv[2])) >= 0) {
 		if (bt_audio_set(svc, addr, on, &st) != KERN_SUCCESS) {
+			(void)fprintf(stderr, "%s: RPC failed\n", progname);
+			return (EXIT_ERR);
+		}
+	} else if ((argc == 3 || argc == 4) && (strcmp(argv[2], "hfp") == 0 ||
+	    strcmp(argv[2], "a2dp") == 0)) {
+		if (argc == 4 && (strcmp(argv[2], "hfp") != 0 ||
+		    strcmp(argv[3], "cvsd") != 0))
+			return (-1);
+		/* 1 A2DP, 2 HFP, 3 HFP held to CVSD (bluetooth.defs 31085) */
+		if (bt_audio_route(svc, addr, strcmp(argv[2], "a2dp") == 0 ? 1 :
+		    argc == 4 ? 3 : 2, &st) != KERN_SUCCESS) {
 			(void)fprintf(stderr, "%s: RPC failed\n", progname);
 			return (EXIT_ERR);
 		}
@@ -1729,6 +1771,7 @@ static const struct verb {
 	{ "device",	"device",			cmd_device },
 	{ "autoconnect", "device on|off",		cmd_autoconnect },
 	{ "audio",	"[device on|off | device volume 0-127 | "
+			"device hfp [cvsd] | device a2dp | "
 			"autoswitch on|off | sink on|off]",	cmd_audio },
 	{ "info",	"[node]",			cmd_info },
 	{ "hci",	"[-n node] ogf ocf [byte ...]",	cmd_hci },

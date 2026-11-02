@@ -21,6 +21,18 @@
 #define	SBC_SYNCWORD		0x9c
 #define	SBC_MAX_SAMPLES		128	/* per channel: 16 blocks x 8 bands */
 
+/*
+ * mSBC, the wide-band speech codec of HFP (HFP 1.8, 5.7.4): SBC fixed at
+ * 16 kHz, mono, 15 blocks, 8 subbands, loudness allocation and bitpool 26,
+ * with its own syncword and a header whose configuration bytes are zero.
+ * One 57-byte frame carries 120 samples (7.5 ms).
+ */
+#define	MSBC_SYNCWORD		0xad
+#define	MSBC_FRAME_LEN		57
+#define	MSBC_SAMPLES		120
+#define	MSBC_BLOCKS		15
+#define	MSBC_BITPOOL		26
+
 /* Channel modes, as the frame header and the A2DP capability encode them. */
 #define	SBC_MODE_MONO		0
 #define	SBC_MODE_DUAL		1
@@ -64,5 +76,22 @@ void	sbc_dec_reset(struct sbc_dec *d);
  */
 size_t	sbc_dec_frame(struct sbc_dec *d, const uint8_t *buf, size_t len,
 	    int16_t *pcm, int *nframes);
+
+/*
+ * Decode one mSBC frame (MSBC_FRAME_LEN bytes from the 0xAD syncword) into
+ * MSBC_SAMPLES mono samples. Returns MSBC_FRAME_LEN, or 0 when `buf` does not
+ * start with one. For the hands-free gateway's SCO bridge (sco_bridge.c).
+ */
+size_t	sbc_dec_msbc(struct sbc_dec *d, const uint8_t *buf, size_t len,
+	    int16_t *pcm, int *nframes);
+
+/*
+ * The bit allocation of `d` (channels, bands, mode, alloc, freq, bitpool and
+ * scalefactor[][] set), into d->bits. For the mSBC encoder (msbc.c).
+ */
+void	sbc_bit_alloc(struct sbc_dec *d);
+
+/* The 8-subband prototype filter: the encoder's analysis window too. */
+extern const double	sbc_proto8[80];
 
 #endif /* _BLUETOOTHD_SBC_DECODE_H_ */

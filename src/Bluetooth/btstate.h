@@ -20,11 +20,14 @@
  *       Connecting, Profiles (array: what runs over the link now, "HID"),
  *       RSSI (dBm, while connected and known)
  *   State:/Bluetooth/Device/<addr>/Audio   its audio, while it has any
- *                                     (#218, #219, #220)
+ *                                     (#218, #219, #220, #525)
  *       Role ("Source": we play to it; "Sink": it plays to us), Route
- *       ("A2DP" | "HFP"), Active, Codec ("SBC"), Node ("dsp.bt0"),
- *       DefaultOutput (it owns /dev/dsp), AVRCP, Volume (0-127, AVRCP
- *       absolute volume, while known)
+ *       ("A2DP" | "HFP"), Active, Codec ("SBC"; on HFP "CVSD" | "mSBC"),
+ *       Node ("dsp.bt0"), DefaultOutput (it owns /dev/dsp), AVRCP, Volume
+ *       (0-127, AVRCP absolute volume, while known), HandsFree (the HFP
+ *       service level connection is up), Microphone (its SCO link is up:
+ *       Node records from the headset), Battery (percent, while the
+ *       headset reports it)
  *   State:/Bluetooth/Adapter/<node>/A2DPSink   the speaker role (#219)
  *       Enabled, Peer (the address playing to us, while one does)
  *   State:/Bluetooth/Pairing/<addr>   a prompt waiting for the user (#209)
