@@ -1,0 +1,197 @@
+.\" bluetoothd(8) — NextBSD Bluetooth daemon.
+.\"
+.\" NextBSD-original. There is no upstream page to vendor: Apple's bluetoothd
+.\" is closed source and undocumented.
+.\"
+.Dd November 1, 2026
+.Dt BLUETOOTHD 8
+.Os NextBSD
+.Sh NAME
+.Nm bluetoothd
+.Nd Bluetooth daemon
+.Sh SYNOPSIS
+.Nm
+.Sh DESCRIPTION
+.Nm
+owns Bluetooth on NextBSD.
+It is started by
+.Xr launchd 8
+as
+.Ql org.nextbsd.bluetoothd ,
+serves the Mach service
+.Ql org.nextbsd.bluetooth ,
+and is not intended to be run by hand.
+Use
+.Xr bluetooth 8
+to talk to it.
+.Pp
+.Nm
+and
+.Xr bluetooth 8
+are the only Bluetooth programs on the system.
+The kernel stack, loaded as kexts, carries HCI and L2CAP; everything above it
+lives in
+.Nm :
+controller bring-up and power, discovery, pairing for Classic (BR/EDR) and LE
+with one pairing store, the SDP server and client, the HID host and the audio
+roles.
+It runs as root from boot, so a paired keyboard works at the login window.
+.Pp
+Bluetooth is on by default.
+A controller is powered on when it arrives unless the persisted
+.Ql ControllerPowerState
+is 0, and paired devices reconnect without user action.
+.Sh CONTROLLERS
+.Pa NgUbt.kext
+publishes each controller in the IORegistry as an
+.Ql IOBluetoothHostController
+entry once its netgraph node exists, and retires the entry when the controller
+goes away.
+.Nm
+follows that class with
+.Fn IOServiceAddMatchingNotification ,
+first-match and terminated, as
+.Xr wland 8
+follows
+.Ql IO80211Controller .
+A controller that is already present when
+.Nm
+starts is delivered as an arrival.
+.Pp
+With no controller,
+.Nm
+logs one line, blocks with no timer and loads no kexts: the upper kernel stack
+is loaded when the first controller arrives.
+On a kernel without
+.Pa /dev/ioregistry
+no controller can be seen;
+.Nm
+stays up to answer
+.Xr bluetooth 8
+and reports itself as blind.
+.Sh ARCHITECTURE
+.Bd -literal -offset indent
+NgUbt.kext ──IOBluetoothHostController──▶ bluetoothd
+bluetoothd ──raw HCI / L2CAP sockets──▶ kernel stack
+           ──SCPreferences────────────▶ pairing store + policy
+           ──SCDynamicStore───────────▶ State:/Bluetooth
+           ──MIG org.nextbsd.bluetooth──▶ bluetooth(8) ──▶ Gershwin
+.Ed
+.Pp
+Inside, a policy layer (controllers, the device list, pairing prompts, the
+store, publication, the Mach service) sits above two protocol engines, Classic
+and LE, behind one interface.
+The policy layer never needs to know which transport a device uses: addresses
+are typed (public or random), one prompt shape covers legacy PIN, Secure Simple
+Pairing and LE pairing, and one bond record holds both engines' keys.
+.Sh PAIRING PROMPTS
+Nothing above the Mach line can receive a Mach message, so
+.Nm
+never calls a client back.
+When pairing needs the user,
+.Nm
+parks the request and a client fetches and answers it
+.Pq the pull model .
+A prompt is one of: confirm (just works), numeric comparison, passkey entry,
+passkey display, or a legacy PIN.
+.Sh PAIRING STORE
+Two files under
+.Pa /Local/Library/Preferences/SystemConfiguration ,
+both written through SCPreferences (temporary file and rename on every
+commit):
+.Bl -tag -width "org.nextbsd.Bluetooth.keys.plist"
+.It Pa org.nextbsd.Bluetooth.plist
+Mode 0644.
+Policy and device metadata, readable by tools:
+.Bl -tag -width "ControllerPowerState" -compact
+.It Ql ControllerPowerState
+1 on, 0 off; missing means on.
+.It Ql DiscoverableState
+Inquiry scan at power-up; default off.
+.It Ql AutoConnect
+Reconnect paired devices at power-up; default on.
+.It Ql PairedDevices
+One dictionary per device, keyed by its address
+.Pq Ql aa-bb-cc-dd-ee-ff :
+.Ql Name , AddressType , Transports , ClassOfDevice , Appearance , PnPID ,
+.Ql Profiles , HIDDescriptor , AutoConnect , Trusted , Paired ,
+and
+.Ql LastConnected .
+The cached HID descriptor lets a paired keyboard reconnect with no service
+query.
+.El
+.It Pa org.nextbsd.Bluetooth.keys.plist
+Mode 0600.
+The secrets:
+.Ql LinkKeys
+(Classic),
+.Ql LongTermKeys ,
+.Ql IdentityResolvingKeys
+and
+.Ql SignatureKeys
+(LE), keyed by the same address, in HCI byte order.
+.El
+.Pp
+.Sy Keys are stored in plaintext .
+NextBSD has no keychain; this is the same debt
+.Xr wland 8
+carries for passphrases.
+The keys have a file of their own, mode 0600 and root-owned, so that when a
+keychain lands it replaces that one file.
+Key bytes are never written to the log.
+.Pp
+A missing or corrupt file reads as empty;
+.Nm
+never fails to start because of its store.
+.Sh DYNAMIC STORE
+.Bl -tag -width "State:/Bluetooth/Adapter/<node>"
+.It Ql State:/Bluetooth
+The daemon:
+.Ql State
+.Po
+.Ql Idle ,
+.Ql Active
+or
+.Ql NoIORegistry
+.Pc ,
+.Ql Adapters ,
+.Ql PairedDevices ,
+and the policy keys above.
+.It Ql State:/Bluetooth/Adapter/<node>
+One controller.
+.It Ql State:/Bluetooth/Device/<addr>
+One paired or connected device.
+.El
+.Pp
+Lists do not go in the store; they are served over the Mach service.
+.Xr scutil 8
+shows these keys.
+.Sh FILES
+.Bl -tag -width "/Local/Library/Preferences/SystemConfiguration/" -compact
+.It Pa /usr/sbin/bluetoothd
+The daemon.
+.It Pa /dev/ioregistry
+The in-kernel IORegistry, where controllers appear as
+.Ql IOBluetoothHostController .
+.It Pa /System/Library/LaunchDaemons/org.nextbsd.bluetoothd.plist
+.Xr launchd 8
+job.
+.It Pa /var/log/bluetoothd.stderr
+Log.
+.It Pa /Local/Library/Preferences/SystemConfiguration/
+.Pa org.nextbsd.Bluetooth.plist
+(policy and paired devices) and
+.Pa org.nextbsd.Bluetooth.keys.plist
+(plaintext keys).
+.El
+.Sh SEE ALSO
+.Xr bluetooth 8 ,
+.Xr configd 8 ,
+.Xr ioreg 8 ,
+.Xr launchd 8 ,
+.Xr scutil 8 ,
+.Xr wland 8
+.Sh HISTORY
+.Nm
+first appeared in NextBSD in 2026.
+It is a NextBSD original; Apple has never published its Bluetooth source.

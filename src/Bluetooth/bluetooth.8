@@ -1,0 +1,113 @@
+.\" bluetooth(8) — NextBSD Bluetooth command-line client.
+.\"
+.\" NextBSD-original. There is no upstream page to vendor: Apple's equivalent
+.\" surface lives inside the closed bluetoothd. This page is written for this
+.\" tool.
+.\"
+.Dd November 1, 2026
+.Dt BLUETOOTH 8
+.Os NextBSD
+.Sh NAME
+.Nm bluetooth
+.Nd control Bluetooth
+.Sh SYNOPSIS
+.Nm
+.Cm status
+.Nm
+.Cm list
+.Sh DESCRIPTION
+.Nm
+is the command-line client for
+.Xr bluetoothd 8 ,
+the NextBSD Bluetooth daemon.
+.Pp
+It is a pure-C Mach client: it looks up the
+.Ql org.nextbsd.bluetooth
+Mach service and issues MIG RPCs.
+It does not link CoreFoundation or SystemConfiguration, so it is also the
+supported way for anything above the Mach line, including the Gershwin
+desktop, to drive Bluetooth.
+.Sh COMMANDS
+.Bl -tag -width "status"
+.It Cm status
+Print the daemon's state, the persisted policy (power, discoverable,
+auto-connect), the number of paired devices, and each controller with its
+transport, USB vendor and product, state, and, once it has been brought up,
+its address and name.
+.It Cm list
+Print the paired devices from the pairing store: address, name, class of
+device, link
+.Po
+.Ql BR/EDR ,
+.Ql LE
+or
+.Ql dual
+.Pc ,
+whether it reconnects automatically, its connection state, and the profiles
+it offers.
+.El
+.Pp
+Addresses print as
+.Ql AA:BB:CC:DD:EE:FF ;
+an LE random address carries a
+.Ql /random
+suffix.
+.Sh FILES
+.Bl -tag -width "/Local/Library/Preferences/SystemConfiguration/" -compact
+.It Pa /usr/sbin/bluetooth
+This command.
+.It Pa /var/log/bluetoothd.stderr
+The daemon's log.
+.It Pa /Local/Library/Preferences/SystemConfiguration/
+.Pa org.nextbsd.Bluetooth.plist
+(policy and paired devices, 0644) and
+.Pa org.nextbsd.Bluetooth.keys.plist
+(link keys and LE keys in plaintext, 0600).
+.El
+.Sh EXIT STATUS
+.Bl -tag -width 2 -compact
+.It 0
+Success.
+.It 1
+An error, or
+.Xr bluetoothd 8
+could not be reached.
+.It 2
+Usage error.
+.It 3
+An answer is needed (reserved for non-interactive pairing).
+.El
+.Sh EXAMPLES
+.Bd -literal -offset indent
+$ bluetooth status
+state:         active
+power:         on
+discoverable:  off
+auto-connect:  on
+paired:        1
+
+controller:    ubt0
+  transport:   USB 8087:0a2b
+  state:       on
+  address:     A4:34:D9:01:02:03
+
+$ bluetooth list
+ADDRESS                  NAME                     CLASS  LINK     AUTO STATE        PROFILES
+C8:2E:47:11:22:33/random MX Keys                  000000 LE       yes  connected    HOGP
+.Ed
+.Sh DIAGNOSTICS
+.Bl -diag
+.It "bluetooth: cannot reach org.nextbsd.bluetooth — is bluetoothd running?"
+The Mach service lookup failed.
+Check
+.Ql launchctl list | grep bluetoothd
+and
+.Pa /var/log/bluetoothd.stderr .
+.El
+.Sh SEE ALSO
+.Xr bluetoothd 8 ,
+.Xr scutil 8 ,
+.Xr wlan 8
+.Sh HISTORY
+.Nm
+first appeared in NextBSD in 2026.

@@ -1,0 +1,245 @@
+/*
+ * bluetooth.defs — Mach-RPC interface to bluetoothd.
+ *
+ * There is no Apple original to port. Apple's equivalent surface sits inside
+ * the closed bluetoothd and is reached through IOBluetooth.framework, so this
+ * IDL is ours. It is shaped by the same two constraints as wlan.defs:
+ *
+ *   1. MIG OUT-OF-LINE DATA IS BROKEN in this kernel (ipconfig.defs). Every
+ *      argument is a fixed-size array or a scalar, and lists use the flat
+ *      count-then-entry(i) pattern: bt_paired_count, then bt_paired_entry(i).
+ *
+ *   2. Lists do not go in the dynamic store either: CONFIG_DATA_MAX caps any
+ *      value at 8 KiB. State:/Bluetooth carries a summary only.
+ *
+ * Subsystem base 31000: configd and ipconfigd share 20000 (as Apple ships
+ * them), wland has 30000, so bluetoothd takes the next range of its own.
+ *
+ * ---------------------------------------------------------------------------
+ * HOW THIS FILE GROWS
+ *
+ * A routine's message id is its position in this file, so ids are stable only
+ * if nothing moves. The surface is laid out in blocks, one per area, each
+ * padded with `skip` to a fixed size. A later ticket replaces a `skip` in its
+ * block with its routine; the ids of everything else stay put, and parallel
+ * tickets edit different blocks. Rules:
+ *
+ *   - never reorder, rename the wire shape of, or remove a routine;
+ *   - a retired routine becomes `skip`;
+ *   - a block that fills up continues in the open range at the end (31100+).
+ *
+ *   31000-31009  daemon and controllers   status, adapter list; power,
+ *                                         discoverable, name (#207)
+ *   31010-31019  paired devices           list; unpair (#209), device status
+ *                                         (#213), auto-connect
+ *   31020-31029  discovery                scan, scan_count, scan_entry (#208)
+ *   31030-31039  pairing                  pair, pair_status, pair_confirm
+ *                                         (#209; LE SMP #205 uses the same)
+ *   31040-31049  connections              connect, disconnect (#213)
+ *   31050-31069  diagnostics              info, ping, browse (#211)
+ *   31070-31099  profiles                 HID, audio
+ *   31100-       open                     appended in order
+ *
+ * The server demux _bluetooth_server() runs inside bluetoothd's
+ * mach_service_thread receive loop. Per-routine bodies are in bluetoothd_mig.c.
+ */
+
+#include <mach/std_types.defs>
+#include <mach/mach_types.defs>
+
+subsystem bluetooth 31000;
+serverprefix _;
+
+import "bluetooth_mig_types.h";
+
+type bt_node		= array[32] of char ctype: BTNodeName;
+type bt_address		= array[32] of char ctype: BTAddressString;
+type bt_name		= array[249] of char ctype: BTDeviceName;
+type bt_profiles	= array[128] of char ctype: BTProfileList;
+type bt_transport	= array[16] of char ctype: BTTransportName;
+type bt_daemon_state	= MACH_MSG_TYPE_INTEGER_32 ctype: bt_daemon_state_t;
+type bt_adapter_state	= MACH_MSG_TYPE_INTEGER_32 ctype: bt_adapter_state_t;
+type bt_device_state	= MACH_MSG_TYPE_INTEGER_32 ctype: bt_device_state_t;
+type bt_pair_method	= MACH_MSG_TYPE_INTEGER_32 ctype: bt_pair_method_t;
+type bt_status_code	= MACH_MSG_TYPE_INTEGER_32 ctype: bt_status_t;
+
+/* ---- 31000-31009: daemon and controllers -------------------------------- */
+
+/*
+ * 31000 bt_status — the daemon summary: whether a controller is present, how
+ * many, how many devices are paired, and the persisted policy
+ * (ControllerPowerState, DiscoverableState, AutoConnect). The same facts are
+ * in State:/Bluetooth.
+ */
+routine bt_status(
+	server		: mach_port_t;
+	out state	: bt_daemon_state;
+	out adapters	: int;
+	out paired	: int;
+	out power_state	: int;
+	out discoverable : int;
+	out autoconnect	: int
+);
+
+/* 31001 bt_adapter_count — controllers bluetoothd follows right now. */
+routine bt_adapter_count(
+	server		: mach_port_t;
+	out count	: int
+);
+
+/*
+ * 31002 bt_adapter_info — one controller, by index. `address` and `name` are
+ * empty until the controller has been brought up and read (#207).
+ */
+routine bt_adapter_info(
+	server		: mach_port_t;
+	index		: int;
+	out node	: bt_node;
+	out transport	: bt_transport;
+	out vendor	: int;
+	out product	: int;
+	out state	: bt_adapter_state;
+	out address	: bt_address;
+	out name	: bt_name;
+	out status	: bt_status_code
+);
+
+skip;	/* 31003 */
+skip;	/* 31004 */
+skip;	/* 31005 */
+skip;	/* 31006 */
+skip;	/* 31007 */
+skip;	/* 31008 */
+skip;	/* 31009 */
+
+/* ---- 31010-31019: paired devices ---------------------------------------- */
+
+/* 31010 bt_paired_count — devices in PairedDevices. */
+routine bt_paired_count(
+	server		: mach_port_t;
+	out count	: int;
+	out status	: bt_status_code
+);
+
+/*
+ * 31011 bt_paired_entry — one paired device, by index, in address order.
+ * `transports` is a BT_TRANSPORT_* mask; `profiles` is comma-separated.
+ */
+routine bt_paired_entry(
+	server		: mach_port_t;
+	index		: int;
+	out address	: bt_address;
+	out name	: bt_name;
+	out class_of_device : int;
+	out transports	: int;
+	out profiles	: bt_profiles;
+	out autoconnect	: int;
+	out state	: bt_device_state;
+	out status	: bt_status_code
+);
+
+skip;	/* 31012 */
+skip;	/* 31013 */
+skip;	/* 31014 */
+skip;	/* 31015 */
+skip;	/* 31016 */
+skip;	/* 31017 */
+skip;	/* 31018 */
+skip;	/* 31019 */
+
+/* ---- 31020-31029: discovery --------------------------------------------- */
+
+skip;	/* 31020 */
+skip;	/* 31021 */
+skip;	/* 31022 */
+skip;	/* 31023 */
+skip;	/* 31024 */
+skip;	/* 31025 */
+skip;	/* 31026 */
+skip;	/* 31027 */
+skip;	/* 31028 */
+skip;	/* 31029 */
+
+/* ---- 31030-31039: pairing ----------------------------------------------- */
+
+skip;	/* 31030 */
+skip;	/* 31031 */
+skip;	/* 31032 */
+skip;	/* 31033 */
+skip;	/* 31034 */
+skip;	/* 31035 */
+skip;	/* 31036 */
+skip;	/* 31037 */
+skip;	/* 31038 */
+skip;	/* 31039 */
+
+/* ---- 31040-31049: connections ------------------------------------------- */
+
+skip;	/* 31040 */
+skip;	/* 31041 */
+skip;	/* 31042 */
+skip;	/* 31043 */
+skip;	/* 31044 */
+skip;	/* 31045 */
+skip;	/* 31046 */
+skip;	/* 31047 */
+skip;	/* 31048 */
+skip;	/* 31049 */
+
+/* ---- 31050-31069: diagnostics ------------------------------------------- */
+
+skip;	/* 31050 */
+skip;	/* 31051 */
+skip;	/* 31052 */
+skip;	/* 31053 */
+skip;	/* 31054 */
+skip;	/* 31055 */
+skip;	/* 31056 */
+skip;	/* 31057 */
+skip;	/* 31058 */
+skip;	/* 31059 */
+skip;	/* 31060 */
+skip;	/* 31061 */
+skip;	/* 31062 */
+skip;	/* 31063 */
+skip;	/* 31064 */
+skip;	/* 31065 */
+skip;	/* 31066 */
+skip;	/* 31067 */
+skip;	/* 31068 */
+skip;	/* 31069 */
+
+/* ---- 31070-31099: profiles (HID, audio) --------------------------------- */
+
+skip;	/* 31070 */
+skip;	/* 31071 */
+skip;	/* 31072 */
+skip;	/* 31073 */
+skip;	/* 31074 */
+skip;	/* 31075 */
+skip;	/* 31076 */
+skip;	/* 31077 */
+skip;	/* 31078 */
+skip;	/* 31079 */
+skip;	/* 31080 */
+skip;	/* 31081 */
+skip;	/* 31082 */
+skip;	/* 31083 */
+skip;	/* 31084 */
+skip;	/* 31085 */
+skip;	/* 31086 */
+skip;	/* 31087 */
+skip;	/* 31088 */
+skip;	/* 31089 */
+skip;	/* 31090 */
+skip;	/* 31091 */
+skip;	/* 31092 */
+skip;	/* 31093 */
+skip;	/* 31094 */
+skip;	/* 31095 */
+skip;	/* 31096 */
+skip;	/* 31097 */
+skip;	/* 31098 */
+skip;	/* 31099 */
+
+/* ---- 31100-: open range, appended in order ------------------------------ */

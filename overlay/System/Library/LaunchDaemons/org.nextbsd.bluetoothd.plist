@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  org.nextbsd.bluetoothd.plist
+
+  Boot-time launchd plist for bluetoothd, the NextBSD Bluetooth daemon.
+
+  WHY org.nextbsd.* AND NOT com.apple.*
+
+  Apple's daemon is also called bluetoothd, but its labels and Mach services
+  (com.apple.bluetoothd, com.apple.server.bluetooth) are contracts that only
+  Apple's closed frameworks look up, and nothing Apple-derived on NextBSD does.
+  We write the bluetooth(8) CLI, and the IOBluetooth-shaped Objective-C API
+  lives above the Mach line in Gershwin. Both ends are ours, so the label is
+  ours, as for wland.
+
+  WHAT BLUETOOTHD DOES
+
+  bluetoothd and bluetooth(8) are the only Bluetooth userland. bluetoothd owns
+  controller bring-up and power, discovery, pairing for Classic and LE with one
+  store (SCPreferences), the SDP server and client, the HID host and the audio
+  roles, and publishes State:/Bluetooth. Bluetooth is on by default; it runs
+  as root from boot, so a paired keyboard works at the login window.
+
+  HOW BLUETOOTHD FINDS CONTROLLERS
+
+  NgUbt.kext publishes each controller in the IORegistry as an
+  IOBluetoothHostController entry and retires it when the controller goes.
+  bluetoothd follows that class with IOServiceAddMatchingNotification,
+  first-match and terminated. With no controller it blocks, polls nothing and
+  loads no kexts. launchd LaunchEvents (com.apple.iokit.matching) would let
+  launchd start bluetoothd only when a controller appears, but libxpc's event
+  streams are not there yet, so the job runs at load.
+
+  RunAtLoad + KeepAlive: starts at boot and respawns on crash. There is no
+  launchd service ordering in this port, so bluetoothd opens the SCDynamicStore
+  lazily and tolerates configd not being up yet.
+
+  StandardErrorPath / StandardOutPath route the log to
+  /var/log/bluetoothd.stderr. Nothing goes to the console.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.nextbsd.bluetoothd</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/sbin/bluetoothd</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>MachServices</key>
+    <dict>
+        <key>org.nextbsd.bluetooth</key>
+        <true/>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/var/log/bluetoothd.stderr</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/bluetoothd.stderr</string>
+</dict>
+</plist>

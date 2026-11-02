@@ -272,6 +272,8 @@ above; `/System/Library` and `~/Library` paths are kept as-is.
 | cpdup | `man cpdup` (1) | filesystem copy / mirror utility |
 | WLAN | `man wlan` (8) | WLAN command-line client |
 | WLAN | `man wland` (8) | 802.11 management daemon |
+| Bluetooth | `man bluetooth` (8) | Bluetooth command-line client |
+| Bluetooth | `man bluetoothd` (8) | Bluetooth daemon |
 | swapd | `man swapd` (8) | swap file manager (NextBSD's dynamic_pager) |
 | libxml2 | `man xmllint` (1), `man xmlcatalog` (1) | XML parser / validator, catalog tool |
 | libxml2 | `man libxml` (3) | libxml2 library overview |
