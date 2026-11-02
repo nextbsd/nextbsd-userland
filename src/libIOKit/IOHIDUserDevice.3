@@ -72,10 +72,10 @@ The report descriptor, as
 .Vt CFData ,
 at most 4096 bytes.
 Required.
-.It Dv kIOHIDVendorIDKey , Dv kIOHIDProductIDKey , Dv kIOHIDVersionNumberKey , Dv kIOHIDCountryCodeKey
-Numbers.
+.It Dv kIOHIDVendorIDKey , Dv kIOHIDProductIDKey , Dv kIOHIDVersionNumberKey
+16-bit numbers.
 .It Dv kIOHIDProductKey , Dv kIOHIDSerialNumberKey
-Strings.
+Strings, cut to 79 bytes.
 A Bluetooth device's serial number is its address.
 .It Dv kIOHIDTransportKey
 .Dq Bluetooth
@@ -84,7 +84,7 @@ or
 makes a Bluetooth HID device; any other value makes a virtual one.
 .It Dv kIOHIDRequestTimeoutKey
 How long, in milliseconds, the kernel waits for a get- or set-report
-answer.
+answer, from 50 to 1200000.
 The default is 1000.
 .El
 .Pp
@@ -121,9 +121,9 @@ are also provided.
 .Pp
 .Fn IOHIDUserDeviceHandleReportWithTimeStamp
 delivers one input report and may be called from any thread.
-A
+The transport carries no timestamp:
 .Fa timestamp
-of 0 means now.
+is ignored, and the kernel stamps the report when it delivers it.
 .Pp
 .Fn IOHIDUserDeviceCancel
 removes the device.
@@ -163,3 +163,4 @@ There is no run-loop scheduling.
 .Fn IOHIDUserDeviceSetProperty
 only works before activation.
 Kernel set-protocol and set-idle requests are answered with success.
+Report timestamps are not passed to the kernel.
