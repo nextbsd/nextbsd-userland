@@ -1,21 +1,25 @@
 /*
  * classic_engine.c — the BR/EDR engine behind engine.h.
  *
- * Two halves over the controller's shared raw HCI socket:
+ * Three parts over the controller's shared raw HCI socket:
  *
  *   discovery (here)   Inquiry with RSSI and Extended Inquiry Response, then
  *                      a Remote_Name_Request for each device whose name
  *                      neither its EIR nor bluetoothd's cache gave (#208)
  *   security           security.c: link keys, PIN, Secure Simple Pairing,
  *                      pair and unpair (#209)
+ *   links              links.c: ACL connect and disconnect, link state,
+ *                      securing links to bonded devices, RSSI (#213)
  *
  * Every device seen is raised as BT_EV_FOUND, a name found later as another
  * BT_EV_FOUND for the same address; the policy layer merges them into its
- * scan cache. Connections (#213) come later.
+ * scan cache. Links are raised as BT_EV_CONNECTED / DISCONNECTED /
+ * LINK_CHANGED.
  */
 #include "classic.h"
 #include "hci.h"
 #include "hci_compat.h"
+#include "links.h"
 #include "security.h"
 
 #include <stdarg.h>
@@ -343,6 +347,7 @@ classic_attach(const struct bt_controller_desc *c,
 	e->powered = c->powered;
 	e->name_idx = -1;
 	sec_init(e);
+	links_init(e);
 	*out = e;
 	return (bt_status_success_e);
 }
@@ -371,6 +376,7 @@ classic_hci_event(struct bt_engine *e, uint8_t code, const uint8_t *params,
 	ev.params = params;
 	if (hci_cmd_result(&ev, &opcode, &status, &rp, &rplen)) {
 		sec_cmd_result(e, opcode, status);
+		links_cmd_result(e, opcode, status, rp, rplen);
 		if (status == 0)
 			return;
 		if (opcode == HCI_OPCODE(OGF_LC, NG_HCI_OCF_INQUIRY) &&
@@ -385,6 +391,8 @@ classic_hci_event(struct bt_engine *e, uint8_t code, const uint8_t *params,
 		return;
 	}
 	if (sec_hci_event(e, code, params, len))
+		return;
+	if (links_hci_event(e, code, params, len))
 		return;
 	discovery_event(e, code, params, len);
 }
@@ -422,10 +430,27 @@ classic_unpair(struct bt_engine *e, const struct bt_addr *peer)
 	return (sec_unpair(e, peer));
 }
 
+static bt_status_t
+classic_connect(struct bt_engine *e, const struct bt_addr *peer)
+{
+	if (e->inquiring || e->naming)
+		(void)discover(e, false, 0);	/* paging beats inquiring */
+	return (links_connect(e, peer));
+}
+
+static bt_status_t
+classic_disconnect(struct bt_engine *e, const struct bt_addr *peer)
+{
+	return (links_disconnect(e, peer));
+}
+
 static uint64_t
 classic_next_timer(struct bt_engine *e)
 {
-	uint64_t t = sec_next_timer(e);
+	uint64_t t = sec_next_timer(e), l = links_next_timer(e);
+
+	if (l != 0 && (t == 0 || l < t))
+		t = l;
 
 	if (e->inquiring && (t == 0 || e->inquiry_deadline < t))
 		t = e->inquiry_deadline;
@@ -443,6 +468,7 @@ static void
 classic_timer(struct bt_engine *e, uint64_t now)
 {
 	sec_timer(e, now);
+	links_timer(e, now);
 	if (e->inquiring && now >= e->inquiry_deadline) {
 		/* The controller never said Inquiry_Complete. */
 		classic_log(e, "inquiry overran; ending it");
@@ -476,6 +502,8 @@ const struct bt_engine_ops bt_classic_engine = {
 	.pair		= classic_pair,
 	.pair_reply	= classic_pair_reply,
 	.unpair		= classic_unpair,
+	.connect	= classic_connect,
+	.disconnect	= classic_disconnect,
 	.next_timer	= classic_next_timer,
 	.timer		= classic_timer,
 };

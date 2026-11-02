@@ -33,6 +33,12 @@
 #define	DEV_PNP			CFSTR("PnPID")
 #define	DEV_PROFILES		CFSTR("Profiles")
 #define	DEV_HIDDESC		CFSTR("HIDDescriptor")
+#define	DEV_HID_VCABLE		CFSTR("HIDVirtualCable")
+#define	DEV_HID_RECONNECT	CFSTR("HIDReconnectInitiate")
+#define	DEV_HID_CONNECTABLE	CFSTR("HIDNormallyConnectable")
+#define	DEV_HID_BOOT		CFSTR("HIDBootDevice")
+#define	DEV_HID_COUNTRY		CFSTR("HIDCountryCode")
+#define	DEV_HID_SESSION		CFSTR("HIDSessionEstablished")
 #define	DEV_AUTOCONNECT		CFSTR("AutoConnect")
 #define	DEV_TRUSTED		CFSTR("Trusted")
 #define	DEV_PAIRED		CFSTR("Paired")
@@ -194,6 +200,20 @@ bt_prefs_set_autoconnect(bool on)
 /* Paired devices                                                      */
 /* ------------------------------------------------------------------ */
 
+/* One HID* boolean: present means the HID attributes are known. */
+static void
+hid_flag_get(CFDictionaryRef e, CFStringRef key, uint8_t bit,
+    struct bt_bond *b)
+{
+	bool v;
+
+	if (!btcf_get_bool(e, key, &v))
+		return;
+	b->flags |= BT_BOND_HID_ATTRS;
+	if (v)
+		b->hid_flags |= bit;
+}
+
 /* Fill the metadata half of `b` from a PairedDevices entry. */
 static bool
 entry_to_bond(CFStringRef cf_key, CFDictionaryRef e, struct bt_bond *b)
@@ -203,6 +223,7 @@ entry_to_bond(CFStringRef cf_key, CFDictionaryRef e, struct bt_bond *b)
 	CFTypeRef v;
 	long long n;
 	size_t got;
+	bool session;
 
 	if (!CFStringGetCString(cf_key, key, sizeof(key),
 	    kCFStringEncodingUTF8) || !bt_addr_aton(key, &b->addr))
@@ -241,6 +262,16 @@ entry_to_bond(CFStringRef cf_key, CFDictionaryRef e, struct bt_bond *b)
 	    &got) && got > 0 && got <= sizeof(b->hid_desc)) {
 		b->hid_desc_len = (uint16_t)got;
 		b->flags |= BT_BOND_HID_DESC;
+	}
+	hid_flag_get(e, DEV_HID_VCABLE, BT_HID_VIRTUAL_CABLE, b);
+	hid_flag_get(e, DEV_HID_RECONNECT, BT_HID_RECONNECT_INITIATE, b);
+	hid_flag_get(e, DEV_HID_CONNECTABLE, BT_HID_NORMALLY_CONNECTABLE, b);
+	hid_flag_get(e, DEV_HID_BOOT, BT_HID_BOOT_DEVICE, b);
+	if (btcf_get_bool(e, DEV_HID_SESSION, &session) && session)
+		b->hid_flags |= BT_HID_SESSION_ESTABLISHED;
+	if (btcf_get_int(e, DEV_HID_COUNTRY, &n)) {
+		b->hid_country_code = (uint8_t)n;
+		b->flags |= BT_BOND_HID_ATTRS;
 	}
 
 	v = CFDictionaryGetValue(e, DEV_TRANSPORTS);
@@ -323,6 +354,20 @@ bond_to_entry(const struct bt_bond *b)
 	if ((b->flags & BT_BOND_HID_DESC) != 0 && b->hid_desc_len > 0 &&
 	    b->hid_desc_len <= sizeof(b->hid_desc))
 		btcf_set_data(e, DEV_HIDDESC, b->hid_desc, b->hid_desc_len);
+	if ((b->flags & BT_BOND_HID_ATTRS) != 0) {
+		btcf_set_bool(e, DEV_HID_VCABLE,
+		    (b->hid_flags & BT_HID_VIRTUAL_CABLE) != 0);
+		btcf_set_bool(e, DEV_HID_RECONNECT,
+		    (b->hid_flags & BT_HID_RECONNECT_INITIATE) != 0);
+		btcf_set_bool(e, DEV_HID_CONNECTABLE,
+		    (b->hid_flags & BT_HID_NORMALLY_CONNECTABLE) != 0);
+		btcf_set_bool(e, DEV_HID_BOOT,
+		    (b->hid_flags & BT_HID_BOOT_DEVICE) != 0);
+		btcf_set_int(e, DEV_HID_COUNTRY, b->hid_country_code);
+	}
+	/* Learnt by the HID host, so kept even without the SDP record. */
+	if ((b->hid_flags & BT_HID_SESSION_ESTABLISHED) != 0)
+		btcf_set_bool(e, DEV_HID_SESSION, true);
 
 	arr = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
 	if (arr != NULL) {

@@ -17,6 +17,7 @@
 #include "adapter.h"
 #include "btstore.h"
 #include "bluetooth_mig_types.h"
+#include "connections.h"
 #include "discovery.h"
 #include "engine.h"
 #include "firmware.h"
@@ -244,13 +245,15 @@ _bt_paired_entry(mach_port_t server, int index, BTAddressString address,
 	*class_of_device = 0;
 	*transports = 0;
 	*autoconnect = 0;
-	/* The connection table arrives with #213; until then, disconnected. */
 	*state = bt_device_disconnected_e;
 
 	if (!bt_store_paired_at(index, &b)) {
 		*status = bt_status_index_out_of_range_e;
 		return (KERN_SUCCESS);
 	}
+	bluetoothd_lock();
+	*state = conn_state_locked(&b.addr);
+	bluetoothd_unlock();
 	(void)bt_addr_ntoa(&b.addr, BT_ADDR_FMT_DISPLAY, address,
 	    sizeof(BTAddressString));
 	(void)strlcpy(name, b.name, sizeof(BTDeviceName));
@@ -278,6 +281,99 @@ _bt_unpair(mach_port_t server, BTAddressString address_in,
 	bluetoothd_lock();
 	*status = adapter_unpair_locked(&a);
 	bluetoothd_unlock();
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_bt_device_status(mach_port_t server, BTAddressString address_in,
+    BTDeviceName name, int *class_of_device, bt_device_state_t *state,
+    BTNodeName node, int *rssi, BTProfileList profiles, int *paired,
+    bt_status_t *status)
+{
+	BTAddressString address;
+	struct conn_status cs;
+	struct bt_bond *b;
+	struct bt_addr a;
+	bool linked;
+
+	(void)server;
+	WIRE_STR(address, address_in);
+	(void)memset(name, 0, sizeof(BTDeviceName));
+	(void)memset(node, 0, sizeof(BTNodeName));
+	(void)memset(profiles, 0, sizeof(BTProfileList));
+	*class_of_device = 0;
+	*state = bt_device_disconnected_e;
+	*rssi = 127;
+	*paired = 0;
+	if (!bt_addr_aton(address, &a)) {
+		*status = bt_status_invalid_parameter_e;
+		return (KERN_SUCCESS);
+	}
+	b = calloc(1, sizeof(*b));
+	if (b == NULL) {
+		*status = bt_status_internal_error_e;
+		return (KERN_SUCCESS);
+	}
+	bluetoothd_lock();
+	linked = conn_status_locked(&a, &cs);
+	bluetoothd_unlock();
+	*paired = bt_store_bond_find(&a, false, b) ? 1 : 0;
+	if (!*paired && a.type == BT_ADDR_PUBLIC) {
+		/* An LE device whose identity is a static random address. */
+		a.type = BT_ADDR_RANDOM;
+		*paired = bt_store_bond_find(&a, false, b) ? 1 : 0;
+	}
+	if (!linked && !*paired) {
+		free(b);
+		*status = bt_status_no_such_device_e;
+		return (KERN_SUCCESS);
+	}
+	if (*paired) {
+		(void)strlcpy(name, b->name, sizeof(BTDeviceName));
+		*class_of_device = (int)b->class_of_device;
+	}
+	if (*class_of_device == 0)
+		*class_of_device = (int)cs.class_of_device;
+	*state = cs.state;
+	(void)strlcpy(node, cs.node, sizeof(BTNodeName));
+	*rssi = cs.rssi;
+	bt_profiles_format(cs.profiles, profiles, sizeof(BTProfileList));
+	free(b);
+	*status = bt_status_success_e;
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_bt_device_autoconnect(mach_port_t server, BTAddressString address_in, int on,
+    bt_status_t *status)
+{
+	BTAddressString address;
+	struct bt_bond *b;
+	struct bt_addr a;
+
+	(void)server;
+	WIRE_STR(address, address_in);
+	if (!bt_addr_aton(address, &a)) {
+		*status = bt_status_invalid_parameter_e;
+		return (KERN_SUCCESS);
+	}
+	b = calloc(1, sizeof(*b));
+	if (b == NULL) {
+		*status = bt_status_internal_error_e;
+		return (KERN_SUCCESS);
+	}
+	/* Under the lock: the main loop saves bonds too. */
+	bluetoothd_lock();
+	if (!bt_store_bond_find(&a, true, b))
+		*status = bt_status_not_paired_e;
+	else {
+		b->autoconnect = (on != 0);
+		*status = bt_store_bond_save(b) == 0 ? bt_status_success_e :
+		    bt_status_store_error_e;
+	}
+	bluetoothd_unlock();
+	(void)memset(b, 0, sizeof(*b));
+	free(b);
 	return (KERN_SUCCESS);
 }
 
@@ -456,5 +552,45 @@ _bt_pair_confirm(mach_port_t server, BTAddressString address_in, int accept,
 	    (uint32_t)passkey, pin);
 	bluetoothd_unlock();
 	(void)memset(pin, 0, sizeof(pin));
+	return (KERN_SUCCESS);
+}
+
+/* ---- 31040-31049: connections ------------------------------------------- */
+
+kern_return_t
+_bt_connect(mach_port_t server, BTAddressString address_in,
+    bt_status_t *status)
+{
+	BTAddressString address;
+	struct bt_addr a;
+
+	(void)server;
+	WIRE_STR(address, address_in);
+	if (!bt_addr_aton(address, &a)) {
+		*status = bt_status_invalid_parameter_e;
+		return (KERN_SUCCESS);
+	}
+	bluetoothd_lock();
+	*status = conn_connect_locked(&a);
+	bluetoothd_unlock();
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_bt_disconnect(mach_port_t server, BTAddressString address_in,
+    bt_status_t *status)
+{
+	BTAddressString address;
+	struct bt_addr a;
+
+	(void)server;
+	WIRE_STR(address, address_in);
+	if (!bt_addr_aton(address, &a)) {
+		*status = bt_status_invalid_parameter_e;
+		return (KERN_SUCCESS);
+	}
+	bluetoothd_lock();
+	*status = conn_disconnect_locked(&a);
+	bluetoothd_unlock();
 	return (KERN_SUCCESS);
 }

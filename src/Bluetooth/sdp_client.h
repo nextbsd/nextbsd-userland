@@ -82,8 +82,8 @@ int	sdp_client_detect_profiles(const struct bt_addr *peer,
 
 /*
  * Fold a query's results into a bond: the Classic Profiles bits are replaced
- * (HOGP is kept), the PnP ID and the HID report descriptor are set with their
- * BT_BOND_* flags. Nothing is saved.
+ * (HOGP is kept), the PnP ID, the HID report descriptor and the HID record's
+ * booleans (hid_flags) are set with their BT_BOND_* flags. Nothing is saved.
  */
 void	sdp_client_apply(const struct sdp_device_info *info,
 	    struct bt_bond *b);
@@ -96,8 +96,9 @@ int	sdp_client_update_bond(const struct bt_addr *peer, struct bt_bond *b);
 
 /*
  * The pair-time hook: query `peer` on a detached thread, then, under
- * bluetoothd_lock(), merge the result into its stored bond (keys included) and
- * save it. Call it once the bond is saved (BT_EV_PAIRED). Does nothing if the
+ * bluetoothd_lock(), merge the result into its stored bond (keys included),
+ * save it and tell connections.c (conn_bond_refreshed_locked: a new HID
+ * device gets its first session). Call it once the bond is saved (BT_EV_PAIRED). Does nothing if the
  * device is no longer paired by the time the answer arrives. Returns 0 if the
  * thread started.
  */

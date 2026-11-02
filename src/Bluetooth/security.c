@@ -57,6 +57,12 @@ pairing_with(const struct bt_engine *e, const struct bt_addr *peer)
 	    memcmp(e->sec.peer.b, peer->b, BT_ADDR_LEN) == 0);
 }
 
+bool
+classic_pairing_with(const struct bt_engine *e, const struct bt_addr *peer)
+{
+	return (pairing_with(e, peer));
+}
+
 void
 sec_init(struct bt_engine *e)
 {
@@ -447,12 +453,8 @@ sec_hci_event(struct bt_engine *e, uint8_t code, const uint8_t *p, size_t len)
 		if (len < sizeof(*ep))
 			return (true);
 		h = NG_HCI_CON_HANDLE(le16toh(ep->con_handle));
-		if (e->sec.stage != SEC_AUTHENTICATING || h != e->sec.handle) {
-			if (ep->status != 0)
-				classic_log(e, "authentication on handle %d "
-				    "failed: 0x%02x", h, ep->status);
-			return (true);
-		}
+		if (e->sec.stage != SEC_AUTHENTICATING || h != e->sec.handle)
+			return (false);	/* a link's own (links.c) */
 		if (ep->status != 0) {
 			finish(e, ep->status == HCI_ERR_AUTH_FAILURE ?
 			    bt_status_pairing_rejected_e :
@@ -484,15 +486,6 @@ sec_hci_event(struct bt_engine *e, uint8_t code, const uint8_t *p, size_t len)
 		return (false);
 	}
 
-	case NG_HCI_EVENT_ENCRYPTION_CHANGE: {
-		const ng_hci_encryption_change_ep *ep = (const void *)p;
-
-		if (len >= sizeof(*ep) && ep->status != 0)
-			classic_log(e, "encryption on handle %u failed: "
-			    "0x%02x", NG_HCI_CON_HANDLE(
-			    le16toh(ep->con_handle)), ep->status);
-		return (true);
-	}
 
 	default:
 		return (false);

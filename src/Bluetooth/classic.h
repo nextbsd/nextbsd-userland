@@ -1,7 +1,7 @@
 /*
- * classic.h — the Classic (BR/EDR) engine's private state, shared by its two
- * halves: discovery in classic_engine.c and the security manager in
- * security.c. Nothing outside the engine includes this; the policy layer sees
+ * classic.h — the Classic (BR/EDR) engine's private state, shared by its
+ * three parts: discovery in classic_engine.c, the security manager in
+ * security.c and the ACL links in links.c. Nothing outside the engine includes this; the policy layer sees
  * only engine.h, where struct bt_engine is opaque.
  *
  * The LE engine (#205) keeps its own state the same way, in its own private
@@ -56,6 +56,28 @@ struct classic_sec {
 	uint64_t		deadline;	/* the whole pairing */
 };
 
+/*
+ * One ACL link (links.c). A link is recorded from the Connection_Request (the
+ * peer paged us) or from bt_connect's Create_Connection, and lives until its
+ * Disconnection_Complete. Links the kernel opened for an L2CAP connect (the
+ * HID host, the SDP client) appear at their Connection_Complete.
+ */
+#define	CLASSIC_LINK_MAX	16
+
+struct classic_link {
+	bool			used;
+	struct bt_addr		peer;
+	int			handle;		/* -1 while connecting */
+	bool			incoming;	/* Connection_Request seen */
+	bool			requested;	/* our Create_Connection */
+	bool			securing;	/* Authentication_Requested sent */
+	bool			closing;	/* Disconnect sent */
+	bool			encrypted;
+	bool			central;
+	int8_t			rssi;		/* 127 until read */
+	uint32_t		class_of_device;
+};
+
 struct bt_engine {
 	struct bt_engine_host	host;
 	char			node[32];
@@ -76,7 +98,16 @@ struct bt_engine {
 
 	/* Security (security.c). */
 	struct classic_sec	sec;
+
+	/* ACL links (links.c). */
+	struct classic_link	links[CLASSIC_LINK_MAX];
+	uint64_t		rssi_next;	/* next Read_RSSI round */
+	bool			rssi_unsupported;
 };
+
+/* Is the pairing in progress (security.c) with `peer`? */
+bool	classic_pairing_with(const struct bt_engine *e,
+	    const struct bt_addr *peer);
 
 /* Raise an event to the policy layer. */
 void	classic_raise(struct bt_engine *e, const struct bt_event *ev);

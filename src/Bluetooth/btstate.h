@@ -12,9 +12,11 @@
  *   State:/Bluetooth/Adapter/<node>   one controller (#207)
  *       Address, Name, Transport, VendorID, ProductID, State,
  *       Powered, Discoverable, Connectable, Scanning
- *   State:/Bluetooth/Device/<addr>    one paired device (#209; connections
+ *   State:/Bluetooth/Device/<addr>    one paired or connected device (#209,
  *                                     #213); <addr> is BT_ADDR_FMT_KEY
- *       Address, Name, ClassOfDevice, Paired
+ *       Address, Name, ClassOfDevice, Adapter, Paired, Connected,
+ *       Connecting, Profiles (array: what runs over the link now, "HID"),
+ *       RSSI (dBm, while connected and known)
  *   State:/Bluetooth/Pairing/<addr>   a prompt waiting for the user (#209)
  *       Address, Method, Passkey, Expires
  *   State:/Bluetooth/Firmware/<ugen>  a firmware download (#202)
@@ -84,8 +86,22 @@ int	bt_state_publish_adapter(const struct bt_adapter_summary *s);
 int	bt_state_publish_pairing(const char *key,
 	    const struct bt_pair_prompt *p, const char *method);
 
-/* A paired device, at full key `key` (BT_STATE_DEVICE_PREFIX + addr). */
-int	bt_state_publish_device(const char *key, const struct bt_bond *b);
+/* One device, for State:/Bluetooth/Device/<addr> (connections.c). */
+struct bt_device_summary {
+	const struct bt_addr	*addr;
+	const char		*name;		/* "" when unknown */
+	uint32_t		class_of_device;
+	const char		*adapter;	/* "" when not connected */
+	bool			paired;
+	bool			connected;
+	bool			connecting;
+	uint32_t		profiles;	/* BT_PROFILE_* running */
+	int			rssi;		/* 127: unknown */
+};
+
+/* A device, at full key `key` (BT_STATE_DEVICE_PREFIX + addr). */
+int	bt_state_publish_device(const char *key,
+	    const struct bt_device_summary *s);
 
 /* A firmware download (BT_STATE_FIRMWARE_PREFIX + ugen). */
 int	bt_state_publish_firmware(const char *ugen, int vendor, int product,

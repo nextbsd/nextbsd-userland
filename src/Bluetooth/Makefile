@@ -25,13 +25,17 @@ SRCS+=		iokit_watch.c
 # (discovery.c) and the pairing prompts (pairing.c).
 SRCS+=		adapter.c ngstack.c hci.c discovery.c pairing.c
 # The engine contract (engine.h) and the two engines behind it; the Classic
-# engine's security manager (#209) is security.c.
-SRCS+=		engine.c classic_engine.c security.c
+# engine's security manager (#209) is security.c, its ACL links (#213)
+# links.c.
+SRCS+=		engine.c classic_engine.c security.c links.c
 # The LE engine (#205): GAP (le_engine.c), the ATT bearer (att.c), the GATT
 # client (gatt.c), the Security Manager (smp.c) and its crypto toolbox
 # (le_crypto.c, libcrypto); HID over GATT into IOHIDUserDevice (hogp.c, #217,
 # a CoreFoundation module like the store's).
 SRCS+=		le_engine.c att.c gatt.c smp.c le_crypto.c hogp.c
+# Connections, reconnect at power-up and State:/Bluetooth/Device (#213); the
+# Classic HID host, HIDP into IOHIDUserDevice (#524).
+SRCS+=		connections.c hid_host.c
 # Firmware download for bootloader-mode controllers (#202): the device half
 # (firmware.c), the id tables (fw_ids.c) and the iwmbtfw / rtlbtfw ports.
 SRCS+=		firmware.c fw_ids.c fw_intel.c fw_rtl.c
@@ -99,7 +103,8 @@ LDFLAGS+=	-Wl,--allow-shlib-undefined
 #                     SCDynamicStore (State:/Bluetooth)
 #   -lIOKit           IONotificationPort / IOServiceAddMatchingNotification:
 #                     IOBluetoothHostController arrivals and departures;
-#                     IOHIDUserDevice for LE keyboards and mice (hogp.c)
+#                     IOHIDUserDevice for the Classic HID host
+#                     (hid_host.c) and LE keyboards and mice (hogp.c)
 #   -lCoreFoundation  the dictionaries both of the above take
 #   -lsystem_dispatch, -l:libsystem_blocks.so  the serial queue the IOKit
 #                     callbacks run on, and what the SC header pulls
