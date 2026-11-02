@@ -24,6 +24,15 @@
 
 #define	BT_MAX_ADAPTERS		8
 
+/* The discovery cache (discovery.c): entries and how long they live. */
+#define	BT_SCAN_MAX		64
+#define	BT_SCAN_TTL		300	/* seconds since last seen */
+
+struct bt_name_cache {
+	struct bt_addr		addr;
+	char			name[BT_NAME_MAX + 1];
+};
+
 struct bt_adapter {
 	bool			active;
 	uint64_t		entry_id;	/* IORegistry entry ID */
@@ -31,13 +40,42 @@ struct bt_adapter {
 	BTTransportName		transport;	/* "USB" */
 	uint16_t		vendor;		/* USB idVendor */
 	uint16_t		product;	/* USB idProduct */
+	char			ugen[32];	/* "ugen0.3" */
 	bt_adapter_state_t	state;
 	bool			want_power;	/* ControllerPowerState at arrival */
+
+	/* Bring-up (adapter.c). */
+	char			hci_node[32];	/* "ubt0hci" */
+	int			hci_fd;		/* raw HCI socket, or -1 */
+	bool			adopted;	/* the graph outlived a restart */
+	int			init_step;
+	uint16_t		init_opcode;	/* the command awaited */
+	uint64_t		init_deadline;
+	int			init_tries;
+	uint8_t			features[8];	/* LMP features, page 0 */
+	uint8_t			hci_version;
+	uint16_t		manufacturer;
 
 	/* Read from the controller at bring-up (#207). */
 	bool			have_addr;
 	struct bt_addr		addr;
 	BTDeviceName		name;
+
+	/* Policy. */
+	bool			powered;	/* page scan on, engines live */
+	bool			discoverable;	/* inquiry scan on */
+	uint64_t		discoverable_until;	/* 0: no timer */
+	bool			scanning;
+
+	/* The discovery cache (discovery.c). */
+	struct bt_found		found[BT_SCAN_MAX];
+	int			nfound;
+	struct bt_name_cache	names[BT_SCAN_MAX];
+	int			nnames_next;	/* round-robin slot */
+
+	/* Publication: set when something State:/Bluetooth shows changed. */
+	bool			dirty;
+	bool			scan_dirty;
 
 	/* engines[i] runs bt_engines[i] on this controller, or is NULL. */
 	struct bt_engine	*engines[BT_ENGINE_MAX];
@@ -68,5 +106,23 @@ struct bt_adapter	*bluetoothd_adapter_at_locked(int idx);
 
 /* A controller by node name ("ubt0"), or NULL. Caller holds the lock. */
 struct bt_adapter	*bluetoothd_adapter_by_node_locked(const char *node);
+
+/*
+ * The controller an RPC means: by node name, or with an empty name the first
+ * one. NULL when there is none. Caller holds the lock.
+ */
+struct bt_adapter	*bluetoothd_adapter_pick_locked(const char *node);
+
+/* The persisted DiscoverableState. Caller holds the lock. */
+bool	bluetoothd_discoverable_pref_locked(void);
+
+/* Update the cached policy after an RPC changed it. Caller holds the lock. */
+void	bluetoothd_prefs_update_locked(const struct bt_prefs *p);
+
+/*
+ * Wake the main loop, so it publishes what an RPC changed and re-computes its
+ * timers. Safe from any thread.
+ */
+void	bluetoothd_wake(void);
 
 #endif /* _BLUETOOTHD_H_ */

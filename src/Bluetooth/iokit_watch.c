@@ -17,6 +17,7 @@
  * belongs on the main loop.
  */
 #include "iokit_watch.h"
+#include "fw_ids.h"
 
 #include <IOKit/IOKitLib.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -140,6 +141,14 @@ describe(io_object_t obj, struct bt_iokit_event *ev)
 		    sizeof(ev->transport));
 		ev->vendor = prop_u16(props, BT_IOKIT_KEY_VENDOR);
 		ev->product = prop_u16(props, BT_IOKIT_KEY_PRODUCT);
+		prop_string(props, BT_IOKIT_KEY_UGEN, ev->ugen,
+		    sizeof(ev->ugen));
+		ev->if_class[0] = (uint8_t)prop_u16(props,
+		    BT_IOKIT_KEY_IFCLASS);
+		ev->if_class[1] = (uint8_t)prop_u16(props,
+		    BT_IOKIT_KEY_IFSUBCLASS);
+		ev->if_class[2] = (uint8_t)prop_u16(props,
+		    BT_IOKIT_KEY_IFPROTOCOL);
 		CFRelease(props);
 	}
 	if (ev->node[0] == '\0' && IORegistryEntryGetName(obj, name) ==
@@ -165,7 +174,7 @@ drain_iterator(io_iterator_t it, bt_iokit_event_kind_t kind)
 		ev.kind = kind;
 		if (IORegistryEntryGetRegistryEntryID(obj, &ev.entry_id) ==
 		    KERN_SUCCESS) {
-			if (kind == BT_IOKIT_ARRIVED)
+			if (kind != BT_IOKIT_DEPARTED)
 				describe(obj, &ev);
 			enqueue(&ev);
 			any = true;
@@ -189,6 +198,61 @@ terminated_callback(void *refcon, io_iterator_t it)
 	(void)refcon;
 	if (drain_iterator(it, BT_IOKIT_DEPARTED))
 		wake_main_loop();
+}
+
+static void
+usb_matched_callback(void *refcon, io_iterator_t it)
+{
+	(void)refcon;
+	if (drain_iterator(it, BT_IOKIT_USB_ARRIVED))
+		wake_main_loop();
+}
+
+/*
+ * IOUSBHostDevice first-match for each vendor id the firmware loader knows
+ * (libIOKit compares idVendor as a number, nextbsd-userland#527). Only
+ * arrivals: a device that goes away mid-download fails its transfers, and a
+ * departure needs nothing else. A failure here costs firmware download only,
+ * so it is logged and the controller watch stays up.
+ */
+static void
+usb_watch_start(void)
+{
+	uint16_t vids[FW_IDS_MAX_VENDORS];
+	int i, n;
+
+	n = fw_ids_vendors(vids, FW_IDS_MAX_VENDORS);
+	for (i = 0; i < n; i++) {
+		CFMutableDictionaryRef m;
+		CFNumberRef v;
+		io_iterator_t it = IO_OBJECT_NULL;
+		kern_return_t kr;
+		int vid = vids[i];
+
+		m = IOServiceMatching(BT_IOKIT_USB_CLASS);
+		v = CFNumberCreate(NULL, kCFNumberIntType, &vid);
+		if (m == NULL || v == NULL) {
+			if (m != NULL)
+				CFRelease(m);
+			if (v != NULL)
+				CFRelease(v);
+			continue;
+		}
+		CFDictionarySetValue(m, CFSTR(BT_IOKIT_KEY_VENDOR), v);
+		CFRelease(v);
+		kr = IOServiceAddMatchingNotification(g_notify,
+		    kIOFirstMatchNotification, m, usb_matched_callback, NULL,
+		    &it);
+		if (kr != KERN_SUCCESS) {
+			xlog("AddMatchingNotification(%s idVendor 0x%04x) "
+			    "kr=0x%x", BT_IOKIT_USB_CLASS, vid, (unsigned)kr);
+			continue;
+		}
+		/* A device present at boot counts as an arrival. */
+		if (drain_iterator(it, BT_IOKIT_USB_ARRIVED))
+			wake_main_loop();
+		IOObjectRelease(it);
+	}
 }
 
 int
@@ -247,6 +311,9 @@ iokit_watch_start(int wake_fd)
 	(void)drain_iterator(term_it, BT_IOKIT_DEPARTED);
 	IOObjectRelease(match_it);
 	IOObjectRelease(term_it);
+
+	/* Controllers that need firmware first (#202). */
+	usb_watch_start();
 	return (0);
 
 fail:

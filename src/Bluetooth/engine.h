@@ -271,7 +271,8 @@ typedef enum {
 	BT_EV_CONNECTED		= 5,
 	BT_EV_DISCONNECTED	= 6,
 	BT_EV_BOND_UPDATED	= 7,	/* u.bond: new keys (e.g. a link key change) */
-	BT_EV_POWER_CHANGED	= 8	/* u.powered */
+	BT_EV_POWER_CHANGED	= 8,	/* u.powered */
+	BT_EV_DISCOVERY		= 9	/* u.scanning: discovery started/ended */
 } bt_event_kind_t;
 
 #define	BT_EIR_MAX	240	/* what the kernel neighbor cache keeps */
@@ -302,6 +303,7 @@ struct bt_event {
 		const struct bt_bond	*bond;
 		bt_status_t		status;
 		bool			powered;
+		bool			scanning;
 	} u;
 };
 
@@ -318,11 +320,17 @@ struct bt_controller_desc {
 	uint16_t	vendor;		/* USB idVendor */
 	uint16_t	product;	/* USB idProduct */
 	int		hci_fd;		/* the shared raw HCI socket, or -1 */
+	uint8_t		features[8];	/* LMP features, page 0 */
+	bool		powered;	/* scans enabled at attach */
 };
 
 /*
- * bluetoothd's side. Every call happens on bluetoothd's main loop, never on the
- * Mach service thread, so an engine needs no locking of its own.
+ * bluetoothd's side. Every call into an engine, and every callback out of
+ * one, happens with bluetoothd's state lock held: from the main loop (HCI
+ * events, timers) or from a Mach RPC (pair, scan, power). The lock serialises
+ * them, so an engine needs no locking of its own. A callback must not publish
+ * to the SCDynamicStore itself; it records what changed and the main loop
+ * publishes.
  */
 struct bt_engine_host {
 	void	*ctx;
@@ -338,6 +346,12 @@ struct bt_engine_host {
 	 */
 	bool	(*bond_lookup)(void *ctx, const struct bt_addr *peer,
 		    struct bt_bond *out);
+
+	/*
+	 * Is a name for `peer` already cached? Discovery skips the Remote Name
+	 * Request (a page of its own) for devices whose name is known.
+	 */
+	bool	(*name_known)(void *ctx, const struct bt_addr *peer);
 };
 
 /*
@@ -392,6 +406,14 @@ struct bt_engine_ops {
 	 */
 	bt_status_t	(*bond_import)(struct bt_engine *e,
 			    const struct bt_bond *b);
+
+	/*
+	 * Timers. next_timer returns the monotonic time (bt_now_ms(), hci.h)
+	 * of the engine's next deadline, or 0 for none; the main loop sleeps no
+	 * longer than that and then calls timer.
+	 */
+	uint64_t	(*next_timer)(struct bt_engine *e);
+	void		(*timer)(struct bt_engine *e, uint64_t now);
 };
 
 /*

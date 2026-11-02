@@ -7,9 +7,11 @@
  * IOServiceAddMatchingNotification, first-match and terminated, the way wland
  * follows IO80211Controller. No NGM_LISTNODES polling, no devd.
  *
- * A controller still in its bootloader (Intel, waiting for firmware) has no
- * IOBluetoothHostController yet; it is seen as an IOUSBHostDevice instead, and
- * that watch belongs to the firmware loader (#202).
+ * A controller still in its bootloader (Intel, Realtek, waiting for firmware)
+ * has no IOBluetoothHostController: ng_ubt refuses it. It is seen as an
+ * IOUSBHostDevice instead (nextbsd-kernel#391), so the same notification port
+ * also watches IOUSBHostDevice first-match for the vendor ids the firmware
+ * loader knows (fw_ids.c), and hands those to firmware.c (#202).
  */
 #ifndef _BLUETOOTHD_IOKIT_WATCH_H_
 #define _BLUETOOTHD_IOKIT_WATCH_H_
@@ -20,19 +22,26 @@
 #include "bluetooth_mig_types.h"	/* BTNodeName, BTTransportName */
 
 #define	BT_IOKIT_CLASS		"IOBluetoothHostController"
+#define	BT_IOKIT_USB_CLASS	"IOUSBHostDevice"
 
 /*
  * Properties read from the entry. Any of them may be missing; the node name
  * then falls back to the entry's own name, and the rest stay zero or empty.
  */
-#define	BT_IOKIT_KEY_NODE	"org.nextbsd.bluetooth.Node"
-#define	BT_IOKIT_KEY_TRANSPORT	"org.nextbsd.bluetooth.Transport"
+#define	BT_IOKIT_KEY_NODE	"org.nextbsd.bluetooth.NodeName"
+#define	BT_IOKIT_KEY_TRANSPORT	"Transport"
 #define	BT_IOKIT_KEY_VENDOR	"idVendor"
 #define	BT_IOKIT_KEY_PRODUCT	"idProduct"
+#define	BT_IOKIT_KEY_UGEN	"org.nextbsd.ugen"
+/* IOUSBHostDevice: the first interface's class triple (nextbsd-kernel#391). */
+#define	BT_IOKIT_KEY_IFCLASS	"bInterfaceClass"
+#define	BT_IOKIT_KEY_IFSUBCLASS	"bInterfaceSubClass"
+#define	BT_IOKIT_KEY_IFPROTOCOL	"bInterfaceProtocol"
 
 typedef enum {
-	BT_IOKIT_ARRIVED	= 1,
-	BT_IOKIT_DEPARTED	= 2
+	BT_IOKIT_ARRIVED	= 1,	/* IOBluetoothHostController */
+	BT_IOKIT_DEPARTED	= 2,
+	BT_IOKIT_USB_ARRIVED	= 3	/* IOUSBHostDevice, a firmware candidate */
 } bt_iokit_event_kind_t;
 
 /*
@@ -47,6 +56,8 @@ struct bt_iokit_event {
 	BTTransportName		transport;	/* "USB" */
 	uint16_t		vendor;
 	uint16_t		product;
+	char			ugen[32];	/* "ugen0.3" */
+	uint8_t			if_class[3];	/* USB only: class, sub, proto */
 };
 
 /*

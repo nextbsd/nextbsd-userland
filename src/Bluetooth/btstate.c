@@ -8,8 +8,11 @@
 
 #include <SystemConfiguration/SCDynamicStore.h>
 
+#include <notify.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
+#include <unistd.h>
 
 static SCDynamicStoreRef	g_store;
 
@@ -92,6 +95,145 @@ bt_state_publish_daemon(const struct bt_daemon_summary *s)
 		return (-1);
 	}
 	return (0);
+}
+
+/* Set `k` to `d`, consuming `d`. 0 on success. */
+static int
+set_value(const char *k, CFMutableDictionaryRef d)
+{
+	CFStringRef key;
+	Boolean ok;
+
+	if (d == NULL)
+		return (-1);
+	if (store() == NULL) {
+		CFRelease(d);
+		return (-1);
+	}
+	key = btcf_str(k);
+	ok = (key != NULL) && SCDynamicStoreSetValue(g_store, key, d);
+	if (key != NULL)
+		CFRelease(key);
+	CFRelease(d);
+	if (!ok) {
+		xlog("could not set %s", k);
+		return (-1);
+	}
+	return (0);
+}
+
+static CFMutableDictionaryRef
+new_dict(void)
+{
+	return (CFDictionaryCreateMutable(NULL, 0,
+	    &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks));
+}
+
+int
+bt_state_publish_adapter(const struct bt_adapter_summary *s)
+{
+	CFMutableDictionaryRef d = new_dict();
+	char key[128];
+
+	if (d == NULL)
+		return (-1);
+	if (s->address[0] != '\0')
+		btcf_set_str(d, CFSTR("Address"), s->address);
+	if (s->name[0] != '\0')
+		btcf_set_str(d, CFSTR("Name"), s->name);
+	btcf_set_str(d, CFSTR("Transport"), s->transport);
+	btcf_set_int(d, CFSTR("VendorID"), s->vendor);
+	btcf_set_int(d, CFSTR("ProductID"), s->product);
+	btcf_set_str(d, CFSTR("State"), s->state);
+	btcf_set_bool(d, CFSTR("Powered"), s->powered);
+	btcf_set_bool(d, CFSTR("Discoverable"), s->discoverable);
+	btcf_set_bool(d, CFSTR("Connectable"), s->connectable);
+	btcf_set_bool(d, CFSTR("Scanning"), s->scanning);
+	(void)snprintf(key, sizeof(key), "%s%s", BT_STATE_ADAPTER_PREFIX,
+	    s->node);
+	return (set_value(key, d));
+}
+
+int
+bt_state_publish_pairing(const char *key, const struct bt_pair_prompt *p,
+    const char *method)
+{
+	CFMutableDictionaryRef d = new_dict();
+	char addr[BT_ADDR_STRLEN];
+
+	if (d == NULL)
+		return (-1);
+	btcf_set_str(d, CFSTR("Address"), bt_addr_ntoa(&p->peer,
+	    BT_ADDR_FMT_DISPLAY, addr, sizeof(addr)));
+	btcf_set_str(d, CFSTR("Method"), method);
+	if (p->method == bt_pair_numeric_comparison_e ||
+	    p->method == bt_pair_passkey_display_e)
+		btcf_set_int(d, CFSTR("Passkey"), p->passkey);
+	btcf_set_int(d, CFSTR("Expires"), (long long)p->expires);
+	return (set_value(key, d));
+}
+
+int
+bt_state_publish_device(const char *key, const struct bt_bond *b)
+{
+	CFMutableDictionaryRef d = new_dict();
+	char addr[BT_ADDR_STRLEN];
+
+	if (d == NULL)
+		return (-1);
+	btcf_set_str(d, CFSTR("Address"), bt_addr_ntoa(&b->addr,
+	    BT_ADDR_FMT_DISPLAY, addr, sizeof(addr)));
+	btcf_set_str(d, CFSTR("Name"), b->name);
+	btcf_set_int(d, CFSTR("ClassOfDevice"), b->class_of_device);
+	btcf_set_bool(d, CFSTR("Paired"), true);
+	return (set_value(key, d));
+}
+
+int
+bt_state_publish_firmware(const char *ugen, int vendor, int product,
+    const char *state)
+{
+	CFMutableDictionaryRef d = new_dict();
+	char key[128];
+
+	if (d == NULL)
+		return (-1);
+	btcf_set_int(d, CFSTR("VendorID"), vendor);
+	btcf_set_int(d, CFSTR("ProductID"), product);
+	btcf_set_str(d, CFSTR("State"), state);
+	(void)snprintf(key, sizeof(key), "%s%s", BT_STATE_FIRMWARE_PREFIX,
+	    ugen);
+	return (set_value(key, d));
+}
+
+void
+bt_state_notify(const char *name)
+{
+	(void)notify_post(name);
+}
+
+bool
+bt_state_computer_name(char *buf, size_t len)
+{
+	CFStringRef name = NULL;
+	char *dot;
+
+	if (store() != NULL)
+		name = SCDynamicStoreCopyComputerName(g_store, NULL);
+	if (name != NULL) {
+		Boolean ok = CFStringGetCString(name, buf, (CFIndex)len,
+		    kCFStringEncodingUTF8);
+
+		CFRelease(name);
+		if (ok && buf[0] != '\0')
+			return (true);
+	}
+	if (gethostname(buf, len) != 0 || buf[0] == '\0')
+		return (false);
+	buf[len - 1] = '\0';
+	if ((dot = strchr(buf, '.')) != NULL)
+		*dot = '\0';
+	return (buf[0] != '\0');
 }
 
 int

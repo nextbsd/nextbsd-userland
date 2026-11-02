@@ -18,6 +18,30 @@
 .Nm
 .Cm sdp
 .Ar address
+.Nm
+.Cm power
+.Cm on | off
+.Op Ar node
+.Nm
+.Cm discoverable
+.Cm on | off
+.Op Fl t Ar seconds
+.Op Ar node
+.Nm
+.Cm scan
+.Op Fl t Ar seconds
+.Op Ar node
+.Nm
+.Cm pair
+.Ar address
+.Op Ar pin
+.Nm
+.Cm confirm
+.Ar address
+.Cm yes | no | Ar passkey | Ar pin
+.Nm
+.Cm unpair
+.Ar address
 .Sh DESCRIPTION
 .Nm
 is the command-line client for
@@ -57,6 +81,60 @@ connects to the device, which may page it, reads the records and renders
 them; well-known service classes, protocols and attributes are named.
 This replaces
 .Ql sdpcontrol browse .
+.It Cm power Cm on | off Op Ar node
+Power a controller on or off; with no
+.Ar node ,
+the first one.
+Off disconnects every device and stops the controller answering pages and
+inquiries.
+The choice is saved as
+.Ql ControllerPowerState
+and applies to controllers that arrive later.
+Bluetooth is on by default.
+.It Cm discoverable Cm on | off Oo Fl t Ar seconds Oc Op Ar node
+Let other devices find this computer by inquiry.
+With
+.Fl t
+it turns itself off again after
+.Ar seconds
+and the setting is not saved; without, it is saved as
+.Ql DiscoverableState .
+.It Cm scan Oo Fl t Ar seconds Oc Op Ar node
+Discover nearby devices for
+.Ar seconds
+(default 10, at most 60), then print each one's address, name, class and
+signal, and whether it is paired.
+Names come from the device's extended inquiry response, the daemon's cache,
+or a name request after the inquiry.
+Prints
+.Dq no devices found
+when there were none.
+.It Cm pair Ar address Op Ar pin
+Pair with a device and follow the pairing to the end.
+If the device asks for confirmation, a passkey or a PIN,
+.Nm
+asks on the terminal; without a terminal it prints what is needed and exits
+with status 3, and
+.Cm confirm
+answers.
+A keyboard shows nothing to confirm: type the passkey
+.Nm
+prints on the keyboard, then press Enter on it.
+Headphones and speakers pair with no question.
+A legacy device that needs a PIN can be given it here.
+.It Cm confirm Ar address Cm yes | no | Ar passkey | Ar pin
+Answer the prompt a pairing with
+.Ar address
+is waiting on:
+.Cm yes
+or
+.Cm no
+for a number to compare, the six digits a device shows for passkey entry,
+or the PIN.
+A prompt not answered within 60 seconds fails the pairing.
+.It Cm unpair Ar address
+Forget a paired device: its keys, its entry in the pairing store, and its
+link if it is connected.
 .El
 .Pp
 Addresses print as
@@ -87,7 +165,9 @@ could not be reached.
 .It 2
 Usage error.
 .It 3
-An answer is needed (reserved for non-interactive pairing).
+.Cm pair
+needs an answer and there is no terminal to ask on; use
+.Cm confirm .
 .El
 .Sh EXAMPLES
 .Bd -literal -offset indent
@@ -102,6 +182,18 @@ controller:    ubt0
   transport:   USB 8087:0a2b
   state:       on
   address:     A4:34:D9:01:02:03
+  name:        thinkpad-t460s
+  powered:     on
+  discoverable: off
+  features:    SSP LE EIR
+
+$ bluetooth scan
+scanning for 10 seconds...
+ADDRESS                  NAME                         CLASS           SIGNAL       PAIRED
+B8:D5:0B:12:34:56        Beats Studio                 headphones      ***  -58     no
+
+$ bluetooth pair B8:D5:0B:12:34:56
+paired with B8:D5:0B:12:34:56
 
 $ bluetooth list
 ADDRESS                  NAME                     CLASS  LINK     AUTO STATE        PROFILES
@@ -116,6 +208,11 @@ record 0x00010001: AudioSink
 .Ed
 .Sh DIAGNOSTICS
 .Bl -diag
+.It "bluetooth: no Bluetooth adapters"
+No controller is present, or none has been brought up yet.
+.It "bluetooth: adapter is powered off"
+Turn it on with
+.Ql bluetooth power on .
 .It "bluetooth: cannot reach org.nextbsd.bluetooth — is bluetoothd running?"
 The Mach service lookup failed.
 Check
