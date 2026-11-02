@@ -19,6 +19,12 @@
  *   AutoConnect            bool  reconnect paired devices on power-up, before
  *                                login included. Default true. Each device
  *                                also has its own AutoConnect.
+ *   AutoSwitchAudio        bool  a headset that connects takes /dev/dsp, so
+ *                                programs play to it (#218). Default true.
+ *   A2DPSink               bool  be a Bluetooth speaker: advertise the A2DP
+ *                                sink record and the Audio/Rendering CoD
+ *                                bits, and accept a phone's stream (#219).
+ *                                Default false.
  *   PairedDevices          dict  keyed by the address in BT_ADDR_FMT_KEY form
  *                                ("aa-bb-cc-dd-ee-ff"), each entry:
  *       Name               string
@@ -38,6 +44,8 @@
  *                                  is left to (connections.h)
  *       AutoConnect        bool
  *       Trusted            bool    accept connections it initiates
+ *       Audio              bool    play to it when it connects (an A2DP
+ *                                  sink); absent means true (#218)
  *       Paired             int     unix time
  *       LastConnected      int     unix time
  *
@@ -69,6 +77,9 @@ struct bt_prefs {
 	int	power_state;		/* ControllerPowerState: 1 on, 0 off */
 	bool	discoverable;		/* DiscoverableState */
 	bool	autoconnect;		/* AutoConnect */
+	bool	autoswitch_audio;	/* AutoSwitchAudio: a headset takes
+					   /dev/dsp (#218) */
+	bool	a2dp_sink;		/* A2DPSink: we are a speaker (#219) */
 };
 
 /*
@@ -86,6 +97,8 @@ void	bt_prefs_load(struct bt_prefs *out);
 int	bt_prefs_set_power_state(int on);
 int	bt_prefs_set_discoverable(bool on);
 int	bt_prefs_set_autoconnect(bool on);
+int	bt_prefs_set_autoswitch_audio(bool on);
+int	bt_prefs_set_a2dp_sink(bool on);
 
 /* Number of PairedDevices entries. */
 int	bt_store_paired_count(void);

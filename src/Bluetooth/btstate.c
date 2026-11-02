@@ -4,6 +4,7 @@
  * Called from the main loop only, so the one session needs no lock.
  */
 #include "btstate.h"
+#include "audio.h"
 #include "btcf.h"
 
 #include <SystemConfiguration/SCDynamicStore.h>
@@ -84,6 +85,8 @@ bt_state_publish_daemon(const struct bt_daemon_summary *s)
 	btcf_set_int(d, CFSTR("ControllerPowerState"), s->prefs.power_state);
 	btcf_set_bool(d, CFSTR("DiscoverableState"), s->prefs.discoverable);
 	btcf_set_bool(d, CFSTR("AutoConnect"), s->prefs.autoconnect);
+	btcf_set_bool(d, CFSTR("AutoSwitchAudio"), s->prefs.autoswitch_audio);
+	btcf_set_bool(d, CFSTR("A2DPSink"), s->prefs.a2dp_sink);
 
 	key = btcf_str(BT_STATE_KEY);
 	ok = (key != NULL) && SCDynamicStoreSetValue(g_store, key, d);
@@ -227,6 +230,47 @@ bt_state_publish_firmware(const char *ugen, int vendor, int product,
 	btcf_set_str(d, CFSTR("State"), state);
 	(void)snprintf(key, sizeof(key), "%s%s", BT_STATE_FIRMWARE_PREFIX,
 	    ugen);
+	return (set_value(key, d));
+}
+
+int
+bt_state_publish_audio(const char *key, const struct audio_status *s)
+{
+	CFMutableDictionaryRef d = new_dict();
+
+	if (d == NULL)
+		return (-1);
+	btcf_set_str(d, CFSTR("Role"), s->role == AUDIO_ROLE_SOURCE ?
+	    "Source" : s->role == AUDIO_ROLE_SINK ? "Sink" : "None");
+	btcf_set_str(d, CFSTR("Route"), s->route == AUDIO_ROUTE_HFP ? "HFP" :
+	    s->route == AUDIO_ROUTE_A2DP ? "A2DP" : "None");
+	btcf_set_bool(d, CFSTR("Active"), s->active);
+	if (s->codec[0] != '\0')
+		btcf_set_str(d, CFSTR("Codec"), s->codec);
+	if (s->node[0] != '\0')
+		btcf_set_str(d, CFSTR("Node"), s->node);
+	btcf_set_bool(d, CFSTR("DefaultOutput"), s->default_out);
+	btcf_set_bool(d, CFSTR("AVRCP"), s->avrcp);
+	if (s->volume >= 0)
+		btcf_set_int(d, CFSTR("Volume"), s->volume);
+	return (set_value(key, d));
+}
+
+int
+bt_state_publish_a2dp_sink(const char *node, bool enabled,
+    const struct bt_addr *peer)
+{
+	CFMutableDictionaryRef d = new_dict();
+	char key[128], addr[BT_ADDR_STRLEN];
+
+	if (d == NULL)
+		return (-1);
+	btcf_set_bool(d, CFSTR("Enabled"), enabled);
+	if (peer != NULL)
+		btcf_set_str(d, CFSTR("Peer"), bt_addr_ntoa(peer,
+		    BT_ADDR_FMT_DISPLAY, addr, sizeof(addr)));
+	(void)snprintf(key, sizeof(key), "%s%s/A2DPSink",
+	    BT_STATE_ADAPTER_PREFIX, node);
 	return (set_value(key, d));
 }
 

@@ -14,6 +14,11 @@
  *   bluetooth disconnect <address>          disconnect
  *   bluetooth device <address>              one device's state
  *   bluetooth autoconnect <address> on|off  reconnect at power-up or not
+ *   bluetooth audio                         audio policy and devices
+ *   bluetooth audio <address> on|off        play to a headset or not
+ *   bluetooth audio <address> volume <0-127>
+ *   bluetooth audio autoswitch on|off       a headset takes /dev/dsp
+ *   bluetooth audio sink on|off             be a Bluetooth speaker
  *
  * A pure-C MIG client for org.nextbsd.bluetooth, modelled on wlan(8):
  * bootstrap_look_up, then straight RPCs. It links only liblaunch and
@@ -51,6 +56,8 @@
 #define	EXIT_ANSWER		3
 
 static const char *progname = "bluetooth";
+
+static int	print_audio(mach_port_t svc, bool header);
 
 static const char *
 status_str(bt_status_t s)
@@ -257,6 +264,7 @@ cmd_status(mach_port_t svc, int argc, char **argv)
 	(void)printf("discoverable:  %s\n", disc ? "on" : "off");
 	(void)printf("auto-connect:  %s\n", autoc ? "on" : "off");
 	(void)printf("paired:        %d\n", npaired);
+	(void)print_audio(svc, false);
 
 	for (i = 0; ; i++) {
 		BTUSBDeviceName dev;
@@ -894,6 +902,100 @@ cmd_sdp(mach_port_t svc, int argc, char **argv)
 	return (EXIT_OK);
 }
 
+/* The audio devices and policy, as `status` and `audio` print them. */
+static int
+print_audio(mach_port_t svc, bool header)
+{
+	bt_status_t st;
+	int autosw, sink, count, i;
+
+	if (bt_audio_policy(svc, -1, -1, &autosw, &sink, &st) !=
+	    KERN_SUCCESS) {
+		(void)fprintf(stderr, "%s: RPC failed\n", progname);
+		return (EXIT_ERR);
+	}
+	if (header)
+		(void)printf("\n");
+	(void)printf("audio:         headset takes /dev/dsp %s, "
+	    "speaker (A2DP sink) %s\n", autosw ? "on" : "off",
+	    sink ? "on" : "off");
+	if (bt_audio_count(svc, &count, &st) != KERN_SUCCESS ||
+	    st != bt_status_success_e)
+		return (EXIT_OK);
+	for (i = 0; i < count; i++) {
+		BTAddressString addr;
+		BTNodeName node;
+		BTTransportName codec;
+		int role, route, active, avrcp, defout, volume;
+
+		if (bt_audio_entry(svc, i, addr, &role, &route, &active,
+		    &avrcp, &defout, &volume, node, codec, &st) !=
+		    KERN_SUCCESS || st != bt_status_success_e)
+			break;
+		(void)printf("  %s  %s", addr, role == 1 ? "playing to it" :
+		    role == 2 ? "playing to us" : "remote control only");
+		if (role == 1)
+			(void)printf(" via /dev/%s%s", node,
+			    defout ? " (and /dev/dsp)" : "");
+		if (route == 2)
+			(void)printf(", on HFP");
+		if (codec[0] != '\0')
+			(void)printf(", %s", codec);
+		if (avrcp)
+			(void)printf(", AVRCP");
+		if (volume >= 0)
+			(void)printf(", volume %d/127", volume);
+		(void)printf("\n");
+	}
+	return (EXIT_OK);
+}
+
+static int
+cmd_audio(mach_port_t svc, int argc, char **argv)
+{
+	BTAddressString addr;
+	bt_status_t st;
+	int on, a = -1, b = -1, x, y;
+	char *end;
+	long v;
+
+	if (argc == 1)
+		return (print_audio(svc, false));
+	if (argc == 3 && (strcmp(argv[1], "autoswitch") == 0 ||
+	    strcmp(argv[1], "sink") == 0)) {
+		if ((on = parse_onoff(argv[2])) < 0)
+			return (-1);
+		if (strcmp(argv[1], "autoswitch") == 0)
+			a = on;
+		else
+			b = on;
+		if (bt_audio_policy(svc, a, b, &x, &y, &st) != KERN_SUCCESS) {
+			(void)fprintf(stderr, "%s: RPC failed\n", progname);
+			return (EXIT_ERR);
+		}
+		return (st == bt_status_success_e ? EXIT_OK :
+		    fail("audio", st));
+	}
+	(void)memset(addr, 0, sizeof(addr));
+	(void)strlcpy(addr, argv[1], sizeof(addr));
+	if (argc == 3 && (on = parse_onoff(argv[2])) >= 0) {
+		if (bt_audio_set(svc, addr, on, &st) != KERN_SUCCESS) {
+			(void)fprintf(stderr, "%s: RPC failed\n", progname);
+			return (EXIT_ERR);
+		}
+	} else if (argc == 4 && strcmp(argv[2], "volume") == 0) {
+		v = strtol(argv[3], &end, 10);
+		if (*argv[3] == '\0' || *end != '\0' || v < 0 || v > 127)
+			return (-1);
+		if (bt_audio_volume(svc, addr, (int)v, &st) != KERN_SUCCESS) {
+			(void)fprintf(stderr, "%s: RPC failed\n", progname);
+			return (EXIT_ERR);
+		}
+	} else
+		return (-1);
+	return (st == bt_status_success_e ? EXIT_OK : fail("audio", st));
+}
+
 /*
  * The verbs. `args` is the synopsis after the verb, for usage(); a later
  * ticket adds a row here and its cmd_ function above.
@@ -916,6 +1018,8 @@ static const struct verb {
 	{ "disconnect",	"address",			cmd_disconnect },
 	{ "device",	"address",			cmd_device },
 	{ "autoconnect", "address on|off",		cmd_autoconnect },
+	{ "audio",	"[address on|off | address volume 0-127 | "
+			"autoswitch on|off | sink on|off]",	cmd_audio },
 };
 
 #define	NVERBS	(sizeof(verbs) / sizeof(verbs[0]))

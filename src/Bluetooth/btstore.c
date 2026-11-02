@@ -22,6 +22,8 @@
 #define	KEY_POWER		CFSTR("ControllerPowerState")
 #define	KEY_DISCOVERABLE	CFSTR("DiscoverableState")
 #define	KEY_AUTOCONNECT		CFSTR("AutoConnect")
+#define	KEY_AUTOSWITCH_AUDIO	CFSTR("AutoSwitchAudio")
+#define	KEY_A2DP_SINK		CFSTR("A2DPSink")
 #define	KEY_PAIRED		CFSTR("PairedDevices")
 
 /* PairedDevices/<addr> fields. */
@@ -41,6 +43,7 @@
 #define	DEV_HID_SESSION		CFSTR("HIDSessionEstablished")
 #define	DEV_AUTOCONNECT		CFSTR("AutoConnect")
 #define	DEV_TRUSTED		CFSTR("Trusted")
+#define	DEV_AUDIO		CFSTR("Audio")
 #define	DEV_PAIRED		CFSTR("Paired")
 #define	DEV_LASTCONN		CFSTR("LastConnected")
 
@@ -121,6 +124,8 @@ bt_prefs_load(struct bt_prefs *out)
 	out->power_state = 1;		/* on by default */
 	out->discoverable = false;
 	out->autoconnect = true;
+	out->autoswitch_audio = true;
+	out->a2dp_sink = false;	/* it would advertise us as a speaker */
 
 	prefs = btcf_prefs_open(BT_PREFS_PATH);
 	if (prefs == NULL)
@@ -146,6 +151,14 @@ bt_prefs_load(struct bt_prefs *out)
 	else if (v != NULL && CFGetTypeID(v) == CFNumberGetTypeID() &&
 	    CFNumberGetValue(v, kCFNumberLongLongType, &n))
 		out->autoconnect = (n != 0);
+
+	v = SCPreferencesGetValue(prefs, KEY_AUTOSWITCH_AUDIO);
+	if (v != NULL && CFGetTypeID(v) == CFBooleanGetTypeID())
+		out->autoswitch_audio = CFBooleanGetValue(v);
+
+	v = SCPreferencesGetValue(prefs, KEY_A2DP_SINK);
+	if (v != NULL && CFGetTypeID(v) == CFBooleanGetTypeID())
+		out->a2dp_sink = CFBooleanGetValue(v);
 
 	CFRelease(prefs);
 }
@@ -196,6 +209,20 @@ bt_prefs_set_autoconnect(bool on)
 	                                      : kCFBooleanFalse));
 }
 
+int
+bt_prefs_set_autoswitch_audio(bool on)
+{
+	return (prefs_set(KEY_AUTOSWITCH_AUDIO, on ? kCFBooleanTrue
+	                                           : kCFBooleanFalse));
+}
+
+int
+bt_prefs_set_a2dp_sink(bool on)
+{
+	return (prefs_set(KEY_A2DP_SINK, on ? kCFBooleanTrue
+	                                    : kCFBooleanFalse));
+}
+
 /* ------------------------------------------------------------------ */
 /* Paired devices                                                      */
 /* ------------------------------------------------------------------ */
@@ -240,6 +267,12 @@ entry_to_bond(CFStringRef cf_key, CFDictionaryRef e, struct bt_bond *b)
 	b->autoconnect = true;
 	(void)btcf_get_bool(e, DEV_AUTOCONNECT, &b->autoconnect);
 	(void)btcf_get_bool(e, DEV_TRUSTED, &b->trusted);
+	{
+		bool audio = true;	/* absent: on */
+
+		(void)btcf_get_bool(e, DEV_AUDIO, &audio);
+		b->no_audio = !audio;
+	}
 	if (btcf_get_int(e, DEV_PAIRED, &n))
 		b->paired_at = (time_t)n;
 	if (btcf_get_int(e, DEV_LASTCONN, &n))
@@ -332,6 +365,7 @@ bond_to_entry(const struct bt_bond *b)
 		btcf_set_int(e, DEV_APPEARANCE, b->appearance);
 	btcf_set_bool(e, DEV_AUTOCONNECT, b->autoconnect);
 	btcf_set_bool(e, DEV_TRUSTED, b->trusted);
+	btcf_set_bool(e, DEV_AUDIO, !b->no_audio);
 	btcf_set_int(e, DEV_PAIRED, (long long)(b->paired_at != 0 ?
 	    b->paired_at : time(NULL)));
 	if (b->last_connected != 0)

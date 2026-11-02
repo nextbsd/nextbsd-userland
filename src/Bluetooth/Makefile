@@ -36,6 +36,10 @@ SRCS+=		le_engine.c att.c gatt.c smp.c le_crypto.c hogp.c
 # Connections, reconnect at power-up and State:/Bluetooth/Device (#213); the
 # Classic HID host, HIDP into IOHIDUserDevice (#524).
 SRCS+=		connections.c hid_host.c
+# Audio (#218, #219, #220): the policy and the mixer (audio.c) run through
+# the child supervisor (child.c); AVRCP into IOHIDUserDevice media keys
+# (avrcp.c); the A2DP sink with its AVDTP acceptor and SBC decoder.
+SRCS+=		audio.c child.c avrcp.c a2dp_sink.c avdtp.c sbc_decode.c
 # Firmware download for bootloader-mode controllers (#202): the device half
 # (firmware.c), the id tables (fw_ids.c) and the iwmbtfw / rtlbtfw ports.
 SRCS+=		firmware.c fw_ids.c fw_intel.c fw_rtl.c
@@ -128,5 +132,6 @@ BINDIR=		/usr/sbin
 #   usb       libusb: firmware download over the ugen node, as iwmbtfw and
 #             rtlbtfw do
 #   crypto    libcrypto: AES-128, AES-CMAC and P-256 ECDH for LE pairing
-LIBADD+=	pthread netgraph usb crypto
+#   m         cosf: the SBC decoder's synthesis tables (sbc_decode.c)
+LIBADD+=	pthread netgraph usb crypto m
 .include <bsd.prog.mk>

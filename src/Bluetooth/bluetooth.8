@@ -55,6 +55,21 @@
 .Cm autoconnect
 .Ar address
 .Cm on | off
+.Nm
+.Cm audio
+.Nm
+.Cm audio
+.Ar address
+.Cm on | off
+.Nm
+.Cm audio
+.Ar address
+.Cm volume
+.Ar level
+.Nm
+.Cm audio
+.Cm autoswitch | sink
+.Cm on | off
 .Sh DESCRIPTION
 .Nm
 is the command-line client for
@@ -173,6 +188,29 @@ over the link.
 .It Cm autoconnect Ar address Cm on | off
 Whether a paired device is reconnected when a controller powers up
 (on by default).
+.It Cm audio
+Print the audio preferences and every device with audio now: a headset
+played to (and the
+.Pa /dev/dsp.btN
+programs open), a phone playing to this machine, AVRCP, and the headset's
+volume.
+.Cm status
+prints the same.
+.It Cm audio Ar address Cm on | off
+Whether
+.Xr bluetoothd 8
+plays to a paired headset when it connects (on by default).
+Off stops a mixer that runs.
+.It Cm audio Ar address Cm volume Ar level
+Set a headset's volume, 0\(en127, with AVRCP absolute volume.
+.It Cm audio Cm autoswitch Cm on | off
+Whether a headset that connects takes
+.Pa /dev/dsp
+(on by default).
+Applies to the next headset that connects.
+.It Cm audio Cm sink Cm on | off
+Be a Bluetooth speaker, so a phone can play through this machine (off by
+default).
 .El
 .Pp
 Addresses print as
