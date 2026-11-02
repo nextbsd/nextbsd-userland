@@ -4,7 +4,7 @@
 .\" surface lives inside the closed bluetoothd. This page is written for this
 .\" tool.
 .\"
-.Dd November 1, 2026
+.Dd November 2, 2026
 .Dt BLUETOOTH 8
 .Os NextBSD
 .Sh NAME
@@ -14,67 +14,85 @@
 .Nm
 .Cm status
 .Nm
-.Cm list
-.Nm
-.Cm sdp
-.Ar address
-.Nm
 .Cm power
 .Cm on | off
-.Op Ar node
-.Nm
-.Cm discoverable
-.Cm on | off
-.Op Fl t Ar seconds
 .Op Ar node
 .Nm
 .Cm scan
 .Op Fl t Ar seconds
 .Op Ar node
 .Nm
+.Cm list
+.Nm
 .Cm pair
-.Ar address
+.Ar device
 .Op Ar pin
+.Op Fl -no-prompt
 .Nm
 .Cm confirm
-.Ar address
+.Ar device
 .Cm yes | no | Ar passkey | Ar pin
 .Nm
-.Cm unpair
-.Ar address
-.Nm
 .Cm connect
-.Ar address
+.Ar device
 .Nm
 .Cm disconnect
-.Ar address
+.Ar device
+.Nm
+.Cm unpair
+.Ar device
 .Nm
 .Cm device
-.Ar address
+.Ar device
 .Nm
 .Cm autoconnect
-.Ar address
+.Ar device
 .Cm on | off
 .Nm
 .Cm audio
 .Nm
 .Cm audio
-.Ar address
+.Ar device
 .Cm on | off
 .Nm
 .Cm audio
-.Ar address
+.Ar device
 .Cm volume
 .Ar level
 .Nm
 .Cm audio
 .Cm autoswitch | sink
 .Cm on | off
+.Nm
+.Cm discoverable
+.Cm on | off
+.Op Fl t Ar seconds
+.Op Ar node
+.Nm
+.Cm info
+.Op Ar node
+.Nm
+.Cm hci
+.Op Fl n Ar node
+.Ar ogf ocf
+.Op Ar byte ...
+.Nm
+.Cm ping
+.Op Fl c Ar count
+.Op Fl s Ar size
+.Op Fl i Ar seconds
+.Ar device
+.Nm
+.Cm sdp | browse
+.Ar device
 .Sh DESCRIPTION
 .Nm
 is the command-line client for
 .Xr bluetoothd 8 ,
-the NextBSD Bluetooth daemon.
+the NextBSD Bluetooth daemon, and the only Bluetooth command on the system.
+It covers everyday use (power, scan, pair, connect) and the diagnostics
+that used to need separate tools: controller information, raw HCI commands,
+L2CAP echo and SDP browsing.
 .Pp
 It is a pure-C Mach client: it looks up the
 .Ql org.nextbsd.bluetooth
@@ -82,110 +100,123 @@ Mach service and issues MIG RPCs.
 It does not link CoreFoundation or SystemConfiguration, so it is also the
 supported way for anything above the Mach line, including the Gershwin
 desktop, to drive Bluetooth.
+.Pp
+A
+.Ar device
+is an address,
+.Ql AA:BB:CC:DD:EE:FF
+(an LE random address carries a
+.Ql /random
+suffix, which may be left off when typing it), or the start of a device's name, ignoring case.
+A name is looked up among the paired devices first, then among the devices
+the last
+.Cm scan
+found; it must match one device, or exactly one by its whole name.
+A
+.Ar node
+names a controller, such as
+.Ql ubt0 ;
+without one, the first controller is meant.
 .Sh COMMANDS
 .Bl -tag -width "status"
 .It Cm status
 Print the daemon's state, the persisted policy (power, discoverable,
-auto-connect), the number of paired devices, and each controller with its
-transport, USB vendor and product, state, and, once it has been brought up,
-its address and name.
-.It Cm list
-Print the paired devices from the pairing store: address, name, class of
-device, link
-.Po
-.Ql BR/EDR ,
-.Ql LE
-or
-.Ql dual
-.Pc ,
-whether it reconnects automatically, its connection state, and the profiles
-it offers.
-.It Cm sdp Ar address
-Browse the SDP records of the Classic (BR/EDR) device at
-.Ar address ,
-paired or not, and print every attribute of every record.
-.Xr bluetoothd 8
-connects to the device, which may page it, reads the records and renders
-them; well-known service classes, protocols and attributes are named.
-This replaces
-.Ql sdpcontrol browse .
+auto-connect), the number of paired devices, the firmware loader's work,
+each connected device with the profiles running over its link (HID, HID
+over GATT, audio), and each controller with its transport, USB vendor and
+product, state, address and name.
 .It Cm power Cm on | off Op Ar node
-Power a controller on or off; with no
-.Ar node ,
-the first one.
+Power a controller on or off.
 Off disconnects every device and stops the controller answering pages and
 inquiries.
 The choice is saved as
 .Ql ControllerPowerState
 and applies to controllers that arrive later.
 Bluetooth is on by default.
-.It Cm discoverable Cm on | off Oo Fl t Ar seconds Oc Op Ar node
-Let other devices find this computer by inquiry.
-With
-.Fl t
-it turns itself off again after
-.Ar seconds
-and the setting is not saved; without, it is saved as
-.Ql DiscoverableState .
 .It Cm scan Oo Fl t Ar seconds Oc Op Ar node
 Discover nearby devices for
 .Ar seconds
-(default 10, at most 60), then print each one's address, name, class and
+(default 10, at most 60), Classic and LE together, then print each one's
+address, name, kind (from its class of device, or for LE its appearance),
+link
+.Pq Ql BR/EDR , Ql LE No or Ql dual ,
 signal, and whether it is paired.
-Names come from the device's extended inquiry response, the daemon's cache,
-or a name request after the inquiry.
-LE devices are scanned for at the same time and listed with them.
 Prints
 .Dq no devices found
 when there were none.
-.It Cm pair Ar address Op Ar pin
+Put a device in pairing mode before scanning for it.
+.It Cm list
+Print the paired devices: address, name, class of device, link, whether it
+reconnects automatically, its connection state, and its profiles.
+.It Cm pair Ar device Oo Ar pin Oc Op Fl -no-prompt
 Pair with a device and follow the pairing to the end.
-If the device asks for confirmation, a passkey or a PIN,
+Classic or LE is chosen from what the scan saw.
+A device with nothing to compare, such as a mouse or headphones, pairs with
+no question: running
+.Cm pair
+was the yes.
+If the device needs a number confirmed, a passkey or a PIN,
 .Nm
-asks on the terminal; without a terminal it prints what is needed and exits
-with status 3, and
+asks on the terminal.
+For a keyboard it prints a passkey: type it on the keyboard, then press
+Enter there.
+A legacy device that needs a PIN can be given it on the command line.
+Ctrl-C refuses the pairing.
+.Pp
+Without a terminal, or with
+.Fl -no-prompt ,
+.Nm
+does not ask: it prints one line,
+.Dl address=<addr> method=<method> passkey=<digits> expires=<seconds>
+and exits with status 3, and
 .Cm confirm
 answers.
-A keyboard shows nothing to confirm: type the passkey
-.Nm
-prints on the keyboard, then press Enter on it.
-Headphones, speakers and mice pair with no question.
-An LE device is paired over LE, the same way; its address may be given with
-or without the
-.Ql /random
-suffix.
-A legacy device that needs a PIN can be given it here.
-.It Cm confirm Ar address Cm yes | no | Ar passkey | Ar pin
+.Ar method
+is one of
+.Ql numeric-comparison ,
+.Ql passkey-entry ,
+.Ql passkey-display
+or
+.Ql pin ;
+.Ar passkey
+is empty unless there is a number to show.
+For
+.Ql passkey-display
+nothing needs answering; the pairing goes on in the daemon while the user
+types the passkey on the device.
+.It Cm confirm Ar device Cm yes | no | Ar passkey | Ar pin
 Answer the prompt a pairing with
-.Ar address
+.Ar device
 is waiting on:
 .Cm yes
 or
 .Cm no
-for a number to compare, the six digits a device shows for passkey entry,
-or the PIN.
+for a number to compare, the six digits the device shows for passkey
+entry, or the PIN.
 A prompt not answered within 60 seconds fails the pairing.
-.It Cm unpair Ar address
-Forget a paired device: its keys, its entry in the pairing store, and its
-link if it is connected.
-.It Cm connect Ar address
-Connect a device and wait (up to 30 seconds) until it is connected.
-A paired keyboard, mouse or other HID device gets its HID channels and
-appears to the system as a HID device; anything else gets a link.
+.It Cm connect Ar device
+Connect a paired device and wait (up to 30 seconds) until it is connected.
+A keyboard, mouse or other HID device, Classic or LE, gets its HID channels
+and appears to the system as a HID device; anything else gets a link.
 Prints
 .Dq connected to Ar address
 with the profiles that run over the link.
-.It Cm disconnect Ar address
-Disconnect a device: its HID channels, then the link.
+Paired devices normally reconnect by themselves; this is for when one has
+not.
+.It Cm disconnect Ar device
+Disconnect a device: its profiles, then the link.
 A keyboard or mouse that reconnects by itself comes back at its next key
 press or movement; use
 .Cm unpair
 to stop that.
-.It Cm device Ar address
+.It Cm unpair Ar device
+Forget a paired device: its keys, its entry in the pairing store, and its
+link if it is connected.
+.It Cm device Ar device
 Print one device's name, class, whether it is paired, its link state, the
 controller it is connected through, its signal and the profiles running
 over the link.
-.It Cm autoconnect Ar address Cm on | off
+.It Cm autoconnect Ar device Cm on | off
 Whether a paired device is reconnected when a controller powers up
 (on by default).
 .It Cm audio
@@ -196,12 +227,12 @@ programs open), a phone playing to this machine, AVRCP, and the headset's
 volume.
 .Cm status
 prints the same.
-.It Cm audio Ar address Cm on | off
+.It Cm audio Ar device Cm on | off
 Whether
 .Xr bluetoothd 8
 plays to a paired headset when it connects (on by default).
 Off stops a mixer that runs.
-.It Cm audio Ar address Cm volume Ar level
+.It Cm audio Ar device Cm volume Ar level
 Set a headset's volume, 0\(en127, with AVRCP absolute volume.
 .It Cm audio Cm autoswitch Cm on | off
 Whether a headset that connects takes
@@ -211,13 +242,60 @@ Applies to the next headset that connects.
 .It Cm audio Cm sink Cm on | off
 Be a Bluetooth speaker, so a phone can play through this machine (off by
 default).
+.It Cm discoverable Cm on | off Oo Fl t Ar seconds Oc Op Ar node
+Let other devices find this computer by inquiry.
+With
+.Fl t
+it turns itself off again after
+.Ar seconds
+and the setting is not saved; without, it is saved as
+.Ql DiscoverableState .
+.It Cm info Op Ar node
+Print what the controller says about itself: its address, manufacturer,
+HCI and LMP versions, supported features, ACL, SCO and LE buffer sizes;
+the HCI node's free credits and packet and byte counters; and every open
+link with its type, handle, role, encryption, mode and pending packets.
+.It Cm hci Oo Fl n Ar node Oc Ar ogf ocf Op Ar byte ...
+Send one raw HCI command and print the event that answered it, its status
+and its return parameters.
+.Ar ogf ,
+.Ar ocf
+and each parameter
+.Ar byte
+are hexadecimal, with or without
+.Ql 0x ;
+multi-byte parameters are given in the controller's order, least
+significant byte first.
+For a command answered by Command Status, the command goes on in the
+controller and its later events are not shown.
+Only root may send raw commands, and
+.Xr bluetoothd 8
+is not told what they change.
+.It Cm ping Oo Fl c Ar count Oc Oo Fl s Ar size Oc Oo Fl i Ar seconds Oc Ar device
+Send L2CAP Echo Requests to a Classic device and print each round trip,
+then a summary.
+.Fl c
+sends
+.Ar count
+(default 5; 0 until Ctrl-C),
+.Fl s
+puts
+.Ar size
+bytes in each (default 44, at most 668), and
+.Fl i
+waits
+.Ar seconds
+between them (default 1).
+The device is paged if there is no link yet, so the first round trip is
+slow, and it need not be paired.
+LE has no echo, so LE devices cannot be pinged.
+.It Cm sdp Ar device , Cm browse Ar device
+Browse the SDP records of a Classic device, paired or not, and print every
+attribute of every record.
+.Xr bluetoothd 8
+connects to the device, which may page it, reads the records and renders
+them; well-known service classes, protocols and attributes are named.
 .El
-.Pp
-Addresses print as
-.Ql AA:BB:CC:DD:EE:FF ;
-an LE random address carries a
-.Ql /random
-suffix.
 .Sh FILES
 .Bl -tag -width "/Local/Library/Preferences/SystemConfiguration/" -compact
 .It Pa /usr/sbin/bluetooth
@@ -234,25 +312,55 @@ The daemon's log.
 .Bl -tag -width 2 -compact
 .It 0
 Success.
+For
+.Cm ping ,
+at least one echo came back.
 .It 1
-An error, or
+An error, an HCI command that failed, or
 .Xr bluetoothd 8
 could not be reached.
 .It 2
 Usage error.
 .It 3
 .Cm pair
-needs an answer and there is no terminal to ask on; use
+needs an answer and was told not to ask, or has no terminal to ask on; use
 .Cm confirm .
 .El
 .Sh EXAMPLES
+Pair and connect a mouse, a keyboard and headphones:
 .Bd -literal -offset indent
-$ bluetooth status
+# bluetooth scan
+scanning for 10 seconds...
+ADDRESS                  NAME                         CLASS           LINK   SIGNAL       PAIRED
+F4:73:35:12:34:56/random MX Master 3                  mouse           LE     ***  -58     no
+C8:2E:47:11:22:33/random MX Keys                      keyboard        LE     **   -64     no
+B8:D5:0B:12:34:56        Beats Studio                 headphones      BR/EDR ***  -55     no
+
+# bluetooth pair "mx master"
+pairing with F4:73:35:12:34:56/random...
+paired with F4:73:35:12:34:56/random
+
+# bluetooth pair "mx keys"
+pairing with C8:2E:47:11:22:33/random...
+Type 123456 on C8:2E:47:11:22:33/random, then press Enter on it
+paired with C8:2E:47:11:22:33/random
+
+# bluetooth pair beats
+pairing with B8:D5:0B:12:34:56...
+paired with B8:D5:0B:12:34:56
+
+# bluetooth connect beats
+connected to B8:D5:0B:12:34:56 (A2DPSink,AVRCP,HFP)
+
+# bluetooth status
 state:         active
 power:         on
 discoverable:  off
 auto-connect:  on
-paired:        1
+paired:        3
+connected:     MX Master 3 F4:73:35:12:34:56/random (HOGP)
+connected:     MX Keys C8:2E:47:11:22:33/random (HOGP)
+connected:     Beats Studio B8:D5:0B:12:34:56 (A2DPSink,AVRCP,HFP)
 
 controller:    ubt0
   transport:   USB 8087:0a2b
@@ -262,52 +370,85 @@ controller:    ubt0
   powered:     on
   discoverable: off
   features:    SSP LE EIR
+.Ed
+.Pp
+A pane pairing without a terminal:
+.Bd -literal -offset indent
+$ bluetooth pair 00:1B:66:AA:BB:CC --no-prompt
+address=00:1B:66:AA:BB:CC method=numeric-comparison passkey=482913 expires=59
+$ echo $?
+3
+$ bluetooth confirm 00:1B:66:AA:BB:CC yes
+.Ed
+.Pp
+Diagnostics:
+.Bd -literal -offset indent
+# bluetooth info
+controller:    ubt0
+address:       A4:34:D9:01:02:03
+manufacturer:  Intel 2
+HCI version:   4.2 (0x08) revision 0x0100
+LMP version:   4.2 (0x08) subversion 0x0100
+features:      bf fe 0f fe db ff 7b 87 (SSP, LE, EIR)
+ACL buffers:   4 x 1021 bytes
+SCO buffers:   6 x 96 bytes
+LE buffers:    shared with ACL
+free credits:  1 command, 4 ACL, 6 SCO
+commands:      58 sent, 61 events received
+ACL packets:   1204 in, 37 out
+SCO packets:   0 in, 0 out
+bytes:         14212 in, 702 out
 
-$ bluetooth scan
-scanning for 10 seconds...
-ADDRESS                  NAME                         CLASS           SIGNAL       PAIRED
-B8:D5:0B:12:34:56        Beats Studio                 headphones      ***  -58     no
+ADDRESS                  LINK HANDLE ROLE       ENCRYPTED MODE   PENDING
+F4:73:35:12:34:56/random LE   0x0040 central    yes       active 0
 
-$ bluetooth pair B8:D5:0B:12:34:56
-paired with B8:D5:0B:12:34:56
+# bluetooth hci 04 0001
+opcode:        0x1001 (OGF 0x04, OCF 0x001)
+event:         Command Complete
+status:        0x00 success
+return:        08 00 01 08 02 00 00 01
 
-$ bluetooth list
-ADDRESS                  NAME                     CLASS  LINK     AUTO STATE        PROFILES
-C8:2E:47:11:22:33/random MX Keys                  000000 LE       yes  connected    HOGP
-
-$ bluetooth connect 34:88:5D:AA:BB:CC
-connected to 34:88:5D:AA:BB:CC (HID)
-
-$ bluetooth device 34:88:5D:AA:BB:CC
-34:88:5D:AA:BB:CC
-  name:        Keyboard K380
-  class:       002540 keyboard
-  paired:      yes
-  state:       connected
-  controller:  ubt0
-  signal:      ***  -55 dBm
-  profiles:    HID
+# bluetooth ping -c 3 beats
+L2CAP echo to B8:D5:0B:12:34:56, 44 bytes of data
+44 bytes from B8:D5:0B:12:34:56 seq=1 time=1342.118 ms
+44 bytes from B8:D5:0B:12:34:56 seq=2 time=21.402 ms
+44 bytes from B8:D5:0B:12:34:56 seq=3 time=19.877 ms
+--- B8:D5:0B:12:34:56 ---
+3 sent, 3 received, round trip min/avg/max 19.877/461.132/1342.118 ms
 
 $ bluetooth sdp 00:1B:66:AA:BB:CC
 record 0x00010001: AudioSink
   0x0000 ServiceRecordHandle: 0x00010001
   0x0001 ServiceClassIDList: { 0x110b (AudioSink) }
-  0x0004 ProtocolDescriptorList: { { 0x0100 (L2CAP), 0x0019 }, { 0x0019 (AVDTP), 0x0103 } }
-  0x0009 BluetoothProfileDescriptorList: { { 0x110d (AdvancedAudioDistribution), 0x0103 } }
 .Ed
 .Sh DIAGNOSTICS
-.Bl -diag
-.It "bluetooth: no Bluetooth adapters"
-No controller is present, or none has been brought up yet.
-.It "bluetooth: adapter is powered off"
-Turn it on with
-.Ql bluetooth power on .
-.It "bluetooth: cannot reach org.nextbsd.bluetooth — is bluetoothd running?"
+.Bl -tag -width "cannot reach org.nextbsd.bluetooth"
+.It Sy cannot reach org.nextbsd.bluetooth \(em is bluetoothd running?
 The Mach service lookup failed.
 Check
 .Ql launchctl list | grep bluetoothd
 and
 .Pa /var/log/bluetoothd.stderr .
+.It Sy no Bluetooth adapters
+No controller is present, or none has been brought up yet.
+.Ql bluetooth status
+shows whether firmware is still loading.
+.It Sy adapter is powered off
+Turn it on with
+.Ql bluetooth power on .
+.It Sy no device called ...
+The name matches no paired device and nothing the last scan found.
+Run
+.Cm scan
+with the device in pairing mode, or give its address.
+.It Sy ... matches more than one device
+Give more of the name, or the address.
+.It Sy only root can send raw HCI commands
+Run
+.Cm hci
+as root.
+.It Sy the controller did not answer
+The command got no Command Complete or Command Status within 5 seconds.
 .El
 .Sh SEE ALSO
 .Xr bluetoothd 8 ,
@@ -316,3 +457,16 @@ and
 .Sh HISTORY
 .Nm
 first appeared in NextBSD in 2026.
+.Sh BUGS
+.Cm hci
+shows only the event that answers the command, not the events a command
+answered by Command Status produces later, such as an inquiry's results.
+.Pp
+While
+.Cm ping ,
+.Cm sdp
+or
+.Cm hci
+waits on a device or the controller, other
+.Nm
+commands wait behind it.

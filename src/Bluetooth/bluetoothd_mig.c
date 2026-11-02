@@ -19,6 +19,7 @@
 #include "btstore.h"
 #include "bluetooth_mig_types.h"
 #include "connections.h"
+#include "diag.h"
 #include "discovery.h"
 #include "engine.h"
 #include "firmware.h"
@@ -27,6 +28,7 @@
 #include <mach/mach.h>
 #include "bluetoothServer.h"		/* MIG-emitted prototypes */
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -706,5 +708,183 @@ _bt_audio_policy(mach_port_t server, int autoswitch, int a2dp_sink,
 	if (sink_changed)
 		audio_prefs_changed();
 	bluetoothd_wake();
+	return (KERN_SUCCESS);
+}
+
+/* ---- 31050-31069: diagnostics ------------------------------------------- */
+/*
+ * bt_sdp_browse and bt_sdp_browse_line (31050, 31051) are in sdp_client.c.
+ * These block on the controller or the peer (diag.h says for how long) with
+ * the state lock not held.
+ */
+
+kern_return_t
+_bt_adapter_details(mach_port_t server, BTNodeName node_in,
+    BTNodeName node_out, BTAddressString address, int *hci_version,
+    int *hci_revision, int *lmp_version, int *lmp_subversion,
+    int *manufacturer, BTFeatures features, int *acl_mtu, int *acl_pkts,
+    int *sco_mtu, int *sco_pkts, int *le_mtu, int *le_pkts,
+    bt_status_t *status)
+{
+	struct diag_details d;
+	BTNodeName node;
+
+	(void)server;
+	WIRE_STR(node, node_in);
+	(void)memset(node_out, 0, sizeof(BTNodeName));
+	(void)memset(address, 0, sizeof(BTAddressString));
+	(void)memset(features, 0, sizeof(BTFeatures));
+
+	*status = diag_details(node, &d);
+	(void)strlcpy(node_out, d.node, sizeof(BTNodeName));
+	if (d.have_addr)
+		(void)bt_addr_ntoa(&d.addr, BT_ADDR_FMT_DISPLAY, address,
+		    sizeof(BTAddressString));
+	*hci_version = d.hci_version;
+	*hci_revision = d.hci_revision;
+	*lmp_version = d.lmp_version;
+	*lmp_subversion = d.lmp_subversion;
+	*manufacturer = d.manufacturer;
+	(void)memcpy(features, d.features, sizeof(BTFeatures));
+	*acl_mtu = d.acl_mtu;
+	*acl_pkts = d.acl_pkts;
+	*sco_mtu = d.sco_mtu;
+	*sco_pkts = d.sco_pkts;
+	*le_mtu = d.le_mtu;
+	*le_pkts = d.le_pkts;
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_bt_adapter_stats(mach_port_t server, BTNodeName node_in, int *cmd_sent,
+    int *events, int *acl_recv, int *acl_sent, int *sco_recv, int *sco_sent,
+    int *bytes_recv, int *bytes_sent, int *cmd_free, int *acl_free,
+    int *sco_free, bt_status_t *status)
+{
+	struct diag_stats s;
+	BTNodeName node;
+
+	(void)server;
+	WIRE_STR(node, node_in);
+	*status = diag_stats(node, &s);
+	/* Counters cross as int and are printed back as unsigned. */
+	*cmd_sent = (int)s.cmd_sent;
+	*events = (int)s.events;
+	*acl_recv = (int)s.acl_recv;
+	*acl_sent = (int)s.acl_sent;
+	*sco_recv = (int)s.sco_recv;
+	*sco_sent = (int)s.sco_sent;
+	*bytes_recv = (int)s.bytes_recv;
+	*bytes_sent = (int)s.bytes_sent;
+	*cmd_free = s.cmd_free;
+	*acl_free = s.acl_free;
+	*sco_free = s.sco_free;
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_bt_link_count(mach_port_t server, BTNodeName node_in, int *count,
+    bt_status_t *status)
+{
+	struct diag_link *l;
+	BTNodeName node;
+
+	(void)server;
+	WIRE_STR(node, node_in);
+	*status = diag_links(node, &l, count);
+	free(l);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_bt_link_entry(mach_port_t server, BTNodeName node_in, int index,
+    BTAddressString address, int *link_type, int *handle, int *role,
+    int *encryption, int *mode, int *pending, bt_status_t *status)
+{
+	struct diag_link *l;
+	BTNodeName node;
+	int n;
+
+	(void)server;
+	WIRE_STR(node, node_in);
+	(void)memset(address, 0, sizeof(BTAddressString));
+	*link_type = *handle = *role = *encryption = *mode = *pending = 0;
+
+	*status = diag_links(node, &l, &n);
+	if (*status == bt_status_success_e) {
+		if (index < 0 || index >= n) {
+			*status = bt_status_index_out_of_range_e;
+		} else {
+			(void)bt_addr_ntoa(&l[index].addr, BT_ADDR_FMT_DISPLAY,
+			    address, sizeof(BTAddressString));
+			*link_type = l[index].link_type;
+			*handle = l[index].handle;
+			*role = l[index].role;
+			*encryption = l[index].encryption;
+			*mode = l[index].mode;
+			*pending = l[index].pending;
+		}
+	}
+	free(l);
+	return (KERN_SUCCESS);
+}
+
+/*
+ * A raw HCI command can do anything to the controller, including reading or
+ * writing link keys, so it is root's alone: the euid from the sender's audit
+ * token (val[1] in the Darwin layout, as audit_token_to_au32 reads it), which
+ * the receive loop asks the kernel to append (mach_service.c).
+ */
+kern_return_t
+_bt_hci_command(mach_port_t server, BTNodeName node_in, int opcode,
+    BTHCIData params, int plen, int *event, int *hci_status,
+    BTHCIData rparams, int *rplen, int *errnum, bt_status_t *status,
+    audit_token_t audit)
+{
+	BTNodeName node;
+	uint8_t hst = 0;
+	size_t n = 0;
+
+	(void)server;
+	WIRE_STR(node, node_in);
+	(void)memset(rparams, 0, sizeof(BTHCIData));
+	*event = *hci_status = *rplen = *errnum = 0;
+
+	if (audit.val[1] != 0) {
+		*errnum = EPERM;
+		*status = bt_status_operation_not_supported_e;
+		return (KERN_SUCCESS);
+	}
+	if (opcode <= 0 || opcode > 0xffff || plen < 0 ||
+	    plen > BT_HCI_DATA_MAX) {
+		*status = bt_status_invalid_parameter_e;
+		return (KERN_SUCCESS);
+	}
+	*status = diag_hci_command(node, (uint16_t)opcode,
+	    (const uint8_t *)params, (size_t)plen, event, &hst,
+	    (uint8_t *)rparams, &n, errnum);
+	*hci_status = hst;
+	*rplen = (int)n;
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_bt_l2cap_ping(mach_port_t server, BTAddressString address_in, int size,
+    int *rtt_us, int *result, int *errnum, bt_status_t *status)
+{
+	BTAddressString address;
+	struct bt_addr a;
+	uint32_t rtt = 0, res = 0;
+
+	(void)server;
+	WIRE_STR(address, address_in);
+	*rtt_us = *result = *errnum = 0;
+	if (!bt_addr_aton(address, &a) || size < 0) {
+		*status = bt_status_invalid_parameter_e;
+		return (KERN_SUCCESS);
+	}
+	*status = diag_l2cap_ping(&a, (size_t)size, &rtt, &res, errnum);
+	*rtt_us = (int)rtt;
+	*result = (int)res;
 	return (KERN_SUCCESS);
 }

@@ -61,6 +61,16 @@ typedef char	BTPinString[17];
 /* A USB device node, as the IORegistry names it: "ugen0.3". */
 typedef char	BTUSBDeviceName[32];
 
+/* LMP features, page 0, as Read_Local_Supported_Features returns them. */
+typedef char	BTFeatures[8];
+
+/*
+ * HCI command parameters or return parameters for bt_hci_command: up to 255
+ * octets (NG_HCI_CMD_PKT_SIZE), with the length passed beside it.
+ */
+#define	BT_HCI_DATA_MAX	255
+typedef char	BTHCIData[256];
+
 /* Daemon state, as `bluetooth status` and State:/Bluetooth report it. */
 typedef enum {
 	bt_daemon_idle_e		= 0,	/* running, no controller */

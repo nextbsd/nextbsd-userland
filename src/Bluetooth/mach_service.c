@@ -5,7 +5,9 @@
  * mach_msg(MACH_RCV_MSG | MACH_RCV_TIMEOUT, 500ms) loop and hands each message
  * to bluetooth_server() (the MIG demux for bluetooth.defs). Structurally
  * identical to wland's mach_service.c, itself ipconfigd's: the same 500ms
- * timeout keeps the loop awake to notice shutdown.
+ * timeout keeps the loop awake to notice shutdown. One difference: it asks for
+ * the sender's audit token in the trailer, as configd does, because
+ * bt_hci_command is root-only and reads it (ServerAuditToken).
  *
  * WHY org.nextbsd.* AND NOT com.apple.*:
  *
@@ -37,6 +39,11 @@
 #define	BT_RPC_BUFSZ		8192
 
 #define	BT_SERVICE_NAME		"org.nextbsd.bluetooth"
+
+/* Append the audit token; MIG rejects a ServerAuditToken routine without it. */
+#define	BT_RCV_TRAILER						\
+	(MACH_RCV_TRAILER_TYPE(MACH_MSG_TRAILER_FORMAT_0) |		\
+	 MACH_RCV_TRAILER_ELEMENTS(MACH_RCV_TRAILER_AUDIT))
 
 static pthread_t	worker;
 static int		worker_running;
@@ -79,8 +86,8 @@ mach_service_thread(void *arg)
 		mach_msg_return_t mr;
 
 		(void)memset(&req, 0, sizeof(req));
-		mr = mach_msg(&req.hdr, MACH_RCV_MSG | MACH_RCV_TIMEOUT,
-		    0, sizeof(req), sp, 500, MACH_PORT_NULL);
+		mr = mach_msg(&req.hdr, MACH_RCV_MSG | MACH_RCV_TIMEOUT |
+		    BT_RCV_TRAILER, 0, sizeof(req), sp, 500, MACH_PORT_NULL);
 		if (mr == MACH_RCV_TIMED_OUT)
 			continue;
 		if (mr != MACH_MSG_SUCCESS) {
