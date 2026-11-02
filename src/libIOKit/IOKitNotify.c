@@ -459,8 +459,12 @@ io_source_handler(void *arg)
 				snap[n_snap++] = w;
 		pthread_mutex_unlock(&port->lock);
 
+		/* Property criteria (idVendor, ...; nextbsd-kernel#391) are
+		 * not in the event, so read the entry's bag. A departed
+		 * entry stays readable while it lingers. */
 		for (i = 0; i < n_snap; i++)
-			fire_callback(port, snap[i], id);
+			if (__io_props_match(id, &snap[i]->criteria))
+				fire_callback(port, snap[i], id);
 	}
 }
 

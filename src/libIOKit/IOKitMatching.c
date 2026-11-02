@@ -9,6 +9,12 @@
  * and IONameMatch (→ `name`); other Apple keys (IOPropertyMatch, IOBSDName,
  * IOService plane parents/children, regex) are silently ignored and the
  * lookup uses whatever criteria survived.
+ *
+ * The USB matching keys (idVendor, idProduct, ...; nextbsd-kernel#391) have
+ * no field in the kernel criteria, so the kernel matches the class and this
+ * file filters its results against each entry's property bag, comparing
+ * numbers as integers (__io_props_match). IOKitNotify.c does the same for
+ * each event.
  */
 #include <IOKit/IOKitLib.h>
 #include "IOKitInternal.h"
@@ -262,9 +268,33 @@ copy_string_value(CFDictionaryRef matching, CFStringRef key,
 	    kCFStringEncodingUTF8) == TRUE);
 }
 
+/*
+ * The numeric matching keys of Darwin's IOUSBHostDevice and
+ * IOUSBHostInterface. The kernel publishes each as an nvlist number
+ * (dev/iokit/iokit_usb.c), so a dictionary value matches as an integer.
+ */
+static const char *const prop_keys[] = {
+	"idVendor",
+	"idProduct",
+	"bcdDevice",
+	"bDeviceClass",
+	"bDeviceSubClass",
+	"bDeviceProtocol",
+	"bInterfaceClass",
+	"bInterfaceSubClass",
+	"bInterfaceProtocol",
+	"bConfigurationValue",
+	"bInterfaceNumber",
+	"locationID",
+};
+_Static_assert(sizeof(prop_keys) / sizeof(prop_keys[0]) <=
+    IO_CRITERIA_PROPS_MAX, "IO_CRITERIA_PROPS_MAX too small");
+
 void
 __io_extract_criteria(CFDictionaryRef matching, struct io_criteria *out)
 {
+	unsigned i;
+
 	(void)memset(out, 0, sizeof(*out));
 	if (matching == NULL)
 		return;
@@ -274,6 +304,59 @@ __io_extract_criteria(CFDictionaryRef matching, struct io_criteria *out)
 		    out->klass, sizeof(out->klass));
 	(void)copy_string_value(matching, CFSTR(kIONameMatchKey),
 	    out->name, sizeof(out->name));
+
+	for (i = 0; i < sizeof(prop_keys) / sizeof(prop_keys[0]); i++) {
+		CFStringRef k;
+		CFTypeRef v;
+		int64_t n;
+
+		k = CFStringCreateWithCString(kCFAllocatorDefault,
+		    prop_keys[i], kCFStringEncodingUTF8);
+		if (k == NULL)
+			continue;
+		v = CFDictionaryGetValue(matching, k);
+		CFRelease(k);
+		if (v == NULL || CFGetTypeID(v) != CFNumberGetTypeID() ||
+		    !CFNumberGetValue((CFNumberRef)v, kCFNumberSInt64Type, &n))
+			continue;
+		out->props[out->nprops].key = i;
+		out->props[out->nprops].value = n;
+		out->nprops++;
+	}
+}
+
+bool
+__io_props_match(uint64_t node_id, const struct io_criteria *c)
+{
+	kern_return_t kr;
+	uint32_t len = 0;
+	nvlist_t *nv;
+	void *buf;
+	unsigned i;
+	bool ok;
+	int fd;
+
+	if (c->nprops == 0)
+		return (true);
+	fd = __io_ioregistry_fd();
+	if (fd < 0)
+		return (false);
+	buf = ioreg_fetch_props(fd, node_id, &len, &kr);
+	if (buf == NULL)
+		return (false);
+	nv = (len != 0) ? nvlist_unpack(buf, len, 0) : NULL;
+	free(buf);
+	if (nv == NULL)
+		return (false);
+	ok = true;
+	for (i = 0; i < c->nprops && ok; i++) {
+		const char *key = prop_keys[c->props[i].key];
+
+		ok = nvlist_exists_number(nv, key) &&
+		    (int64_t)nvlist_get_number(nv, key) == c->props[i].value;
+	}
+	nvlist_destroy(nv);
+	return (ok);
 }
 
 /*
@@ -344,6 +427,16 @@ lookup_matches(CFDictionaryRef matching, uint64_t **ids_out,
 		}
 		if (lk.count > cap)	/* truncated to our fixed array */
 			lk.count = cap;
+		if (c.nprops != 0) {
+			/* The kernel matched class and name; keep the ids
+			 * whose properties match too. */
+			uint32_t i, n = 0;
+
+			for (i = 0; i < lk.count; i++)
+				if (__io_props_match(ids[i], &c))
+					ids[n++] = ids[i];
+			lk.count = n;
+		}
 		*ids_out = ids;
 		*count_out = lk.count;
 		return (KERN_SUCCESS);

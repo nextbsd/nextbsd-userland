@@ -83,10 +83,27 @@ io_object_t	__io_alloc_iterator(uint64_t *ids, uint32_t count);
  */
 #define IO_CRITERIA_FIELD_MAX	32
 
+/*
+ * Numeric property criteria (nextbsd-kernel#391): the USB matching keys
+ * (idVendor, idProduct, bcdDevice, the bDevice and bInterface class triples,
+ * locationID) that Darwin's IOUSBHostDevice / IOUSBHostInterface match on.
+ * The kernel criteria struct has no room for them, so the kernel matches the
+ * class and name and libIOKit compares these against the entry's property
+ * bag. `key` indexes a fixed key table in IOKitMatching.c.
+ */
+#define IO_CRITERIA_PROPS_MAX	12
+
+struct io_prop_criterion {
+	unsigned	key;
+	int64_t		value;
+};
+
 struct io_criteria {
 	char	name[IO_CRITERIA_FIELD_MAX];
 	char	klass[IO_CRITERIA_FIELD_MAX];	/* "class" — C++ keyword */
 	char	driver[IO_CRITERIA_FIELD_MAX];
+	unsigned nprops;
+	struct io_prop_criterion props[IO_CRITERIA_PROPS_MAX];
 };
 
 /*
@@ -95,12 +112,22 @@ struct io_criteria {
  *
  *  IOProviderClass / IOClass	-> out->klass
  *  IONameMatch			-> out->name
+ *  idVendor, idProduct, ...	-> out->props (CFNumber values only)
  *
  * `matching` may carry other keys (IOPropertyMatch, IOBSDName,
  * regex), all currently ignored.
  */
 void	__io_extract_criteria(CFDictionaryRef matching,
 	    struct io_criteria *out);
+
+/*
+ * True if registry entry `node_id` satisfies the numeric property criteria
+ * in `c` (always true when it has none): each property must be present in
+ * the entry's bag as a number equal to the criterion. A departed entry is
+ * still readable while it lingers, so this also works for a terminated
+ * notification.
+ */
+bool	__io_props_match(uint64_t node_id, const struct io_criteria *c);
 
 /*
  * Fill a flat kernel `struct ioreg_criteria` from an io_criteria for the
