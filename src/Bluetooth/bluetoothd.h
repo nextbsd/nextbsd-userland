@@ -66,6 +66,7 @@ struct bt_adapter {
 	bool			discoverable;	/* inquiry scan on */
 	uint64_t		discoverable_until;	/* 0: no timer */
 	bool			scanning;
+	uint8_t			scanning_engines;	/* bit i: engines[i] */
 
 	/* The discovery cache (discovery.c). */
 	struct bt_found		found[BT_SCAN_MAX];

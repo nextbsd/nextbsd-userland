@@ -137,6 +137,7 @@ static void	host_event(void *ctx, const struct bt_engine *e,
 static bool	host_bond_lookup(void *ctx, const struct bt_addr *peer,
 		    struct bt_bond *out);
 static bool	host_name_known(void *ctx, const struct bt_addr *peer);
+static void	import_bonds(struct bt_adapter *a);
 
 static void
 attach_engines(struct bt_adapter *a)
@@ -174,6 +175,37 @@ attach_engines(struct bt_adapter *a)
 			xlog("%s: engine %s did not attach (status %d)",
 			    a->node, bt_engines[i]->name, (int)st);
 	}
+	import_bonds(a);
+}
+
+/*
+ * Hand every stored bond to the engines that keep keys of their own (the LE
+ * engine's reconnect list and IRKs), so a paired keyboard reconnects before
+ * anyone logs in.
+ */
+static void
+import_bonds(struct bt_adapter *a)
+{
+	struct bt_bond *b;
+	int i, j, n;
+
+	b = calloc(1, sizeof(*b));
+	if (b == NULL)
+		return;
+	n = bt_store_paired_count();
+	for (i = 0; i < n; i++) {
+		if (!bt_store_paired_at(i, b) ||
+		    !bt_store_bond_find(&b->addr, true, b))
+			continue;
+		for (j = 0; j < BT_ENGINE_MAX; j++) {
+			if (a->engines[j] != NULL &&
+			    bt_engines[j]->bond_import != NULL)
+				(void)bt_engines[j]->bond_import(
+				    a->engines[j], b);
+		}
+	}
+	explicit_bzero(b, sizeof(*b));
+	free(b);
 }
 
 static void
@@ -188,20 +220,28 @@ detach_engines(struct bt_adapter *a)
 	}
 }
 
-/* The Classic engine of `a`, if attached. */
+/* The engine of `a` for `transport` (BT_TRANSPORT_*), if attached. */
 static struct bt_engine *
-classic_of(struct bt_adapter *a, const struct bt_engine_ops **ops)
+engine_of(struct bt_adapter *a, int transport,
+    const struct bt_engine_ops **ops)
 {
 	int i;
 
 	for (i = 0; i < BT_ENGINE_MAX && bt_engines[i] != NULL; i++) {
-		if (bt_engines[i]->transport == BT_TRANSPORT_BREDR &&
+		if (bt_engines[i]->transport == transport &&
 		    a->engines[i] != NULL) {
 			*ops = bt_engines[i];
 			return (a->engines[i]);
 		}
 	}
 	return (NULL);
+}
+
+/* The Classic engine of `a`, if attached. */
+static struct bt_engine *
+classic_of(struct bt_adapter *a, const struct bt_engine_ops **ops)
+{
+	return (engine_of(a, BT_TRANSPORT_BREDR, ops));
 }
 
 /* ---- init ----------------------------------------------------------------- */
@@ -669,18 +709,90 @@ save_link_key(struct bt_adapter *a, const struct bt_bond *k)
 	free(b);
 }
 
+/*
+ * LE keys, or what HOGP cached (engine.h BT_EV_BOND_UPDATED from the LE
+ * engine): merged into the bond for the identity address in k->addr. `peer`
+ * is the address the device was seen and paired at, which may be a private
+ * one: the discovery cache knows its name under that.
+ */
+static void
+save_le_bond(struct bt_adapter *a, const struct bt_addr *peer,
+    const struct bt_bond *k)
+{
+	struct bt_bond *b;
+	const struct bt_found *f;
+	char addr[BT_ADDR_STRLEN];
+	bool existed;
+
+	b = calloc(1, sizeof(*b));
+	if (b == NULL)
+		return;
+	existed = bt_store_bond_find(&k->addr, true, b);
+	if (!existed) {
+		if ((k->flags & (BT_BOND_LTK | BT_BOND_IRK)) == 0) {
+			free(b);	/* a cache update for a forgotten bond */
+			return;
+		}
+		(void)memset(b, 0, sizeof(*b));
+		b->addr = k->addr;
+		if (!disc_name(a, peer, b->name, sizeof(b->name)))
+			(void)disc_name(a, &k->addr, b->name,
+			    sizeof(b->name));
+		f = disc_find(a, peer);
+		if (f != NULL)
+			b->appearance = f->appearance;
+		b->autoconnect = true;
+		b->trusted = true;
+		b->paired_at = k->paired_at != 0 ? k->paired_at : time(NULL);
+	}
+	b->transports |= BT_TRANSPORT_LE;
+	b->profiles |= k->profiles;
+	if ((k->flags & BT_BOND_LTK) != 0)
+		b->ltk = k->ltk;
+	if ((k->flags & BT_BOND_IRK) != 0)
+		(void)memcpy(b->irk, k->irk, sizeof(b->irk));
+	if ((k->flags & BT_BOND_CSRK) != 0)
+		(void)memcpy(b->csrk, k->csrk, sizeof(b->csrk));
+	if ((k->flags & BT_BOND_HID_DESC) != 0 && k->hid_desc_len > 0) {
+		b->hid_desc_len = k->hid_desc_len;
+		(void)memcpy(b->hid_desc, k->hid_desc, k->hid_desc_len);
+	}
+	if ((k->flags & BT_BOND_PNP_ID) != 0)
+		b->pnp = k->pnp;
+	b->flags |= k->flags & (BT_BOND_LTK | BT_BOND_IRK | BT_BOND_CSRK |
+	    BT_BOND_HID_DESC | BT_BOND_PNP_ID);
+	if (bt_store_bond_save(b) != 0)
+		xlog("%s: could not store the LE bond for %s", a->node,
+		    bt_addr_ntoa(&k->addr, BT_ADDR_FMT_DISPLAY, addr,
+		    sizeof(addr)));
+	else if (existed && (k->flags & (BT_BOND_HID_DESC |
+	    BT_BOND_PNP_ID)) != 0)
+		pairing_device_changed_locked(&k->addr, true);
+	explicit_bzero(b, sizeof(*b));
+	free(b);
+}
+
 static void
 host_event(void *ctx, const struct bt_engine *e, const struct bt_event *ev)
 {
 	struct bt_adapter *a = ctx;
+	int i;
 
-	(void)e;
 	switch (ev->kind) {
 	case BT_EV_FOUND:
 		disc_found(a, &ev->u.found);
 		break;
 	case BT_EV_DISCOVERY:
-		a->scanning = ev->u.scanning;
+		/* Both engines scan; the controller scans while either does. */
+		for (i = 0; i < BT_ENGINE_MAX; i++) {
+			if (a->engines[i] != e)
+				continue;
+			if (ev->u.scanning)
+				a->scanning_engines |= (uint8_t)(1u << i);
+			else
+				a->scanning_engines &= (uint8_t)~(1u << i);
+		}
+		a->scanning = a->scanning_engines != 0;
 		a->dirty = true;
 		a->scan_dirty = true;
 		break;
@@ -688,19 +800,26 @@ host_event(void *ctx, const struct bt_engine *e, const struct bt_event *ev)
 		pairing_prompt_locked(&ev->u.prompt);
 		break;
 	case BT_EV_BOND_UPDATED:
-		if (ev->u.bond != NULL &&
-		    (ev->u.bond->flags & BT_BOND_LINK_KEY) != 0)
+		if (ev->u.bond == NULL)
+			break;
+		if (ev->transport == BT_TRANSPORT_LE)
+			save_le_bond(a, &ev->peer, ev->u.bond);
+		else if ((ev->u.bond->flags & BT_BOND_LINK_KEY) != 0)
 			save_link_key(a, ev->u.bond);
 		break;
 	case BT_EV_PAIRED:
 		(void)pairing_finish_locked(&ev->peer, bt_status_success_e);
-		pairing_device_changed_locked(&ev->peer, true);
+		/* An LE device is published under its identity address. */
+		pairing_device_changed_locked(ev->u.bond != NULL ?
+		    &ev->u.bond->addr : &ev->peer, true);
 		/*
-		 * Read the device's SDP records (HID descriptor, profiles) into
-		 * its bond. Its own thread; it merges under bluetoothd_lock(),
-		 * so it waits until this callback's caller lets go.
+		 * Read a Classic device's SDP records (HID descriptor, profiles)
+		 * into its bond; LE devices describe themselves over GATT. Its
+		 * own thread; it merges under bluetoothd_lock(), so it waits
+		 * until this callback's caller lets go.
 		 */
-		if (sdp_client_refresh_bond(&ev->peer) != 0)
+		if (ev->transport != BT_TRANSPORT_LE &&
+		    sdp_client_refresh_bond(&ev->peer) != 0)
 			xlog("%s: could not start the SDP query", a->node);
 		break;
 	case BT_EV_PAIR_FAILED:
@@ -721,6 +840,11 @@ host_bond_lookup(void *ctx, const struct bt_addr *peer, struct bt_bond *out)
 	struct bt_addr p = *peer;
 
 	(void)ctx;
+	/* An LE identity may be a static random address; Classic is public. */
+	if (bt_store_bond_find(&p, true, out))
+		return (true);
+	if (p.type == BT_ADDR_PUBLIC)
+		return (false);
 	p.type = BT_ADDR_PUBLIC;
 	return (bt_store_bond_find(&p, true, out));
 }
@@ -820,24 +944,30 @@ adapter_set_discoverable_locked(struct bt_adapter *a, bool on, int seconds)
 bt_status_t
 adapter_scan_locked(struct bt_adapter *a, int seconds)
 {
-	const struct bt_engine_ops *ops;
-	struct bt_engine *e;
-	bt_status_t st;
+	bt_status_t st = bt_status_operation_not_supported_e, r;
+	bool any = false;
+	int i;
 
 	if (!ready(a))
 		return (bt_status_busy_e);
 	if (!a->powered)
 		return (bt_status_powered_off_e);
-	e = classic_of(a, &ops);
-	if (e == NULL || ops->discover == NULL)
-		return (bt_status_operation_not_supported_e);
 	if (seconds <= 0)
 		seconds = 10;
 	if (seconds > 60)
 		seconds = 60;
-	st = ops->discover(e, true, seconds);
+	/* Inquiry and LE scanning together: one list (discovery.c). */
+	for (i = 0; i < BT_ENGINE_MAX && bt_engines[i] != NULL; i++) {
+		if (a->engines[i] == NULL || bt_engines[i]->discover == NULL)
+			continue;
+		r = bt_engines[i]->discover(a->engines[i], true, seconds);
+		if (r == bt_status_success_e)
+			any = true;
+		else if (st == bt_status_operation_not_supported_e)
+			st = r;
+	}
 	bluetoothd_wake();
-	return (st);
+	return (any ? bt_status_success_e : st);
 }
 
 /*
@@ -862,32 +992,68 @@ pick_for_peer(const struct bt_addr *peer)
 	return (first);
 }
 
+/*
+ * Which engine pairs `peer`, by what scanning saw of it, its address type or
+ * an earlier bond: LE for random addresses and LE-only devices, Classic for
+ * the rest, dual-mode devices included (Classic HID is preferred over HOGP).
+ * The address the user typed carries no type, so a device the LE scan saw
+ * at a random address is matched on its six octets and `peer` takes the
+ * random type.
+ */
+static int
+pair_transport(struct bt_adapter *a, struct bt_addr *peer)
+{
+	const struct bt_found *f = disc_find(a, peer);
+	struct bt_addr r;
+	struct bt_bond *b;
+	int t = BT_TRANSPORT_BREDR;
+
+	if (f == NULL && peer->type == BT_ADDR_PUBLIC) {
+		r = *peer;
+		r.type = BT_ADDR_RANDOM;
+		if ((f = disc_find(a, &r)) != NULL)
+			*peer = r;
+	}
+	if (peer->type == BT_ADDR_RANDOM)
+		return (BT_TRANSPORT_LE);
+	if (f != NULL)
+		return ((f->transports & BT_TRANSPORT_BREDR) != 0 ?
+		    BT_TRANSPORT_BREDR : BT_TRANSPORT_LE);
+	b = calloc(1, sizeof(*b));
+	if (b != NULL && bt_store_bond_find(peer, false, b) &&
+	    b->transports == BT_TRANSPORT_LE)
+		t = BT_TRANSPORT_LE;
+	free(b);
+	return (t);
+}
+
 bt_status_t
 adapter_pair_locked(const struct bt_addr *peer, const char *pin)
 {
 	const struct bt_engine_ops *ops;
 	struct bt_adapter *a;
 	struct bt_engine *e;
+	struct bt_addr p = *peer;
 	bt_status_t st;
+	int transport;
 
-	if (peer->type != BT_ADDR_PUBLIC)
-		return (bt_status_operation_not_supported_e);	/* LE: #205 */
-	a = pick_for_peer(peer);
+	a = pick_for_peer(&p);
 	if (a == NULL)
 		return (bt_status_no_adapter_e);
 	if (!a->powered)
 		return (bt_status_powered_off_e);
-	e = classic_of(a, &ops);
+	transport = pair_transport(a, &p);
+	e = engine_of(a, transport, &ops);
 	if (e == NULL || ops->pair == NULL)
 		return (bt_status_operation_not_supported_e);
-	if (pairing_active_locked(peer))
+	if (pairing_active_locked(&p))
 		return (bt_status_busy_e);
 
-	pairing_begin_locked(a->node, peer);
-	st = ops->pair(e, peer, BT_IO_DISPLAY_YES_NO,
+	pairing_begin_locked(a->node, &p);
+	st = ops->pair(e, &p, BT_IO_DISPLAY_YES_NO,
 	    (pin != NULL && pin[0] != '\0') ? pin : NULL);
 	if (st != bt_status_success_e)
-		(void)pairing_finish_locked(peer, st);
+		(void)pairing_finish_locked(&p, st);
 	bluetoothd_wake();
 	return (st);
 }
@@ -911,7 +1077,8 @@ adapter_pair_confirm_locked(const struct bt_addr *peer, bool accept,
 	a = bluetoothd_adapter_by_node_locked(node);
 	if (a == NULL)
 		return (bt_status_no_adapter_e);
-	e = classic_of(a, &ops);
+	e = engine_of(a, pr.transport == BT_TRANSPORT_LE ? BT_TRANSPORT_LE :
+	    BT_TRANSPORT_BREDR, &ops);
 	if (e == NULL || ops->pair_reply == NULL)
 		return (bt_status_operation_not_supported_e);
 
@@ -937,12 +1104,18 @@ adapter_unpair_locked(const struct bt_addr *peer)
 	struct bt_engine *e;
 	struct bt_addr p = *peer;
 	bool found;
-	int i, n = bluetoothd_adapter_count_locked();
+	int i, transports, n = bluetoothd_adapter_count_locked();
 
 	b = calloc(1, sizeof(*b));
 	if (b == NULL)
 		return (bt_status_internal_error_e);
 	found = bt_store_bond_find(&p, false, b);
+	if (!found && p.type == BT_ADDR_PUBLIC) {
+		/* An LE device with a static random identity. */
+		p.type = BT_ADDR_RANDOM;
+		found = bt_store_bond_find(&p, false, b);
+	}
+	transports = b->transports;
 	free(b);
 	if (!found)
 		return (bt_status_not_paired_e);
@@ -954,7 +1127,12 @@ adapter_unpair_locked(const struct bt_addr *peer)
 			continue;
 		e = classic_of(a, &ops);
 		if (e != NULL && ops->unpair != NULL &&
-		    p.type == BT_ADDR_PUBLIC)
+		    p.type == BT_ADDR_PUBLIC &&
+		    (transports & BT_TRANSPORT_LE) != transports)
+			(void)ops->unpair(e, &p);
+		e = engine_of(a, BT_TRANSPORT_LE, &ops);
+		if (e != NULL && ops->unpair != NULL &&
+		    (transports & BT_TRANSPORT_LE) != 0)
 			(void)ops->unpair(e, &p);
 	}
 	if (bt_store_bond_forget(&p) != 0)

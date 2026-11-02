@@ -26,7 +26,12 @@ SRCS+=		iokit_watch.c
 SRCS+=		adapter.c ngstack.c hci.c discovery.c pairing.c
 # The engine contract (engine.h) and the two engines behind it; the Classic
 # engine's security manager (#209) is security.c.
-SRCS+=		engine.c classic_engine.c security.c le_engine.c
+SRCS+=		engine.c classic_engine.c security.c
+# The LE engine (#205): GAP (le_engine.c), the ATT bearer (att.c), the GATT
+# client (gatt.c), the Security Manager (smp.c) and its crypto toolbox
+# (le_crypto.c, libcrypto); HID over GATT into IOHIDUserDevice (hogp.c, #217,
+# a CoreFoundation module like the store's).
+SRCS+=		le_engine.c att.c gatt.c smp.c le_crypto.c hogp.c
 # Firmware download for bootloader-mode controllers (#202): the device half
 # (firmware.c), the id tables (fw_ids.c) and the iwmbtfw / rtlbtfw ports.
 SRCS+=		firmware.c fw_ids.c fw_intel.c fw_rtl.c
@@ -93,7 +98,8 @@ LDFLAGS+=	-Wl,--allow-shlib-undefined
 #   -lSystemConfiguration  SCPreferences (the pairing store) and
 #                     SCDynamicStore (State:/Bluetooth)
 #   -lIOKit           IONotificationPort / IOServiceAddMatchingNotification:
-#                     IOBluetoothHostController arrivals and departures
+#                     IOBluetoothHostController arrivals and departures;
+#                     IOHIDUserDevice for LE keyboards and mice (hogp.c)
 #   -lCoreFoundation  the dictionaries both of the above take
 #   -lsystem_dispatch, -l:libsystem_blocks.so  the serial queue the IOKit
 #                     callbacks run on, and what the SC header pulls
@@ -116,5 +122,6 @@ BINDIR=		/usr/sbin
 #   netgraph  libnetgraph: the control socket the graph is built through
 #   usb       libusb: firmware download over the ugen node, as iwmbtfw and
 #             rtlbtfw do
-LIBADD+=	pthread netgraph usb
+#   crypto    libcrypto: AES-128, AES-CMAC and P-256 ECDH for LE pairing
+LIBADD+=	pthread netgraph usb crypto
 .include <bsd.prog.mk>
