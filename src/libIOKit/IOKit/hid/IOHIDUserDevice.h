@@ -33,11 +33,14 @@
  *  - kIOHIDTransportKey "Bluetooth" and "BluetoothLowEnergy" make the device
  *    a Bluetooth HID device; any other value makes it a virtual one.
  *  - Of the property keys, the kernel uses ReportDescriptor (required, at
- *    most 4096 bytes), VendorID, ProductID, VersionNumber, CountryCode,
- *    Product, SerialNumber, Transport and RequestTimeout. Other keys are
- *    kept by the object and returned by IOHIDUserDeviceCopyProperty.
+ *    most 4096 bytes), VendorID, ProductID, VersionNumber (16 bits each),
+ *    Product and SerialNumber (79 bytes each), Transport and RequestTimeout
+ *    (milliseconds, 50 to 1200000; default 1000). Other keys are kept by
+ *    the object and returned by IOHIDUserDeviceCopyProperty.
  *  - IOHIDUserDeviceSetProperty only works before Activate.
- *  - Timestamps are passed to the kernel as given; 0 means now.
+ *  - The transport carries no timestamp, so the one passed to
+ *    IOHIDUserDeviceHandleReportWithTimeStamp is ignored and the kernel
+ *    stamps the report when it delivers it.
  *  - There is no run-loop scheduling; use a dispatch queue.
  */
 #ifndef _IOKIT_HID_IOHIDUSERDEVICE_H_

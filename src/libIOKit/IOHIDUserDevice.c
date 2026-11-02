@@ -6,21 +6,23 @@
  * IOHIDUserDevice.kext (nextbsd-kernel-extensions#25). On Darwin the object
  * wraps an IOHIDResourceDeviceUserClient connection; here it wraps one open
  * of /dev/hidresource, whose ioctls are that user client's methods one for
- * one (vhid.h). The kernel ABI lives only in vhid.h.
+ * one. The kernel ABI lives only in hidresource.h, a verbatim copy of the
+ * kext's IOHIDUserDevice/src/hidresource.h; when the kext changes it, copy it
+ * again.
  *
  * Shape:
  *   - Create validates the properties, opens the node (loading the kext
  *     through kextd the first time the node is missing) and keeps a copy of
  *     the properties. Nothing is published yet.
- *   - Activate sends the properties to the kernel (VHIDIOCCREATE) and starts
+ *   - Activate sends the properties to the kernel (HIDRESOURCE_IOC_CREATE)
+ *     and starts
  *     a DISPATCH_SOURCE_TYPE_READ source on the fd, targeted at the device's
  *     queue. The kernel attaches hidbus from a taskqueue, so the drivers'
  *     attach-time get/set-report requests arrive on that source and the
  *     handlers answer them on the device's queue. This is Darwin's
  *     StartWhenScheduled order: the service is registered only once the
  *     device can answer.
- *   - Input reports go out with write(2) (timestamp 0) or VHIDIOCINPUT, from
- *     any thread. The fd lock keeps them off a closing fd.
+ *   - Input reports go out with write(2), from any thread. The fd lock keeps them off a closing fd.
  *   - Cancel cancels the source; its cancel handler, on the device's queue,
  *     closes the fd (which destroys the kernel device and fails its pending
  *     requests), runs the caller's cancel handler and drops the reference
@@ -34,14 +36,21 @@
  *   - SetProperty only edits the copy that Activate sends; there is no
  *     kernel setProperties path after that.
  *   - Kernel SET_PROTOCOL and SET_IDLE requests have no handler in Apple's
- *     API; they are answered with success.
+ *     API; they are answered with success at once, as hkbd's attach waits
+ *     for them.
+ *   - The transport has no timestamp, so HandleReportWithTimeStamp ignores
+ *     it; evdev stamps the event when the kernel delivers it.
+ *   - Of the properties, the kernel takes ReportDescriptor, VendorID,
+ *     ProductID, VersionNumber, Product, SerialNumber, RequestTimeout and
+ *     Transport (as a bus type). Numbers above 0xffff in the 16-bit fields
+ *     are truncated, as USB and Bluetooth IDs are 16-bit anyway.
  *   - Misuse that Apple traps with os_assert (registering after Activate,
  *     Activate without a queue) is logged and ignored.
  */
 #include <IOKit/IOKitLib.h>
 #include <IOKit/hid/IOHIDUserDevice.h>
 
-#include "vhid.h"		/* mirror of the kext's ABI */
+#include "hidresource.h"	/* verbatim copy of the kext's ABI */
 /* KextManager.h uses the AVAILABLE_MAC_OS_X_* macros without including them. */
 #include <AvailabilityMacros.h>
 #include "KextManager.h"	/* kext_tools/kext.subproj, linked in whole */
@@ -52,7 +61,6 @@
 
 #include <sys/param.h>
 #include <sys/ioctl.h>
-#include <sys/nv.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -67,7 +75,11 @@
 #define	HID_STATE_ACTIVE	1
 #define	HID_STATE_CANCELLED	2
 
-#define	HID_EVENT_BUFSIZE	(sizeof(struct vhid_event) + VHID_MAX_REPORT)
+/*
+ * The kext that provides HIDRESOURCE_PATH, loaded through kextd on the first
+ * IOHIDUserDeviceCreateWithProperties when the node is absent.
+ */
+#define	HID_KEXT_IDENTIFIER	"org.nextbsd.kext.IOHIDUserDevice"
 
 struct __IOHIDUserDevice {
 	CFRuntimeBase			 base;
@@ -86,8 +98,8 @@ struct __IOHIDUserDevice {
 	void				*getLengthRefcon;
 	IOHIDUserDeviceReportCallback	 setCallback;
 	void				*setRefcon;
-	uint8_t				*event;		/* HID_EVENT_BUFSIZE */
-	uint8_t				*report;	/* VHID_MAX_REPORT */
+	uint8_t				*event;		/* HIDRESOURCE_EVENT_MAX */
+	struct hidresource_reply	*reply;
 };
 
 static CFTypeID __kIOHIDUserDeviceTypeID = _kCFRuntimeNotATypeID;
@@ -113,7 +125,7 @@ __IOHIDUserDeviceFinalize(CFTypeRef object)
 	if (device->properties != NULL)
 		CFRelease(device->properties);
 	free(device->event);
-	free(device->report);
+	free(device->reply);
 	pthread_mutex_destroy(&device->lock);
 }
 
@@ -158,18 +170,18 @@ hid_open_resource(void)
 	OSReturn r;
 	int fd;
 
-	fd = open(VHID_CTL_PATH, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+	fd = open(HIDRESOURCE_PATH, O_RDWR | O_NONBLOCK | O_CLOEXEC);
 	if (fd >= 0 || errno != ENOENT)
 		return (fd);
-	r = KextManagerLoadKextWithIdentifier(CFSTR(VHID_KEXT_IDENTIFIER),
+	r = KextManagerLoadKextWithIdentifier(CFSTR(HID_KEXT_IDENTIFIER),
 	    NULL);
 	if (r != kOSReturnSuccess) {
 		syslog(LOG_ERR, "IOHIDUserDevice: cannot load %s: 0x%x",
-		    VHID_KEXT_IDENTIFIER, (unsigned)r);
+		    HID_KEXT_IDENTIFIER, (unsigned)r);
 		errno = ENXIO;
 		return (-1);
 	}
-	return (open(VHID_CTL_PATH, O_RDWR | O_NONBLOCK | O_CLOEXEC));
+	return (open(HIDRESOURCE_PATH, O_RDWR | O_NONBLOCK | O_CLOEXEC));
 }
 
 static IOReturn
@@ -225,11 +237,11 @@ static IOHIDReportType
 hid_report_type(uint8_t type, IOHIDReportType dflt)
 {
 	switch (type) {
-	case VHID_REPORT_INPUT:
+	case HIDRESOURCE_REPORT_INPUT:
 		return (kIOHIDReportTypeInput);
-	case VHID_REPORT_OUTPUT:
+	case HIDRESOURCE_REPORT_OUTPUT:
 		return (kIOHIDReportTypeOutput);
-	case VHID_REPORT_FEATURE:
+	case HIDRESOURCE_REPORT_FEATURE:
 		return (kIOHIDReportTypeFeature);
 	default:
 		return (dflt);
@@ -289,57 +301,51 @@ dict_descriptor(CFDictionaryRef d)
 
 	v = CFDictionaryGetValue(d, CFSTR(kIOHIDReportDescriptorKey));
 	if (v == NULL || CFGetTypeID(v) != CFDataGetTypeID() ||
-	    CFDataGetLength(v) <= 0 || CFDataGetLength(v) > VHID_MAX_DESCRIPTOR)
+	    CFDataGetLength(v) <= 0 || CFDataGetLength(v) > HIDRESOURCE_DESC_MAX)
 		return (NULL);
 	return (v);
 }
 
 /*
- * Packs the properties into the VHIDIOCCREATE nvlist: only the keys the
- * kernel accepts, with Transport reduced to the values it knows.
+ * Fills HIDRESOURCE_IOC_CREATE from the properties. Transport "Bluetooth" and
+ * "BluetoothLowEnergy" ask for BUS_BLUETOOTH, anything else BUS_VIRTUAL; the
+ * kernel grants Bluetooth only to a privileged creator.
  */
-static void *
-hid_pack_properties(CFDictionaryRef props, size_t *lenp)
+static bool
+hid_fill_create(CFDictionaryRef props, struct hidresource_create *hc)
 {
-	static const char *const numbers[] = {
-		VHID_KEY_VENDOR_ID, VHID_KEY_PRODUCT_ID, VHID_KEY_VERSION_NUMBER,
-		VHID_KEY_COUNTRY_CODE, VHID_KEY_REQUEST_TIMEOUT,
-	};
-	static const char *const strings[] = {
-		VHID_KEY_PRODUCT, VHID_KEY_SERIAL_NUMBER,
-	};
 	CFDataRef desc;
-	nvlist_t *nvl;
 	uint64_t n;
-	size_t i;
 	char *s;
-	void *buf;
 
 	if ((desc = dict_descriptor(props)) == NULL)
-		return (NULL);
-	if ((nvl = nvlist_create(0)) == NULL)
-		return (NULL);
-	nvlist_add_binary(nvl, VHID_KEY_REPORT_DESCRIPTOR,
-	    CFDataGetBytePtr(desc), (size_t)CFDataGetLength(desc));
-	for (i = 0; i < nitems(numbers); i++)
-		if (dict_number(props, numbers[i], &n))
-			nvlist_add_number(nvl, numbers[i], n);
-	for (i = 0; i < nitems(strings); i++)
-		if ((s = dict_string(props, strings[i])) != NULL) {
-			nvlist_add_string(nvl, strings[i], s);
-			free(s);
-		}
-	s = dict_string(props, VHID_KEY_TRANSPORT);
-	if (s != NULL && (strcmp(s, VHID_TRANSPORT_BLUETOOTH) == 0 ||
-	    strcmp(s, VHID_TRANSPORT_BLUETOOTH_LE) == 0))
-		nvlist_add_string(nvl, VHID_KEY_TRANSPORT, s);
-	else
-		nvlist_add_string(nvl, VHID_KEY_TRANSPORT,
-		    VHID_TRANSPORT_VIRTUAL);
+		return (false);
+	memset(hc, 0, sizeof(*hc));
+	hc->hc_bus = HIDRESOURCE_BUS_VIRTUAL;
+	s = dict_string(props, kIOHIDTransportKey);
+	if (s != NULL && (strcmp(s, kIOHIDTransportBluetoothValue) == 0 ||
+	    strcmp(s, kIOHIDTransportBluetoothLowEnergyValue) == 0))
+		hc->hc_bus = HIDRESOURCE_BUS_BLUETOOTH;
 	free(s);
-	buf = nvlist_error(nvl) == 0 ? nvlist_pack(nvl, lenp) : NULL;
-	nvlist_destroy(nvl);
-	return (buf);
+	if (dict_number(props, kIOHIDVendorIDKey, &n))
+		hc->hc_vendor = (uint16_t)n;
+	if (dict_number(props, kIOHIDProductIDKey, &n))
+		hc->hc_product = (uint16_t)n;
+	if (dict_number(props, kIOHIDVersionNumberKey, &n))
+		hc->hc_version = (uint16_t)n;
+	if (dict_number(props, kIOHIDRequestTimeoutKey, &n))
+		hc->hc_timeout = n > UINT32_MAX ? UINT32_MAX : (uint32_t)n;
+	if ((s = dict_string(props, kIOHIDProductKey)) != NULL) {
+		strlcpy(hc->hc_name, s, sizeof(hc->hc_name));
+		free(s);
+	}
+	if ((s = dict_string(props, kIOHIDSerialNumberKey)) != NULL) {
+		strlcpy(hc->hc_uniq, s, sizeof(hc->hc_uniq));
+		free(s);
+	}
+	hc->hc_desc_len = (uint32_t)CFDataGetLength(desc);
+	memcpy(hc->hc_desc, CFDataGetBytePtr(desc), hc->hc_desc_len);
+	return (true);
 }
 
 IOHIDUserDeviceRef
@@ -368,10 +374,10 @@ IOHIDUserDeviceCreateWithProperties(CFAllocatorRef allocator,
 	device->state = HID_STATE_INACTIVE;
 	device->properties = CFDictionaryCreateMutableCopy(allocator, 0,
 	    properties);
-	device->event = malloc(HID_EVENT_BUFSIZE);
-	device->report = malloc(VHID_MAX_REPORT);
+	device->event = malloc(HIDRESOURCE_EVENT_MAX);
+	device->reply = malloc(sizeof(*device->reply));
 	if (device->properties == NULL || device->event == NULL ||
-	    device->report == NULL) {
+	    device->reply == NULL) {
 		CFRelease(device);
 		return (NULL);
 	}
@@ -499,48 +505,50 @@ IOHIDUserDeviceRegisterSetReportCallback(IOHIDUserDeviceRef device,
 	device->setRefcon = refcon;
 }
 
+/*
+ * Answers a request. For GET_REPORT the report is already in
+ * device->reply->hr_data.
+ */
 static void
 hid_reply(IOHIDUserDeviceRef device, uint32_t token, IOReturn ret,
-    const void *data, CFIndex len)
+    CFIndex len)
 {
-	struct vhid_reply r;
+	struct hidresource_reply *r = device->reply;
 
-	memset(&r, 0, sizeof(r));
-	r.vr_token = token;
-	r.vr_error = hid_ioreturn_to_errno(ret);
-	if (ret == kIOReturnSuccess && data != NULL && len > 0) {
-		r.vr_data = data;
-		r.vr_len = (uint32_t)len;
-	}
+	r->hr_token = token;
+	r->hr_error = hid_ioreturn_to_errno(ret);
+	r->hr_len = ret == kIOReturnSuccess && len > 0 ? (uint32_t)len : 0;
+	r->hr_reserved = 0;
 	/* ESRCH: the request already timed out in the kernel. */
-	(void)ioctl(device->fd, VHIDIOCREPLY, &r);
+	(void)ioctl(device->fd, HIDRESOURCE_IOC_REPLY, r);
 }
 
 static void
-hid_get_report(IOHIDUserDeviceRef device, const struct vhid_event *ev)
+hid_get_report(IOHIDUserDeviceRef device, const struct hidresource_event *ev)
 {
+	uint8_t *report = device->reply->hr_data;
 	IOHIDReportType type;
 	CFIndex max, len;
 	IOReturn ret;
 
-	type = hid_report_type(ev->ve_report_type, kIOHIDReportTypeFeature);
-	max = ev->ve_len < VHID_MAX_REPORT ? ev->ve_len : VHID_MAX_REPORT;
+	type = hid_report_type(ev->he_report_type, kIOHIDReportTypeFeature);
+	max = ev->he_maxlen < HIDRESOURCE_REPORT_MAX ? ev->he_maxlen :
+	    HIDRESOURCE_REPORT_MAX;
 	len = max;
-	memset(device->report, 0, (size_t)max);
+	memset(report, 0, (size_t)max);
 	if (device->getBlock != NULL)
-		ret = device->getBlock(type, ev->ve_report_id, device->report,
-		    &len);
+		ret = device->getBlock(type, ev->he_report_id, report, &len);
 	else if (device->getLengthCallback != NULL)
 		ret = device->getLengthCallback(device->getLengthRefcon, type,
-		    ev->ve_report_id, device->report, &len);
+		    ev->he_report_id, report, &len);
 	else if (device->getCallback != NULL)
 		ret = device->getCallback(device->getRefcon, type,
-		    ev->ve_report_id, device->report, len);
+		    ev->he_report_id, report, len);
 	else
 		ret = kIOReturnUnsupported;
 	if (len < 0 || len > max)
 		len = max;
-	hid_reply(device, ev->ve_token, ret, device->report, len);
+	hid_reply(device, ev->he_token, ret, len);
 }
 
 static IOReturn
@@ -563,14 +571,14 @@ hid_set_report(IOHIDUserDeviceRef device, IOHIDReportType type,
 static void
 hid_read_events(IOHIDUserDeviceRef device)
 {
-	struct vhid_event ev;
+	struct hidresource_event ev;
 	const uint8_t *data;
 	CFIndex len;
 	ssize_t n;
 	IOReturn ret;
 
 	for (;;) {
-		n = read(device->fd, device->event, HID_EVENT_BUFSIZE);
+		n = read(device->fd, device->event, HIDRESOURCE_EVENT_MAX);
 		if (n < 0 && errno == EINTR)
 			continue;
 		if (n < 0 && errno == EAGAIN)
@@ -584,32 +592,34 @@ hid_read_events(IOHIDUserDeviceRef device)
 		memcpy(&ev, device->event, sizeof(ev));
 		data = device->event + sizeof(ev);
 		len = (CFIndex)((size_t)n - sizeof(ev));
-		if (ev.ve_len < len)
-			len = ev.ve_len;
+		if (ev.he_len < len)
+			len = ev.he_len;
 
-		switch (ev.ve_type) {
-		case VHID_EV_GET_REPORT:
+		switch (ev.he_type) {
+		case HIDRESOURCE_EVENT_GET_REPORT:
 			hid_get_report(device, &ev);
 			break;
-		case VHID_EV_SET_REPORT:
+		case HIDRESOURCE_EVENT_SET_REPORT:
 			ret = hid_set_report(device, hid_report_type(
-			    ev.ve_report_type, kIOHIDReportTypeFeature),
-			    ev.ve_report_id, data, len);
-			hid_reply(device, ev.ve_token, ret, NULL, 0);
+			    ev.he_report_type, kIOHIDReportTypeFeature),
+			    ev.he_report_id, data, len);
+			hid_reply(device, ev.he_token, ret, 0);
 			break;
-		case VHID_EV_OUTPUT:
+		case HIDRESOURCE_EVENT_OUTPUT:
 			/* Fire and forget, like an HIDP DATA output frame. */
 			(void)hid_set_report(device, hid_report_type(
-			    ev.ve_report_type, kIOHIDReportTypeOutput),
-			    ev.ve_report_id, data, len);
+			    ev.he_report_type, kIOHIDReportTypeOutput),
+			    ev.he_report_id, data, len);
 			break;
-		case VHID_EV_SET_PROTOCOL:
-		case VHID_EV_SET_IDLE:
-			hid_reply(device, ev.ve_token, kIOReturnSuccess, NULL,
-			    0);
+		case HIDRESOURCE_EVENT_SET_IDLE:
+		case HIDRESOURCE_EVENT_SET_PROTOCOL:
+			hid_reply(device, ev.he_token, kIOReturnSuccess, 0);
 			break;
 		default:
-			/* START, STOP, OPEN, CLOSE: nothing to do. */
+			/* START, STOP, and anything newer. */
+			if (ev.he_token != 0)
+				hid_reply(device, ev.he_token,
+				    kIOReturnUnsupported, 0);
 			break;
 		}
 	}
@@ -634,10 +644,8 @@ hid_source_cancelled(IOHIDUserDeviceRef device)
 void
 IOHIDUserDeviceActivate(IOHIDUserDeviceRef device)
 {
-	struct vhid_create vc;
+	struct hidresource_create *hc;
 	dispatch_source_t source;
-	size_t len;
-	void *buf;
 	int error;
 
 	pthread_mutex_lock(&device->lock);
@@ -650,16 +658,15 @@ IOHIDUserDeviceActivate(IOHIDUserDeviceRef device)
 		syslog(LOG_ERR, "IOHIDUserDevice: Activate without a queue");
 		return;
 	}
-	buf = hid_pack_properties(device->properties, &len);
-	if (buf == NULL) {
+	hc = malloc(sizeof(*hc));
+	if (hc == NULL || !hid_fill_create(device->properties, hc)) {
 		pthread_mutex_unlock(&device->lock);
-		syslog(LOG_ERR, "IOHIDUserDevice: cannot pack properties");
+		free(hc);
+		syslog(LOG_ERR, "IOHIDUserDevice: bad properties");
 		return;
 	}
-	vc.vc_nvlist = buf;
-	vc.vc_nvlist_len = len;
-	error = ioctl(device->fd, VHIDIOCCREATE, &vc) == -1 ? errno : 0;
-	free(buf);
+	error = ioctl(device->fd, HIDRESOURCE_IOC_CREATE, hc) == -1 ? errno : 0;
+	free(hc);
 	if (error != 0) {
 		pthread_mutex_unlock(&device->lock);
 		syslog(LOG_ERR, "IOHIDUserDevice: create failed: %s",
@@ -670,7 +677,7 @@ IOHIDUserDeviceActivate(IOHIDUserDeviceRef device)
 	source = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ,
 	    (uintptr_t)device->fd, 0, device->queue);
 	if (source == NULL) {
-		(void)ioctl(device->fd, VHIDIOCDESTROY);
+		(void)ioctl(device->fd, HIDRESOURCE_IOC_DESTROY);
 		pthread_mutex_unlock(&device->lock);
 		syslog(LOG_ERR, "IOHIDUserDevice: no read source");
 		return;
@@ -725,14 +732,13 @@ IOHIDUserDeviceCancel(IOHIDUserDeviceRef device)
 
 IOReturn
 IOHIDUserDeviceHandleReportWithTimeStamp(IOHIDUserDeviceRef device,
-    uint64_t timestamp, const uint8_t *report, CFIndex reportLength)
+    uint64_t timestamp __unused, const uint8_t *report, CFIndex reportLength)
 {
-	struct vhid_input vi;
 	IOReturn ret;
 	int error;
 
 	if (device == NULL || report == NULL || reportLength <= 0 ||
-	    reportLength > VHID_MAX_REPORT)
+	    reportLength > HIDRESOURCE_REPORT_MAX)
 		return (kIOReturnBadArgument);
 
 	pthread_mutex_lock(&device->lock);
@@ -742,19 +748,8 @@ IOHIDUserDeviceHandleReportWithTimeStamp(IOHIDUserDeviceRef device,
 		pthread_mutex_unlock(&device->lock);
 		return (ret);
 	}
-	error = 0;
-	if (timestamp != 0) {
-		vi.vi_timestamp = timestamp;
-		vi.vi_data = report;
-		vi.vi_len = (uint32_t)reportLength;
-		if (ioctl(device->fd, VHIDIOCINPUT, &vi) == -1)
-			error = errno;
-	}
-	if (timestamp == 0 || error == ENOTTY) {
-		error = 0;
-		if (write(device->fd, report, (size_t)reportLength) == -1)
-			error = errno;
-	}
+	error = write(device->fd, report, (size_t)reportLength) == -1 ?
+	    errno : 0;
 	pthread_mutex_unlock(&device->lock);
 	return (hid_errno_to_ioreturn(error));
 }
