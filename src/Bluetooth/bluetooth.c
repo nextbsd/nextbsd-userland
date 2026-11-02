@@ -10,6 +10,10 @@
  *   bluetooth confirm <address> yes|no|<passkey or PIN>
  *   bluetooth unpair <address>              forget a device
  *   bluetooth sdp <addr>                    a remote device's SDP records
+ *   bluetooth connect <address>             connect, and follow it
+ *   bluetooth disconnect <address>          disconnect
+ *   bluetooth device <address>              one device's state
+ *   bluetooth autoconnect <address> on|off  reconnect at power-up or not
  *
  * A pure-C MIG client for org.nextbsd.bluetooth, modelled on wlan(8):
  * bootstrap_look_up, then straight RPCs. It links only liblaunch and
@@ -18,9 +22,8 @@
  * runs it the way Network.prefPane runs its helper (see src/WLAN/wlan.c for
  * why no Gershwin process speaks Mach).
  *
- * The verbs live in one table. A later verb is a row and a function:
- * connect / disconnect (#213) and the diagnostics info / ping / browse
- * (#211). Usage text is generated from the table.
+ * The verbs live in one table. A later verb is a row and a function: the
+ * diagnostics info / ping (#211). Usage text is generated from the table.
  *
  * Exit status: 0 ok; 1 error or RPC failure; 2 usage; 3 an answer is needed
  * (pair --no-prompt, #211).
@@ -712,6 +715,136 @@ cmd_unpair(mach_port_t svc, int argc, char **argv)
 	return (EXIT_OK);
 }
 
+#define	CONNECT_WAIT_S		30
+
+/*
+ * Connect, then follow the device until it is connected or the attempt has
+ * ended: the daemon answers as soon as it has started paging.
+ */
+static int
+cmd_connect(mach_port_t svc, int argc, char **argv)
+{
+	BTAddressString addr, a2;
+	BTDeviceName name;
+	BTNodeName node;
+	BTProfileList profiles;
+	bt_device_state_t state = bt_device_disconnected_e;
+	bt_status_t st;
+	int cod, rssi, paired, waited;
+
+	if (argc != 2)
+		return (-1);
+	(void)memset(addr, 0, sizeof(addr));
+	(void)strlcpy(addr, argv[1], sizeof(addr));
+	if (bt_connect(svc, addr, &st) != KERN_SUCCESS) {
+		(void)fprintf(stderr, "%s: RPC failed\n", progname);
+		return (EXIT_ERR);
+	}
+	if (st != bt_status_success_e)
+		return (fail("connect", st));
+	for (waited = 0; waited < CONNECT_WAIT_S * 1000; waited += 250) {
+		(void)memcpy(a2, addr, sizeof(a2));
+		if (bt_device_status(svc, a2, name, &cod, &state, node, &rssi,
+		    profiles, &paired, &st) != KERN_SUCCESS) {
+			(void)fprintf(stderr, "%s: RPC failed\n", progname);
+			return (EXIT_ERR);
+		}
+		if (st == bt_status_success_e &&
+		    state == bt_device_connected_e) {
+			if (profiles[0] != '\0')
+				(void)printf("connected to %s (%s)\n", addr,
+				    profiles);
+			else
+				(void)printf("connected to %s\n", addr);
+			return (EXIT_OK);
+		}
+		if (waited >= 1000 && (st != bt_status_success_e ||
+		    state == bt_device_disconnected_e))
+			break;
+		nap(250);
+	}
+	(void)fprintf(stderr, "%s: could not connect to %s\n", progname,
+	    addr);
+	return (EXIT_ERR);
+}
+
+static int
+cmd_disconnect(mach_port_t svc, int argc, char **argv)
+{
+	BTAddressString addr;
+	bt_status_t st;
+
+	if (argc != 2)
+		return (-1);
+	(void)memset(addr, 0, sizeof(addr));
+	(void)strlcpy(addr, argv[1], sizeof(addr));
+	if (bt_disconnect(svc, addr, &st) != KERN_SUCCESS) {
+		(void)fprintf(stderr, "%s: RPC failed\n", progname);
+		return (EXIT_ERR);
+	}
+	if (st != bt_status_success_e)
+		return (fail("disconnect", st));
+	return (EXIT_OK);
+}
+
+static int
+cmd_device(mach_port_t svc, int argc, char **argv)
+{
+	BTAddressString addr;
+	BTDeviceName name;
+	BTNodeName node;
+	BTProfileList profiles;
+	bt_device_state_t state;
+	bt_status_t st;
+	int cod, rssi, paired;
+
+	if (argc != 2)
+		return (-1);
+	(void)memset(addr, 0, sizeof(addr));
+	(void)strlcpy(addr, argv[1], sizeof(addr));
+	if (bt_device_status(svc, addr, name, &cod, &state, node, &rssi,
+	    profiles, &paired, &st) != KERN_SUCCESS) {
+		(void)fprintf(stderr, "%s: RPC failed\n", progname);
+		return (EXIT_ERR);
+	}
+	if (st != bt_status_success_e)
+		return (fail("device", st));
+	(void)printf("%s\n", argv[1]);
+	(void)printf("  name:        %s\n", name[0] != '\0' ? name : "-");
+	(void)printf("  class:       %06x %s\n", cod & 0xffffff,
+	    class_str(cod));
+	(void)printf("  paired:      %s\n", paired ? "yes" : "no");
+	(void)printf("  state:       %s\n", device_state_str(state));
+	if (node[0] != '\0')
+		(void)printf("  controller:  %s\n", node);
+	if (rssi != 127)
+		(void)printf("  signal:      %s %d dBm\n", signal_bar(rssi),
+		    rssi);
+	if (profiles[0] != '\0')
+		(void)printf("  profiles:    %s\n", profiles);
+	return (EXIT_OK);
+}
+
+static int
+cmd_autoconnect(mach_port_t svc, int argc, char **argv)
+{
+	BTAddressString addr;
+	bt_status_t st;
+	int on;
+
+	if (argc != 3 || (on = parse_onoff(argv[2])) < 0)
+		return (-1);
+	(void)memset(addr, 0, sizeof(addr));
+	(void)strlcpy(addr, argv[1], sizeof(addr));
+	if (bt_device_autoconnect(svc, addr, on, &st) != KERN_SUCCESS) {
+		(void)fprintf(stderr, "%s: RPC failed\n", progname);
+		return (EXIT_ERR);
+	}
+	if (st != bt_status_success_e)
+		return (fail("autoconnect", st));
+	return (EXIT_OK);
+}
+
 /*
  * Browse a remote device's SDP records (replaces sdpcontrol browse). The
  * daemon connects, reads and renders; the CLI fetches the lines one by one.
@@ -779,6 +912,10 @@ static const struct verb {
 	{ "confirm",	"address yes|no|passkey|pin",	cmd_confirm },
 	{ "unpair",	"address",			cmd_unpair },
 	{ "sdp",	"<address>",			cmd_sdp },
+	{ "connect",	"address",			cmd_connect },
+	{ "disconnect",	"address",			cmd_disconnect },
+	{ "device",	"address",			cmd_device },
+	{ "autoconnect", "address on|off",		cmd_autoconnect },
 };
 
 #define	NVERBS	(sizeof(verbs) / sizeof(verbs[0]))

@@ -65,4 +65,12 @@ bt_status_t	adapter_pair_confirm_locked(const struct bt_addr *peer,
 		    bool accept, uint32_t passkey, const char *pin);
 bt_status_t	adapter_unpair_locked(const struct bt_addr *peer);
 
+/* The Classic engine of `a` and its ops, or NULL. Lock held. */
+struct bt_engine	*adapter_classic_locked(struct bt_adapter *a,
+			    const struct bt_engine_ops **ops);
+
+/* The engine of `a` for `transport` (BT_TRANSPORT_*), or NULL. Lock held. */
+struct bt_engine	*adapter_engine_locked(struct bt_adapter *a,
+			    int transport, const struct bt_engine_ops **ops);
+
 #endif /* _BLUETOOTHD_ADAPTER_H_ */

@@ -29,7 +29,9 @@
  *   - each controller is brought up (adapter.c: kexts, netgraph graph, HCI
  *     init, power) and gets the engines of engine.h, Classic and LE;
  *   - a controller that boots into a loader gets its firmware first
- *     (firmware.c, on IOUSBHostDevice arrivals).
+ *     (firmware.c, on IOUSBHostDevice arrivals);
+ *   - connections, reconnect at power-up and State:/Bluetooth/Device are
+ *     connections.c's; the HID host (hid_host.c) feeds IOHIDUserDevice.
  *
  * With no controller it blocks with no timer and loads nothing: the upper
  * kernel stack is loaded when the first controller arrives (#207), so a
@@ -48,9 +50,11 @@
 #include "adapter.h"
 #include "btstate.h"
 #include "btstore.h"
+#include "connections.h"
 #include "engine.h"
 #include "firmware.h"
 #include "hci.h"
+#include "hid_host.h"
 #include "iokit_watch.h"
 #include "mach_service.h"
 #include "sdp_server.h"
@@ -400,11 +404,18 @@ main(int argc, char **argv)
 		xlog("no /dev/ioregistry; controllers cannot be seen");
 
 	/*
-	 * The SDP server (sdp_server.h). The controller bring-up starts it
-	 * once it has loaded the L2CAP sockets; this covers a daemon restart
-	 * with the stack already loaded. Without the stack it fails quietly.
+	 * The SDP server (sdp_server.h) and the HID host's listeners
+	 * (hid_host.h). The controller bring-up starts them once it has
+	 * loaded the L2CAP sockets; this covers a daemon restart with the
+	 * stack already loaded. Without the stack they fail quietly.
 	 */
 	(void)sdp_server_start();
+	(void)hid_host_start();
+
+	/* State:/Bluetooth/Device/<addr> for every paired device. */
+	bluetoothd_lock();
+	conn_publish_paired_locked();
+	bluetoothd_unlock();
 
 	/*
 	 * configd may not be up yet (there is no launchd service ordering);

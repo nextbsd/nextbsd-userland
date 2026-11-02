@@ -198,6 +198,18 @@ void		bt_profiles_format(uint32_t mask, char *buf, size_t len);
 #define	BT_BOND_CSRK		0x08	/* LE signature key */
 #define	BT_BOND_HID_DESC	0x10	/* cached HID report descriptor */
 #define	BT_BOND_PNP_ID		0x20	/* PnP ID (SDP 0x1200 / DIS 0x2A50) */
+#define	BT_BOND_HID_ATTRS	0x40	/* hid_flags and hid_country_code */
+
+/*
+ * The Classic HID record's booleans (SDP 0x0204-0x020e), as the HID host
+ * (#524) needs them on a reconnect with no SDP round trip, plus what the host
+ * has learnt itself. Stored as PairedDevices/<addr>/HID* (btstore.h).
+ */
+#define	BT_HID_VIRTUAL_CABLE		0x01	/* 0x0204 */
+#define	BT_HID_RECONNECT_INITIATE	0x02	/* 0x0205: the device pages us */
+#define	BT_HID_NORMALLY_CONNECTABLE	0x04	/* 0x020d: it page-scans */
+#define	BT_HID_BOOT_DEVICE		0x08	/* 0x020e */
+#define	BT_HID_SESSION_ESTABLISHED	0x10	/* a HID session has been up */
 
 /* Device ID / PnP ID. vendor_id_source: 1 Bluetooth SIG, 2 USB-IF. */
 struct bt_pnp_id {
@@ -248,6 +260,8 @@ struct bt_bond {
 	bool			trusted;		/* accept its connections */
 	time_t			paired_at;
 	time_t			last_connected;
+	uint8_t			hid_flags;		/* BT_HID_* */
+	uint8_t			hid_country_code;	/* SDP 0x0203 */
 	uint16_t		hid_desc_len;
 	uint8_t			hid_desc[BT_HID_DESC_MAX];
 
@@ -272,7 +286,8 @@ typedef enum {
 	BT_EV_DISCONNECTED	= 6,
 	BT_EV_BOND_UPDATED	= 7,	/* u.bond: new keys (e.g. a link key change) */
 	BT_EV_POWER_CHANGED	= 8,	/* u.powered */
-	BT_EV_DISCOVERY		= 9	/* u.scanning: discovery started/ended */
+	BT_EV_DISCOVERY		= 9,	/* u.scanning: discovery started/ended */
+	BT_EV_LINK_CHANGED	= 10	/* u.link: encryption, role or RSSI */
 } bt_event_kind_t;
 
 #define	BT_EIR_MAX	240	/* what the kernel neighbor cache keeps */
@@ -293,6 +308,21 @@ struct bt_found {
 	time_t		last_seen;
 };
 
+/*
+ * One ACL link, as BT_EV_CONNECTED, BT_EV_DISCONNECTED and BT_EV_LINK_CHANGED
+ * report it. A connection attempt that fails is a BT_EV_DISCONNECTED with
+ * handle -1 and the HCI status in `reason`.
+ */
+struct bt_link {
+	int		handle;		/* -1 when there is none */
+	bool		incoming;	/* the peer paged us */
+	bool		encrypted;
+	bool		central;	/* we are the central (master) */
+	int8_t		rssi;		/* dBm; 127 when unknown */
+	uint8_t		reason;		/* HCI reason or status (disconnect) */
+	uint32_t	class_of_device; /* from Connection_Request, incoming */
+};
+
 struct bt_event {
 	bt_event_kind_t		kind;
 	struct bt_addr		peer;
@@ -304,6 +334,7 @@ struct bt_event {
 		bt_status_t		status;
 		bool			powered;
 		bool			scanning;
+		struct bt_link		link;
 	} u;
 };
 

@@ -174,18 +174,42 @@ bt_state_publish_pairing(const char *key, const struct bt_pair_prompt *p,
 }
 
 int
-bt_state_publish_device(const char *key, const struct bt_bond *b)
+bt_state_publish_device(const char *key, const struct bt_device_summary *s)
 {
 	CFMutableDictionaryRef d = new_dict();
+	CFMutableArrayRef arr;
 	char addr[BT_ADDR_STRLEN];
+	uint32_t bit;
 
 	if (d == NULL)
 		return (-1);
-	btcf_set_str(d, CFSTR("Address"), bt_addr_ntoa(&b->addr,
+	btcf_set_str(d, CFSTR("Address"), bt_addr_ntoa(s->addr,
 	    BT_ADDR_FMT_DISPLAY, addr, sizeof(addr)));
-	btcf_set_str(d, CFSTR("Name"), b->name);
-	btcf_set_int(d, CFSTR("ClassOfDevice"), b->class_of_device);
-	btcf_set_bool(d, CFSTR("Paired"), true);
+	btcf_set_str(d, CFSTR("Name"), s->name);
+	btcf_set_int(d, CFSTR("ClassOfDevice"), s->class_of_device);
+	if (s->adapter[0] != '\0')
+		btcf_set_str(d, CFSTR("Adapter"), s->adapter);
+	btcf_set_bool(d, CFSTR("Paired"), s->paired);
+	btcf_set_bool(d, CFSTR("Connected"), s->connected);
+	btcf_set_bool(d, CFSTR("Connecting"), s->connecting);
+	arr = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
+	if (arr != NULL) {
+		for (bit = 1; bit != 0; bit <<= 1) {
+			const char *name;
+			CFStringRef n;
+
+			if ((s->profiles & bit) == 0 ||
+			    (name = bt_profile_name(bit)) == NULL ||
+			    (n = btcf_str(name)) == NULL)
+				continue;
+			CFArrayAppendValue(arr, n);
+			CFRelease(n);
+		}
+		CFDictionarySetValue(d, CFSTR("Profiles"), arr);
+		CFRelease(arr);
+	}
+	if (s->connected && s->rssi != 127)
+		btcf_set_int(d, CFSTR("RSSI"), s->rssi);
 	return (set_value(key, d));
 }
 

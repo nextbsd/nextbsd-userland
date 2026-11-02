@@ -6,13 +6,13 @@
 #include "bluetoothd.h"
 #include "btstate.h"
 #include "btstore.h"
+#include "connections.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
 #define	PAIRING_MAX	8
-#define	DEVQ_MAX	16
 
 struct pairing {
 	bool			used;
@@ -27,15 +27,7 @@ struct pairing {
 	bool			published;	/* the Pairing/<addr> key is set */
 };
 
-/* Devices whose State:/Bluetooth/Device/<addr> needs updating. */
-struct devq {
-	bool		used;
-	struct bt_addr	peer;
-	bool		paired;
-};
-
 static struct pairing	g_pairings[PAIRING_MAX];
-static struct devq	g_devq[DEVQ_MAX];
 
 /* Classic addresses are public; match on the six octets. */
 static bool
@@ -190,22 +182,9 @@ pairing_status_locked(const struct bt_addr *peer, bt_pair_state_t *state,
 void
 pairing_device_changed_locked(const struct bt_addr *peer, bool paired)
 {
-	int i, slot = -1;
-
-	for (i = 0; i < DEVQ_MAX; i++) {
-		if (g_devq[i].used && same(&g_devq[i].peer, peer)) {
-			slot = i;
-			break;
-		}
-		if (!g_devq[i].used && slot < 0)
-			slot = i;
-	}
-	if (slot < 0)
-		return;		/* sixteen at once; the next change catches up */
-	g_devq[slot].used = true;
-	g_devq[slot].peer = *peer;
-	g_devq[slot].paired = paired;
-	bluetoothd_wake();
+	/* connections.c owns State:/Bluetooth/Device/<addr>. */
+	(void)paired;
+	conn_device_changed_locked(peer);
 }
 
 static const char *
@@ -229,10 +208,9 @@ pairing_publish(void)
 		bool			show;
 		struct bt_pair_prompt	prompt;
 	} work[PAIRING_MAX];
-	struct devq devs[DEVQ_MAX];
 	char key[BT_ADDR_STRLEN], path[128];
 	time_t now = time(NULL);
-	int i, n = 0, nd = 0;
+	int i, n = 0;
 	bool notify = false;
 
 	bluetoothd_lock();
@@ -258,12 +236,6 @@ pairing_publish(void)
 		    now - p->finished > PAIRING_KEEP_S)
 			p->used = false;
 	}
-	for (i = 0; i < DEVQ_MAX; i++) {
-		if (g_devq[i].used) {
-			devs[nd++] = g_devq[i];
-			g_devq[i].used = false;
-		}
-	}
 	bluetoothd_unlock();
 
 	for (i = 0; i < n; i++) {
@@ -279,20 +251,4 @@ pairing_publish(void)
 	}
 	if (notify)
 		bt_state_notify(BT_NOTIFY_PAIRING);
-
-	for (i = 0; i < nd; i++) {
-		struct bt_bond b;
-
-		(void)bt_addr_ntoa(&devs[i].peer, BT_ADDR_FMT_KEY, key,
-		    sizeof(key));
-		(void)snprintf(path, sizeof(path), "%s%s",
-		    BT_STATE_DEVICE_PREFIX, key);
-		if (devs[i].paired &&
-		    bt_store_bond_find(&devs[i].peer, false, &b))
-			(void)bt_state_publish_device(path, &b);
-		else
-			(void)bt_state_remove(path);
-	}
-	if (nd > 0)
-		bt_state_notify(BT_NOTIFY_DEVICE);
 }

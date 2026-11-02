@@ -16,6 +16,7 @@
 #include "bluetoothd.h"
 #include "btstore.h"
 #include "bluetooth_mig_types.h"
+#include "connections.h"
 
 #include <sys/types.h>
 #include <sys/endian.h>
@@ -710,6 +711,20 @@ sdp_client_apply(const struct sdp_device_info *info, struct bt_bond *b)
 		b->hid_desc_len = info->hid.desc_len;
 		b->flags |= BT_BOND_HID_DESC;
 	}
+	if (info->hid.present) {
+		/* What the HID host learnt itself is kept. */
+		b->hid_flags &= BT_HID_SESSION_ESTABLISHED;
+		if (info->hid.virtual_cable)
+			b->hid_flags |= BT_HID_VIRTUAL_CABLE;
+		if (info->hid.reconnect_initiate)
+			b->hid_flags |= BT_HID_RECONNECT_INITIATE;
+		if (info->hid.normally_connectable)
+			b->hid_flags |= BT_HID_NORMALLY_CONNECTABLE;
+		if (info->hid.boot_device)
+			b->hid_flags |= BT_HID_BOOT_DEVICE;
+		b->hid_country_code = info->hid.country_code;
+		b->flags |= BT_BOND_HID_ATTRS;
+	}
 }
 
 int
@@ -749,6 +764,8 @@ refresh_thread(void *arg)
 		sdp_client_apply(info, b);
 		if (bt_store_bond_save(b) != 0)
 			xlog("%s: could not save the SDP results", disp);
+		else
+			conn_bond_refreshed_locked(peer);	/* HID, State */
 	} else
 		xlog("%s: no longer paired; SDP results dropped", disp);
 	bluetoothd_unlock();

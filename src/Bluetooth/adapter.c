@@ -12,10 +12,12 @@
 #include "bluetoothd.h"
 #include "btstate.h"
 #include "btstore.h"
+#include "connections.h"
 #include "discovery.h"
 #include "engine.h"
 #include "hci.h"
 #include "hci_compat.h"
+#include "hid_host.h"
 #include "ngstack.h"
 #include "pairing.h"
 #include "sdp_client.h"
@@ -225,6 +227,7 @@ static struct bt_engine *
 engine_of(struct bt_adapter *a, int transport,
     const struct bt_engine_ops **ops)
 {
+	*ops = NULL;
 	int i;
 
 	for (i = 0; i < BT_ENGINE_MAX && bt_engines[i] != NULL; i++) {
@@ -269,6 +272,8 @@ init_finish(struct bt_adapter *a)
 	    bt_adapter_powered_off_e;
 	attach_engines(a);
 	a->dirty = true;
+	if (a->powered)
+		conn_adapter_up_locked(a);
 	xlog("%s: ready: %s \"%s\", %s%s%s, powered %s", a->node,
 	    a->have_addr ? bt_addr_ntoa(&a->addr, BT_ADDR_FMT_DISPLAY, addr,
 	    sizeof(addr)) : "?", a->name,
@@ -489,6 +494,9 @@ adapter_bringup(struct bt_adapter *a)
 	 */
 	if (err == NULL && sdp_server_start() < 0)
 		xlog("%s: SDP server not started: %s", node, strerror(errno));
+	/* The HID host's listeners (PSM 0x11/0x13), likewise. */
+	if (err == NULL && hid_host_start() < 0)
+		xlog("%s: HID listeners not started", node);
 	if (err == NULL) {
 		fd = hci_open(hci_node);
 		if (fd < 0)
@@ -524,6 +532,7 @@ adapter_teardown_locked(struct bt_adapter *a)
 	char key[128];
 
 	pairing_drop_node_locked(a->node);
+	conn_adapter_down_locked(a);
 	detach_engines(a);
 	if (a->hci_fd >= 0) {
 		(void)close(a->hci_fd);
@@ -597,7 +606,7 @@ earlier(uint64_t t, uint64_t u)
 uint64_t
 adapter_next_timer_locked(void)
 {
-	uint64_t t = 0;
+	uint64_t t = conn_next_timer_locked();
 	int i, j, n = bluetoothd_adapter_count_locked();
 
 	for (i = 0; i < n; i++) {
@@ -624,6 +633,7 @@ adapter_timers_locked(uint64_t now)
 	time_t wall = time(NULL);
 	int i, j, n = bluetoothd_adapter_count_locked();
 
+	conn_timers_locked(now);
 	for (i = 0; i < n; i++) {
 		struct bt_adapter *a = bluetoothd_adapter_at_locked(i);
 
@@ -816,11 +826,19 @@ host_event(void *ctx, const struct bt_engine *e, const struct bt_event *ev)
 		 * Read a Classic device's SDP records (HID descriptor, profiles)
 		 * into its bond; LE devices describe themselves over GATT. Its
 		 * own thread; it merges under bluetoothd_lock(), so it waits
-		 * until this callback's caller lets go.
+		 * until this callback's caller lets go. A Classic HID device is
+		 * then connected for its first session (connections.c).
 		 */
+		if (ev->transport != BT_TRANSPORT_LE)
+			conn_paired_locked(&ev->peer);
 		if (ev->transport != BT_TRANSPORT_LE &&
 		    sdp_client_refresh_bond(&ev->peer) != 0)
 			xlog("%s: could not start the SDP query", a->node);
+		break;
+	case BT_EV_CONNECTED:
+	case BT_EV_DISCONNECTED:
+	case BT_EV_LINK_CHANGED:
+		conn_event_locked(a, ev);
 		break;
 	case BT_EV_PAIR_FAILED:
 		if (pairing_finish_locked(&ev->peer, ev->u.status)) {
@@ -901,6 +919,7 @@ adapter_set_power_locked(struct bt_adapter *a, bool on)
 		a->discoverable_until = 0;
 		a->powered = false;
 		a->scanning = false;
+		conn_adapter_down_locked(a);
 	} else {
 		a->powered = true;
 		a->discoverable = bluetoothd_discoverable_pref_locked();
@@ -917,6 +936,8 @@ adapter_set_power_locked(struct bt_adapter *a, bool on)
 	}
 	a->state = on ? bt_adapter_powered_on_e : bt_adapter_powered_off_e;
 	a->dirty = true;
+	if (on)
+		conn_adapter_up_locked(a);
 	xlog("%s: powered %s", a->node, on ? "on" : "off");
 	bluetoothd_wake();
 	return (bt_status_success_e);
@@ -1120,6 +1141,8 @@ adapter_unpair_locked(const struct bt_addr *peer)
 	if (!found)
 		return (bt_status_not_paired_e);
 
+	/* A virtual-cable HID device is told before its link goes. */
+	hid_host_unplug(&p);
 	for (i = 0; i < n; i++) {
 		struct bt_adapter *a = bluetoothd_adapter_at_locked(i);
 
@@ -1220,4 +1243,19 @@ adapter_publish(void)
 	if (scan_changed)
 		bt_state_notify(BT_NOTIFY_SCAN);
 	pairing_publish();
+	conn_publish();
+}
+
+struct bt_engine *
+adapter_classic_locked(struct bt_adapter *a, const struct bt_engine_ops **ops)
+{
+	return (classic_of(a, ops));
+}
+
+struct bt_engine *
+adapter_engine_locked(struct bt_adapter *a, int transport,
+    const struct bt_engine_ops **ops)
+{
+	*ops = NULL;
+	return (engine_of(a, transport, ops));
 }

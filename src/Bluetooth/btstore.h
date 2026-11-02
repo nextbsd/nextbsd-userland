@@ -30,6 +30,12 @@
  *       Profiles           array   "HID", "HOGP", "A2DPSink", ... (engine.c)
  *       HIDDescriptor      data    cached report descriptor, so a paired
  *                                  keyboard reconnects with no SDP/GATT query
+ *       HIDVirtualCable, HIDReconnectInitiate, HIDNormallyConnectable,
+ *       HIDBootDevice      bool    the SDP HID record's booleans
+ *       HIDCountryCode     int
+ *       HIDSessionEstablished bool a HID session has been up once: from
+ *                                  then on a device that reconnects itself
+ *                                  is left to (connections.h)
  *       AutoConnect        bool
  *       Trusted            bool    accept connections it initiates
  *       Paired             int     unix time

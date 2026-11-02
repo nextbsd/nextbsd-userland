@@ -30,8 +30,8 @@
  *
  *   31000-31009  daemon and controllers   status, adapter list; power,
  *                                         discoverable, name (#207)
- *   31010-31019  paired devices           list; unpair (#209), device status
- *                                         (#213), auto-connect
+ *   31010-31019  paired devices           list; unpair (#209), device status,
+ *                                         auto-connect (#213)
  *   31020-31029  discovery                scan, scan_count, scan_entry (#208)
  *   31030-31039  pairing                  pair, pair_status, pair_confirm
  *                                         (#209; LE SMP #205 uses the same)
@@ -205,8 +205,36 @@ routine bt_unpair(
 	out status	: bt_status_code
 );
 
-skip;	/* 31013 */
-skip;	/* 31014 */
+/*
+ * 31013 bt_device_status — one device, paired or not: its name and class,
+ * its link state, the controller it is connected through, the signal in dBm
+ * (127 when unknown) and the profiles running over the link now (comma-
+ * separated). no_such_device when it is neither paired nor connected.
+ */
+routine bt_device_status(
+	server		: mach_port_t;
+	address		: bt_address;
+	out name	: bt_name;
+	out class_of_device : int;
+	out state	: bt_device_state;
+	out node	: bt_node;
+	out rssi	: int;
+	out profiles	: bt_profiles;
+	out paired	: int;
+	out status	: bt_status_code
+);
+
+/*
+ * 31014 bt_device_autoconnect — whether a paired device is reconnected when a
+ * controller powers up (PairedDevices/<addr>/AutoConnect).
+ */
+routine bt_device_autoconnect(
+	server		: mach_port_t;
+	address		: bt_address;
+	on		: int;
+	out status	: bt_status_code
+);
+
 skip;	/* 31015 */
 skip;	/* 31016 */
 skip;	/* 31017 */
@@ -319,8 +347,28 @@ skip;	/* 31039 */
 
 /* ---- 31040-31049: connections ------------------------------------------- */
 
-skip;	/* 31040 */
-skip;	/* 31041 */
+/*
+ * 31040 bt_connect — connect a device: a paired HID device gets its HID
+ * channels, anything else an ACL link. Returns once the attempt has started;
+ * bt_device_status follows it.
+ */
+routine bt_connect(
+	server		: mach_port_t;
+	address		: bt_address;
+	out status	: bt_status_code
+);
+
+/*
+ * 31041 bt_disconnect — disconnect a device: its profiles' channels, then
+ * the link. A device that reconnects by itself may come back; unpair it to
+ * stop that.
+ */
+routine bt_disconnect(
+	server		: mach_port_t;
+	address		: bt_address;
+	out status	: bt_status_code
+);
+
 skip;	/* 31042 */
 skip;	/* 31043 */
 skip;	/* 31044 */

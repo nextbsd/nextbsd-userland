@@ -560,6 +560,7 @@ conn_release(struct le_conn *c, bt_status_t st)
 {
 	struct bt_engine *e = c->e;
 	struct bt_addr addr = c->addr;
+	struct bt_addr ident = c->identity;
 	bool linked = c->state != LC_CONNECTING;
 	bool worked = c->state == LC_READY;
 	bool pairing = c->pairing;
@@ -600,8 +601,16 @@ conn_release(struct le_conn *c, bt_status_t st)
 		ev.u.status = st;
 		le_raise(e, &ev);
 	}
-	if (linked)
+	if (linked) {
 		raise_simple(e, BT_EV_DISCONNECTED, &addr);
+		/*
+		 * BT_EV_CONNECTED named the identity address, which differs
+		 * from the one on the air for a private address: the policy
+		 * layer (connections.c) keys the link by the former.
+		 */
+		if (!bt_addr_equal(&ident, &addr))
+			raise_simple(e, BT_EV_DISCONNECTED, &ident);
+	}
 	e->reconcile = true;
 }
 

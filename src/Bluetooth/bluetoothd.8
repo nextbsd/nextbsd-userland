@@ -233,6 +233,68 @@ and
 .Ql PnPID ,
 so a reconnect skips reading them.
 .El
+.Sh CONNECTIONS
+.Nm
+follows every Classic link: who connected, through which controller,
+whether it is encrypted, and its signal (read every 10 seconds).
+A new link to a paired device is authenticated with the stored key and then
+encrypted.
+The kernel accepts every incoming link; one from a device that is not paired
+and
+.Ql Trusted ,
+and not being paired, is disconnected at once and logged.
+.Pp
+When a controller comes up powered, every paired device whose
+.Ql AutoConnect
+is on (and the global
+.Ql AutoConnect )
+is connected once, ten seconds apart, with no user action and whether or not
+anyone is logged in.
+A HID device is connected by the host only until its first HID session;
+after that, a device whose SDP record says it reconnects by itself
+.Pq Ql HIDReconnectInitiate
+is left to page the computer, and
+.Nm
+only listens.
+LE devices are reconnected by the LE engine itself (see
+.Sx LOW ENERGY ) ;
+their links are followed and published the same way.
+.Sh HID HOST
+.Nm
+is the Classic HID host; there is no
+.Nm bthidd
+and no
+.Nm vkbd .
+It runs HIDP over the L2CAP control (PSM 0x11) and interrupt (PSM 0x13)
+channels, as initiator for a device's first session after pairing and as a
+listener on every controller for a device that reconnects itself.
+.Pp
+Each connected HID device becomes one
+.Xr IOHIDUserDevice 3 ,
+built from the report descriptor cached at pairing time, with the device's
+vendor and product from its PnP ID, transport
+.Ql Bluetooth ,
+its address as serial number and its name as product.
+The kernel's HID drivers attach to it as to a USB device:
+.Nm hkbd
+for keyboards (through
+.Nm kbdmux ,
+so the console and the login window see it),
+.Nm hms
+and
+.Nm hmt
+for pointers.
+Input reports go to the device unchanged; keyboard LEDs and other output
+reports go back as HIDP DATA on the interrupt channel, feature reports as
+SET_REPORT, and report reads as GET_REPORT.
+A keyboard or mouse whose descriptor is not known is driven in boot
+protocol.
+.Pp
+When the device disconnects, its
+.Xr IOHIDUserDevice 3
+is cancelled and the kernel releases any key still held down.
+A device that unplugs its virtual cable is forgotten; unpairing one sends it
+the same.
 .Sh PAIRING STORE
 Two files under
 .Pa /Local/Library/Preferences/SystemConfiguration ,
@@ -253,7 +315,9 @@ Reconnect paired devices at power-up; default on.
 One dictionary per device, keyed by its address
 .Pq Ql aa-bb-cc-dd-ee-ff :
 .Ql Name , AddressType , Transports , ClassOfDevice , Appearance , PnPID ,
-.Ql Profiles , HIDDescriptor , AutoConnect , Trusted , Paired ,
+.Ql Profiles , HIDDescriptor , HIDVirtualCable , HIDReconnectInitiate ,
+.Ql HIDNormallyConnectable , HIDBootDevice , HIDCountryCode ,
+.Ql HIDSessionEstablished , AutoConnect , Trusted , Paired ,
 and
 .Ql LastConnected .
 The cached HID descriptor lets a paired keyboard reconnect with no service
@@ -303,7 +367,15 @@ One controller:
 and
 .Ql Scanning .
 .It Ql State:/Bluetooth/Device/<addr>
-One paired device.
+One paired or connected device:
+.Ql Address , Name , ClassOfDevice , Adapter , Paired , Connected ,
+.Ql Connecting , Profiles
+(what runs over the link now, such as
+.Ql HID )
+and
+.Ql RSSI
+while connected.
+A device that is neither paired nor connected has no key.
 .It Ql State:/Bluetooth/Pairing/<addr>
 A pairing prompt waiting for the user.
 .It Ql State:/Bluetooth/Firmware/<ugen>
@@ -342,6 +414,7 @@ Log.
 (plaintext keys).
 .El
 .Sh SEE ALSO
+.Xr IOHIDUserDevice 3 ,
 .Xr notify 3 ,
 .Xr bluetooth 8 ,
 .Xr configd 8 ,

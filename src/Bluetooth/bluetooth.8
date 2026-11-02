@@ -42,6 +42,19 @@
 .Nm
 .Cm unpair
 .Ar address
+.Nm
+.Cm connect
+.Ar address
+.Nm
+.Cm disconnect
+.Ar address
+.Nm
+.Cm device
+.Ar address
+.Nm
+.Cm autoconnect
+.Ar address
+.Cm on | off
 .Sh DESCRIPTION
 .Nm
 is the command-line client for
@@ -140,6 +153,26 @@ A prompt not answered within 60 seconds fails the pairing.
 .It Cm unpair Ar address
 Forget a paired device: its keys, its entry in the pairing store, and its
 link if it is connected.
+.It Cm connect Ar address
+Connect a device and wait (up to 30 seconds) until it is connected.
+A paired keyboard, mouse or other HID device gets its HID channels and
+appears to the system as a HID device; anything else gets a link.
+Prints
+.Dq connected to Ar address
+with the profiles that run over the link.
+.It Cm disconnect Ar address
+Disconnect a device: its HID channels, then the link.
+A keyboard or mouse that reconnects by itself comes back at its next key
+press or movement; use
+.Cm unpair
+to stop that.
+.It Cm device Ar address
+Print one device's name, class, whether it is paired, its link state, the
+controller it is connected through, its signal and the profiles running
+over the link.
+.It Cm autoconnect Ar address Cm on | off
+Whether a paired device is reconnected when a controller powers up
+(on by default).
 .El
 .Pp
 Addresses print as
@@ -203,6 +236,19 @@ paired with B8:D5:0B:12:34:56
 $ bluetooth list
 ADDRESS                  NAME                     CLASS  LINK     AUTO STATE        PROFILES
 C8:2E:47:11:22:33/random MX Keys                  000000 LE       yes  connected    HOGP
+
+$ bluetooth connect 34:88:5D:AA:BB:CC
+connected to 34:88:5D:AA:BB:CC (HID)
+
+$ bluetooth device 34:88:5D:AA:BB:CC
+34:88:5D:AA:BB:CC
+  name:        Keyboard K380
+  class:       002540 keyboard
+  paired:      yes
+  state:       connected
+  controller:  ubt0
+  signal:      ***  -55 dBm
+  profiles:    HID
 
 $ bluetooth sdp 00:1B:66:AA:BB:CC
 record 0x00010001: AudioSink

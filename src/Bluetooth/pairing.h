@@ -61,7 +61,7 @@ bool	pairing_status_locked(const struct bt_addr *peer,
 	    bt_pair_state_t *state, bt_status_t *result,
 	    struct bt_pair_prompt *prompt, char *node, size_t nodelen);
 
-/* A device was paired (true) or forgotten (false): publish or remove it. */
+/* A device was paired (true) or forgotten (false): republish its State key. */
 void	pairing_device_changed_locked(const struct bt_addr *peer, bool paired);
 
 /* Publish what changed. Main loop, lock NOT held. */
