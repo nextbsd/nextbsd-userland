@@ -1,0 +1,165 @@
+.\" IOHIDUserDevice(3) — NextBSD virtual HID devices.
+.\"
+.\" NextBSD-original. Apple documents this API only in the SDK header
+.\" comments, so there is no upstream page to vendor.
+.\"
+.Dd November 1, 2026
+.Dt IOHIDUSERDEVICE 3
+.Os NextBSD
+.Sh NAME
+.Nm IOHIDUserDeviceCreateWithProperties ,
+.Nm IOHIDUserDeviceSetDispatchQueue ,
+.Nm IOHIDUserDeviceSetCancelHandler ,
+.Nm IOHIDUserDeviceRegisterGetReportBlock ,
+.Nm IOHIDUserDeviceRegisterSetReportBlock ,
+.Nm IOHIDUserDeviceActivate ,
+.Nm IOHIDUserDeviceCancel ,
+.Nm IOHIDUserDeviceHandleReportWithTimeStamp ,
+.Nm IOHIDUserDeviceHandleReport ,
+.Nm IOHIDUserDeviceCopyProperty ,
+.Nm IOHIDUserDeviceSetProperty
+.Nd HID devices created from userland
+.Sh LIBRARY
+IOKit Library (libIOKit, \-lIOKit)
+.Sh SYNOPSIS
+.In IOKit/hid/IOHIDUserDevice.h
+.Ft IOHIDUserDeviceRef
+.Fn IOHIDUserDeviceCreateWithProperties "CFAllocatorRef allocator" "CFDictionaryRef properties" "IOOptionBits options"
+.Ft void
+.Fn IOHIDUserDeviceSetDispatchQueue "IOHIDUserDeviceRef device" "dispatch_queue_t queue"
+.Ft void
+.Fn IOHIDUserDeviceSetCancelHandler "IOHIDUserDeviceRef device" "dispatch_block_t handler"
+.Ft void
+.Fn IOHIDUserDeviceRegisterGetReportBlock "IOHIDUserDeviceRef device" "IOHIDUserDeviceGetReportBlock block"
+.Ft void
+.Fn IOHIDUserDeviceRegisterSetReportBlock "IOHIDUserDeviceRef device" "IOHIDUserDeviceSetReportBlock block"
+.Ft void
+.Fn IOHIDUserDeviceActivate "IOHIDUserDeviceRef device"
+.Ft void
+.Fn IOHIDUserDeviceCancel "IOHIDUserDeviceRef device"
+.Ft IOReturn
+.Fn IOHIDUserDeviceHandleReportWithTimeStamp "IOHIDUserDeviceRef device" "uint64_t timestamp" "const uint8_t *report" "CFIndex reportLength"
+.Ft IOReturn
+.Fn IOHIDUserDeviceHandleReport "IOHIDUserDeviceRef device" "const uint8_t *report" "CFIndex reportLength"
+.Ft CFTypeRef
+.Fn IOHIDUserDeviceCopyProperty "IOHIDUserDeviceRef device" "CFStringRef key"
+.Ft Boolean
+.Fn IOHIDUserDeviceSetProperty "IOHIDUserDeviceRef device" "CFStringRef key" "CFTypeRef property"
+.Sh DESCRIPTION
+An
+.Vt IOHIDUserDeviceRef
+is a HID device whose reports come from the process that created it.
+The kernel's HID drivers see an ordinary hidbus device:
+.Xr hkbd 4 ,
+.Xr hms 4
+and
+.Xr hmt 4
+attach to it as they would to a USB device,
+and the IORegistry shows it as
+.Ql IOHIDUserDevice .
+.Xr bluetoothd 8
+uses it for Bluetooth keyboards, mice and media keys.
+The API is Apple's, from
+.In IOKit/hid/IOHIDUserDevice.h .
+.Pp
+.Fn IOHIDUserDeviceCreateWithProperties
+describes the device with a dictionary keyed by the
+.In IOKit/hid/IOHIDKeys.h
+names:
+.Bl -tag -width "kIOHIDReportDescriptorKey"
+.It Dv kIOHIDReportDescriptorKey
+The report descriptor, as
+.Vt CFData ,
+at most 4096 bytes.
+Required.
+.It Dv kIOHIDVendorIDKey , Dv kIOHIDProductIDKey , Dv kIOHIDVersionNumberKey , Dv kIOHIDCountryCodeKey
+Numbers.
+.It Dv kIOHIDProductKey , Dv kIOHIDSerialNumberKey
+Strings.
+A Bluetooth device's serial number is its address.
+.It Dv kIOHIDTransportKey
+.Dq Bluetooth
+or
+.Dq BluetoothLowEnergy
+makes a Bluetooth HID device; any other value makes a virtual one.
+.It Dv kIOHIDRequestTimeoutKey
+How long, in milliseconds, the kernel waits for a get- or set-report
+answer.
+The default is 1000.
+.El
+.Pp
+Other keys are kept by the object and returned by
+.Fn IOHIDUserDeviceCopyProperty .
+.Fa options
+is reserved and should be 0.
+The first create loads
+.Pa IOHIDUserDevice.kext
+through
+.Xr kextd 8
+if
+.Pa /dev/hidresource
+is missing.
+.Pp
+The device is published at
+.Fn IOHIDUserDeviceActivate ,
+and the drivers ask for reports while they attach,
+so set the queue and register the handlers first.
+The get handler fills
+.Fa report
+and sets
+.Fa *reportLength ;
+the set handler also receives output reports, such as keyboard LEDs, as
+.Dv kIOHIDReportTypeOutput .
+Reports begin with the report ID when the descriptor numbers its reports.
+Handlers run on the device's queue.
+The callback forms
+.Fn IOHIDUserDeviceRegisterGetReportCallback ,
+.Fn IOHIDUserDeviceRegisterGetReportWithReturnLengthCallback
+and
+.Fn IOHIDUserDeviceRegisterSetReportCallback
+are also provided.
+.Pp
+.Fn IOHIDUserDeviceHandleReportWithTimeStamp
+delivers one input report and may be called from any thread.
+A
+.Fa timestamp
+of 0 means now.
+.Pp
+.Fn IOHIDUserDeviceCancel
+removes the device.
+The cancel handler runs on the device's queue once no other handler can
+run, and is the place to release the device.
+Exiting or closing the device has the same effect on the kernel side:
+the device's lifetime is the creating process's.
+.Sh RETURN VALUES
+.Fn IOHIDUserDeviceCreateWithProperties
+returns
+.Dv NULL
+if the properties have no usable report descriptor or
+.Pa /dev/hidresource
+cannot be opened.
+.Fn IOHIDUserDeviceHandleReportWithTimeStamp
+returns
+.Dv kIOReturnSuccess ,
+.Dv kIOReturnNotReady
+before activation,
+.Dv kIOReturnOffline
+after cancellation, or another
+.Vt IOReturn
+for a failed write.
+.Sh FILES
+.Bl -tag -width "/dev/hidresource" -compact
+.It Pa /dev/hidresource
+the virtual HID transport, one open per device
+.El
+.Sh SEE ALSO
+.Xr hidbus 4 ,
+.Xr bluetoothd 8 ,
+.Xr ioreg 8 ,
+.Xr kextd 8
+.Sh CAVEATS
+Creating a device needs root.
+There is no run-loop scheduling.
+.Fn IOHIDUserDeviceSetProperty
+only works before activation.
+Kernel set-protocol and set-idle requests are answered with success.

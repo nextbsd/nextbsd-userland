@@ -19,6 +19,7 @@ LIB=		IOKit
 SHLIB_MAJOR=	1
 
 SRCS=		IOKitLib.c IOKitMatching.c IOKitNotify.c IOPMAssertions.c
+SRCS+=		IOHIDUserDevice.c
 
 # WARNS=0: the public header pulls the whole CoreFoundation public
 # header tree (for later iters' CFDictionary / CFString surfaces).
@@ -34,6 +35,13 @@ WARNS=		0
 # ioreg.c. This lib's `make install` (run by the driver) gzips + installs it
 # into MANDIR via bsd.lib.mk.
 MAN=		ioreg.8
+
+# IOHIDUserDevice(3): the virtual-HID API (nextbsd-userland#521).
+MAN+=		IOHIDUserDevice.3
+MLINKS=		IOHIDUserDevice.3 IOHIDUserDeviceCreateWithProperties.3 \
+		IOHIDUserDevice.3 IOHIDUserDeviceActivate.3 \
+		IOHIDUserDevice.3 IOHIDUserDeviceCancel.3 \
+		IOHIDUserDevice.3 IOHIDUserDeviceHandleReportWithTimeStamp.3
 
 # -fblocks: the public header pulls CoreFoundation, and CoreFoundation's
 # ForSwiftFoundationOnly.h / CFCalendarPriv.h / CFStreamPriv.h declare
@@ -65,6 +73,12 @@ LDADD+=		-L${SYSROOT}/usr/lib/system
 INCS=		IOKit/IOKitLib.h IOKit/IOMessage.h
 INCS+=		IOKit/pwr_mgt/IOPMLib.h IOKit/pwr_mgt/IOPMLibPrivate.h
 INCSDIR=	${PREFIX}/include/IOKit
+
+# <IOKit/hid/...>: IOHIDUserDevice (nextbsd-userland#521). A separate group
+# so the headers keep their hid/ directory, as in IOKit.framework.
+INCSGROUPS=	INCS HIDINCS
+HIDINCS=	IOKit/hid/IOHIDKeys.h IOKit/hid/IOHIDUserDevice.h
+HIDINCSDIR=	${PREFIX}/include/IOKit/hid
 LIBDIR=		${PREFIX}/lib/system
 
 # -lCoreFoundation: the CFDictionary / CFString / CFNumber object
@@ -100,4 +114,10 @@ LDADD+=		-Wl,--whole-archive ${LIBKEXT} -Wl,--no-whole-archive
 DPADD+=		${LIBKEXT}
 LIBADD+=	z
 .endif
+# IOHIDUserDevice.c loads IOHIDUserDevice.kext with
+# KextManagerLoadKextWithIdentifier, so it needs KextManager.h (from
+# kext.subproj) and the libkern/OSReturn.h it includes. The compat tree is
+# searched last, so the sysroot's own headers still win.
+CFLAGS.IOHIDUserDevice.c+=	-I${.CURDIR}/../kext_tools/kext.subproj
+CFLAGS.IOHIDUserDevice.c+=	-idirafter ${.CURDIR}/../kext_tools/compat
 .include <bsd.lib.mk>

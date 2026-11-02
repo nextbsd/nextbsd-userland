@@ -663,7 +663,7 @@ run_buildenv "make -C $SRC/kext_tools/kext.subproj SYSROOT=$SYSROOT MIGOUT=$KEXT
 test -f "$SRC/kext_tools/kext.subproj/libkext.a" || { echo "FAIL: libkext.a not built"; exit 1; }
 
 comp "libIOKit"
-mkdir -p "$DESTDIR/usr/include/IOKit"
+mkdir -p "$DESTDIR/usr/include/IOKit" "$DESTDIR/usr/include/IOKit/hid"
 run_buildenv "make -C $SRC/libIOKit DESTDIR=$DESTDIR SYSROOT=$SYSROOT LIBKEXT=$SRC/kext_tools/kext.subproj/libkext.a all install"
 # The public kext API headers, as IOKit.framework ships them: KextManager.h
 # (and the libkern/OSReturn.h it includes) and the MIG types.
@@ -675,6 +675,7 @@ install -m 0644 "$SRC/kext_tools/compat/libkern/OSReturn.h" "$DESTDIR/usr/includ
 sync_sysroot
 test -f "$DESTDIR/usr/lib/system/libIOKit.so.1" || { echo "FAIL: libIOKit.so.1 not installed"; exit 1; }
 test -f "$DESTDIR/usr/include/IOKit/IOKitLib.h" || { echo "FAIL: IOKit/IOKitLib.h not installed"; exit 1; }
+test -f "$DESTDIR/usr/include/IOKit/hid/IOHIDUserDevice.h" || { echo "FAIL: IOKit/hid/IOHIDUserDevice.h not installed"; exit 1; }
 
 comp "ioreg(8)"
 mkdir -p "$DESTDIR/usr/sbin"
