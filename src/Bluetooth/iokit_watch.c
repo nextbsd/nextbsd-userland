@@ -17,6 +17,7 @@
  * belongs on the main loop.
  */
 #include "iokit_watch.h"
+#include "bluetoothd.h"
 #include "fw_ids.h"
 
 #include <IOKit/IOKitLib.h>
@@ -132,9 +133,15 @@ describe(io_object_t obj, struct bt_iokit_event *ev)
 {
 	CFMutableDictionaryRef props = NULL;
 	io_name_t name;
+	kern_return_t kr;
 
-	if (IORegistryEntryCreateCFProperties(obj, &props, NULL, 0) ==
-	    KERN_SUCCESS && props != NULL) {
+	kr = IORegistryEntryCreateCFProperties(obj, &props, NULL, 0);
+	if (kr != KERN_SUCCESS || props == NULL) {
+		if (bluetoothd_debug)
+			xlog("registry entry %llu: properties unreadable "
+			    "(kr=0x%x)", (unsigned long long)ev->entry_id,
+			    (unsigned)kr);
+	} else {
 		prop_string(props, BT_IOKIT_KEY_NODE, ev->node,
 		    sizeof(ev->node));
 		prop_string(props, BT_IOKIT_KEY_TRANSPORT, ev->transport,
@@ -178,6 +185,10 @@ drain_iterator(io_iterator_t it, bt_iokit_event_kind_t kind)
 				describe(obj, &ev);
 			enqueue(&ev);
 			any = true;
+		} else if (bluetoothd_debug) {
+			xlog("%s match skipped: no registry entry ID (it may "
+			    "have gone)", kind == BT_IOKIT_USB_ARRIVED ?
+			    BT_IOKIT_USB_CLASS : BT_IOKIT_CLASS);
 		}
 		IOObjectRelease(obj);
 	}

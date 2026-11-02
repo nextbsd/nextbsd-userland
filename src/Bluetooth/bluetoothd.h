@@ -86,6 +86,12 @@ struct bt_adapter {
 extern volatile sig_atomic_t	bluetoothd_got_term;
 
 /*
+ * -d: also log debug-level lines, such as why an IOUSBHostDevice match was
+ * not handed to the firmware loader. Set once in main(), before any thread.
+ */
+extern bool	bluetoothd_debug;
+
+/*
  * Lock / unlock the shared state. The MIG routine bodies in bluetoothd_mig.c
  * call these: they run on the Mach service thread and read what the main loop
  * writes.

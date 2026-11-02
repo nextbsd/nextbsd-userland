@@ -3,7 +3,7 @@
 .\" NextBSD-original. There is no upstream page to vendor: Apple's bluetoothd
 .\" is closed source and undocumented.
 .\"
-.Dd November 1, 2026
+.Dd November 2, 2026
 .Dt BLUETOOTHD 8
 .Os NextBSD
 .Sh NAME
@@ -11,6 +11,7 @@
 .Nd Bluetooth daemon
 .Sh SYNOPSIS
 .Nm
+.Op Fl d
 .Sh DESCRIPTION
 .Nm
 owns Bluetooth on NextBSD.
@@ -24,6 +25,13 @@ and is not intended to be run by hand.
 Use
 .Xr bluetooth 8
 to talk to it.
+.Pp
+The options are as follows:
+.Bl -tag -width indent
+.It Fl d
+Also log debug-level lines, such as why a USB device was not handed to the
+firmware loader.
+.El
 .Pp
 .Nm
 and
@@ -110,8 +118,8 @@ the driver attaches; until then they are only an
 .Ql IOUSBHostDevice
 in the IORegistry.
 .Nm
-watches those by vendor id, and for one with no driver downloads the
-firmware itself, from
+watches those by vendor id, whether present at start or arriving later, and
+for one with no driver downloads the firmware itself, from
 .Pa /System/Library/Extensions/NgUbt.kext/Contents/Resources/firmware ,
 then resets the device so that it comes back as a controller.
 The download protocol is ported from the BSD-licensed Intel and Realtek
