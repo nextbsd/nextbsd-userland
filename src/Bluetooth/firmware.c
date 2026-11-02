@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define	FW_MAX		8
 
@@ -105,26 +106,14 @@ load_ubt(void)
 		fw_log("cannot load %s: 0x%x", FW_KEXT_UBT, (unsigned)r);
 }
 
-static bt_firmware_state_t
-download(struct fw_dev *d)
+/* The device at ugen bus `bus`, address `addr`, if it is still `d`'s. */
+static libusb_device *
+find_dev(libusb_context *ctx, const struct fw_dev *d, uint8_t bus,
+    uint8_t addr)
 {
-	libusb_context *ctx = NULL;
 	libusb_device **list = NULL, *dev = NULL;
-	libusb_device_handle *hdl = NULL;
 	struct libusb_device_descriptor dd;
-	bt_firmware_state_t st = bt_firmware_failed_e;
-	uint8_t bus, addr;
 	ssize_t cnt, i;
-	int r;
-
-	if (parse_ugen_name(d->ugen, &bus, &addr) < 0) {
-		fw_log("%s: not a ugen name", d->ugen);
-		return (st);
-	}
-	if ((r = libusb_init(&ctx)) != 0) {
-		fw_log("libusb_init failed: %d", r);
-		return (st);
-	}
 
 	cnt = libusb_get_device_list(ctx, &list);
 	for (i = 0; i < cnt; i++) {
@@ -138,6 +127,41 @@ download(struct fw_dev *d)
 	}
 	if (list != NULL)
 		libusb_free_device_list(list, 1);
+	return (dev);
+}
+
+/*
+ * After libusb_reset_device(). The reset is asynchronous: USB_DEVICEENUMERATE
+ * only queues the port reset for the hub's explore thread, which then resets
+ * the port, sets the configuration and lets ng_ubt probe again, all under the
+ * device's enumeration lock. Every ugen request that follows (the open, the
+ * kernel-driver test) takes that lock, so it waits for all of that once it has
+ * begun; this is only for the thread to begin. 150 ms is what Linux's btintel
+ * allows an Intel controller after its own reset (btintel_reset_to_bootloader).
+ */
+#define	FW_RESET_SETTLE_US	150000
+
+static bt_firmware_state_t
+download(struct fw_dev *d)
+{
+	libusb_context *ctx = NULL;
+	libusb_device *dev = NULL;
+	libusb_device_handle *hdl = NULL;
+	bt_firmware_state_t st = bt_firmware_failed_e;
+	bool retried = false;
+	uint8_t bus, addr;
+	int r;
+
+	if (parse_ugen_name(d->ugen, &bus, &addr) < 0) {
+		fw_log("%s: not a ugen name", d->ugen);
+		return (st);
+	}
+	if ((r = libusb_init(&ctx)) != 0) {
+		fw_log("libusb_init failed: %d", r);
+		return (st);
+	}
+
+	dev = find_dev(ctx, d, bus, addr);
 	if (dev == NULL) {
 		fw_log("%s: device not found (it may have gone)", d->ugen);
 		goto out;
@@ -149,36 +173,75 @@ download(struct fw_dev *d)
 		goto out;
 	}
 
-	if ((r = libusb_open(dev, &hdl)) != 0) {
-		fw_log("%s: libusb_open failed: %s", d->ugen,
-		    libusb_strerror(r));
-		goto out;
-	}
+	for (;;) {
+		if ((r = libusb_open(dev, &hdl)) != 0) {
+			fw_log("%s: libusb_open failed: %s", d->ugen,
+			    libusb_strerror(r));
+			goto out;
+		}
 
-	/* ng_ubt attached: the firmware is in already. */
-	r = libusb_kernel_driver_active(hdl, 0);
-	if (r < 0) {
-		fw_log("%s: libusb_kernel_driver_active failed: %s", d->ugen,
-		    libusb_strerror(r));
-		goto out;
-	}
-	if (r > 0) {
-		st = bt_firmware_operational_e;
-		goto out;
-	}
+		/* ng_ubt attached: the firmware is in already. */
+		r = libusb_kernel_driver_active(hdl, 0);
+		if (r < 0) {
+			fw_log("%s: libusb_kernel_driver_active failed: %s",
+			    d->ugen, libusb_strerror(r));
+			goto out;
+		}
+		if (r > 0) {
+			if (retried)
+				fw_log("%s: ng_ubt attached after the reset",
+				    d->ugen);
+			st = bt_firmware_operational_e;
+			goto out;
+		}
 
-	fw_log("%s: %04x:%04x has no driver; checking its firmware",
-	    d->ugen, d->vendor, d->product);
-	set_state(d, bt_firmware_downloading_e);
-	if (d->kind == FW_KIND_INTEL)
-		r = fw_intel_run(hdl, d->gen, FW_DIR_INTEL);
-	else
-		r = fw_rtl_run(hdl, FW_DIR_RTL);
+		if (!retried) {
+			fw_log("%s: %04x:%04x has no driver; checking its "
+			    "firmware", d->ugen, d->vendor, d->product);
+			set_state(d, bt_firmware_downloading_e);
+		}
+		if (d->kind == FW_KIND_INTEL)
+			r = fw_intel_run(hdl, d->gen, FW_DIR_INTEL);
+		else
+			r = fw_rtl_run(hdl, FW_DIR_RTL);
+		if (r != FW_RESULT_NO_REPLY || retried)
+			break;
+
+		/*
+		 * An Intel controller left wedged by a warm reboot does not
+		 * answer Read Version (0xfc05) at all, and only a power cycle
+		 * or a USB reset brings it back (#539). Reset it once, as
+		 * btusb does for a controller whose commands time out, and
+		 * try again. The re-enumeration keeps the ugen name and this
+		 * worker still owns it (`busy`), so firmware_usb_arrived()
+		 * leaves any arrival it produces to us. The handle is not
+		 * trusted across the reset: close it and find the device
+		 * again by bus and address, as above.
+		 */
+		fw_log("%s: no reply to identify; resetting the device and "
+		    "trying once more", d->ugen);
+		r = libusb_reset_device(hdl);
+		if (r != 0)
+			fw_log("%s: libusb_reset_device failed: %s", d->ugen,
+			    libusb_strerror(r));
+		libusb_close(hdl);
+		hdl = NULL;
+		libusb_unref_device(dev);
+		retried = true;
+		(void)usleep(FW_RESET_SETTLE_US);
+		dev = find_dev(ctx, d, bus, addr);
+		if (dev == NULL) {
+			/* A new address is a new ugen: its own arrival. */
+			fw_log("%s: device not found after the reset",
+			    d->ugen);
+			goto out;
+		}
+	}
 
 	switch (r) {
 	case FW_RESULT_DOWNLOADED:
-		fw_log("%s: firmware loaded; resetting so ng_ubt attaches",
-		    d->ugen);
+		fw_log("%s: firmware loaded%s; resetting so ng_ubt attaches",
+		    d->ugen, retried ? " after the reset" : "");
 		/* Ask the kernel to probe and attach the device again. */
 		r = libusb_reset_device(hdl);
 		if (r != 0)
@@ -187,10 +250,15 @@ download(struct fw_dev *d)
 		st = bt_firmware_done_e;
 		break;
 	case FW_RESULT_OPERATIONAL:
+		if (retried)
+			fw_log("%s: operational after the reset", d->ugen);
 		st = bt_firmware_operational_e;
 		break;
 	default:
-		fw_log("%s: firmware download failed", d->ugen);
+		fw_log("%s: firmware download failed%s", d->ugen,
+		    retried ? (r == FW_RESULT_NO_REPLY ?
+		    " (still no reply after the reset)" :
+		    " after the reset") : "");
 		st = bt_firmware_failed_e;
 		break;
 	}

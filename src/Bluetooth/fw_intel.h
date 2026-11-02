@@ -12,7 +12,8 @@
  * Identify the controller behind `hdl`, and download and boot its firmware
  * from `firmware_dir` if it is in its bootloader. Returns a FW_RESULT_*
  * (firmware.h). On FW_RESULT_DOWNLOADED the caller resets the device, so it
- * re-enumerates and ng_ubt attaches.
+ * re-enumerates and ng_ubt attaches. FW_RESULT_NO_REPLY means identify got no
+ * answer at all; the caller may reset the device and try again.
  */
 int	fw_intel_run(libusb_device_handle *hdl, enum fw_intel_gen gen,
 	    const char *firmware_dir);
