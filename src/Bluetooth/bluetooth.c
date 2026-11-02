@@ -3,6 +3,7 @@
  *
  *   bluetooth status            daemon, policy and controllers
  *   bluetooth list              paired devices
+ *   bluetooth sdp <addr>        a remote device's SDP records
  *
  * A pure-C MIG client for org.nextbsd.bluetooth, modelled on wlan(8):
  * bootstrap_look_up, then straight RPCs. It links only liblaunch and
@@ -224,6 +225,55 @@ cmd_list(mach_port_t svc, int argc, char **argv)
 }
 
 /*
+ * Browse a remote device's SDP records (replaces sdpcontrol browse). The
+ * daemon connects, reads and renders; the CLI fetches the lines one by one.
+ */
+static int
+cmd_sdp(mach_port_t svc, int argc, char **argv)
+{
+	BTAddressString address;
+	bt_status_t st;
+	int records, lines, error, i;
+
+	if (argc != 2) {
+		(void)fprintf(stderr, "usage: %s sdp <address>\n", progname);
+		return (EXIT_USAGE);
+	}
+	(void)memset(address, 0, sizeof(address));
+	(void)strlcpy(address, argv[1], sizeof(address));
+
+	if (bt_sdp_browse(svc, address, &records, &lines, &error, &st) !=
+	    KERN_SUCCESS) {
+		(void)fprintf(stderr, "%s: RPC failed\n", progname);
+		return (EXIT_ERR);
+	}
+	if (st != bt_status_success_e) {
+		if (error != 0)
+			(void)fprintf(stderr, "%s: sdp %s: %s (%s)\n",
+			    progname, argv[1], status_str(st),
+			    strerror(error));
+		else
+			(void)fprintf(stderr, "%s: sdp %s: %s\n", progname,
+			    argv[1], status_str(st));
+		return (EXIT_ERR);
+	}
+	if (records == 0) {
+		(void)printf("no service records\n");
+		return (EXIT_OK);
+	}
+	for (i = 0; i < lines; i++) {
+		BTSDPLine line;
+
+		if (bt_sdp_browse_line(svc, i, line, &st) != KERN_SUCCESS ||
+		    st != bt_status_success_e)
+			break;
+		line[sizeof(line) - 1] = '\0';
+		(void)printf("%s\n", line);
+	}
+	return (EXIT_OK);
+}
+
+/*
  * The verbs. `args` is the synopsis after the verb, for usage(); a later
  * ticket adds a row here and its cmd_ function above.
  */
@@ -234,6 +284,7 @@ static const struct verb {
 } verbs[] = {
 	{ "status",	"",	cmd_status },
 	{ "list",	"",	cmd_list },
+	{ "sdp",	"<address>",	cmd_sdp },
 };
 
 #define	NVERBS	(sizeof(verbs) / sizeof(verbs[0]))

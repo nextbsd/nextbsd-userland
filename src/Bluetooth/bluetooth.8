@@ -15,6 +15,9 @@
 .Cm status
 .Nm
 .Cm list
+.Nm
+.Cm sdp
+.Ar address
 .Sh DESCRIPTION
 .Nm
 is the command-line client for
@@ -45,6 +48,15 @@ or
 .Pc ,
 whether it reconnects automatically, its connection state, and the profiles
 it offers.
+.It Cm sdp Ar address
+Browse the SDP records of the Classic (BR/EDR) device at
+.Ar address ,
+paired or not, and print every attribute of every record.
+.Xr bluetoothd 8
+connects to the device, which may page it, reads the records and renders
+them; well-known service classes, protocols and attributes are named.
+This replaces
+.Ql sdpcontrol browse .
 .El
 .Pp
 Addresses print as
@@ -94,6 +106,13 @@ controller:    ubt0
 $ bluetooth list
 ADDRESS                  NAME                     CLASS  LINK     AUTO STATE        PROFILES
 C8:2E:47:11:22:33/random MX Keys                  000000 LE       yes  connected    HOGP
+
+$ bluetooth sdp 00:1B:66:AA:BB:CC
+record 0x00010001: AudioSink
+  0x0000 ServiceRecordHandle: 0x00010001
+  0x0001 ServiceClassIDList: { 0x110b (AudioSink) }
+  0x0004 ProtocolDescriptorList: { { 0x0100 (L2CAP), 0x0019 }, { 0x0019 (AVDTP), 0x0103 } }
+  0x0009 BluetoothProfileDescriptorList: { { 0x110d (AdvancedAudioDistribution), 0x0103 } }
 .Ed
 .Sh DIAGNOSTICS
 .Bl -diag

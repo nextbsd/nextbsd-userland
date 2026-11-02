@@ -47,6 +47,7 @@
 #include "engine.h"
 #include "iokit_watch.h"
 #include "mach_service.h"
+#include "sdp_server.h"
 
 #include <sys/types.h>
 
@@ -362,6 +363,13 @@ main(int argc, char **argv)
 		xlog("no /dev/ioregistry; controllers cannot be seen");
 
 	/*
+	 * The SDP server (sdp_server.h). The controller bring-up starts it
+	 * once it has loaded the L2CAP sockets; this covers a daemon restart
+	 * with the stack already loaded. Without the stack it fails quietly.
+	 */
+	(void)sdp_server_start();
+
+	/*
 	 * configd may not be up yet (there is no launchd service ordering);
 	 * btstate.c opens the store lazily and the next change retries.
 	 */
@@ -461,6 +469,7 @@ main(int argc, char **argv)
 		g_adapters[i].active = false;
 	}
 	bluetoothd_unlock();
+	sdp_server_stop();
 	(void)bt_state_remove(BT_STATE_KEY);
 	bt_state_close();
 

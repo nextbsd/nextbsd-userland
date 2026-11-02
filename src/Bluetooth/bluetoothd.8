@@ -84,6 +84,31 @@ and LE, behind one interface.
 The policy layer never needs to know which transport a device uses: addresses
 are typed (public or random), one prompt shape covers legacy PIN, Secure Simple
 Pairing and LE pairing, and one bond record holds both engines' keys.
+.Sh SERVICE DISCOVERY
+.Nm
+is the SDP server and client; there is no
+.Nm sdpd
+and no
+.Pa /var/run/sdp
+socket.
+.Pp
+The server listens on L2CAP PSM 1 on every controller and answers the
+ServiceSearch, ServiceAttribute and ServiceSearchAttribute requests, with
+continuation.
+Its records live in memory and are registered by the part of
+.Nm
+that implements each service: the SDP server record and a PnP Information
+(Device ID) record always; A2DP Sink and Source, AVRCP Target and Controller,
+and the Hands-Free Audio Gateway only while that role is enabled.
+.Pp
+The client reads a device's records when it pairs: the HID record (the report
+descriptor, ReconnectInitiate, NormallyConnectable, the parser version), the
+PnP ID, and the service classes that become its
+.Ql Profiles
+.Pq HID, A2DPSink, A2DPSource, AVRCP, HFP .
+They are kept in the pairing store, so a reconnect needs no service query.
+.Ql bluetooth sdp Ar address
+browses a device's records by hand.
 .Sh PAIRING PROMPTS
 Nothing above the Mach line can receive a Mach message, so
 .Nm

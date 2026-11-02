@@ -36,7 +36,8 @@
  *   31030-31039  pairing                  pair, pair_status, pair_confirm
  *                                         (#209; LE SMP #205 uses the same)
  *   31040-31049  connections              connect, disconnect (#213)
- *   31050-31069  diagnostics              info, ping, browse (#211)
+ *   31050-31069  diagnostics              sdp browse (#522); info, ping
+ *                                         (#211)
  *   31070-31099  profiles                 HID, audio
  *   31100-       open                     appended in order
  *
@@ -57,6 +58,7 @@ type bt_address		= array[32] of char ctype: BTAddressString;
 type bt_name		= array[249] of char ctype: BTDeviceName;
 type bt_profiles	= array[128] of char ctype: BTProfileList;
 type bt_transport	= array[16] of char ctype: BTTransportName;
+type bt_sdp_line		= array[256] of char ctype: BTSDPLine;
 type bt_daemon_state	= MACH_MSG_TYPE_INTEGER_32 ctype: bt_daemon_state_t;
 type bt_adapter_state	= MACH_MSG_TYPE_INTEGER_32 ctype: bt_adapter_state_t;
 type bt_device_state	= MACH_MSG_TYPE_INTEGER_32 ctype: bt_device_state_t;
@@ -188,8 +190,30 @@ skip;	/* 31049 */
 
 /* ---- 31050-31069: diagnostics ------------------------------------------- */
 
-skip;	/* 31050 */
-skip;	/* 31051 */
+/*
+ * 31050 bt_sdp_browse — browse a remote device's SDP records (what sdpcontrol
+ * browse did). bluetoothd connects to the device's PSM 1, reads every record,
+ * renders them as text and keeps the lines; `records` and `lines` say how
+ * many. `errnum` is the errno behind a failure. Blocks for as long as the
+ * device takes to answer (bounded: 20 s to connect, 5 s per response).
+ */
+routine bt_sdp_browse(
+	server		: mach_port_t;
+	address		: bt_address;
+	out records	: int;
+	out lines	: int;
+	out errnum	: int;
+	out status	: bt_status_code
+);
+
+/* 31051 bt_sdp_browse_line — one line of the last browse, by index. */
+routine bt_sdp_browse_line(
+	server		: mach_port_t;
+	index		: int;
+	out line	: bt_sdp_line;
+	out status	: bt_status_code
+);
+
 skip;	/* 31052 */
 skip;	/* 31053 */
 skip;	/* 31054 */
