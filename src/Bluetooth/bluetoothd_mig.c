@@ -15,6 +15,7 @@
  */
 #include "bluetoothd.h"
 #include "adapter.h"
+#include "audio.h"
 #include "btstore.h"
 #include "bluetooth_mig_types.h"
 #include "connections.h"
@@ -592,5 +593,118 @@ _bt_disconnect(mach_port_t server, BTAddressString address_in,
 	bluetoothd_lock();
 	*status = conn_disconnect_locked(&a);
 	bluetoothd_unlock();
+	return (KERN_SUCCESS);
+}
+
+/* ---- 31080-31084: audio ------------------------------------------------- */
+
+kern_return_t
+_bt_audio_count(mach_port_t server, int *count, bt_status_t *status)
+{
+	struct audio_status st;
+	int n = 0;
+
+	(void)server;
+	while (audio_status_at(n, &st))
+		n++;
+	*count = n;
+	*status = bt_status_success_e;
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_bt_audio_entry(mach_port_t server, int index, BTAddressString address,
+    int *role, int *route, int *active, int *avrcp, int *default_out,
+    int *volume, BTNodeName node, BTTransportName codec, bt_status_t *status)
+{
+	struct audio_status st;
+
+	(void)server;
+	(void)memset(address, 0, sizeof(BTAddressString));
+	(void)memset(node, 0, sizeof(BTNodeName));
+	(void)memset(codec, 0, sizeof(BTTransportName));
+	*role = *route = *active = *avrcp = *default_out = 0;
+	*volume = -1;
+	if (index < 0 || !audio_status_at(index, &st)) {
+		*status = bt_status_index_out_of_range_e;
+		return (KERN_SUCCESS);
+	}
+	(void)bt_addr_ntoa(&st.peer, BT_ADDR_FMT_DISPLAY, address,
+	    sizeof(BTAddressString));
+	*role = (int)st.role;
+	*route = (int)st.route;
+	*active = st.active ? 1 : 0;
+	*avrcp = st.avrcp ? 1 : 0;
+	*default_out = st.default_out ? 1 : 0;
+	*volume = st.volume;
+	(void)strlcpy(node, st.node, sizeof(BTNodeName));
+	(void)strlcpy(codec, st.codec, sizeof(BTTransportName));
+	*status = bt_status_success_e;
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_bt_audio_set(mach_port_t server, BTAddressString address_in, int on,
+    bt_status_t *status)
+{
+	BTAddressString address;
+	struct bt_addr a;
+
+	(void)server;
+	WIRE_STR(address, address_in);
+	if (!bt_addr_aton(address, &a)) {
+		*status = bt_status_invalid_parameter_e;
+		return (KERN_SUCCESS);
+	}
+	*status = audio_set_enabled(&a, on != 0);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_bt_audio_volume(mach_port_t server, BTAddressString address_in, int volume,
+    bt_status_t *status)
+{
+	BTAddressString address;
+	struct bt_addr a;
+
+	(void)server;
+	WIRE_STR(address, address_in);
+	if (!bt_addr_aton(address, &a)) {
+		*status = bt_status_invalid_parameter_e;
+		return (KERN_SUCCESS);
+	}
+	*status = audio_set_volume(&a, volume);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_bt_audio_policy(mach_port_t server, int autoswitch, int a2dp_sink,
+    int *autoswitch_now, int *a2dp_sink_now, bt_status_t *status)
+{
+	struct bt_prefs p;
+	bool sink_changed = false;
+
+	(void)server;
+	*status = bt_status_success_e;
+	bluetoothd_lock();
+	bluetoothd_prefs_locked(&p);
+	if (autoswitch >= 0 && p.autoswitch_audio != (autoswitch != 0)) {
+		p.autoswitch_audio = (autoswitch != 0);
+		if (bt_prefs_set_autoswitch_audio(p.autoswitch_audio) != 0)
+			*status = bt_status_store_error_e;
+	}
+	if (a2dp_sink >= 0 && p.a2dp_sink != (a2dp_sink != 0)) {
+		p.a2dp_sink = (a2dp_sink != 0);
+		sink_changed = true;
+		if (bt_prefs_set_a2dp_sink(p.a2dp_sink) != 0)
+			*status = bt_status_store_error_e;
+	}
+	bluetoothd_prefs_update_locked(&p);
+	bluetoothd_unlock();
+	*autoswitch_now = p.autoswitch_audio ? 1 : 0;
+	*a2dp_sink_now = p.a2dp_sink ? 1 : 0;
+	if (sink_changed)
+		audio_prefs_changed();
+	bluetoothd_wake();
 	return (KERN_SUCCESS);
 }

@@ -73,4 +73,14 @@ struct bt_engine	*adapter_classic_locked(struct bt_adapter *a,
 struct bt_engine	*adapter_engine_locked(struct bt_adapter *a,
 			    int transport, const struct bt_engine_ops **ops);
 
+/*
+ * The Class of Device service bits a profile needs (the A2DP sink: Audio and
+ * Rendering), ORed with the other profiles' into every controller's class,
+ * now and at bring-up. 0 withdraws the profile's bits.
+ */
+#define	ADAPTER_COD_A2DP_SINK	0
+#define	ADAPTER_COD_HFP		1	/* the hands-free gateway (#525) */
+#define	ADAPTER_COD_OWNERS	2
+void		adapter_set_cod_services_locked(int owner, uint32_t bits);
+
 #endif /* _BLUETOOTHD_ADAPTER_H_ */

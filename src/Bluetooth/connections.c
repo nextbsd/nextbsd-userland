@@ -4,6 +4,7 @@
  */
 #include "connections.h"
 #include "adapter.h"
+#include "audio.h"
 #include "btstate.h"
 #include "btstore.h"
 #include "discovery.h"
@@ -354,9 +355,14 @@ conn_event_locked(struct bt_adapter *a, const struct bt_event *ev)
 		}
 		touch_bond(&ev->peer);
 		conn_device_changed_locked(&ev->peer);
+		/* An A2DP sink gets its mixer, whoever paged whom. */
+		audio_link_up_locked(&ev->peer, a->node);
 		break;
 
 	case BT_EV_DISCONNECTED:
+		/* The mixer must not outlive the link (audio.h). */
+		if (ev->u.link.handle >= 0)
+			audio_link_down_locked(&ev->peer);
 		c = find(&ev->peer);
 		if (c == NULL)
 			return;
@@ -647,6 +653,7 @@ conn_adapter_down_locked(struct bt_adapter *a)
 			g_autoq[i].used = false;
 	}
 	/* Its links are gone with it; their sockets die on their own. */
+	audio_adapter_down_locked(a->node);
 	for (i = 0; i < CONN_MAX; i++) {
 		if (g_conns[i].used && strcmp(g_conns[i].node, a->node) == 0)
 			forget(&g_conns[i]);
@@ -690,6 +697,7 @@ conn_bond_refreshed_locked(const struct bt_addr *peer)
 	}
 	conn_device_changed_locked(peer);
 	hid_host_bond_updated(peer);
+	audio_bond_updated_locked(peer);	/* it may be a headset */
 	if (!fresh)
 		return;
 	/* Its first HID session is ours to open (HID Profile, §5.4.2). */

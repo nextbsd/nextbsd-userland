@@ -258,6 +258,7 @@ struct bt_bond {
 	uint32_t		profiles;		/* BT_PROFILE_* */
 	bool			autoconnect;
 	bool			trusted;		/* accept its connections */
+	bool			no_audio;		/* Audio = false: no A2DP */
 	time_t			paired_at;
 	time_t			last_connected;
 	uint8_t			hid_flags;		/* BT_HID_* */

@@ -31,7 +31,10 @@
  *   - a controller that boots into a loader gets its firmware first
  *     (firmware.c, on IOUSBHostDevice arrivals);
  *   - connections, reconnect at power-up and State:/Bluetooth/Device are
- *     connections.c's; the HID host (hid_host.c) feeds IOHIDUserDevice.
+ *     connections.c's; the HID host (hid_host.c) feeds IOHIDUserDevice;
+ *   - audio (audio.c): the A2DP source runs virtual_oss for a connected
+ *     headset, AVRCP (avrcp.c) turns its buttons into media keys, and the
+ *     A2DP sink (a2dp_sink.c) plays a phone through the speakers.
  *
  * With no controller it blocks with no timer and loads nothing: the upper
  * kernel stack is loaded when the first controller arrives (#207), so a
@@ -48,6 +51,9 @@
  */
 #include "bluetoothd.h"
 #include "adapter.h"
+#include "a2dp_sink.h"
+#include "audio.h"
+#include "avrcp.h"
 #include "btstate.h"
 #include "btstore.h"
 #include "connections.h"
@@ -412,6 +418,11 @@ main(int argc, char **argv)
 	(void)sdp_server_start();
 	(void)hid_host_start();
 
+	/* Audio: mixers a crashed daemon left, then AVRCP and the sink. */
+	audio_init();
+	avrcp_start();
+	a2dp_sink_prefs_changed();
+
 	/* State:/Bluetooth/Device/<addr> for every paired device. */
 	bluetoothd_lock();
 	conn_publish_paired_locked();
@@ -544,6 +555,9 @@ main(int argc, char **argv)
 	}
 
 	xlog("bluetoothd exiting on signal %d", (int)bluetoothd_got_term);
+
+	/* Mixers first: none may outlive us and keep paging a headset. */
+	audio_shutdown();
 
 	/*
 	 * Detach every engine and take the keys out of the store. The netgraph

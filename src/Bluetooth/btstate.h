@@ -8,6 +8,8 @@
  *       ControllerPowerState int     the persisted policy
  *       DiscoverableState   bool
  *       AutoConnect         bool
+ *       AutoSwitchAudio     bool
+ *       A2DPSink            bool
  *
  *   State:/Bluetooth/Adapter/<node>   one controller (#207)
  *       Address, Name, Transport, VendorID, ProductID, State,
@@ -17,6 +19,14 @@
  *       Address, Name, ClassOfDevice, Adapter, Paired, Connected,
  *       Connecting, Profiles (array: what runs over the link now, "HID"),
  *       RSSI (dBm, while connected and known)
+ *   State:/Bluetooth/Device/<addr>/Audio   its audio, while it has any
+ *                                     (#218, #219, #220)
+ *       Role ("Source": we play to it; "Sink": it plays to us), Route
+ *       ("A2DP" | "HFP"), Active, Codec ("SBC"), Node ("dsp.bt0"),
+ *       DefaultOutput (it owns /dev/dsp), AVRCP, Volume (0-127, AVRCP
+ *       absolute volume, while known)
+ *   State:/Bluetooth/Adapter/<node>/A2DPSink   the speaker role (#219)
+ *       Enabled, Peer (the address playing to us, while one does)
  *   State:/Bluetooth/Pairing/<addr>   a prompt waiting for the user (#209)
  *       Address, Method, Passkey, Expires
  *   State:/Bluetooth/Firmware/<ugen>  a firmware download (#202)
@@ -53,6 +63,7 @@
 #define	BT_NOTIFY_PAIRING	"org.nextbsd.bluetooth.pairing"
 #define	BT_NOTIFY_DEVICE	"org.nextbsd.bluetooth.device"
 #define	BT_NOTIFY_FIRMWARE	"org.nextbsd.bluetooth.firmware"
+#define	BT_NOTIFY_AUDIO		"org.nextbsd.bluetooth.audio"
 
 struct bt_daemon_summary {
 	bt_daemon_state_t	state;
@@ -102,6 +113,15 @@ struct bt_device_summary {
 /* A device, at full key `key` (BT_STATE_DEVICE_PREFIX + addr). */
 int	bt_state_publish_device(const char *key,
 	    const struct bt_device_summary *s);
+
+/* A device's audio, at full key `key` (BT_STATE_DEVICE_PREFIX + addr +
+ * "/Audio"). */
+struct audio_status;
+int	bt_state_publish_audio(const char *key, const struct audio_status *s);
+
+/* A controller's A2DP sink role; `peer` is NULL when nothing plays. */
+int	bt_state_publish_a2dp_sink(const char *node, bool enabled,
+	    const struct bt_addr *peer);
 
 /* A firmware download (BT_STATE_FIRMWARE_PREFIX + ugen). */
 int	bt_state_publish_firmware(const char *ugen, int vendor, int product,

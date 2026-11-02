@@ -295,6 +295,82 @@ When the device disconnects, its
 is cancelled and the kernel releases any key still held down.
 A device that unplugs its virtual cable is forgotten; unpairing one sends it
 the same.
+.Sh AUDIO
+.Nm
+is the only Bluetooth audio process; no FreeBSD Bluetooth helper is run.
+.Ss A2DP source
+When the link to a paired device whose services include an A2DP sink (a
+headset or speaker) comes up, whichever side paged the other, and the
+device's
+.Ql Audio
+switch is on,
+.Nm
+runs NextBSD's base mixer for it:
+.Bd -literal -offset indent
+virtual_oss -S -C 2 -c 2 -r 48000 -b 16 -s 768 -R /dev/null \e
+    -P /dev/bluetooth/AA:BB:CC:DD:EE:FF -d dsp.btN [-d dsp] \e
+    -t dsp.btN.ctl
+.Ed
+.Pp
+The mixer's Bluetooth backend,
+.Pa /usr/lib/virtual_oss/voss_bt.so ,
+finds the AVDTP channel, negotiates SBC and streams;
+.Nm
+owns the link and its keys.
+Programs play to
+.Pa /dev/dsp.btN .
+With
+.Ql AutoSwitchAudio
+on, the first headset also takes
+.Pa /dev/dsp ,
+so programs that open the default device play to it; the system device
+comes back when the headset goes.
+.Pp
+.Xr virtual_oss 8
+never gives up on a sink that has gone: it retries every two seconds and
+pages the headset each time.
+So the mixer lives exactly as long as the link: it is stopped (SIGTERM,
+then SIGKILL) when the link drops, the device is unpaired, its switch is
+turned off or the controller goes, and restarted with a backoff only while
+the link is up.
+A mixer left behind by a crashed
+.Nm
+is stopped when the next one starts.
+.Ss AVRCP
+.Nm
+listens on AVCTP's PSM 0x17 and opens the channel itself when a headset has
+not.
+As target it accepts the headset's play, pause, stop, next, previous,
+volume, mute, fast-forward and rewind buttons and delivers them through an
+.Xr IOHIDUserDevice 3
+with a Consumer Control collection, so
+.Nm hcons
+attaches and they arrive as ordinary media keys.
+As controller it follows the headset's absolute volume (AVRCP 1.4) and sets
+it with
+.Ql bluetooth audio Ar address Cm volume .
+Other requests are answered NOT IMPLEMENTED, so the link stays up.
+.Ss A2DP sink
+With
+.Ql A2DPSink
+on, this machine is a Bluetooth speaker: it publishes the Audio Sink
+service record, adds the Audio and Rendering bits to its Class of Device
+and accepts AVDTP on PSM 0x19.
+A phone's SBC stream is decoded in
+.Nm
+and played to
+.Pa /dev/dsp ,
+one stream at a time.
+PSM 0x19 is shared with the source role: a device known to be a sink that
+opens AVDTP is refused, and the mixer connects to it instead.
+Off by default, since it advertises the machine to everything nearby.
+.Ss Profile switching
+A device's audio is carried by one profile at a time.
+The hands-free gateway moves it to HFP by pointing the mixer at
+.Pa /dev/null
+through its control device, which closes the A2DP stream while
+.Pa /dev/dsp.btN
+stays open for programs, and back again afterwards.
 .Sh PAIRING STORE
 Two files under
 .Pa /Local/Library/Preferences/SystemConfiguration ,
@@ -311,13 +387,19 @@ Policy and device metadata, readable by tools:
 Inquiry scan at power-up; default off.
 .It Ql AutoConnect
 Reconnect paired devices at power-up; default on.
+.It Ql AutoSwitchAudio
+A headset that connects takes
+.Pa /dev/dsp ;
+default on.
+.It Ql A2DPSink
+Be a Bluetooth speaker; default off.
 .It Ql PairedDevices
 One dictionary per device, keyed by its address
 .Pq Ql aa-bb-cc-dd-ee-ff :
 .Ql Name , AddressType , Transports , ClassOfDevice , Appearance , PnPID ,
 .Ql Profiles , HIDDescriptor , HIDVirtualCable , HIDReconnectInitiate ,
 .Ql HIDNormallyConnectable , HIDBootDevice , HIDCountryCode ,
-.Ql HIDSessionEstablished , AutoConnect , Trusted , Paired ,
+.Ql HIDSessionEstablished , AutoConnect , Trusted , Audio , Paired ,
 and
 .Ql LastConnected .
 The cached HID descriptor lets a paired keyboard reconnect with no service
@@ -380,6 +462,21 @@ A device that is neither paired nor connected has no key.
 A pairing prompt waiting for the user.
 .It Ql State:/Bluetooth/Firmware/<ugen>
 A firmware download.
+.It Ql State:/Bluetooth/Device/<addr>/Audio
+A device's audio while it has any:
+.Ql Role
+.Pq Ql Source : we play to it; Ql Sink : it plays to us ,
+.Ql Route
+.Pq Ql A2DP | HFP ,
+.Ql Active , Codec , Node , DefaultOutput , AVRCP
+and
+.Ql Volume
+(0\(en127).
+.It Ql State:/Bluetooth/Adapter/<node>/A2DPSink
+.Ql Enabled ,
+and
+.Ql Peer
+while a phone plays to us.
 .El
 .Pp
 Each change is announced with
@@ -388,9 +485,10 @@ on
 .Ql org.nextbsd.bluetooth.adapter ,
 .Ql .scan ,
 .Ql .pairing ,
-.Ql .device
+.Ql .device ,
+.Ql .firmware
 or
-.Ql .firmware .
+.Ql .audio .
 .Pp
 Lists do not go in the store; they are served over the Mach service.
 .Xr scutil 8
@@ -422,6 +520,7 @@ Log.
 .Xr kextd 8 ,
 .Xr launchd 8 ,
 .Xr scutil 8 ,
+.Xr virtual_oss 8 ,
 .Xr wland 8
 .Sh HISTORY
 .Nm

@@ -9,6 +9,9 @@
  * Read_Buffer_Size (nextbsd-kernel-extensions#30).
  */
 #include "adapter.h"
+#include "a2dp_sink.h"
+#include "audio.h"
+#include "avrcp.h"
 #include "bluetoothd.h"
 #include "btstate.h"
 #include "btstore.h"
@@ -45,6 +48,10 @@
  * when a profile that needs them (the A2DP sink) registers.
  */
 #define	LOCAL_CLASS_OF_DEVICE	0x000100
+
+/* Service-class bits each profile asks for (adapter_set_cod_services_locked). */
+static uint32_t		g_cod_owner[ADAPTER_COD_OWNERS];
+static uint32_t		g_cod_services;		/* their union */
 
 enum {
 	INIT_RESET = 0,
@@ -369,9 +376,12 @@ init_send(struct bt_adapter *a)
 			op = HCI_OPCODE(OGF_HC, HCI_OCF_WRITE_INQUIRY_MODE);
 			break;
 		case INIT_CLASS:
-			buf[0] = LOCAL_CLASS_OF_DEVICE & 0xff;
-			buf[1] = (LOCAL_CLASS_OF_DEVICE >> 8) & 0xff;
-			buf[2] = (LOCAL_CLASS_OF_DEVICE >> 16) & 0xff;
+			buf[0] = (LOCAL_CLASS_OF_DEVICE | g_cod_services) &
+			    0xff;
+			buf[1] = ((LOCAL_CLASS_OF_DEVICE | g_cod_services) >>
+			    8) & 0xff;
+			buf[2] = ((LOCAL_CLASS_OF_DEVICE | g_cod_services) >>
+			    16) & 0xff;
 			len = 3;
 			op = HCI_OPCODE(OGF_HC, NG_HCI_OCF_WRITE_UNIT_CLASS);
 			break;
@@ -497,6 +507,11 @@ adapter_bringup(struct bt_adapter *a)
 	/* The HID host's listeners (PSM 0x11/0x13), likewise. */
 	if (err == NULL && hid_host_start() < 0)
 		xlog("%s: HID listeners not started", node);
+	/* AVRCP's listener and records; the A2DP sink's, if on. */
+	if (err == NULL) {
+		avrcp_start();
+		a2dp_sink_prefs_changed();
+	}
 	if (err == NULL) {
 		fd = hci_open(hci_node);
 		if (fd < 0)
@@ -541,6 +556,8 @@ adapter_teardown_locked(struct bt_adapter *a)
 	ngstack_teardown(a->node);
 	(void)snprintf(key, sizeof(key), "%s%s", BT_STATE_ADAPTER_PREFIX,
 	    a->node);
+	(void)bt_state_remove(key);
+	(void)strlcat(key, "/A2DPSink", sizeof(key));
 	(void)bt_state_remove(key);
 	bt_state_notify(BT_NOTIFY_ADAPTER);
 }
@@ -1160,6 +1177,7 @@ adapter_unpair_locked(const struct bt_addr *peer)
 	}
 	if (bt_store_bond_forget(&p) != 0)
 		return (bt_status_store_error_e);
+	audio_bond_updated_locked(&p);		/* its mixer stops */
 	pairing_device_changed_locked(&p, false);
 	bluetoothd_wake();
 	return (bt_status_success_e);
@@ -1244,6 +1262,8 @@ adapter_publish(void)
 		bt_state_notify(BT_NOTIFY_SCAN);
 	pairing_publish();
 	conn_publish();
+	audio_publish();
+	a2dp_sink_publish();
 }
 
 struct bt_engine *
@@ -1258,4 +1278,39 @@ adapter_engine_locked(struct bt_adapter *a, int transport,
 {
 	*ops = NULL;
 	return (engine_of(a, transport, ops));
+}
+
+void
+adapter_set_cod_services_locked(int owner, uint32_t bits)
+{
+	uint32_t cod, all = 0;
+	uint8_t buf[3];
+	int i, n = bluetoothd_adapter_count_locked();
+
+	if (owner < 0 || owner >= ADAPTER_COD_OWNERS)
+		return;
+	g_cod_owner[owner] = bits;
+	for (i = 0; i < ADAPTER_COD_OWNERS; i++)
+		all |= g_cod_owner[i];
+	if (all == g_cod_services)
+		return;
+	g_cod_services = all;
+	bits = all;
+	cod = LOCAL_CLASS_OF_DEVICE | bits;
+	buf[0] = cod & 0xff;
+	buf[1] = (cod >> 8) & 0xff;
+	buf[2] = (cod >> 16) & 0xff;
+	/* Controllers still initialising pick it up at INIT_CLASS. */
+	for (i = 0; i < n; i++) {
+		struct bt_adapter *a = bluetoothd_adapter_at_locked(i);
+
+		if (a == NULL || !ready(a) || a->hci_fd < 0)
+			continue;
+		if (hci_send_cmd(a->hci_fd, HCI_OPCODE(OGF_HC,
+		    NG_HCI_OCF_WRITE_UNIT_CLASS), buf, sizeof(buf)) < 0)
+			xlog("%s: Write_Class_Of_Device: %s", a->node,
+			    strerror(errno));
+		else
+			xlog("%s: Class of Device %06x", a->node, cod);
+	}
 }

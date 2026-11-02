@@ -6,7 +6,8 @@
  *   links        the engines raise BT_EV_CONNECTED, BT_EV_DISCONNECTED and
  *                BT_EV_LINK_CHANGED (links.c); this table keeps one row per
  *                device with its controller, handle, encryption, RSSI and
- *                the profiles running over it (HID, from hid_host.c)
+ *                the profiles running over it (HID, from hid_host.c;
+ *                A2DP and AVRCP, from audio.c)
  *   trust        an incoming link from a device that is not paired and
  *                Trusted, and not the pairing in progress, is disconnected
  *                and logged (the kernel has already accepted it)
@@ -14,6 +15,9 @@
  *                control and interrupt channels, anything else an ACL link;
  *                returns once the attempt has started (the wlan_connect rule)
  *   disconnect   bt_disconnect: the HID session first, then the link
+ *   audio        every link up and down, and every bond refresh, is passed
+ *                to audio.c, which runs the A2DP source's mixer while a
+ *                paired sink's link is up (#218)
  *   reconnect    when a controller comes up powered, every paired device
  *                whose AutoConnect is on (and the global AutoConnect) is
  *                connected once, CONN_AUTO_GAP_MS apart. A HID device is

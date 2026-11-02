@@ -38,7 +38,8 @@
  *   31040-31049  connections              connect, disconnect (#213)
  *   31050-31069  diagnostics              sdp browse (#522); info, ping
  *                                         (#211)
- *   31070-31099  profiles                 HID, audio
+ *   31070-31099  profiles                 HID, audio (31080-31084), HFP
+ *                                         (31085-31089)
  *   31100-       open                     appended in order
  *
  * The server demux _bluetooth_server() runs inside bluetoothd's
@@ -435,11 +436,77 @@ skip;	/* 31076 */
 skip;	/* 31077 */
 skip;	/* 31078 */
 skip;	/* 31079 */
-skip;	/* 31080 */
-skip;	/* 31081 */
-skip;	/* 31082 */
-skip;	/* 31083 */
-skip;	/* 31084 */
+/*
+ * 31080-31084 audio (#218, #219, #220). 31085-31089 stay free for the
+ * hands-free gateway (#525).
+ *
+ * 31080 bt_audio_count — devices with audio right now: a headset we play to
+ * (A2DP source), a phone playing to us (A2DP sink), or an AVRCP session.
+ */
+routine bt_audio_count(
+	server		: mach_port_t;
+	out count	: int;
+	out status	: bt_status_code
+);
+
+/*
+ * 31081 bt_audio_entry — one of them, by index. `role` and `route` are
+ * audio_role_t and audio_route_t (audio.h: 1 source / 2 sink; 1 A2DP /
+ * 2 HFP). `node` is the device programs open ("dsp.bt0"); `default_out` says
+ * it also owns /dev/dsp. `volume` is AVRCP absolute volume, 0-127, or -1.
+ */
+routine bt_audio_entry(
+	server		: mach_port_t;
+	index		: int;
+	out address	: bt_address;
+	out role	: int;
+	out route	: int;
+	out active	: int;
+	out avrcp	: int;
+	out default_out	: int;
+	out volume	: int;
+	out node	: bt_node;
+	out codec	: bt_transport;
+	out status	: bt_status_code
+);
+
+/*
+ * 31082 bt_audio_set — a paired device's Audio switch: whether bluetoothd
+ * plays to it when it connects (PairedDevices/<addr>/Audio). Off stops a
+ * mixer that runs.
+ */
+routine bt_audio_set(
+	server		: mach_port_t;
+	address		: bt_address;
+	on		: int;
+	out status	: bt_status_code
+);
+
+/*
+ * 31083 bt_audio_volume — set a headset's volume (0-127) with AVRCP
+ * SetAbsoluteVolume. not_connected without an AVRCP session;
+ * operation_not_supported when the headset has no absolute volume.
+ */
+routine bt_audio_volume(
+	server		: mach_port_t;
+	address		: bt_address;
+	volume		: int;
+	out status	: bt_status_code
+);
+
+/*
+ * 31084 bt_audio_policy — the audio preferences: AutoSwitchAudio (a headset
+ * takes /dev/dsp) and A2DPSink (be a speaker). -1 leaves one as it is; the
+ * values after the change come back.
+ */
+routine bt_audio_policy(
+	server		: mach_port_t;
+	autoswitch	: int;
+	a2dp_sink	: int;
+	out autoswitch_now : int;
+	out a2dp_sink_now : int;
+	out status	: bt_status_code
+);
 skip;	/* 31085 */
 skip;	/* 31086 */
 skip;	/* 31087 */
