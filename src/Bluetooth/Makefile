@@ -25,6 +25,9 @@ SRCS+=		engine.c classic_engine.c le_engine.c
 # secrets (keystore.c), the SCDynamicStore publication (btstate.c), and their
 # shared helpers (btcf.c).
 SRCS+=		btcf.c btstore.c keystore.c btstate.c
+# SDP: the server on L2CAP PSM 1 with the local records, the client that reads
+# a peer's HID, PnP and audio records at pair time, and their shared wire format.
+SRCS+=		sdp_proto.c sdp_server.c sdp_client.c
 
 # bluetoothServer.c — MIG-generated server stub for bluetooth.defs.
 # build-userland.sh runs host mig and passes MIGOUT=; a standalone build

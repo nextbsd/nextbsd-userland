@@ -48,6 +48,13 @@ typedef char	BTProfileList[128];
 /* Transport of a controller: "USB" (later "UART"). */
 typedef char	BTTransportName[16];
 
+/*
+ * One line of `bluetooth sdp <addr>` output (bt_sdp_browse_line): the daemon
+ * renders the peer's records as text, so the CLI needs no SDP parser.
+ */
+#define	BT_SDP_LINE_MAX	256
+typedef char	BTSDPLine[BT_SDP_LINE_MAX];
+
 /* Daemon state, as `bluetooth status` and State:/Bluetooth report it. */
 typedef enum {
 	bt_daemon_idle_e		= 0,	/* running, no controller */
