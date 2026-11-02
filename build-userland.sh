@@ -919,6 +919,39 @@ $CROSS_CC --sysroot="$SYSROOT" \
 test -x "$DESTDIR/usr/sbin/wlan" || { echo "FAIL: /usr/sbin/wlan not built"; exit 1; }
 echo "==> wland + wlan built"
 
+# ---- Bluetooth (bluetoothd + the bluetooth CLI) -----------------------------
+# The Bluetooth daemon. Same shape as WLAN above: generate the bluetooth.defs
+# MIG stubs with the host mig, build the daemon (bsd.prog.mk) with MIGOUT, then
+# hand-link the CLI from bluetooth.c + the MIG *user* stub. bluetoothd follows
+# IOBluetoothHostController through libIOKit, built above.
+comp "bluetoothd"
+mkdir -p "$DESTDIR/usr/sbin"
+BT_MIG="$MIGROOT/bluetooth"
+rm -rf "$BT_MIG"; mkdir -p "$BT_MIG"
+run_mig "$BT_MIG" -I"$SRC/libmach/include" -I"$SRC/Bluetooth" \
+    -header bluetooth.h -user bluetoothUser.c \
+    -server bluetoothServer.c -sheader bluetoothServer.h \
+    "$SRC/Bluetooth/bluetooth.defs" \
+    || { echo "FAIL: mig could not process bluetooth.defs"; exit 1; }
+test -s "$BT_MIG/bluetoothServer.c" || { echo "FAIL: mig produced no bluetoothServer.c"; exit 1; }
+run_buildenv "make -C $SRC/Bluetooth DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$BT_MIG all install"
+test -x "$DESTDIR/usr/sbin/bluetoothd" || { echo "FAIL: /usr/sbin/bluetoothd not installed"; exit 1; }
+
+comp "bluetooth(8) CLI"
+# Same bare cross-`cc` link as wlan(8). Pure-C MIG client: no CF, no SC, so it
+# links only liblaunch + the Mach syscall shim, and is the bridge across the
+# Mach line for Gershwin.
+$CROSS_CC --sysroot="$SYSROOT" \
+    -I"$BT_MIG" -I"$SRC/Bluetooth" \
+    -I"$SRC/launchd/liblaunch" -I"$SRC/launchd/freebsd-shims" \
+    -I"$SYSROOT/usr/include" -L"$SYSROOT/usr/lib/system" \
+    -Wno-macro-redefined -Wl,-rpath,/usr/lib/system -Wl,--allow-shlib-undefined \
+    -o "$DESTDIR/usr/sbin/bluetooth" \
+    "$SRC/Bluetooth/bluetooth.c" "$BT_MIG/bluetoothUser.c" \
+    -llaunch -lsystem_kernel
+test -x "$DESTDIR/usr/sbin/bluetooth" || { echo "FAIL: /usr/sbin/bluetooth not built"; exit 1; }
+echo "==> bluetoothd + bluetooth built"
+
 # ---- mDNSResponder + libdns_sd ----------------------------------------------
 # build.sh ~2400-2461. mDNSResponder daemon (bsd.prog.mk) then libdns_sd
 # (bsd.lib.mk). No MIG surface in these blocks.
