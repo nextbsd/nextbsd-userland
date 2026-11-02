@@ -97,11 +97,28 @@ struct __io_kinterest {
 	uint64_t		 id;
 };
 
+/*
+ * Kernel match watches this port holds, one per distinct (kernel criteria,
+ * event mask). The kernel sees only the class, name and driver; property
+ * criteria such as idVendor are filtered here. So matching notifications that
+ * differ only in properties (bluetoothd registers one per firmware vendor)
+ * share one kernel watch: a kernel watch per registration would deliver each
+ * event once per registration, and io_source_handler fans every delivery out
+ * to all the matching registrations, so each callback would fire N times.
+ */
+struct __io_kwatch {
+	struct __io_kwatch	*next;
+	struct ioreg_criteria	 criteria;
+	uint32_t		 mask;
+};
+
 struct IONotificationPort {
 	atomic_int		 refcnt;	/* 1 for the port itself, plus one
 						 * per interest registration */
 	struct __io_interest	*interests;	/* guarded by `lock` */
 	struct __io_kinterest	*kinterests;	/* guarded by `lock` */
+	struct __io_kwatch	*kwatches;	/* guarded by `lock` */
+	size_t			 nwatches;	/* length of `watches` */
 	mach_port_t		 recv_port;	/* receive right we own */
 	dispatch_source_t	 source;	/* MACH_RECV source on recv_port */
 	dispatch_queue_t	 recv_queue;	/* private serial queue the source
@@ -417,6 +434,8 @@ decode_event(const union event_rcv_buf *buf, uint32_t *evt, uint64_t *id,
  * several events can coalesce into one fire, and a left-over message would
  * re-fire the source forever. Runs on the private recv_queue.
  */
+#define	WATCH_SNAP_STACK	16
+
 static void
 io_source_handler(void *arg)
 {
@@ -428,8 +447,8 @@ io_source_handler(void *arg)
 		uint64_t id;
 		uint32_t evt;
 		char name[32], klass[32];
-		struct __io_watch *w, *snap[16];
-		int n_snap = 0, i;
+		struct __io_watch *w, *stack_snap[WATCH_SNAP_STACK], **snap;
+		size_t n_snap = 0, cap, i;
 
 		mr = mach_msg(&buf.hdr,
 		    MACH_RCV_MSG | MACH_RCV_TIMEOUT,
@@ -445,15 +464,36 @@ io_source_handler(void *arg)
 		    klass, sizeof(klass)))
 			continue;
 
-		/* Snapshot the matching watches under the lock into a
-		 * small array, then fire outside the lock so a user
-		 * callback can safely add or remove notifications. The
-		 * 16-entry cap is plenty: one IONotificationPort with more
-		 * than 16 simultaneous
-		 * matching watches on a single event is not a real
-		 * shape. */
+		/*
+		 * Snapshot the matching watches under the lock, then fire
+		 * outside it so a user callback can safely add
+		 * notifications. Watches are freed only by io_source_cancel,
+		 * which runs after this handler, so the pointers stay valid.
+		 *
+		 * The snapshot holds every watch on the port. It used to stop
+		 * at 16, and watches that differ only in property criteria
+		 * all match the class here. bluetoothd has 19 IOUSBHostDevice
+		 * watches, one per firmware vendor, registered Intel and
+		 * Realtek first; the list is newest first, so 16 OEM watches
+		 * filled the snapshot and an Intel or Realtek controller that
+		 * arrived after bluetoothd started was never delivered
+		 * (nextbsd-userland#538). The stack array covers the usual
+		 * port; if the heap one cannot be had, the first 16 still go
+		 * out rather than none.
+		 */
+		snap = stack_snap;
+		cap = WATCH_SNAP_STACK;
 		pthread_mutex_lock(&port->lock);
-		for (w = port->watches; w != NULL && n_snap < 16;
+		if (port->nwatches > cap) {
+			struct __io_watch **big;
+
+			big = calloc(port->nwatches, sizeof(*big));
+			if (big != NULL) {
+				snap = big;
+				cap = port->nwatches;
+			}
+		}
+		for (w = port->watches; w != NULL && n_snap < cap;
 		    w = w->next)
 			if (event_matches_watch(w, evt, name, klass))
 				snap[n_snap++] = w;
@@ -465,6 +505,8 @@ io_source_handler(void *arg)
 		for (i = 0; i < n_snap; i++)
 			if (__io_props_match(id, &snap[i]->criteria))
 				fire_callback(port, snap[i], id);
+		if (snap != stack_snap)
+			free(snap);
 	}
 }
 
@@ -482,11 +524,16 @@ io_source_cancel(void *arg)
 {
 	struct IONotificationPort *port = arg;
 	struct __io_watch *w, *next;
+	struct __io_kwatch *kw, *knext;
 	dispatch_queue_t q;
 
 	for (w = port->watches; w != NULL; w = next) {
 		next = w->next;
 		free(w);
+	}
+	for (kw = port->kwatches; kw != NULL; kw = knext) {
+		knext = kw->next;
+		free(kw);
 	}
 	pthread_mutex_lock(&port->lock);
 	while (port->interests != NULL)
@@ -626,24 +673,42 @@ IONotificationPortDestroy(IONotificationPortRef port)
  * each matching event. Returns KERN_SUCCESS on success, a kIOReturn* error
  * otherwise. No nvlist packing is involved, so the libxpc-vs-libnv mismatch
  * that broke the #218 round-trip cannot recur.
+ *
+ * A port that already holds a kernel watch with the same kernel criteria and
+ * mask reuses it (struct __io_kwatch). Called with the port lock held, so two
+ * concurrent registrations add one kernel watch.
  */
 static kern_return_t
-kernel_watch_register(struct IONotificationPort *port,
+kernel_watch_register_locked(struct IONotificationPort *port,
     const struct io_criteria *c, uint32_t mask)
 {
 	struct ioreg_watch_reg reg;
+	struct __io_kwatch *kw;
 	int fd = __io_ioregistry_fd();
+
+	memset(&reg, 0, sizeof(reg));
+	__io_fill_criteria(c, &reg.criteria);	/* zeroes, then copies */
+	for (kw = port->kwatches; kw != NULL; kw = kw->next)
+		if (kw->mask == mask && memcmp(&kw->criteria, &reg.criteria,
+		    sizeof(reg.criteria)) == 0)
+			return (KERN_SUCCESS);
 
 	if (fd < 0)
 		return (kIOReturnNoDevice);
-
-	memset(&reg, 0, sizeof(reg));
-	__io_fill_criteria(c, &reg.criteria);
+	kw = calloc(1, sizeof(*kw));
+	if (kw == NULL)
+		return (KERN_RESOURCE_SHORTAGE);
 	reg.event_mask = mask;	/* OR of IOREG_EVENT_* */
 	reg.notify_port = (uint32_t)port->recv_port;	/* recv right name */
 
-	if (ioctl(fd, IOREGIOCWATCH, &reg) != 0)
+	if (ioctl(fd, IOREGIOCWATCH, &reg) != 0) {
+		free(kw);
 		return (kIOReturnError);
+	}
+	kw->criteria = reg.criteria;
+	kw->mask = mask;
+	kw->next = port->kwatches;
+	port->kwatches = kw;
 	return (KERN_SUCCESS);
 }
 
@@ -675,16 +740,6 @@ IOServiceAddMatchingNotification(IONotificationPortRef port,
 
 	__io_extract_criteria(matching, &c);
 
-	/* Kernel notify channel: the criteria travel as a flat by-value struct
-	 * (#218), so there is no nvlist packing and nothing to mismatch —
-	 * kernel_watch_register fills it from `c` directly. The kernel has no
-	 * per-watch handle and retires the watch when the recv right is dropped. */
-	kr = kernel_watch_register(port, &c, mask);
-	if (kr != KERN_SUCCESS) {
-		CFRelease(matching);
-		return (kr);
-	}
-
 	w = calloc(1, sizeof(*w));
 	if (w == NULL) {
 		CFRelease(matching);
@@ -695,9 +750,23 @@ IOServiceAddMatchingNotification(IONotificationPortRef port,
 	w->callback = callback;
 	w->refcon = refcon;
 
+	/* Kernel notify channel: the criteria travel as a flat by-value struct
+	 * (#218), so there is no nvlist packing and nothing to mismatch —
+	 * kernel_watch_register_locked fills it from `c` directly. The kernel
+	 * has no per-watch handle and retires the watch when the recv right is
+	 * dropped. The client watch is linked under the same lock, so an event
+	 * the kernel watch sends finds it. */
 	pthread_mutex_lock(&port->lock);
+	kr = kernel_watch_register_locked(port, &c, mask);
+	if (kr != KERN_SUCCESS) {
+		pthread_mutex_unlock(&port->lock);
+		free(w);
+		CFRelease(matching);
+		return (kr);
+	}
 	w->next = port->watches;
 	port->watches = w;
+	port->nwatches++;
 	pthread_mutex_unlock(&port->lock);
 
 	/* Initial arming: hand the caller an iterator over the

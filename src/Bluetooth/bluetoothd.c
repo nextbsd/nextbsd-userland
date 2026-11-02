@@ -78,10 +78,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sysexits.h>
 #include <time.h>
 #include <unistd.h>
 
 volatile sig_atomic_t	bluetoothd_got_term;
+bool			bluetoothd_debug;
 
 static pthread_mutex_t	g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct bt_adapter g_adapters[BT_MAX_ADAPTERS];
@@ -355,12 +357,20 @@ main(int argc, char **argv)
 {
 	struct bt_iokit_event ev;
 	struct sigaction sa;
-	int i, j, npaired;
+	int ch, i, j, npaired;
 
-	(void)argc;
-	(void)argv;
+	while ((ch = getopt(argc, argv, "d")) != -1) {
+		switch (ch) {
+		case 'd':
+			bluetoothd_debug = true;
+			break;
+		default:
+			(void)fprintf(stderr, "usage: bluetoothd [-d]\n");
+			return (EX_USAGE);
+		}
+	}
 
-	xlog("bluetoothd starting");
+	xlog("bluetoothd starting%s", bluetoothd_debug ? " (debug)" : "");
 
 	(void)memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = on_signal;

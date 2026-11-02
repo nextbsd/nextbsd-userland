@@ -302,16 +302,35 @@ firmware_usb_arrived(const struct bt_iokit_event *ev)
 	pthread_t t;
 	int i;
 
+	/* Every skip says why at debug level (-d), nextbsd-userland#538. */
 	kind = fw_ids_lookup(ev->vendor, ev->product, &gen);
-	if (kind == FW_KIND_NONE || ev->ugen[0] == '\0')
+	if (kind == FW_KIND_NONE) {
+		if (bluetoothd_debug)
+			fw_log("%s: %04x:%04x skipped: not a controller that "
+			    "needs firmware", ev->ugen[0] != '\0' ? ev->ugen :
+			    "?", ev->vendor, ev->product);
 		return;
+	}
+	if (ev->ugen[0] == '\0') {
+		if (bluetoothd_debug)
+			fw_log("registry entry %llu (%04x:%04x) skipped: no "
+			    "%s property", (unsigned long long)ev->entry_id,
+			    ev->vendor, ev->product, BT_IOKIT_KEY_UGEN);
+		return;
+	}
 	/*
 	 * Realtek's own VID is on card readers and Ethernet too: only a
 	 * Bluetooth HCI interface (e0/01/01) is ours, as in rtlbtfw.conf.
 	 */
 	if (kind == FW_KIND_REALTEK_GENERIC && (ev->if_class[0] != 0xe0 ||
-	    ev->if_class[1] != 0x01 || ev->if_class[2] != 0x01))
+	    ev->if_class[1] != 0x01 || ev->if_class[2] != 0x01)) {
+		if (bluetoothd_debug)
+			fw_log("%s: %04x:%04x skipped: interface %02x/%02x/%02x "
+			    "is not Bluetooth HCI", ev->ugen, ev->vendor,
+			    ev->product, ev->if_class[0], ev->if_class[1],
+			    ev->if_class[2]);
 		return;
+	}
 
 	(void)pthread_mutex_lock(&g_fw_lock);
 	for (i = 0; i < FW_MAX; i++) {
@@ -323,6 +342,9 @@ firmware_usb_arrived(const struct bt_iokit_event *ev)
 	if (d != NULL && d->busy) {
 		/* The re-enumeration of a device we are resetting. */
 		(void)pthread_mutex_unlock(&g_fw_lock);
+		if (bluetoothd_debug)
+			fw_log("%s: skipped: a firmware worker already has it",
+			    ev->ugen);
 		return;
 	}
 	for (i = 0; d == NULL && i < FW_MAX; i++) {
