@@ -114,11 +114,8 @@ watches those by vendor id, and for one with no driver downloads the
 firmware itself, from
 .Pa /System/Library/Extensions/NgUbt.kext/Contents/Resources/firmware ,
 then resets the device so that it comes back as a controller.
-The download protocol is ported from FreeBSD's
-.Nm iwmbtfw
-and
-.Nm rtlbtfw ;
-neither program is run.
+The download protocol is ported from the BSD-licensed Intel and Realtek
+loaders; no separate program is run.
 The outcome is logged, shown by
 .Ql bluetooth status ,
 and published as
@@ -140,9 +137,7 @@ are typed (public or random), one prompt shape covers legacy PIN, Secure Simple
 Pairing and LE pairing, and one bond record holds both engines' keys.
 .Sh SERVICE DISCOVERY
 .Nm
-is the SDP server and client; there is no
-.Nm sdpd
-and no
+is the SDP server and client; no other program serves SDP, and there is no
 .Pa /var/run/sdp
 socket.
 .Pp
@@ -261,10 +256,7 @@ LE devices are reconnected by the LE engine itself (see
 their links are followed and published the same way.
 .Sh HID HOST
 .Nm
-is the Classic HID host; there is no
-.Nm bthidd
-and no
-.Nm vkbd .
+is the Classic HID host; no other program takes part.
 It runs HIDP over the L2CAP control (PSM 0x11) and interrupt (PSM 0x13)
 channels, as initiator for a device's first session after pairing and as a
 listener on every controller for a device that reconnects itself.
@@ -493,6 +485,30 @@ or
 Lists do not go in the store; they are served over the Mach service.
 .Xr scutil 8
 shows these keys.
+.Sh CONTROLLER DIAGNOSTICS
+The diagnostics of
+.Xr bluetooth 8
+run here and come back over the Mach service, so no separate HCI or L2CAP
+tool is installed:
+.Bl -tag -width "bluetooth ping"
+.It Ql bluetooth info
+reads the controller's version
+.Pq Read_Local_Version_Information ,
+features, ACL, SCO and LE buffer sizes, the HCI node's packet counters and
+free credits, and its open links.
+.It Ql bluetooth hci
+sends one raw HCI command and returns the Command Complete or Command
+Status that answers it, within 5 seconds.
+Only root may; the caller's audit token is checked.
+.Nm
+is not told what such a command changed.
+.It Ql bluetooth ping
+sends one L2CAP Echo Request per call to a Classic device, paging it if
+needed, and times the response.
+.El
+.Pp
+Each runs on its own socket, never the controller's own, and blocks only
+the caller and the Mach service while it waits.
 .Sh FILES
 .Bl -tag -width "/Local/Library/Preferences/SystemConfiguration/" -compact
 .It Pa /usr/sbin/bluetoothd

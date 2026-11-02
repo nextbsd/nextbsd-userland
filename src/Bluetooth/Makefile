@@ -50,6 +50,9 @@ SRCS+=		btcf.c btstore.c keystore.c btstate.c
 # SDP: the server on L2CAP PSM 1 with the local records, the client that reads
 # a peer's HID, PnP and audio records at pair time, and their shared wire format.
 SRCS+=		sdp_proto.c sdp_server.c sdp_client.c
+# Diagnostics for bluetooth(8) info / hci / ping (#211): controller details,
+# node statistics and links, raw HCI commands and the L2CAP echo.
+SRCS+=		diag.c
 
 # bluetoothServer.c — MIG-generated server stub for bluetooth.defs.
 # build-userland.sh runs host mig and passes MIGOUT=; a standalone build
