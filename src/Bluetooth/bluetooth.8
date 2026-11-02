@@ -106,6 +106,7 @@ Discover nearby devices for
 signal, and whether it is paired.
 Names come from the device's extended inquiry response, the daemon's cache,
 or a name request after the inquiry.
+LE devices are scanned for at the same time and listed with them.
 Prints
 .Dq no devices found
 when there were none.
@@ -120,7 +121,11 @@ answers.
 A keyboard shows nothing to confirm: type the passkey
 .Nm
 prints on the keyboard, then press Enter on it.
-Headphones and speakers pair with no question.
+Headphones, speakers and mice pair with no question.
+An LE device is paired over LE, the same way; its address may be given with
+or without the
+.Ql /random
+suffix.
 A legacy device that needs a PIN can be given it here.
 .It Cm confirm Ar address Cm yes | no | Ar passkey | Ar pin
 Answer the prompt a pairing with

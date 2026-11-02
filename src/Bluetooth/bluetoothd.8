@@ -186,6 +186,53 @@ A device with no input and no output, such as headphones, is accepted
 without a question.
 A paired device's link key is answered from the store, so it reconnects
 after a restart; a new key is saved the moment the controller reports it.
+.Sh LOW ENERGY
+Keyboards and mice sold in recent years are mostly LE-only and use HID over
+GATT.
+The LE engine runs over the kernel's L2CAP sockets: one on the Attribute
+Protocol channel (CID 4), whose connection makes the kernel create the LE
+link, and one on the Security Manager channel (CID 6).
+Scanning, encryption and the long-term key requests go over the raw HCI
+socket.
+.Bl -bullet
+.It
+.Ql bluetooth scan
+scans LE actively alongside the inquiry; LE devices join the same list, a
+random address with a
+.Ql /random
+suffix.
+.It
+.Ql bluetooth pair
+picks the engine from what the scan saw: LE for random addresses and LE-only
+devices, Classic for the rest, dual-mode devices included.
+LE pairing offers Secure Connections and falls back to legacy pairing.
+A mouse pairs with no question; a keyboard is given a passkey to type; a
+device with a display shows a number to compare or a passkey to enter.
+The device's long-term key, identity resolving key and signature key go to
+the key file; a bond is kept under the identity address the device gives.
+.It
+While a paired LE device with AutoConnect is not connected,
+.Nm
+scans passively in the background and connects as soon as it advertises,
+its private address resolved with its identity resolving key, before anyone
+logs in.
+The link is encrypted with the stored key before any other traffic.
+.It
+On an encrypted link to a device with the HID service,
+.Nm
+reads its report map and report references, enables notifications on its
+input reports, and creates an
+.Ql IOHIDUserDevice
+(Transport
+.Ql BluetoothLowEnergy )
+that the kernel's HID drivers attach to.
+Output reports, such as the keyboard LEDs, are written back.
+The report map and PnP ID are cached in the device's
+.Ql HIDDescriptor
+and
+.Ql PnPID ,
+so a reconnect skips reading them.
+.El
 .Sh PAIRING STORE
 Two files under
 .Pa /Local/Library/Preferences/SystemConfiguration ,
