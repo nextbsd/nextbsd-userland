@@ -14,7 +14,7 @@
  * _pm_os_log(), in os_log_shim.c, which drops the {annotation}, prints %@
  * through CFCopyDescription, and hands every other conversion to vsnprintf.
  *
- * Output goes to stderr, which launchd sends to /var/log/pmconfigd.stderr
+ * Output goes to stderr, which launchd sends to /var/log/powerd.stderr
  * (StandardErrorPath in org.nextbsd.powerd.plist), never the console. That
  * is the same sink every NextBSD daemon uses. Moving it to ASL later is a
  * change to os_log_shim.c alone; no caller changes.

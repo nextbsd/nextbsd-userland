@@ -1,7 +1,9 @@
-# pmconfigd — Apple's power management daemon (macOS ships it as powerd),
+# powerd — Apple's power management daemon, built from its pmconfigd sources,
 # ported to NextBSD.
 #
-# Builds /usr/sbin/pmconfigd; runs as the launchd job org.nextbsd.powerd
+# Builds /System/Library/CoreServices/powerd.bundle/powerd, where macOS
+# installs it, beside the bundle's assertion plists; runs as the launchd job
+# org.nextbsd.powerd
 # (overlay/System/Library/LaunchDaemons/org.nextbsd.powerd.plist), vending
 # Apple's two MachServices, com.apple.PowerManagement.control (MIG) and
 # com.apple.iokit.powerdxpc (XPC).
@@ -11,17 +13,19 @@
 # Xcode project's powerd target is the source of truth for what the daemon
 # is made of, and SRCS below grows toward it. See ../VENDORED.md.
 #
-# The binary is pmconfigd. pmconfigd owns the CPU power policy
-# (nextbsd-userland#231, CPUPower_freebsd.c), so the base no longer ships
-# FreeBSD's powerd(8) (nextbsd-freebsd-compat scripts/superseded).
+# Until nextbsd-userland#240 the binary was /usr/sbin/pmconfigd. The daemon
+# also owns the CPU power policy (nextbsd-userland#231, CPUPower_freebsd.c),
+# so the base no longer ships FreeBSD's /usr/sbin/powerd or its powerd.8
+# (nextbsd-freebsd-compat scripts/superseded); this powerd.8 takes that
+# page's place.
 #
 # Build:   make SYSROOT=/path/to/rootfs MIGOUT=/path/to/migout
 # Install: make DESTDIR=/path/to/rootfs install
 
-PROG=		pmconfigd
+PROG=		powerd
 # NextBSD-original page: Apple ships no page for powerd.
-MAN=		pmconfigd.8
-BINDIR=		/usr/sbin
+MAN=		powerd.8
+BINDIR=		/System/Library/CoreServices/powerd.bundle
 
 # NextBSD sources live in ../freebsd-shims, Apple's in this directory and
 # ../common. As each Apple file is ported it joins SRCS and the matching part

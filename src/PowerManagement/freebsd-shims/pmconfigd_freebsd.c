@@ -37,7 +37,7 @@
  * job is org.nextbsd.powerd but the services it vends are Apple's.
  *
  * Quiet by design: nothing reaches the console. os_log goes to stderr, which
- * launchd sends to /var/log/pmconfigd.stderr, and on a normal start the
+ * launchd sends to /var/log/powerd.stderr, and on a normal start the
  * daemon writes a single line there.
  */
 #include <dispatch/dispatch.h>
@@ -371,7 +371,7 @@ powerd_init(void *__unused context)
 
     BatteryTimeRemaining_finish();
 
-    os_log(OS_LOG_DEFAULT, "pmconfigd started: %s%s, %s\n",
+    os_log(OS_LOG_DEFAULT, "powerd started: %s%s, %s\n",
            kIOPMServerBootstrapName,
            MACH_PORT_NULL != serverPort ? "" : " (not checked in)",
            kIOPMServerXPCName);
