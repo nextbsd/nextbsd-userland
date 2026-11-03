@@ -216,12 +216,20 @@ struct ioreg_test_event {
  * kernel keeps a send right, and the watch also ends when the client's
  * receive right dies.
  *
- * `interest` is the interest type; only IOREG_INTEREST_GENERAL
- * (kIOGeneralInterest) exists. Returns 0, EINVAL for a bad port or interest
+ * `interest` is the interest type. IOREG_INTEREST_GENERAL
+ * (kIOGeneralInterest) hears what the entry's provider sends all its
+ * clients. IOREG_INTEREST_APP_POWER (kIOAppPowerStateInterest, #243) is what
+ * IORegisterForSystemPower registers on the IOPMrootDomain entry: the root
+ * domain sends each such client the system sleep/wake messages itself, with
+ * that client's acknowledgement id in argument[0] (see <sys/iopmroot.h>).
+ * The two are separate watches: a general watch hears no sleep/wake
+ * messages and an app power watch no property changes; both hear
+ * kIOMessageServiceIsTerminated. Returns 0, EINVAL for a bad port or interest
  * type, ENOENT if `id` is not a live entry, ENOSYS on a kernel built without
  * COMPAT_MACH. Self-contained / fixed-size for 32- and 64-bit ABI parity.
  */
 #define	IOREG_INTEREST_GENERAL	1	/* kIOGeneralInterest */
+#define	IOREG_INTEREST_APP_POWER 2	/* kIOAppPowerStateInterest */
 
 struct ioreg_interest_reg {
 	uint64_t	id;		/* in: registry id of the entry */

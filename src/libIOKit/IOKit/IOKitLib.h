@@ -37,6 +37,12 @@
  *   IOServiceAddInterestNotification (kIOGeneralInterest), with the
  *   kIOMessage* codes in <IOKit/IOMessage.h>.
  *
+ * System power (nextbsd-userland#234, kernel nextbsd-kernel#243):
+ *   kIOAppPowerStateInterest, IONotificationPortGetRunLoopSource,
+ *   io_connect_t + IOServiceClose, IORegistryEntrySetCFProperty(ies) on the
+ *   IOPMrootDomain entry; the power calls themselves are in
+ *   <IOKit/pwr_mgt/IOPMLib.h>.
+ *
  * NOTE: there is also a separate Apple-API stub at
  * src/launchd/freebsd-shims/IOKit/IOKitLib.h covering the four IOKit
  * calls launchctl makes (IOKitWaitQuiet etc.). That shim aliases
@@ -63,6 +69,13 @@ typedef struct __IOObject *io_object_t;
 typedef io_object_t io_registry_entry_t;
 typedef io_object_t io_service_t;
 typedef io_object_t io_iterator_t;
+/*
+ * A connection to a service's user client. NextBSD has no IOServiceOpen; the
+ * only connections are the IOPMrootDomain ones IORegisterForSystemPower and
+ * IOPMFindPowerManagement return (<IOKit/pwr_mgt/IOPMLib.h>). Close one with
+ * IOServiceClose.
+ */
+typedef io_object_t io_connect_t;
 
 #define IO_OBJECT_NULL ((io_object_t)0)
 
@@ -93,6 +106,26 @@ typedef int IOReturn;
 #define kIOReturnUnsupported 0x2c7
 #define kIOReturnBadArgument 0x2c9
 #define kIOReturnNotFound    0x2f0
+/* More of Apple's common errors (the bare values, as above). Guarded:
+ * IOHIDUserDevice.h and some consumers define a few of them too. */
+#ifndef kIOReturnNoMemory
+#define kIOReturnNoMemory	0x2bd
+#endif
+#ifndef kIOReturnNotPrivileged
+#define kIOReturnNotPrivileged	0x2c1
+#endif
+#ifndef kIOReturnExclusiveAccess
+#define kIOReturnExclusiveAccess 0x2c5
+#endif
+#ifndef kIOReturnBusy
+#define kIOReturnBusy		0x2d5
+#endif
+#ifndef kIOReturnNotReady
+#define kIOReturnNotReady	0x2d8
+#endif
+#ifndef kIOReturnNotPermitted
+#define kIOReturnNotPermitted	0x2e2
+#endif
 
 /*
  * "main port" sentinels. On macOS these select the IOKit master
@@ -164,6 +197,12 @@ kern_return_t	IOObjectRetain(io_object_t object);
 kern_return_t	IOObjectRelease(io_object_t object);
 
 /*
+ * IOServiceClose — close a connection (io_connect_t) and release the handle,
+ * as on Darwin. kIOReturnBadArgument if `connect` is not one.
+ */
+kern_return_t	IOServiceClose(io_connect_t connect);
+
+/*
  * iter 2 ----------------------------------------------------------
  *
  * Well-known IOService matching dictionary keys (the small subset
@@ -194,6 +233,22 @@ kern_return_t	IORegistryEntryCreateCFProperties(io_registry_entry_t entry,
 CFTypeRef	IORegistryEntryCreateCFProperty(io_registry_entry_t entry,
 		    CFStringRef key, CFAllocatorRef allocator,
 		    IOOptionBits options);
+
+/*
+ * IORegistryEntrySetCFProperty / IORegistryEntrySetCFProperties — set
+ * properties on an entry, which Darwin hands to the service's setProperties.
+ * On NextBSD only the IOPMrootDomain entry takes them (the keys xnu's
+ * IOPMrootDomain::setProperties acts on, such as "SleepDisabled" and
+ * "DisablePowerButtonSleep"; other keys are accepted and ignored); every
+ * other entry returns kIOReturnUnsupported, IORegistryEntry's default.
+ * Values may be CFBoolean, CFNumber or CFString (up to 63 bytes); other types
+ * return kIOReturnUnsupported. Root only (kIOReturnNotPrivileged).
+ * SetCFProperties takes a CFDictionary and returns the first error.
+ */
+kern_return_t	IORegistryEntrySetCFProperty(io_registry_entry_t entry,
+		    CFStringRef propertyName, CFTypeRef property);
+kern_return_t	IORegistryEntrySetCFProperties(io_registry_entry_t entry,
+		    CFTypeRef properties);
 
 /*
  * IOObjectGetClass — the entry's class name (hwregd's `class`
@@ -290,6 +345,17 @@ mach_port_t		IONotificationPortGetMachPort(
 			    IONotificationPortRef notify);
 
 /*
+ * IONotificationPortGetRunLoopSource — a run loop source for the port, made
+ * on first call and owned by the port (do not release it; it is invalidated
+ * by IONotificationPortDestroy). Add it to a run loop with CFRunLoopAddSource
+ * and the port's callbacks run on that run loop's thread. A dispatch queue
+ * set with IONotificationPortSetDispatchQueue takes precedence. NULL on
+ * allocation failure.
+ */
+CFRunLoopSourceRef	IONotificationPortGetRunLoopSource(
+			    IONotificationPortRef notify);
+
+/*
  * IOServiceAddMatchingNotification — register a callback that
  * fires whenever a service matching `matching` arrives (Publish /
  * FirstMatch / Matched) or departs (Terminate). On return the
@@ -327,11 +393,22 @@ kern_return_t	IOServiceAddMatchingNotification(
  * none is set). `service` is retained for as long as the registration lives
  * and is the object handed to the callback.
  *
- * Only kIOGeneralInterest is supported; any other interest type returns
- * kIOReturnUnsupported. Other errors: KERN_INVALID_ARGUMENT for a NULL or
- * non-entry argument, kIOReturnNotFound if the service has already departed,
- * kIOReturnNoDevice without /dev/ioregistry, kIOReturnUnsupported on a kernel
- * without interest support.
+ * kIOGeneralInterest and kIOAppPowerStateInterest are supported; any other
+ * interest type returns kIOReturnUnsupported. Other errors:
+ * KERN_INVALID_ARGUMENT for a NULL or non-entry argument, kIOReturnNotFound
+ * if the service has already departed, kIOReturnNoDevice without
+ * /dev/ioregistry, kIOReturnUnsupported on a kernel without interest support
+ * (or, for kIOAppPowerStateInterest, without the root domain).
+ *
+ * kIOAppPowerStateInterest on the IOPMrootDomain entry is what
+ * IORegisterForSystemPower (<IOKit/pwr_mgt/IOPMLib.h>) registers. The root
+ * domain sends it kIOMessageCanSystemSleep, kIOMessageSystemWillSleep,
+ * kIOMessageSystemWillNotSleep, kIOMessageSystemWillPowerOn and
+ * kIOMessageSystemHasPoweredOn, and, as on Darwin, messageArgument is the
+ * notificationID itself (cast it to intptr_t for IOAllowPowerChange /
+ * IOCancelPowerChange), not an IOServiceInterestMessageArgument. Two such
+ * registrations on one port share one kernel watch and so one
+ * notificationID; IORegisterForSystemPower makes a port per registration.
  *
  * Messages (kIOMessage*, <IOKit/IOMessage.h>) the NextBSD kernel sends:
  *   kIOMessageServicePropertyChange — e.g. a DRM connector hotplug on a drmn
@@ -364,7 +441,8 @@ kern_return_t	IOServiceAddMatchingNotification(
  * IOServiceInterestMessageArgument. It is owned by libIOKit and valid only
  * until the callback returns; copy what you need. It is never NULL for
  * messages from the NextBSD kernel. Fields may be appended later; existing
- * ones keep their offsets.
+ * ones keep their offsets. The exception is kIOAppPowerStateInterest, where
+ * it is the notificationID, as on Darwin (see above).
  */
 typedef void (*IOServiceInterestCallback)(void *refcon,
 		    io_service_t service, uint32_t messageType,

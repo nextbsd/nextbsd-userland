@@ -19,6 +19,7 @@ LIB=		IOKit
 SHLIB_MAJOR=	1
 
 SRCS=		IOKitLib.c IOKitMatching.c IOKitNotify.c IOPMAssertions.c
+SRCS+=		IOPMLib.c
 SRCS+=		IOHIDUserDevice.c
 
 # WARNS=0: the public header pulls the whole CoreFoundation public

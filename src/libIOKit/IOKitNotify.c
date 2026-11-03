@@ -22,6 +22,17 @@
  * code, the entry id, two arguments and a devnode. The handler dispatches it to
  * the port's interest registrations for that id.
  *
+ * kIOAppPowerStateInterest (nextbsd-userland#234, kernel nextbsd-kernel#243)
+ * is a second interest type on the same path: IORegisterForSystemPower
+ * (IOPMLib.c) registers it on the IOPMrootDomain entry, and the root domain
+ * sends each such watch the system sleep/wake messages with that client's
+ * acknowledgement id in argument[0]. As on Darwin the callback gets that id
+ * itself as messageArgument (the notificationID IOAllowPowerChange takes).
+ *
+ * Callbacks run on the port's dispatch queue (IONotificationPortSetDispatch-
+ * Queue), else on the run loops its IONotificationPortGetRunLoopSource source
+ * is scheduled on, else inline on the receive queue.
+ *
  * Delivery is the native EVFILT_MACHPORT filter (mach.ko filt_machport, slot
  * -16) that libmach reroutes the source's kevent onto. task #41's "MACH_RECV
  * doesn't reliably deliver" was the module-era register_event_bell pipe bridge,
@@ -34,11 +45,12 @@
 
 #include "ioregistry.h"		/* vendored: IOREGIOCWATCH, ioreg_watch_reg, IOREG_EVENT_* */
 #include "iokit_notify.h"	/* vendored: ioreg_event_msg + msgid */
+#include "iopmroot.h"		/* vendored: IOPMROOT_ALLOW */
 
 #include <dispatch/dispatch.h>
 #include <mach/mach.h>
 
-#include <sys/ioctl.h>		/* ioctl(2) on /dev/ioregistry */
+#include <sys/ioctl.h>		/* ioctl(2) on /dev/ioregistry, /dev/iopmroot */
 
 #include <errno.h>
 
@@ -79,6 +91,7 @@ struct __io_interest {
 	struct __io_interest		*next;
 	struct IONotificationPort	*port;
 	uint64_t			 id;		/* service registry id */
+	uint32_t			 interest;	/* IOREG_INTEREST_* */
 	io_service_t			 service;	/* retained */
 	IOServiceInterestCallback	 callback;
 	void				*refcon;
@@ -86,15 +99,28 @@ struct __io_interest {
 };
 
 /*
- * Registry ids this port holds a kernel interest watch on. The kernel has no
- * per-watch unregister (the watch ends when the port dies or the entry
- * departs), so a second registration for the same id on the same port reuses
- * the existing watch instead of adding one; otherwise every message would
- * arrive twice and fire each registration twice.
+ * (Registry id, interest type) pairs this port holds a kernel interest watch
+ * on. The kernel has no per-watch unregister (the watch ends when the port
+ * dies or the entry departs), so a second registration for the same pair on
+ * the same port reuses the existing watch instead of adding one; otherwise
+ * every message would arrive twice and fire each registration twice.
  */
 struct __io_kinterest {
 	struct __io_kinterest	*next;
 	uint64_t		 id;
+	uint32_t		 interest;	/* IOREG_INTEREST_* */
+};
+
+/*
+ * A callout waiting for the port's run loop source (run-loop delivery).
+ * `perform` runs it and frees it; `discard` frees it unrun when the port is
+ * destroyed first.
+ */
+struct port_callout {
+	struct port_callout	*next;
+	void			*ctx;
+	void			(*perform)(void *);
+	void			(*discard)(void *);
 };
 
 /*
@@ -127,6 +153,14 @@ struct IONotificationPort {
 	pthread_mutex_t		 lock;		/* guards `watches` + queue */
 	struct __io_watch	*watches;
 	dispatch_queue_t	 queue;		/* optional callback target */
+	/* IONotificationPortGetRunLoopSource: a version 0 source, signalled
+	 * when `pending` gains a callout, as libDiskArbitration and
+	 * SCDynamicStore do (NextBSD's CoreFoundation has no CFMachPort).
+	 * All guarded by `lock`. */
+	CFRunLoopSourceRef	 rls;
+	CFMutableArrayRef	 runloops;	/* where rls is scheduled */
+	struct port_callout	*pending;	/* FIFO */
+	struct port_callout	**pending_tail;
 };
 
 /*
@@ -152,12 +186,77 @@ callout_trampoline(void *ctx)
 }
 
 static void
+callout_discard(void *ctx)
+{
+	struct callout_bundle *b = ctx;
+
+	IOObjectRelease(b->iterator);
+	free(b);
+}
+
+/*
+ * Hand one callout to wherever the port's callbacks run: its dispatch queue
+ * if one is set; else its run loop source, if IONotificationPortGetRunLoop-
+ * Source made one (queued on `pending`, then the source is signalled and its
+ * run loops woken; the callout runs on the run loop's thread); else inline on
+ * the receive queue, which is fine for simple consumers (the iter-4
+ * iokitnotifytest is one). `perform` runs and frees `ctx`, `discard` frees it
+ * unrun. Called with the port lock NOT held: a run loop's schedule callout
+ * takes it, so CoreFoundation is never entered with it held.
+ */
+static void
+port_deliver(struct IONotificationPort *port, void *ctx,
+    void (*perform)(void *), void (*discard)(void *))
+{
+	struct port_callout *pc = NULL;
+	CFRunLoopSourceRef rls = NULL;
+	CFArrayRef loops = NULL;
+	dispatch_queue_t q;
+	CFIndex i, n;
+
+	pthread_mutex_lock(&port->lock);
+	q = port->queue;
+	if (q != NULL)
+		dispatch_retain(q);
+	else if (port->rls != NULL && (pc = calloc(1, sizeof(*pc))) != NULL) {
+		pc->ctx = ctx;
+		pc->perform = perform;
+		pc->discard = discard;
+		*port->pending_tail = pc;
+		port->pending_tail = &pc->next;
+		rls = port->rls;
+		CFRetain(rls);
+		loops = CFArrayCreateCopy(kCFAllocatorDefault, port->runloops);
+	} else if (port->rls != NULL) {
+		pthread_mutex_unlock(&port->lock);
+		discard(ctx);		/* no memory for the queue entry */
+		return;
+	}
+	pthread_mutex_unlock(&port->lock);
+
+	if (q != NULL) {
+		dispatch_async_f(q, ctx, perform);
+		dispatch_release(q);
+	} else if (rls != NULL) {
+		CFRunLoopSourceSignal(rls);
+		n = loops != NULL ? CFArrayGetCount(loops) : 0;
+		for (i = 0; i < n; i++)
+			CFRunLoopWakeUp((CFRunLoopRef)CFArrayGetValueAtIndex(
+			    loops, i));
+		if (loops != NULL)
+			CFRelease(loops);
+		CFRelease(rls);
+	} else
+		perform(ctx);
+}
+
+static void
 fire_callback(struct IONotificationPort *port, struct __io_watch *w,
     uint64_t node_id)
 {
 	uint64_t *ids = calloc(1, sizeof(*ids));
+	struct callout_bundle *b;
 	io_iterator_t it;
-	dispatch_queue_t q;
 
 	if (ids == NULL)
 		return;
@@ -165,29 +264,15 @@ fire_callback(struct IONotificationPort *port, struct __io_watch *w,
 	it = __io_alloc_iterator(ids, 1);	/* takes ownership of ids */
 	if (it == IO_OBJECT_NULL)
 		return;
-
-	pthread_mutex_lock(&port->lock);
-	q = port->queue;
-	pthread_mutex_unlock(&port->lock);
-
-	if (q != NULL) {
-		struct callout_bundle *b = calloc(1, sizeof(*b));
-
-		if (b == NULL) {
-			IOObjectRelease(it);
-			return;
-		}
-		b->callback = w->callback;
-		b->refcon = w->refcon;
-		b->iterator = it;
-		dispatch_async_f(q, b, callout_trampoline);
-	} else {
-		/* No queue — run on the receive thread directly. Acceptable
-		 * for simple consumers (the iter-4 iokitnotifytest is one);
-		 * real consumers usually SetDispatchQueue. */
-		w->callback(w->refcon, it);
+	b = calloc(1, sizeof(*b));
+	if (b == NULL) {
 		IOObjectRelease(it);
+		return;
 	}
+	b->callback = w->callback;
+	b->refcon = w->refcon;
+	b->iterator = it;
+	port_deliver(port, b, callout_trampoline, callout_discard);
 }
 
 /*
@@ -242,6 +327,83 @@ port_unref(struct IONotificationPort *port)
 	free(port);
 }
 
+/*
+ * The run loop source's callouts (IONotificationPortGetRunLoopSource). The
+ * source holds a port reference as its info, so a callout the run loop is
+ * still performing when the port is destroyed finds the port alive.
+ */
+static const void *
+port_rls_retain(const void *info)
+{
+	struct IONotificationPort *port = (struct IONotificationPort *)
+	    (uintptr_t)info;
+
+	(void)atomic_fetch_add(&port->refcnt, 1);
+	return (info);
+}
+
+static void
+port_rls_release(const void *info)
+{
+	port_unref((struct IONotificationPort *)(uintptr_t)info);
+}
+
+static void
+port_rls_schedule(void *info, CFRunLoopRef rl, CFStringRef mode __unused)
+{
+	struct IONotificationPort *port = info;
+	CFRunLoopSourceRef rls = NULL;
+
+	pthread_mutex_lock(&port->lock);
+	if (port->runloops != NULL)
+		CFArrayAppendValue(port->runloops, rl);
+	if (port->pending != NULL && port->rls != NULL) {
+		rls = port->rls;
+		CFRetain(rls);
+	}
+	pthread_mutex_unlock(&port->lock);
+	/* Callouts queued before the source was scheduled anywhere: the run
+	 * loop performs a signalled source on its next pass. */
+	if (rls != NULL) {
+		CFRunLoopSourceSignal(rls);
+		CFRelease(rls);
+	}
+}
+
+static void
+port_rls_cancel(void *info, CFRunLoopRef rl, CFStringRef mode __unused)
+{
+	struct IONotificationPort *port = info;
+	CFIndex idx;
+
+	pthread_mutex_lock(&port->lock);
+	if (port->runloops != NULL) {
+		idx = CFArrayGetFirstIndexOfValue(port->runloops,
+		    CFRangeMake(0, CFArrayGetCount(port->runloops)), rl);
+		if (idx != kCFNotFound)
+			CFArrayRemoveValueAtIndex(port->runloops, idx);
+	}
+	pthread_mutex_unlock(&port->lock);
+}
+
+static void
+port_rls_perform(void *info)
+{
+	struct IONotificationPort *port = info;
+	struct port_callout *list, *pc;
+
+	pthread_mutex_lock(&port->lock);
+	list = port->pending;
+	port->pending = NULL;
+	port->pending_tail = &port->pending;
+	pthread_mutex_unlock(&port->lock);
+	while ((pc = list) != NULL) {
+		list = pc->next;
+		pc->perform(pc->ctx);
+		free(pc);
+	}
+}
+
 static void
 interest_unlink_locked(struct IONotificationPort *port,
     struct __io_interest *rec)
@@ -260,17 +422,18 @@ interest_unlink_locked(struct IONotificationPort *port,
 	rec->linked = false;
 }
 
+/* Forget every kernel interest watch on `id`, whatever its type. */
 static void
 kinterest_forget_locked(struct IONotificationPort *port, uint64_t id)
 {
 	struct __io_kinterest **pp, *k;
 
-	for (pp = &port->kinterests; (k = *pp) != NULL; pp = &k->next) {
+	for (pp = &port->kinterests; (k = *pp) != NULL;) {
 		if (k->id == id) {
 			*pp = k->next;
 			free(k);
-			return;
-		}
+		} else
+			pp = &k->next;
 	}
 }
 
@@ -290,13 +453,16 @@ kinterests_free_locked(struct IONotificationPort *port)
  * One interest callout. The callback, refcon and a retained service are copied
  * out of the registration under the port lock, so the callout does not touch
  * the registration (which a concurrent IOObjectRelease may free). `arg` is the
- * messageArgument the callback sees; it lives as long as the callout.
+ * messageArgument a general-interest callback sees; it lives as long as the
+ * callout. An app power callback sees argument[0] itself (see
+ * handle_interest).
  */
 struct interest_callout {
 	IOServiceInterestCallback		 callback;
 	void					*refcon;
 	io_service_t				 service;	/* retained */
 	uint32_t				 message;
+	uint32_t				 interest;	/* IOREG_INTEREST_* */
 	IOServiceInterestMessageArgument	 arg;
 };
 
@@ -305,17 +471,62 @@ interest_trampoline(void *ctx)
 {
 	struct interest_callout *c = ctx;
 
-	c->callback(c->refcon, c->service, c->message, &c->arg);
+	if (c->interest == IOREG_INTEREST_APP_POWER)
+		c->callback(c->refcon, c->service, c->message,
+		    (void *)(intptr_t)c->arg.argument[0]);
+	else
+		c->callback(c->refcon, c->service, c->message, &c->arg);
+	IOObjectRelease(c->service);
+	free(c);
+}
+
+static void
+interest_discard(void *ctx)
+{
+	struct interest_callout *c = ctx;
+
 	IOObjectRelease(c->service);
 	free(c);
 }
 
 /*
+ * Which registrations a message is for. The root domain sends the system
+ * sleep/wake messages only to app power watches, and general-interest
+ * messages (property changes, kIOPMMessageClamshellStateChange) only to
+ * general watches, so the message says which watch it came through when a
+ * port holds both on one entry. kIOMessageServiceIsTerminated goes to every
+ * watch; 0 means all types.
+ */
+static uint32_t
+interest_of_message(uint32_t message)
+{
+	switch (message) {
+	case kIOMessageServiceIsTerminated:
+		return (0);
+	case kIOMessageCanSystemSleep:
+	case kIOMessageSystemWillSleep:
+	case kIOMessageSystemWillNotSleep:
+	case kIOMessageSystemWillPowerOn:
+	case kIOMessageSystemHasPoweredOn:
+		return (IOREG_INTEREST_APP_POWER);
+	default:
+		return (IOREG_INTEREST_GENERAL);
+	}
+}
+
+/*
  * Handle one ioreg_interest_msg: fire every active registration on this port
- * for the message's entry id, on the callback queue if one is set and inline
- * otherwise (the fire_callback rule). kIOMessageServiceIsTerminated is the
- * last message for the entry: the kernel drops its watch after sending it, so
- * the registrations are unlinked and the port forgets its kernel watch.
+ * for the message's entry id and interest type, through port_deliver.
+ * kIOMessageServiceIsTerminated is the last message for the entry: the kernel
+ * drops its watches after sending it, so the registrations are unlinked and
+ * the port forgets its kernel watches.
+ *
+ * kIOMessageCanSystemSleep and kIOMessageSystemWillSleep wait for an answer.
+ * The kernel watch outlives a registration released with IOObjectRelease
+ * (IODeregisterForSystemPower) until the port is destroyed, and on Darwin a
+ * deregistered client is no longer asked. So when no registration on this
+ * port takes such a message, libIOKit allows the change itself rather than
+ * let the root domain wait out its timeout for an answer that never comes.
  */
 #define INTEREST_SNAP_MAX	16
 
@@ -326,7 +537,7 @@ handle_interest(struct IONotificationPort *port, const union event_rcv_buf *buf)
 	struct interest_callout *snap[INTEREST_SNAP_MAX];
 	IOServiceInterestMessageArgument arg;
 	struct __io_interest *rec, *next;
-	dispatch_queue_t q;
+	uint32_t interest;
 	bool terminated;
 	int n_snap = 0, i;
 
@@ -343,14 +554,14 @@ handle_interest(struct IONotificationPort *port, const union event_rcv_buf *buf)
 	memcpy(arg.devnode, m->devnode, sizeof(arg.devnode));
 	arg.devnode[sizeof(arg.devnode) - 1] = '\0';
 	terminated = (m->message == kIOMessageServiceIsTerminated);
+	interest = interest_of_message(m->message);
 
 	pthread_mutex_lock(&port->lock);
-	q = port->queue;
-	if (q != NULL)
-		dispatch_retain(q);
 	for (rec = port->interests; rec != NULL; rec = next) {
 		next = rec->next;
 		if (rec->id != m->id)
+			continue;
+		if (interest != 0 && rec->interest != interest)
 			continue;
 		if (n_snap < INTEREST_SNAP_MAX) {
 			struct interest_callout *c = calloc(1, sizeof(*c));
@@ -361,6 +572,7 @@ handle_interest(struct IONotificationPort *port, const union event_rcv_buf *buf)
 				c->service = rec->service;
 				(void)IOObjectRetain(c->service);
 				c->message = m->message;
+				c->interest = rec->interest;
 				c->arg = arg;
 				snap[n_snap++] = c;
 			}
@@ -372,14 +584,19 @@ handle_interest(struct IONotificationPort *port, const union event_rcv_buf *buf)
 		kinterest_forget_locked(port, m->id);
 	pthread_mutex_unlock(&port->lock);
 
-	for (i = 0; i < n_snap; i++) {
-		if (q != NULL)
-			dispatch_async_f(q, snap[i], interest_trampoline);
-		else
-			interest_trampoline(snap[i]);
+	if (n_snap == 0 && m->argument[0] != 0 &&
+	    (m->message == kIOMessageCanSystemSleep ||
+	    m->message == kIOMessageSystemWillSleep)) {
+		int64_t nid = (int64_t)m->argument[0];
+		int fd = __io_pmroot_fd();
+
+		if (fd >= 0)
+			(void)ioctl(fd, IOPMROOT_ALLOW, &nid);
 	}
-	if (q != NULL)
-		dispatch_release(q);
+
+	for (i = 0; i < n_snap; i++)
+		port_deliver(port, snap[i], interest_trampoline,
+		    interest_discard);
 }
 
 /*
@@ -525,7 +742,36 @@ io_source_cancel(void *arg)
 	struct IONotificationPort *port = arg;
 	struct __io_watch *w, *next;
 	struct __io_kwatch *kw, *knext;
+	struct port_callout *pending, *pc;
+	CFMutableArrayRef loops;
+	CFRunLoopSourceRef rls;
 	dispatch_queue_t q;
+
+	/* The run loop source first, with the lock dropped: invalidating it
+	 * calls port_rls_cancel for each run loop, which takes the lock.
+	 * Callouts still queued for it are dropped unrun. */
+	pthread_mutex_lock(&port->lock);
+	rls = port->rls;
+	pthread_mutex_unlock(&port->lock);
+	if (rls != NULL)
+		CFRunLoopSourceInvalidate(rls);
+	pthread_mutex_lock(&port->lock);
+	port->rls = NULL;
+	loops = port->runloops;
+	port->runloops = NULL;
+	pending = port->pending;
+	port->pending = NULL;
+	port->pending_tail = &port->pending;
+	pthread_mutex_unlock(&port->lock);
+	while ((pc = pending) != NULL) {
+		pending = pc->next;
+		pc->discard(pc->ctx);
+		free(pc);
+	}
+	if (loops != NULL)
+		CFRelease(loops);
+	if (rls != NULL)
+		CFRelease(rls);
 
 	for (w = port->watches; w != NULL; w = next) {
 		next = w->next;
@@ -590,6 +836,7 @@ IONotificationPortCreate(mach_port_t mainPort __unused)
 		return (NULL);
 	}
 	p->recv_port = mp;
+	p->pending_tail = &p->pending;
 	atomic_store(&p->refcnt, 1);
 	(void)pthread_mutex_init(&p->lock, NULL);
 
@@ -642,6 +889,55 @@ mach_port_t
 IONotificationPortGetMachPort(IONotificationPortRef port)
 {
 	return (port != NULL ? port->recv_port : MACH_PORT_NULL);
+}
+
+CFRunLoopSourceRef
+IONotificationPortGetRunLoopSource(IONotificationPortRef port)
+{
+	CFRunLoopSourceContext ctx;
+	CFRunLoopSourceRef rls, ours;
+	CFMutableArrayRef loops;
+
+	if (port == NULL)
+		return (NULL);
+	pthread_mutex_lock(&port->lock);
+	rls = port->rls;
+	pthread_mutex_unlock(&port->lock);
+	if (rls != NULL)
+		return (rls);
+
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.version = 0;
+	ctx.info = port;
+	ctx.retain = port_rls_retain;
+	ctx.release = port_rls_release;
+	ctx.schedule = port_rls_schedule;
+	ctx.cancel = port_rls_cancel;
+	ctx.perform = port_rls_perform;
+	ours = CFRunLoopSourceCreate(kCFAllocatorDefault, 0, &ctx);
+	loops = CFArrayCreateMutable(kCFAllocatorDefault, 0,
+	    &kCFTypeArrayCallBacks);
+	if (ours == NULL || loops == NULL) {
+		if (ours != NULL)
+			CFRelease(ours);
+		if (loops != NULL)
+			CFRelease(loops);
+		return (NULL);
+	}
+	pthread_mutex_lock(&port->lock);
+	if (port->rls == NULL) {
+		port->rls = ours;
+		port->runloops = loops;
+		ours = NULL;
+		loops = NULL;
+	}
+	rls = port->rls;
+	pthread_mutex_unlock(&port->lock);
+	if (ours != NULL)		/* another thread made it first */
+		CFRelease(ours);
+	if (loops != NULL)
+		CFRelease(loops);
+	return (rls);
 }
 
 void
@@ -778,19 +1074,20 @@ IOServiceAddMatchingNotification(IONotificationPortRef port,
 }
 
 /*
- * Register an interest watch for registry entry `id` on this port, unless the
- * port already holds one (see struct __io_kinterest). Called with the port
+ * Register an `interest` watch for registry entry `id` on this port, unless
+ * the port already holds one (see struct __io_kinterest). Called with the port
  * lock held so two concurrent registrations for one id add one kernel watch.
  */
 static kern_return_t
-kernel_interest_register_locked(struct IONotificationPort *port, uint64_t id)
+kernel_interest_register_locked(struct IONotificationPort *port, uint64_t id,
+    uint32_t interest)
 {
 	struct ioreg_interest_reg reg;
 	struct __io_kinterest *k;
 	int fd = __io_ioregistry_fd();
 
 	for (k = port->kinterests; k != NULL; k = k->next)
-		if (k->id == id)
+		if (k->id == id && k->interest == interest)
 			return (KERN_SUCCESS);
 	if (fd < 0)
 		return (kIOReturnNoDevice);
@@ -800,7 +1097,7 @@ kernel_interest_register_locked(struct IONotificationPort *port, uint64_t id)
 
 	memset(&reg, 0, sizeof(reg));
 	reg.id = id;
-	reg.interest = IOREG_INTEREST_GENERAL;
+	reg.interest = interest;
 	reg.notify_port = (uint32_t)port->recv_port;	/* recv right name */
 	if (ioctl(fd, IOREGIOCINTEREST, &reg) != 0) {
 		int e = errno;
@@ -813,12 +1110,16 @@ kernel_interest_register_locked(struct IONotificationPort *port, uint64_t id)
 		case ENOTTY:	/* kernel predating IOREGIOCINTEREST */
 			return (kIOReturnUnsupported);
 		case EINVAL:
-			return (kIOReturnBadArgument);
+			/* A kernel predating the interest type (an app power
+			 * watch before nextbsd-kernel#243) says EINVAL too. */
+			return (interest == IOREG_INTEREST_GENERAL ?
+			    kIOReturnBadArgument : kIOReturnUnsupported);
 		default:
 			return (kIOReturnError);
 		}
 	}
 	k->id = id;
+	k->interest = interest;
 	k->next = port->kinterests;
 	port->kinterests = k;
 	return (KERN_SUCCESS);
@@ -833,12 +1134,17 @@ IOServiceAddInterestNotification(IONotificationPortRef port,
 	struct __io_interest *rec;
 	io_object_t obj;
 	kern_return_t kr;
+	uint32_t interest;
 
 	if (port == NULL || service == NULL ||
 	    service->kind != IOOBJ_KIND_ENTRY || interestType == NULL ||
 	    callback == NULL || notification == NULL)
 		return (KERN_INVALID_ARGUMENT);
-	if (strcmp(interestType, kIOGeneralInterest) != 0)
+	if (strcmp(interestType, kIOGeneralInterest) == 0)
+		interest = IOREG_INTEREST_GENERAL;
+	else if (strcmp(interestType, kIOAppPowerStateInterest) == 0)
+		interest = IOREG_INTEREST_APP_POWER;
+	else
 		return (kIOReturnUnsupported);
 
 	rec = calloc(1, sizeof(*rec));
@@ -850,12 +1156,13 @@ IOServiceAddInterestNotification(IONotificationPortRef port,
 	}
 	rec->port = port;
 	rec->id = service->node_id;
+	rec->interest = interest;
 	rec->service = service;
 	rec->callback = callback;
 	rec->refcon = refcon;
 
 	pthread_mutex_lock(&port->lock);
-	kr = kernel_interest_register_locked(port, rec->id);
+	kr = kernel_interest_register_locked(port, rec->id, interest);
 	if (kr != KERN_SUCCESS) {
 		pthread_mutex_unlock(&port->lock);
 		free(rec);

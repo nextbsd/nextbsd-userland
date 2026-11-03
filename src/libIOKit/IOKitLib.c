@@ -261,6 +261,8 @@ IOObjectRelease(io_object_t object)
 		free(object->ids);
 	else if (object->kind == IOOBJ_KIND_INTEREST)
 		__io_interest_release(object->interest);
+	else if (object->kind == IOOBJ_KIND_CONNECT)
+		__io_connect_release(object);
 	free(object);
 	return (KERN_SUCCESS);
 }
