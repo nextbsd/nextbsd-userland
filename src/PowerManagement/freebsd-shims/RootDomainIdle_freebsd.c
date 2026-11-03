@@ -182,11 +182,23 @@ hidIdleTimeAvailable(void)
 
 /*
  * NextBSD: publish the wrangler's state for the window server, which does
- * the blanking (see "Display state" above).
+ * the blanking (see "Display state" above), and tell the root domain, as
+ * powerd does with kPMSetDisplayState where the wrangler is not in the
+ * kernel: while the display is off, the kernel turns the first input into
+ * kIOPMMessageRequestUserActive at once (nextbsd-kernel#405), so input
+ * wakes a display put to sleep on request. An older kernel refuses the call;
+ * that is ignored.
  */
 static void
 publishDisplayStatus(bool displayOn)
 {
+    uint64_t    state = displayOn ? 1 : 0;
+
+    if (getRootDomainConnect() != IO_OBJECT_NULL) {
+        (void)IOConnectCallMethod(getRootDomainConnect(), kPMSetDisplayState,
+                                  &state, 1, NULL, 0, NULL, NULL, NULL, NULL);
+    }
+
     if (displayStatusToken == -1 &&
         notify_register_check(kIOHIDEventSystemDisplayStatusNotifyKey,
                               &displayStatusToken) != NOTIFY_STATUS_OK) {
