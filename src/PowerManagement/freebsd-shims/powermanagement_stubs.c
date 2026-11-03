@@ -290,50 +290,6 @@ _io_pm_get_uuid(mach_port_t server, int selector, string_t out_uuid,
 	return (KERN_SUCCESS);
 }
 
-/* ---- PMConnection.m: IOPMConnection ------------------------------------ */
-
-kern_return_t
-_io_pm_connection_create(mach_port_t server, audit_token_t token,
-    string_t name, int interests, uint32_t *connection_id, int *return_code)
-{
-	(void)server; (void)token; (void)name; (void)interests;
-	*connection_id = 0;
-	*return_code = PM_UNSUPPORTED;
-	return (KERN_SUCCESS);
-}
-
-kern_return_t
-_io_pm_connection_schedule_notification(mach_port_t server,
-    audit_token_t token, uint32_t connection_id, mach_port_t notify_port,
-    int disable, int *return_code)
-{
-	(void)server; (void)token; (void)connection_id; (void)disable;
-	if (MACH_PORT_VALID(notify_port))
-		(void)mach_port_deallocate(mach_task_self(), notify_port);
-	*return_code = PM_UNSUPPORTED;
-	return (KERN_SUCCESS);
-}
-
-kern_return_t
-_io_pm_connection_release(mach_port_t server, uint32_t connection_id,
-    int *return_code)
-{
-	(void)server; (void)connection_id;
-	*return_code = PM_UNSUPPORTED;
-	return (KERN_SUCCESS);
-}
-
-kern_return_t
-_io_pm_connection_acknowledge_event(mach_port_t server, audit_token_t token,
-    uint32_t connection_id, int messageToken, vm_offset_t options,
-    mach_msg_type_number_t optionsCnt, int *return_code)
-{
-	(void)server; (void)token; (void)connection_id; (void)messageToken;
-	pm_ool_release(options, optionsCnt);
-	*return_code = PM_UNSUPPORTED;
-	return (KERN_SUCCESS);
-}
-
 /* ---- BatteryTimeRemaining.m: power sources ----------------------------- */
 
 kern_return_t
@@ -443,16 +399,6 @@ _io_pm_set_sleepservice_wake_time_cap(mach_port_t server, audit_token_t token,
     int cap_time, int *return_val)
 {
 	(void)server; (void)token; (void)cap_time;
-	*return_val = PM_UNSUPPORTED;
-	return (KERN_SUCCESS);
-}
-
-kern_return_t
-_io_pm_get_capability_bits(mach_port_t server, audit_token_t token,
-    uint32_t *capBits, int *return_val)
-{
-	(void)server; (void)token;
-	*capBits = 0;
 	*return_val = PM_UNSUPPORTED;
 	return (KERN_SUCCESS);
 }

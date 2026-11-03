@@ -74,9 +74,36 @@ is a client of the kernel's power management root domain, the
 .Ql IOPMrootDomain
 registry entry, which it reaches through
 .Pa /dev/iopmroot .
-It logs the lid
-.Pq clamshell
-state at start and whenever the lid opens or closes.
+The root domain runs every system sleep and wake and waits for its clients'
+answers;
+.Nm
+answers it, and passes each sleep and wake on to the processes registered
+through
+.Fn IOPMConnectionCreate ,
+holding the sleep until they acknowledge it or 28 seconds pass.
+It posts
+.Ql com.apple.powermanagement.systempowerstate
+.Pq Xr notify 3
+at each sleep and wake.
+.Pp
+While it runs,
+.Nm
+owns the lid and power button policy, and the kernel's own
+.Va hw.acpi.lid_switch_state ,
+.Va hw.acpi.power_button_state
+and
+.Va hw.acpi.sleep_button_state
+actions are off: closing the lid sleeps the system
+.Pq Dq Clamshell Sleep ,
+and so does the power button
+.Pq Dq Power Button Sleep .
+When the battery reaches its critical level while the system runs on it,
+.Nm
+sleeps the system
+.Pq Dq Low Power Sleep .
+When
+.Nm
+exits, the kernel's ACPI actions apply again.
 .Pp
 Every other MIG request is answered with
 .Dv kIOReturnUnsupported ;
@@ -97,6 +124,7 @@ the daemon's log
 .Sh SEE ALSO
 .Xr launchctl 1 ,
 .Xr pmset 1 ,
+.Xr notify 3 ,
 .Xr caffeinate 8 ,
 .Xr launchd 8 ,
 .Xr shutdown 8

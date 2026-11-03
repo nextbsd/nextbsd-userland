@@ -63,6 +63,16 @@ it. Root-domain properties go through libIOKit's
 `IORegistryEntrySetCFProperty`, and the root domain's general interest
 (clamshell changes) through `IOServiceAddInterestNotification`.
 
+D5 (nextbsd-userland#229) adds sleep and wake. `PMConnection_freebsd.c` is a
+C port of `PMConnection.m`'s state machine and IOPMConnection server: it
+registers for the root domain's app-power messages, turns each into the
+capability change xnu would send (NextBSD has no dark wake, so every wake
+is a full one), and holds each sleep until IOPMConnection clients answer.
+`pmconfigd_freebsd.c` gains `pmconfigd.m`'s own `IORegisterForSystemPower`
+client. `RootDomain_freebsd.c` claims the lid and power-button policy at
+start and requests "Low Power Sleep" on a critical battery, which xnu's
+root domain does itself.
+
 ## Apple files changed
 
 Each change is under `#ifdef __FreeBSD__`, with Apple's code kept in the
@@ -90,7 +100,8 @@ All in `freebsd-shims/` unless noted (the Libnotify pattern):
 | `powermanagement_stubs.c` | the `_io_*` MIG routines whose Apple files are not built yet; `io_pm_assertion_copy_details` serves only the two scheduled-event selectors |
 | `PrivateLib_freebsd.h` | the share of `PrivateLib.h` (and the IOKit private headers it includes) that the ported Apple files use, until `PrivateLib.h` builds |
 | `PrivateLib_freebsd.c` | `PrivateLib.m` / `PMAssertions.c` functions those files call: scheduled shutdown/restart over launchd's init signals, scheduled sleep through the root domain, entitlement checks, internal assertions; and IOKitUser's `IOPMSchedulePowerEvent` for the "Immediate" (RTC) types |
-| `RootDomain_freebsd.c` | the kernel shim: `IOServiceOpen` / `IOConnectCallMethod` on the IOPMrootDomain as `/dev/iopmroot` ioctls (selector table), `getRootDomain()`, `getRootDomainConnect()`, `_set`/`_copyRootDomainProperty()`, and pmconfigd.m's root-domain general-interest listener |
+| `RootDomain_freebsd.c` | the kernel shim: `IOServiceOpen` / `IOConnectCallMethod` on the IOPMrootDomain as `/dev/iopmroot` ioctls (selector table), `getRootDomain()`, `_set`/`_copyRootDomainProperty()`, pmconfigd.m's root-domain general-interest listener, and the sleep policy the kernel leaves to pmconfigd: claiming the lid and power-button policy, and the low-battery sleep |
+| `PMConnection_freebsd.c` | `PMConnection.m`'s sleep/wake state machine (app-power messages as capability changes), the IOPMConnection MIG routines, `io_pm_get_capability_bits` and `getRootDomainConnect()`, until `PMConnection.m` builds |
 | `libproc.h` | launchd's `libproc.h` shim plus `proc_name()` |
 | `os/log.h`, `os_log_shim.c` | `os_log()`: `%{public}` annotations and `%@` handled, written to stderr (`/var/log/pmconfigd.stderr`) |
 | `os/signpost.h` | `os_signpost_*()` as no-ops |
