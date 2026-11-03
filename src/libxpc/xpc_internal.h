@@ -130,6 +130,7 @@ typedef union {
 
 
 #define _XPC_FROM_WIRE 0x1
+#define _XPC_GLOBAL 0x2		/* immutable global object (xpc_globals.c) */
 struct xpc_object {
 	uint8_t			xo_xpc_type;
 	uint16_t		xo_flags;

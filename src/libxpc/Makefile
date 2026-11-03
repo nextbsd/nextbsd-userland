@@ -44,6 +44,7 @@ SRCS=		xpc_dictionary.c \
 		xpc_type.c \
 		xpc_array.c \
 		xpc_connection.c \
+		xpc_globals.c \
 		subr_nvlist.c \
 		subr_nvpair.c \
 		msgio.c \

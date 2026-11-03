@@ -42,8 +42,6 @@
  *    (an embedded driver) and returns NULL, as it would on a Mac.
  *  - SCDynamicStoreKeyCreate, which NextBSD's SystemConfiguration lacks,
  *    becomes the CFStringCreateWithFormat it amounts to.
- *  - NextBSD's libxpc does not define the XPC_ERROR_* objects, so the
- *    user-activity connection does not tell its errors apart.
  */
 #ifdef __FreeBSD__
 #include "pwr_mgt_freebsd.h"
@@ -392,15 +390,6 @@ void processUserActivityMsg(_UserActiveNotification *_useractive, xpc_object_t m
         });
     }
     else if (type == XPC_TYPE_ERROR) {
-#ifdef __FreeBSD__
-        /*
-         * NextBSD's libxpc declares the XPC_ERROR_* objects but does not
-         * define them, so a reference would leave libIOKit unloadable. Its
-         * errors are not told apart here; the handle stays registered until
-         * IOPMUnregisterNotification().
-         */
-        os_log_error(OS_LOG_DEFAULT, "XPC error for connection 0x%lx", (uintptr_t)_useractive);
-#else
         if (msg == XPC_ERROR_CONNECTION_INTERRUPTED) {
             dispatch_async(getPMQueue(), ^{sendUserActivityMsg(_useractive, kUserActivityRegister);});
         }
@@ -412,7 +401,6 @@ void processUserActivityMsg(_UserActiveNotification *_useractive, xpc_object_t m
                 unregisterNotification(_useractive);
             }
         }
-#endif /* !__FreeBSD__ */
     }
 }
 
