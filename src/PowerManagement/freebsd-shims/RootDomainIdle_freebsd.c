@@ -683,6 +683,27 @@ pmIdleActivityTickle(void)
     });
 }
 
+/*
+ * IODisplayWrangler's "IORequestIdle" (pmset displaysleepnow,
+ * kIOPMSetDisplaySleepNow): the display goes off now, as when its idle timer
+ * expires, and the user counts as inactive, so the idle sleep timer starts.
+ * Input or a user activity tickle turns it back on (pmIdleActivityTickle).
+ */
+__private_extern__ void
+pmIdleDisplaySleepNow(void)
+{
+    dispatch_async(_getPMMainQueue(), ^{
+        (void)checkForWake();
+        if (wranglerAsleep) {
+            return;
+        }
+        INFO_LOG("Display is turned off (requested)\n");
+        evaluatePolicy(kStimulusDisplayWranglerSleep);
+        evaluatePolicy(kStimulusLeaveUserActiveState);
+        evaluateDisplayIdle();
+    });
+}
+
 /* The system woke (kIOMessageSystemHasPoweredOn): every wake is a full wake. */
 __private_extern__ void
 pmIdleSystemDidWake(void)

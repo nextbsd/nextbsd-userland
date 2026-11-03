@@ -365,6 +365,7 @@ __private_extern__ void			pmIdleAggressivenessChanged(unsigned long type,
 __private_extern__ void			pmIdleUserAssertionLevelsChanged(uint32_t levels);
 __private_extern__ void			pmIdleActivityTickle(void);
 __private_extern__ void			pmIdleSystemDidWake(void);
+__private_extern__ void			pmIdleDisplaySleepNow(void);
 __private_extern__ CFTimeInterval	_getHIDIdleTime(void);
 
 /*
@@ -971,7 +972,13 @@ __private_extern__ bool			isDesktopMode(void);
 __private_extern__ CFArrayRef		copyScheduledPowerEvents(void);
 __private_extern__ CFDictionaryRef	copyRepeatPowerEvents(void);
 
-/* ---- IOKit/pwr_mgt/IOPMLib.h (IOKitUser): IOPMAutoWake.c --------------- */
+/*
+ * ---- IOKit/pwr_mgt/IOPMLib.h (IOKitUser): IOPMAutoWake.c ---------------
+ * libIOKit's (nextbsd-userland#235). powerd uses the "Immediate" types to
+ * hand wake and power-on times to the root domain's RTC alarm
+ * (nextbsd-kernel#245): PMScheduleWakeEventChooseBest() at every
+ * kIOMessageSystemWillSleep, AutoWakeScheduler's poweronScheduleCallout().
+ */
 IOReturn IOPMSchedulePowerEvent(CFDateRef time_to_wake, CFStringRef my_id,
     CFStringRef type);
 

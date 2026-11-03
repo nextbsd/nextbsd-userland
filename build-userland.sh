@@ -1003,6 +1003,18 @@ test ! -e "$DESTDIR/usr/sbin/powerd" \
 needed_check "$PM_BUNDLE/powerd" "libxpc"
 echo "==> powerd built"
 
+# ---- pmset(1) ---------------------------------------------------------------
+# Apple's pmset (src/PowerManagement/pmset), built as C with MIGOUT for the
+# powermanagement.defs user stub its Xcode target compiles in, as powerd
+# takes the server stub from the same generation. Installs /usr/bin/pmset and
+# pmset.1, as on macOS.
+comp "pmset(1)"
+mkdir -p "$DESTDIR/usr/bin"
+run_buildenv "make -C $SRC/PowerManagement/pmset DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$PM_MIG all install"
+test -x "$DESTDIR/usr/bin/pmset" || { echo "FAIL: /usr/bin/pmset not installed"; exit 1; }
+needed_check "$DESTDIR/usr/bin/pmset" "libIOKit"
+echo "==> pmset built"
+
 # ---- mDNSResponder + libdns_sd ----------------------------------------------
 # build.sh ~2400-2461. mDNSResponder daemon (bsd.prog.mk) then libdns_sd
 # (bsd.lib.mk). No MIG surface in these blocks.

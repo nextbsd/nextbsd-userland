@@ -473,11 +473,17 @@ pslog
 .Sh FILES
 All changes made through
 .Nm
-are saved in a persistent preferences file (per-system, not per-user) at
-.Pa /Library/Preferences/SystemConfiguration/com.apple.PowerManagement.plist
+are saved in the per-system (not per-user) com.apple.PowerManagement
+preferences domain, for the current host, under
+.Pa /Local/Library/Preferences .
 .Pp
 Scheduled power on/off events are stored separately in
-.Pa /Library/Preferences/SystemConfiguration/com.apple.AutoWake.plist
+.Pa /Local/Library/Preferences/SystemConfiguration/com.apple.AutoWake.plist
 .Pp
+.Xr powerd 8
+logs power management events, which
 .Nm
-modifies the same file that System Settings modifies.
+.Fl g
+log reads, to the ASL store
+.Pa /var/log/powermanagement
+.Pq Pa /etc/asl/com.apple.iokit.power .
