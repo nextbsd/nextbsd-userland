@@ -6,7 +6,7 @@
  * routine is implemented in the pmconfigd source file that owns that
  * feature: assertions in PMAssertions.c, IOPMConnection in PMConnection.m,
  * power sources in BatteryTimeRemaining.m, scheduled events in
- * AutoWakeScheduler.c, and so on. Those files are not built yet.
+ * AutoWakeScheduler.c, and so on. Not all of those files are built yet.
  *
  * Until each is, its routines live here. Every stub answers at once with
  * kIOReturnUnsupported in the routine's own return code, so an IOPMLib
@@ -24,6 +24,9 @@
  */
 #include <mach/mach.h>
 #include <IOKit/IOKitLib.h>		/* kIOReturnUnsupported */
+#include <string.h>
+
+#include "PrivateLib_freebsd.h"		/* copyScheduledPowerEvents() ... */
 
 #include "powermanagementServer.h"	/* MIG: the _io_* prototypes */
 
@@ -69,39 +72,6 @@ _io_pm_force_active_settings(mach_port_t server, audit_token_t token,
 {
 	(void)server; (void)token;
 	pm_ool_release(profiles, profilesCnt);
-	*return_val = PM_UNSUPPORTED;
-	return (KERN_SUCCESS);
-}
-
-/* ---- AutoWakeScheduler.c / RepeatingAutoWake.c: scheduled events ------- */
-
-kern_return_t
-_io_pm_schedule_power_event(mach_port_t server, audit_token_t token,
-    vm_offset_t package, mach_msg_type_number_t packageCnt, int action,
-    int *return_val)
-{
-	(void)server; (void)token; (void)action;
-	pm_ool_release(package, packageCnt);
-	*return_val = PM_UNSUPPORTED;
-	return (KERN_SUCCESS);
-}
-
-kern_return_t
-_io_pm_schedule_repeat_event(mach_port_t server, audit_token_t token,
-    vm_offset_t package, mach_msg_type_number_t packageCnt, int action,
-    int *return_val)
-{
-	(void)server; (void)token; (void)action;
-	pm_ool_release(package, packageCnt);
-	*return_val = PM_UNSUPPORTED;
-	return (KERN_SUCCESS);
-}
-
-kern_return_t
-_io_pm_cancel_repeat_events(mach_port_t server, audit_token_t token,
-    int *return_val)
-{
-	(void)server; (void)token;
 	*return_val = PM_UNSUPPORTED;
 	return (KERN_SUCCESS);
 }
@@ -164,16 +134,60 @@ _io_pm_assertion_retain_release(mach_port_t server, audit_token_t token,
 	return (KERN_SUCCESS);
 }
 
+/*
+ * io_pm_assertion_copy_details also carries the scheduled power events:
+ * IOPMCopyScheduledPowerEvents() and IOPMCopyRepeatingPowerEvents() (what
+ * `pmset -g sched` prints) ask for kIOPMPowerEventsMIGCopyScheduledEvents
+ * and kIOPMPowerEventsMIGCopyRepeatEvents. Those two selectors are served
+ * here as PMAssertions.c serves them, from AutoWakeScheduler.c and
+ * RepeatingAutoWake.c; the assertion selectors stay unsupported.
+ */
 kern_return_t
 _io_pm_assertion_copy_details(mach_port_t server, audit_token_t token,
     int assertion_id, int whichData, vm_offset_t props,
     mach_msg_type_number_t propsCnt, vm_offset_t *assertions,
     mach_msg_type_number_t *assertionsCnt, int *return_val)
 {
-	(void)server; (void)token; (void)assertion_id; (void)whichData;
+	CFTypeRef theCollection = NULL;
+	CFDataRef serializedDetails;
+
+	(void)server; (void)token; (void)assertion_id;
 	pm_ool_release(props, propsCnt);
 	pm_ool_empty(assertions, assertionsCnt);
-	*return_val = PM_UNSUPPORTED;
+
+	if (whichData == kIOPMPowerEventsMIGCopyScheduledEvents)
+		theCollection = copyScheduledPowerEvents();
+	else if (whichData == kIOPMPowerEventsMIGCopyRepeatEvents)
+		theCollection = copyRepeatPowerEvents();
+	else {
+		*return_val = PM_UNSUPPORTED;
+		return (KERN_SUCCESS);
+	}
+
+	/* PMAssertions.c: nothing to copy is success with no data. */
+	*return_val = kIOReturnSuccess;
+	if (theCollection == NULL)
+		return (KERN_SUCCESS);
+
+	serializedDetails = CFPropertyListCreateData(0, theCollection,
+	    kCFPropertyListBinaryFormat_v1_0, 0, NULL);
+	CFRelease(theCollection);
+	if (serializedDetails == NULL) {
+		*return_val = kIOReturnInternalError;
+		return (KERN_SUCCESS);
+	}
+
+	*assertionsCnt =
+	    (mach_msg_type_number_t)CFDataGetLength(serializedDetails);
+	if (vm_allocate(mach_task_self(), (vm_address_t *)assertions,
+	    *assertionsCnt, TRUE) != KERN_SUCCESS) {
+		pm_ool_empty(assertions, assertionsCnt);
+		*return_val = kIOReturnNoMemory;
+	} else {
+		memcpy((void *)*assertions, CFDataGetBytePtr(serializedDetails),
+		    *assertionsCnt);
+	}
+	CFRelease(serializedDetails);
 	return (KERN_SUCCESS);
 }
 

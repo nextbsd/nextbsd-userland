@@ -152,12 +152,19 @@ isA_SCPreferences(SCPreferencesRef prefs)
  * Resolve a prefsID to a file path (malloc'd, caller frees). NULL is
  * the default preferences file; a prefsID containing a '/' is taken
  * as a path; a bare name resolves within the default directory.
+ *
+ * A bare name ending in ".xml" names its ".plist" file, as on Darwin
+ * (SCPOpen.c): the preferences moved from .xml to .plist files long
+ * ago and the old IDs were kept, so Apple's callers still pass
+ * "com.apple.AutoWake.xml" (kIOPMAutoWakePrefsPath) for
+ * com.apple.AutoWake.plist.
  */
 static char *
 __SCPreferencesPath(CFStringRef prefsID)
 {
 	char	idbuf[PATH_MAX];
 	char	pathbuf[PATH_MAX];
+	size_t	idlen;
 
 	if (prefsID == NULL) {
 		return strdup(PREFS_DEFAULT_DIR "/" PREFS_DEFAULT_CONFIG);
@@ -174,6 +181,15 @@ __SCPreferencesPath(CFStringRef prefsID)
 	}
 
 	/* a bare name — resolve within the default directory */
+	idlen = strlen(idbuf);
+	if ((idlen > 4) && (strcmp(idbuf + idlen - 4, ".xml") == 0)) {
+		idbuf[idlen - 4] = '\0';
+		if (snprintf(pathbuf, sizeof(pathbuf), "%s/%s.plist",
+			     PREFS_DEFAULT_DIR, idbuf) >= (int)sizeof(pathbuf)) {
+			return NULL;
+		}
+		return strdup(pathbuf);
+	}
 	if (snprintf(pathbuf, sizeof(pathbuf), "%s/%s",
 		     PREFS_DEFAULT_DIR, idbuf) >= (int)sizeof(pathbuf)) {
 		return NULL;

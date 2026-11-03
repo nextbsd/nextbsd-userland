@@ -37,8 +37,38 @@ the XPC interface used for asynchronous assertions and user activity.
 .El
 .Pp
 The daemon is being ported in stages.
-In this release it checks in both services and answers every MIG request
-with
+In this release it checks in both services and keeps the system's
+scheduled power events
+.Po
+.Xr pmset 1
+.Cm schedule
+and
+.Cm repeat ,
+.Fn IOPMSchedulePowerEvent
+and
+.Fn IOPMScheduleRepeatingPowerEvent
+.Pc .
+When a scheduled
+.Cm shutdown
+or
+.Cm restart
+comes due,
+.Nm
+asks
+.Xr launchd 8
+to power off or reboot, as
+.Xr shutdown 8
+does.
+A scheduled
+.Cm sleep
+is logged and not performed until system sleep is supported.
+.Cm wake
+and
+.Cm poweron
+events are kept and listed, but no hardware alarm is set for them yet, so
+they do not wake or power on the machine.
+.Pp
+Every other MIG request is answered with
 .Dv kIOReturnUnsupported ;
 XPC messages are accepted and ignored.
 .Sh FILES
@@ -47,13 +77,17 @@ XPC messages are accepted and ignored.
 the
 .Xr launchd 8
 job
+.It Pa /Local/Library/Preferences/SystemConfiguration/com.apple.AutoWake.plist
+the scheduled and repeating power events
 .It Pa /var/log/pmconfigd.stderr
 the daemon's log
 .El
 .Sh SEE ALSO
 .Xr launchctl 1 ,
+.Xr pmset 1 ,
 .Xr caffeinate 8 ,
-.Xr launchd 8
+.Xr launchd 8 ,
+.Xr shutdown 8
 .Sh HISTORY
 .Nm
 first appeared in NextBSD in 2026.
