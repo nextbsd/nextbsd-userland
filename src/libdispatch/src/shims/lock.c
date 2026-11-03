@@ -593,6 +593,8 @@ _dispatch_thread_event_signal_slow(dispatch_thread_event_t dte)
 	_dispatch_ulock_wake(&dte->dte_value, 0);
 #elif HAVE_FUTEX
 	_dispatch_futex_wake(&dte->dte_value, 1, FUTEX_PRIVATE_FLAG);
+#elif defined(__FreeBSD__)
+	_umtx_op(&dte->dte_value, UMTX_OP_WAKE_PRIVATE, 1, NULL, NULL);
 #else
 	_dispatch_sema4_signal(&dte->dte_sema, 1);
 #endif
@@ -601,7 +603,7 @@ _dispatch_thread_event_signal_slow(dispatch_thread_event_t dte)
 void
 _dispatch_thread_event_wait_slow(dispatch_thread_event_t dte)
 {
-#if HAVE_UL_COMPARE_AND_WAIT || HAVE_FUTEX
+#if DISPATCH_THREAD_EVENT_USE_VALUE
 	for (;;) {
 		uint32_t value = os_atomic_load(&dte->dte_value, acquire);
 		if (likely(value == 0)) return;
@@ -614,6 +616,11 @@ _dispatch_thread_event_wait_slow(dispatch_thread_event_t dte)
 #elif HAVE_FUTEX
 		_dispatch_futex_wait(&dte->dte_value, UINT32_MAX,
 				NULL, FUTEX_PRIVATE_FLAG);
+#elif defined(__FreeBSD__)
+		// returns at once (EINTR/value changed) or on the wake; the loop
+		// re-checks the value either way
+		_umtx_op(&dte->dte_value, UMTX_OP_WAIT_UINT_PRIVATE, UINT32_MAX,
+				NULL, NULL);
 #endif
 	}
 #else
