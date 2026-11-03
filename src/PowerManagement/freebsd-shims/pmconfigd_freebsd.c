@@ -27,6 +27,8 @@
  *   _getPMMainQueue()       PrivateLib.m, verbatim
  *   ESPrefsHaveChanged(),   pmconfigd.m: re-read the Energy Saver settings
  *   initializeESPrefsNotification()  on kIOPMPrefsChangeNotify
+ *   dynamicStoreNotifyCallBack() pmconfigd.m: PMStore's SCDynamicStore
+ *                           callback (no keys are watched yet)
  *
  * When pmconfigd.m and PrivateLib.m are added to SRCS, this file is deleted.
  *
@@ -48,7 +50,9 @@
 #include <IOKit/pwr_mgt/powermanagement_mig.h>
 #include "powermanagementServer.h"	/* MIG: _powermanagement_subsystem */
 
-#include "PrivateLib_freebsd.h"
+#include <SystemConfiguration/SystemConfiguration.h>
+
+#include "PrivateLib_freebsd.h"	/* PMStoreLoad, BatteryTimeRemaining_* */
 #include "AutoWakeScheduler.h"		/* AutoWake_prime(), checkPendingWakeReqs() */
 #include "PMConnection.h"		/* PMConnection_prime() */
 #include "PMSettings.h"			/* PMSettings_prime() */
@@ -118,6 +122,24 @@ initializeESPrefsNotification(void)
                              ^(int t __unused) {
                                  ESPrefsHaveChanged();
                              });
+}
+
+/* dynamicStoreNotifyCallBack
+ *
+ * Changed Keys in dynamic store
+ *
+ * pmconfigd.m. PMStoreLoad() (PMStore.c) creates pmconfigd's SCDynamicStore
+ * session with this callback. Apple's checks the console-user key for
+ * SystemLoad; SystemLoad.c is not built and no key is watched yet, so there
+ * is nothing to do.
+ */
+__private_extern__
+void dynamicStoreNotifyCallBack(
+    SCDynamicStoreRef   store __unused,
+    CFArrayRef          changedKeys __unused,
+    void                *info __unused)
+{
+    return;
 }
 
 static void
@@ -299,12 +321,14 @@ powerd_init(void *__unused context)
         dispatch_mach_connect(gListener, serverPort, MACH_PORT_NULL, NULL);
     }
 
+    PMStoreLoad();
+
     /*
-     * Apple's powerd_init() continues with PMStoreLoad(), the preference
-     * and notification set-up, and the *_prime() call of every subsystem
-     * (PMConnection, PMSettings, AutoWake, PMAssertions, PMSystemEvents,
-     * SystemLoad, BatteryTimeRemaining, TTYKeepAwake, ...). Each is added
-     * here, in Apple's order, by the ticket that ports it.
+     * Apple's powerd_init() continues with the preference and notification
+     * set-up, and the *_prime() call of every subsystem (PMConnection,
+     * PMSettings, AutoWake, PMAssertions, PMSystemEvents, SystemLoad,
+     * TTYKeepAwake, ...). Each is added here, in Apple's order, by the
+     * ticket that ports it.
      */
     initializeESPrefsNotification();
     initializeRootDomainInterestNotifications();
@@ -319,6 +343,8 @@ powerd_init(void *__unused context)
      * policy is claimed here first.
      */
     claimRootDomainSleepPolicy();
+
+    BatteryTimeRemaining_prime();
 
     /*
      * NextBSD: the idle sleep and display sleep timers xnu's root domain
@@ -342,6 +368,8 @@ powerd_init(void *__unused context)
 
     /* xnu's kIOPMPowerEmergency, which NextBSD's kernel leaves to pmconfigd. */
     initializeLowPowerSleep();
+
+    BatteryTimeRemaining_finish();
 
     os_log(OS_LOG_DEFAULT, "pmconfigd started: %s%s, %s\n",
            kIOPMServerBootstrapName,

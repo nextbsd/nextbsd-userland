@@ -67,8 +67,25 @@
 #include <asl.h>
 #include <xpc/xpc.h>
 
+/*
+ * IOKitUser's <IOKit/ps/IOPowerSources.h> (freebsd-shims/IOKit/ps/) marks
+ * one routine with __OSX_AVAILABLE_STARTING; NextBSD's CoreFoundation does
+ * not pull in <Availability.h>, so define it away before the ps headers,
+ * as Libnotify's and libxpc's shims do.
+ */
+#ifndef __OSX_AVAILABLE_STARTING
+#define __OSX_AVAILABLE_STARTING(...)
+#endif
+
+#include <IOKit/IOMessage.h>
+#include <IOKit/ps/IOPSKeys.h>
+#include <IOKit/ps/IOPowerSources.h>
+#include <IOKit/ps/IOPowerSourcesPrivate.h>
+
 /* ---- SystemConfiguration/SCValidation.h -------------------------------- */
-#ifndef isA_CFType
+/* isA_CFType is a function, so a separate macro guards the set. */
+#ifndef _PM_SHIM_ISA_CFTYPE
+#define _PM_SHIM_ISA_CFTYPE
 static __inline CFTypeRef
 isA_CFType(CFTypeRef obj, CFTypeID type)
 {
@@ -388,6 +405,8 @@ __private_extern__ void			initializeLowPowerSleep(void);
 #define ASSERTIONS_LOG              "assertions"
 #define PMSETTINGS_LOG              "pmSettings"
 #define DISPLAY_LOG                 "displayState"
+#define BATTERY_LOG                 "battery"
+#define BATTERY_HEALTH_LOG          "batteryhealth"
 #define WAKEREQUESTS_LOG            "wakeRequests"
 #define SLEEPWAKE_LOG               "sleepWake"
 
@@ -416,6 +435,106 @@ __private_extern__ void			_askNicelyThenSleepSystem(void);
 __private_extern__ bool			auditTokenHasEntitlement(
 					    audit_token_t token,
 					    CFStringRef entitlement);
+__private_extern__ void			powerd_notify_and_log(os_log_t log,
+					    const char *token);
+
+/* ---- PrivateLib.h: batteries ------------------------------------------ */
+typedef enum {
+   kBatteryPowered = 0,
+   kACPowered
+} PowerSources;
+
+/*
+ * PrivateLib.h's struct IOPMBattery, plus the two fields
+ * BatteryTimeRemaining.m reads in this drop but PrivateLib.h's copy lacks
+ * (fullyCharged, adapterUnsupported), plus one NextBSD field.
+ */
+struct IOPMBattery {
+    io_registry_entry_t     me;
+    io_object_t             msg_port;
+    CFMutableDictionaryRef  properties;
+    uint32_t                     externalConnected:1;
+    uint32_t                     rawExternalConnected:1;
+    uint32_t                     externalChargeCapable:1;
+    uint32_t                     isCharging:1;
+    uint32_t                     showChargingUI:1;
+    uint32_t                     playChargingChime:1;
+    uint32_t                     isPresent:1;
+    uint32_t                     markedDeclining:1;
+    uint32_t                     isTimeRemainingUnknown:1;
+    uint32_t                     isCritical:1;
+    uint32_t                     fullyCharged:1;
+    uint32_t                     adapterUnsupported:1;
+    uint32_t                pfStatus;
+    int                     currentCap;
+    int                     maxCap;
+    int                     designCap;
+    int                     voltage;
+    int                     avgAmperage;
+    int                     instantAmperage;
+    int                     maxerr;
+    int                     cycleCount;
+    int                     location;
+    int                     hwAverageTR;
+    int                     swCalculatedTR;
+    int                     swCalculatedPR;
+    int                     invalidWakeSecs;
+    CFStringRef             batterySerialNumber;
+    CFStringRef             health;
+    CFStringRef             failureDetected;
+    CFStringRef             name;
+    CFStringRef             dynamicStoreKey;
+    CFStringRef             chargeStatus;
+    time_t                  lowCapRatioSinceTime;
+    boolean_t               hasLowCapRatio;
+    /*
+     * NextBSD: the IOPMPowerSource entry's registry name ("BAT0"). One
+     * entry per ACPI battery; BatteryTimeRemaining_freebsd.c orders them
+     * by it when it folds them into the one internal battery.
+     */
+    CFStringRef             ioregName;
+};
+typedef struct IOPMBattery IOPMBattery;
+
+/* ---- xnu IOPM.h: the IOPMPowerSource keys ------------------------------ */
+
+#define kIOPMPSExternalConnectedKey                 "ExternalConnected"
+#define kIOPMPSExternalChargeCapableKey             "ExternalChargeCapable"
+#define kIOPMPSBatteryInstalledKey                  "BatteryInstalled"
+#define kIOPMPSIsChargingKey                        "IsCharging"
+#define kIOPMFullyChargedKey                        "FullyCharged"
+#define kIOPMPSAtWarnLevelKey                       "AtWarnLevel"
+#define kIOPMPSAtCriticalLevelKey                   "AtCriticalLevel"
+#define kIOPMPSCurrentCapacityKey                   "CurrentCapacity"
+#define kIOPMPSMaxCapacityKey                       "MaxCapacity"
+#define kIOPMPSDesignCapacityKey                    "DesignCapacity"
+#define kIOPMPSTimeRemainingKey                     "TimeRemaining"
+#define kIOPMPSAmperageKey                          "Amperage"
+#define kIOPMPSVoltageKey                           "Voltage"
+#define kIOPMPSCycleCountKey                        "CycleCount"
+#define kIOPMPSMaxErrKey                            "MaxErr"
+#define kIOPMPSLocationKey                          "Location"
+#define kIOPMPSErrorConditionKey                    "ErrorCondition"
+#define kIOPMPSManufacturerKey                      "Manufacturer"
+#define kIOPMPSModelKey                             "Model"
+#define kIOPMPSSerialKey                            "Serial"
+#define kIOPMPSBatteryChargeStatusKey               "ChargeStatus"
+#define kIOPMPSAdapterDetailsKey                    "AdapterDetails"
+#define kIOPMPSInvalidWakeSecondsKey                "BatteryInvalidWakeSeconds"
+
+/*
+ * iokit_family_msg(sub_iokit_pmu, 0x100); sub_iokit_pmu is err_sub(9).
+ * The kernel's IOPMPowerSource entries send it after every change.
+ */
+#ifndef kIOPMMessageBatteryStatusHasChanged
+#define kIOPMMessageBatteryStatusHasChanged         ((uint32_t)0xe0024100)
+#endif
+
+
+/* ioupsd/IOUPSPrivate.h */
+#ifndef MAKE_UNIQ_SOURCE_ID
+#define MAKE_UNIQ_SOURCE_ID(pid, psID)      (((pid & 0xffff) << 16) | (psID & 0xffff))
+#endif
 
 /* ---- IOKit/pwr_mgt/IOPMLib.h (IOKitUser): assertions -------------------- */
 #ifndef kIOPMAssertionFrameworkIDKey
@@ -661,18 +780,12 @@ typedef uint32_t IOPMSystemPowerStateCapabilities;
 #define kIOPMDefaultUPSThresholds		"UPSDefaultThresholds"
 #endif
 
-/* ---- IOKit/ps/IOPowerSources.h, IOPowerSourcesPrivate.h (IOKitUser) ----- */
+/* ---- xnu IOPM.h / IOKitUser IOPMLib.h: the providing-source names ------ */
+/* (kIOPSProvidedBy* come from the vendored <IOKit/ps/IOPowerSourcesPrivate.h>.) */
 #ifndef kIOPMACPowerKey
 #define kIOPMACPowerKey				"AC Power"
 #define kIOPMBatteryPowerKey			"Battery Power"
 #define kIOPMUPSPowerKey			"UPS Power"
-#endif
-#ifndef _IOKIT_PS_IOPOWERSOURCESPRIVATE_H
-enum {
-    kIOPSProvidedByAC = 1,
-    kIOPSProvidedByBattery,
-    kIOPSProvidedByExternalBattery
-};
 #endif
 
 /* ---- IOKit/pwr_mgt/IOPM.h, IOPMPrivate.h (xnu): settings ---------------- */
@@ -756,12 +869,7 @@ enum {
 #define rbs_set_iopm_appnap_state(pid, reason, state)	do { } while (0)
 #endif
 
-/* ---- PrivateLib.h: power sources, settings, the powerd bundle ---------- */
-typedef enum {
-   kBatteryPowered = 0,
-   kACPowered
-} PowerSources;
-
+/* ---- PrivateLib.h: settings, the powerd bundle ------------------------ */
 /* IOPMAggressivenessFactors: the form of data that the kernel understands. */
 typedef struct {
     unsigned int        fMinutesToDim;
@@ -834,11 +942,6 @@ __private_extern__ void			mt2RecordAssertionEvent(assertionOps action,
  * PMSettings.m, PMConnection.m and Platform.c come from Apple's own
  * headers, which PMAssertions.c includes.
  */
-/* BatteryTimeRemaining.m (nextbsd-userland#227) */
-__private_extern__ PowerSources		_getPowerSource(void);
-__private_extern__ int			getActivePSType(void);
-__private_extern__ int			_batteryCount(void);
-__private_extern__ bool			getPowerState(PowerSources *source, uint32_t *percentage);
 /* SystemLoad.c */
 __private_extern__ void			SystemLoadUserActiveAssertions(bool _userActiveAssertions);
 __private_extern__ bool			userActiveRootDomain(void);
@@ -878,5 +981,40 @@ __private_extern__ CFDictionaryRef	copyRepeatPowerEvents(void);
 /* ---- IOKit/pwr_mgt/IOPMLib.h (IOKitUser): IOPMAutoWake.c --------------- */
 IOReturn IOPMSchedulePowerEvent(CFDateRef time_to_wake, CFStringRef my_id,
     CFStringRef type);
+
+/* ---- BatteryTimeRemaining.h (the parts built so far) ------------------- */
+
+__private_extern__ IOPMBattery **_batteries(void);
+__private_extern__ int _batteryCount(void);
+__private_extern__ void BatteryTimeRemaining_prime(void);
+__private_extern__ void BatteryTimeRemaining_finish(void);
+__private_extern__ void BatteryTimeRemainingWakeNotification(void);
+#define kInternalBattery      NULL
+__private_extern__ void kernelPowerSourcesDidChange(IOPMBattery *battery_info);
+__private_extern__ bool isFullyCharged(IOPMBattery *b);
+__private_extern__ int getActivePSType(void);
+__private_extern__ bool getPowerState(PowerSources *source, uint32_t *percentage);
+__private_extern__ PowerSources _getPowerSource(void);
+__private_extern__ CFDictionaryRef CF_RETURNS_RETAINED getActiveUPSDictionary(void);
+__private_extern__ CFDictionaryRef CF_RETURNS_RETAINED getActiveBatteryDictionary(void);
+__private_extern__ CFDictionaryRef batteryTimeRemaining_copyIOPMPowerSourceDictionary(void);
+__private_extern__ int batteryTimeRemaining_getPercentRemaining(void);
+__private_extern__ CFStringRef batteryTimeRemaining_getBatterySerialNumber(void);
+__private_extern__ dispatch_queue_t BatteryTimeRemaining_getQ(void);
+
+#ifndef kIOPSFailureKey
+#define kIOPSFailureKey                         "Failure"
+#endif
+
+#ifndef kIOPSDynamicStoreLowBattPathKey
+#define kIOPSDynamicStoreLowBattPathKey         "/IOKit/LowBatteryWarning"
+#endif
+
+typedef enum {
+    kPSTypeUnknown          = 0,
+    kPSTypeIntBattery       = 1,
+    kPSTypeUPS              = 2,
+    kPSTypeAccessory        = 3
+} psTypes_t;
 
 #endif /* !_PM_SHIM_PRIVATELIB_FREEBSD_H_ */

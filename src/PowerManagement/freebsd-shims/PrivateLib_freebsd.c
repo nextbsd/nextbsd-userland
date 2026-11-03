@@ -16,6 +16,8 @@
  * and PMAssertionLog.c call in Apple files that are not built yet, one
  * block per Apple file at the end (see PrivateLib_freebsd.h).
  */
+#include <notify.h>
+
 #include "PrivateLib_freebsd.h"
 #include "PMConnection.h"
 #include "Platform.h"
@@ -506,59 +508,13 @@ IOReturn IOPMCopySleepPreventersListWithID(int preventerType __unused, CFArrayRe
     return kIOReturnUnsupported;
 }
 
-/*
- * ---- PMStore.c and PrivateLib.m's store (nextbsd-userland#227) ---------
- * D3 builds Apple's PMStore.c; until then the current settings go to
- * SCDynamicStore directly, through one session opened on first use.
- */
+/* ---- PrivateLib.m: the store PMStore.c opens, verbatim ---------------- */
+
+extern SCDynamicStoreRef gSCDynamicStore;	/* PMStore.c */
+
 __private_extern__ SCDynamicStoreRef _getSharedPMDynamicStore(void)
 {
-    static SCDynamicStoreRef gSCDynamicStore = NULL;
-
-    if (!gSCDynamicStore) {
-        gSCDynamicStore = SCDynamicStoreCreate(0, CFSTR("PM configd"), NULL, NULL);
-    }
     return gSCDynamicStore;
-}
-
-bool PMStoreSetValue(CFStringRef key, CFTypeRef value)
-{
-    SCDynamicStoreRef   store = _getSharedPMDynamicStore();
-
-    if (!store || !key || !value) {
-        return false;
-    }
-    return SCDynamicStoreSetValue(store, key, value);
-}
-
-/*
- * ---- BatteryTimeRemaining.m (nextbsd-userland#227) ---------------------
- * Until D3's power sources land: an AC-powered machine with no battery.
- */
-__private_extern__ PowerSources _getPowerSource(void)
-{
-    return kACPowered;
-}
-
-__private_extern__ int getActivePSType(void)
-{
-    return kIOPSProvidedByAC;
-}
-
-__private_extern__ int _batteryCount(void)
-{
-    return 0;
-}
-
-__private_extern__ bool getPowerState(PowerSources *source, uint32_t *percentage)
-{
-    if (source) {
-        *source = kACPowered;
-    }
-    if (percentage) {
-        *percentage = 100;
-    }
-    return false;
 }
 
 /*
@@ -612,4 +568,19 @@ __private_extern__ tcpKeepAliveStates_et getTCPKeepAliveState(char *buf, int buf
         buf[0] = '\0';
     }
     return kNotSupported;
+}
+
+/*
+ * PrivateLib.m, verbatim: post a notify(3) name and log it.
+ */
+__private_extern__ void
+powerd_notify_and_log(os_log_t log, const char *token)
+{
+    uint32_t rc = notify_post(token);
+
+    if (rc == NOTIFY_STATUS_OK) {
+        os_log(log, "posted '%s'\n", token);
+    } else {
+        os_log_error(log, "failed to post '%s'. rc:%#x\n", token, rc);
+    }
 }

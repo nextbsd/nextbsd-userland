@@ -7,6 +7,8 @@
  * feature: assertions in PMAssertions.c, IOPMConnection in PMConnection.m,
  * power sources in BatteryTimeRemaining.m, scheduled events in
  * AutoWakeScheduler.c, and so on. Not all of those files are built yet.
+ * (The io_ps_* power-source routines are served by
+ * BatteryTimeRemaining_freebsd.c.)
  *
  * Until each is, its routines live here. Every stub answers at once with
  * kIOReturnUnsupported in the routine's own return code, so an IOPMLib
@@ -99,48 +101,6 @@ _io_pm_get_uuid(mach_port_t server, int selector, string_t out_uuid,
 	(void)server; (void)selector;
 	out_uuid[0] = '\0';
 	*return_val = PM_UNSUPPORTED;
-	return (KERN_SUCCESS);
-}
-
-/* ---- BatteryTimeRemaining.m: power sources ----------------------------- */
-
-kern_return_t
-_io_ps_new_pspowersource(mach_port_t server, audit_token_t token, int *psid,
-    int *return_code)
-{
-	(void)server; (void)token;
-	*psid = 0;
-	*return_code = PM_UNSUPPORTED;
-	return (KERN_SUCCESS);
-}
-
-kern_return_t
-_io_ps_update_pspowersource(mach_port_t server, audit_token_t token,
-    int psid, vm_offset_t psdetails, mach_msg_type_number_t psdetailsCnt,
-    int *return_code)
-{
-	(void)server; (void)token; (void)psid;
-	pm_ool_release(psdetails, psdetailsCnt);
-	*return_code = PM_UNSUPPORTED;
-	return (KERN_SUCCESS);
-}
-
-kern_return_t
-_io_ps_release_pspowersource(mach_port_t server, audit_token_t token,
-    int psid)
-{
-	(void)server; (void)token; (void)psid;
-	return (KERN_SUCCESS);
-}
-
-kern_return_t
-_io_ps_copy_powersources_info(mach_port_t server, audit_token_t token,
-    int pstype, vm_offset_t *powersources,
-    mach_msg_type_number_t *powersourcesCnt, int *return_code)
-{
-	(void)server; (void)token; (void)pstype;
-	pm_ool_empty(powersources, powersourcesCnt);
-	*return_code = PM_UNSUPPORTED;
 	return (KERN_SUCCESS);
 }
 

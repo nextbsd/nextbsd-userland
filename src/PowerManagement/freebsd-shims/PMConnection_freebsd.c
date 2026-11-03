@@ -66,15 +66,6 @@
 #include <string.h>
 #include <strings.h>
 
-/*
- * Two pmconfigd subsystems PMConnection.m calls into that are not on main
- * yet: PMStore.c (the SCDynamicStore cache) and BatteryTimeRemaining.m's
- * wake hook, both from nextbsd-userland#227 (D3). They are weak, so each
- * call starts working when D3's files link and is skipped until then.
- */
-__private_extern__ bool PMStoreSetValue(CFStringRef key, CFTypeRef value) __attribute__((weak));
-__private_extern__ void BatteryTimeRemainingWakeNotification(void) __attribute__((weak));
-
 os_log_t    sleepwake_log = NULL;
 #undef   LOG_STREAM
 #define  LOG_STREAM   sleepwake_log
@@ -703,35 +694,6 @@ static CFDictionaryRef _io_pm_connection_acknowledge_event_unpack_payload(
     return ackOptionsDict;
 }
 
-/*
- * Whether the system runs on external power, from the power-source state
- * pmconfigd itself publishes on kIOPSNotifyPercentChange
- * (BatteryTimeRemaining, nextbsd-userland#227). Apple asks
- * _getPowerSource(); a system with no battery data is on AC there too.
- */
-#define kPMPercentChangeNotify      "com.apple.system.powersources.percent"
-#define kPMPercentExternalBit       (1 << 16)
-#define kPMPercentValidBit          (1 << 19)
-
-static bool _onACPower(void)
-{
-    static int  token = 0;
-    uint64_t    state = 0;
-
-    if (token == 0
-        && notify_register_check(kPMPercentChangeNotify, &token) != NOTIFY_STATUS_OK)
-    {
-        token = 0;
-        return true;
-    }
-    if (notify_get_state(token, &state) != NOTIFY_STATUS_OK
-        || !(state & kPMPercentValidBit))
-    {
-        return true;
-    }
-    return (state & kPMPercentExternalBit) != 0;
-}
-
 kern_return_t _io_pm_connection_acknowledge_event
 (
  mach_port_t server __unused,
@@ -802,7 +764,7 @@ kern_return_t _io_pm_connection_acknowledge_event
         requestDate = isA_CFDate(CFDictionaryGetValue(ackOptionsDict, kIOPMAckDHCPRenewWakeDate));
 
         if (requestDate) {
-            if (_onACPower())
+            if (kACPowered == _getPowerSource())
             {
                 foundResponse->maintenanceRequested = CFDateGetAbsoluteTime(requestDate);
             }
@@ -820,7 +782,7 @@ kern_return_t _io_pm_connection_acknowledge_event
             }
 
             if (requestDate
-                && _onACPower())
+                && (kACPowered == _getPowerSource()))
             {
                 foundResponse->maintenanceRequested = CFDateGetAbsoluteTime(requestDate);
             }
@@ -1007,10 +969,6 @@ static void setSystemSleepStateTracking(IOPMCapabilityBits capables)
 {
     CFStringRef         key = NULL;
     CFNumberRef         capablesNum = NULL;
-
-    /* PMStore.c (D3); see the top of this file. */
-    if (!PMStoreSetValue)
-        return;
 
     /* NextBSD's SystemConfiguration has no SCDynamicStoreKeyCreate(). */
     key = CFStringCreateWithFormat(0, NULL, CFSTR("%@%@"),
@@ -1220,8 +1178,7 @@ static void PMConnectionPowerCallBack(
 
         gMachineStateRevertible = true;
 
-        if (BatteryTimeRemainingWakeNotification)
-            BatteryTimeRemainingWakeNotification();
+        BatteryTimeRemainingWakeNotification();
 
         if (IS_CAP_GAIN(capArgs, kIOPMSystemCapabilityGraphics))
         {

@@ -68,6 +68,36 @@ and
 .Cm poweron
 events are kept and listed, but no hardware alarm is set for them yet, so
 they do not wake or power on the machine.
+.Ss Power sources
+.Nm
+watches the kernel's
+.Ql IOPMPowerSource
+registry entries, one per ACPI battery, and publishes them as one internal
+battery,
+.Ql InternalBattery-0 :
+with two batteries their capacities and currents are added up.
+.Fn IOPSCopyPowerSourcesInfo
+returns its description, together with any power source a process
+registers with
+.Fn IOPSCreatePowerSource .
+The state is also published through
+.Xr notify 3
+under
+.Ql com.apple.system.powersources.timeremaining ,
+.Ql .percent ,
+.Ql .source ,
+.Ql .attach ,
+.Ql .lowbattery
+and
+.Ql .criticallevel ,
+and a low battery warning level as
+.Ql State:/IOKit/LowBatteryWarning
+in the dynamic store.
+On a machine with no battery
+.Nm
+publishes an AC-only state: the power source is
+.Dq AC Power
+and the source list is empty.
 .Pp
 .Nm
 is a client of the kernel's power management root domain, the
