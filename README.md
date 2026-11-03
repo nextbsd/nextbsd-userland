@@ -28,6 +28,8 @@ that the `nextbsd` ISO assembler ingests.
   `system_cmds`) — for generic POSIX tools Apple's build buys nothing over
   FreeBSD's, so these come from **FreeBSD source curated in
   `nextbsd-freebsd-compat`'s `srclist.txt`**, synced to the releng train.
+  The exception is `system_cmds`' `reboot`/`halt` and `shutdown`/`poweroff`
+  (`src/reboot`, `src/shutdown`), which hand the request to launchd.
 - **PAM** (OpenPAM + pam_modules) — a later pass. The exception is Apple's
   `pam_launchd`, built for the OpenPAM inherited from FreeBSD (`src/pam_launchd`).
 

@@ -34,6 +34,8 @@ provenance; it does not relicense anything.
 | `hostnamed` | NextBSD (Apple-shape) | APSL-2.0 *(component header)* |
 | `scutil` | apple-oss-distributions/configd (`scutil.tproj`) | APSL-2.0 |
 | `caffeinate` | apple-oss-distributions/PowerManagement | APSL-2.0 |
+| `reboot` (+ halt) | apple-oss-distributions/system_cmds (`system_cmds-1042.120.1`, `reboot/`); NextBSD changes listed in `reboot.c` | BSD-3-Clause *(per file header)* |
+| `shutdown` (+ poweroff) | apple-oss-distributions/system_cmds (`system_cmds-1042.120.1`, `shutdown/`); NextBSD changes listed in `shutdown.c` | BSD-3-Clause *(per file header)* |
 | `pam_launchd` | apple-oss-distributions/pam_modules (`pam_modules-126`) | APSL-2.0 |
 | `libffi` | apple-oss-distributions/libffi (`libffi-40`, libffi 3.4.0-rc2) | MIT |
 | `libxml2` (+ xmllint, xmlcatalog) | apple-oss-distributions/libxml2 (`libxml2-39.10`, libxml2 2.9.13) | MIT (`src/libxml2/Copyright`) |
