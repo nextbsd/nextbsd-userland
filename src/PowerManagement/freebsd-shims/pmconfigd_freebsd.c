@@ -21,6 +21,9 @@
  *   incoming_XPC_connection() pmconfigd.m's peer handler with no message
  *                           handlers yet (each XPC message belongs to a
  *                           subsystem that is not built; see below)
+ *   SleepWakeCallback()     pmconfigd.m: pmconfigd's own answer to the root
+ *                           domain's sleep/wake messages, as any app's
+ *   initializeSleepWakeNotifications() pmconfigd.m, verbatim
  *   _getPMMainQueue()       PrivateLib.m, verbatim
  *
  * When pmconfigd.m and PrivateLib.m are added to SRCS, this file is deleted.
@@ -44,7 +47,10 @@
 #include "powermanagementServer.h"	/* MIG: _powermanagement_subsystem */
 
 #include "PrivateLib_freebsd.h"
-#include "AutoWakeScheduler.h"		/* AutoWake_prime() */
+#include "AutoWakeScheduler.h"		/* AutoWake_prime(), checkPendingWakeReqs() */
+#include "PMConnection.h"		/* PMConnection_prime() */
+
+#include <IOKit/IOMessage.h>
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -61,6 +67,7 @@ __private_extern__ dispatch_queue_t _getPMMainQueue(void);
 
 static mach_port_t      serverPort = MACH_PORT_NULL;
 static dispatch_mach_t  gListener;
+static io_connect_t     _pm_ack_port = 0;
 
 /*
  * PrivateLib.m. Every pmconfigd subsystem runs on this one serial queue, so
@@ -149,6 +156,70 @@ xpc_register(void)
     xpc_connection_resume(connection);
 }
 
+/*
+ *
+ * Receives notifications on system sleep and system wake.
+ * This callback is not called for maintenance sleep/wake.
+ *
+ * pmconfigd answers the root domain here like any app, at once; holding a
+ * sleep for its IOPMConnection clients is PMConnection's registration
+ * (PMConnection_freebsd.c). Apple's WillSleep also hands the sleep to
+ * user-activity tracking and stops the system-assertion timer, and its
+ * CanSystemSleep waits for async assertions (checkForAsyncAssertions());
+ * those belong to PMAssertions.c (nextbsd-userland#228). Until it builds a
+ * CanSystemSleep is allowed here at once, as checkForAsyncAssertions() does
+ * when no async assertion is pending.
+ */
+static void
+SleepWakeCallback(
+    void            *port __unused,
+    io_service_t    rootdomainservice __unused,
+    natural_t       messageType,
+    void            *acknowledgementToken)
+{
+    // Acknowledge message
+    switch ( messageType ) {
+        case kIOMessageSystemWillSleep:
+            INFO_LOG("Received kIOMessageSystemWillSleep\n");
+            IOAllowPowerChange(_pm_ack_port, (long)acknowledgementToken);
+            break;
+
+        case kIOMessageCanSystemSleep:
+            INFO_LOG("Received kIOMessageCanSystemSleep\n");
+            IOAllowPowerChange(_pm_ack_port, (long)acknowledgementToken);
+            break;
+
+        case kIOMessageSystemWillPowerOn:
+            /* fallthrough */
+        case kIOMessageSystemWillNotSleep:
+            INFO_LOG("Received %s\n",
+                    (messageType == kIOMessageSystemWillPowerOn) ? "kIOMessageSystemWillPowerOn" :
+                        "kIOMessageSystemWillNotSleep");
+            checkPendingWakeReqs(ALLOW_PURGING);
+            break;
+
+        case kIOMessageSystemHasPoweredOn:
+            INFO_LOG("Received kIOMessageSystemHasPoweredOn\n");
+            break;
+
+        default:
+            break;
+    }
+}
+
+static void initializeSleepWakeNotifications(void)
+{
+    IONotificationPortRef           notify;
+    io_object_t                     anIterator;
+
+    _pm_ack_port = IORegisterForSystemPower(0, &notify,
+                                    SleepWakeCallback, &anIterator);
+
+    if ( _pm_ack_port != MACH_PORT_NULL && notify ) {
+        IONotificationPortSetDispatchQueue(notify, _getPMMainQueue());
+    }
+}
+
 static void
 powerd_init(void *__unused context)
 {
@@ -181,10 +252,21 @@ powerd_init(void *__unused context)
      */
     initializeRootDomainInterestNotifications();
 
-    /* PMConnection_prime() opens the root domain's user client here. */
-    (void)getRootDomainConnect();
+    PMConnection_prime();
+    initializeSleepWakeNotifications();
+
+    /*
+     * PMSettings_prime() goes here (nextbsd-userland#228); its first
+     * activateSettings() is what hands the root domain the power-button
+     * setting. Until it builds, the lid and power-button policy is claimed
+     * with PMSettings' default.
+     */
+    claimRootDomainSleepPolicy();
 
     AutoWake_prime();
+
+    /* xnu's kIOPMPowerEmergency, which NextBSD's kernel leaves to pmconfigd. */
+    initializeLowPowerSleep();
 
     os_log(OS_LOG_DEFAULT, "pmconfigd started: %s%s, %s\n",
            kIOPMServerBootstrapName,

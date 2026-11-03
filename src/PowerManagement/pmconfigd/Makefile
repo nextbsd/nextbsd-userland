@@ -34,13 +34,18 @@ BINDIR=		/usr/sbin
 #                           ported files call (PrivateLib_freebsd.h)
 #   RootDomain_freebsd.c    the kernel shim: IOServiceOpen/IOConnectCallMethod
 #                           on the IOPMrootDomain as /dev/iopmroot ioctls,
-#                           and the root domain's general interest
+#                           the root domain's general interest, and the lid,
+#                           power-button and low-battery sleep policy
+#   PMConnection_freebsd.c  PMConnection.m's sleep/wake state machine and
+#                           the IOPMConnection routines, until PMConnection.m
+#                           builds
 .PATH:		${.CURDIR}/../freebsd-shims ${.CURDIR}/../common
 SRCS=		pmconfigd_freebsd.c
 SRCS+=		powermanagement_stubs.c
 SRCS+=		os_log_shim.c
 SRCS+=		PrivateLib_freebsd.c
 SRCS+=		RootDomain_freebsd.c
+SRCS+=		PMConnection_freebsd.c
 
 # Apple's files, built as C under __FreeBSD__ (see ../VENDORED.md):
 #   AutoWakeScheduler.c     pmset schedule: one-shot power events

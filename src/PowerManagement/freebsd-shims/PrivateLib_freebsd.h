@@ -184,6 +184,52 @@ enum {
 };
 #endif
 
+/* ---- IOKit/pwr_mgt/IOPMPrivate.h (xnu): root-domain property keys ------ */
+#ifndef kIOPMRootDomainWakeReasonKey
+#define kIOPMRootDomainWakeReasonKey	"Wake Reason"
+#define kIOPMRootDomainWakeTypeKey	"Wake Type"
+#endif
+#ifndef kIOPMSystemCapabilitiesKey
+#define kIOPMSystemCapabilitiesKey	"System Capabilities"
+#endif
+#ifndef kIOPMSettingSleepOnPowerButtonKey
+#define kIOPMSettingSleepOnPowerButtonKey "Sleep On Power Button"
+#endif
+
+/* ---- IOKit/pwr_mgt/IOPMLibPrivate.h (IOKitUser): IOPMConnection -------- */
+#ifndef kIOPMSystemPowerStateNotify
+#define kIOPMSystemPowerStateNotify	"com.apple.powermanagement.systempowerstate"
+#endif
+#ifndef kIOPMSystemPowerCapabilitiesKeySuffix
+#define kIOPMSystemPowerCapabilitiesKeySuffix "/IOKit/SystemPowerCapabilities"
+#endif
+#ifndef kIOPMCapabilityCPU
+typedef uint32_t IOPMCapabilityBits;
+typedef uint32_t IOPMConnectionMessageToken;
+#define kIOPMCapabilityCPU			0x1
+#define kIOPMCapabilityVideo			0x2
+#define kIOPMCapabilityAudio			0x4
+#define kIOPMCapabilityNetwork			0x8
+#define kIOPMCapabilityDisk			0x10
+#define kIOPMCapabilityPushServiceTask		0x20
+#define kIOPMCapabilityBackgroundTask		0x40
+#define kIOPMCapabilitySilentRunning		0x80
+#define kIOPMCapabilityBitsMask			0xFF
+#define kIOPMEarlyWakeNotification		0x8000
+#endif
+#ifndef kIOPMAckClientInfoKey
+#define kIOPMAckNetworkMaintenanceWakeDate	CFSTR("NetworkMaintenanceWakeDate")
+#define kIOPMAckSUWakeDate			CFSTR("SoftwareUpdate")
+#define kIOPMAckWakeDate			CFSTR("WakeDate")
+#define kIOPMAckDHCPRenewWakeDate		CFSTR("DHCPRenew")
+#define kIOPMAckClientInfoKey			CFSTR("ClientInfo")
+#define kIOPMAckClientInfoBGTaskKey		CFSTR("ClientInfoBGTask")
+#define kIOPMAckClientInfoAppRefreshKey		CFSTR("ClientInfoAppRefresh")
+#endif
+#ifndef kIOPMMaintenanceScheduleImmediate
+#define kIOPMMaintenanceScheduleImmediate	"MaintenanceImmediate"
+#endif
+
 /* ---- The root domain's user client (RootDomain_freebsd.c) -------------- */
 /*
  * On macOS pmconfigd opens the IOPMrootDomain's user client with
@@ -222,10 +268,13 @@ __private_extern__ io_registry_entry_t	getRootDomain(void);
 __private_extern__ IOReturn		_setRootDomainProperty(CFStringRef key,
 					    CFTypeRef val);
 __private_extern__ CFTypeRef		_copyRootDomainProperty(CFStringRef key);
-/* PMConnection.m */
+/* PMConnection.m (PMConnection_freebsd.c) */
 __private_extern__ io_connect_t		getRootDomainConnect(void);
 /* pmconfigd.m */
 __private_extern__ void			initializeRootDomainInterestNotifications(void);
+/* The sleep policy NextBSD's root domain leaves to pmconfigd */
+__private_extern__ void			claimRootDomainSleepPolicy(void);
+__private_extern__ void			initializeLowPowerSleep(void);
 
 /* ---- PrivateLib.h ------------------------------------------------------ */
 #define BIT_IS_SET(x,b)                     ((x & b)==b)
@@ -239,6 +288,7 @@ __private_extern__ void			initializeRootDomainInterestNotifications(void);
 
 #define PM_LOG_SYSTEM               "com.apple.powerd"
 #define WAKEREQUESTS_LOG            "wakeRequests"
+#define SLEEPWAKE_LOG               "sleepWake"
 
 #ifndef LOG_STREAM
 #define LOG_STREAM OS_LOG_DEFAULT

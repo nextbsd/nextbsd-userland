@@ -8,8 +8,9 @@
 # kextmanager.defs and pathnames.h belong to the __APPLE__ code and are not
 # vendored.
 #
-# Plain libc. Builds /sbin/shutdown, with /sbin/poweroff as a link
-# (`shutdown -p now`). Root only, as on Darwin: not setuid.
+# Builds /sbin/shutdown, with /sbin/poweroff as a link (`shutdown -p now`).
+# Root only, as on Darwin: not setuid. Links libIOKit for -s (sleep), which
+# calls IOPMSleepSystem() as Darwin's does (nextbsd/nextbsd-userland#229).
 #
 # Build:   make SYSROOT=/path/to/base
 # Install: make DESTDIR=/path/to/stage install
@@ -24,11 +25,25 @@ BINMODE=	0555
 BINOWN=		root
 BINGRP=		wheel
 
-WARNS?=		6
+# <IOKit/pwr_mgt/IOPMLib.h> pulls in the CoreFoundation headers, which are
+# not WARNS-clean (CFLocking.h's #warning alone fails -Werror); caffeinate(8)
+# builds at 0 for the same reason.
+WARNS?=		0
 
 SYSROOT?=
 .if !empty(SYSROOT)
 CFLAGS+=	--sysroot=${SYSROOT}
+CFLAGS+=	-I${SYSROOT}/usr/include
+LDFLAGS+=	-L${SYSROOT}/usr/lib/system
+LDFLAGS+=	-Wl,-rpath,/usr/lib/system
+LDFLAGS+=	-Wl,--allow-shlib-undefined
 .endif
+
+# libIOKit's source headers ahead of the sysroot's, as caffeinate(8) does;
+# the CoreFoundation headers they include need blocks.
+CFLAGS+=	-I${.CURDIR}/../libIOKit
+CFLAGS+=	-fblocks
+
+LDADD+=		-lIOKit
 
 .include <bsd.prog.mk>

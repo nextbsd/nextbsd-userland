@@ -60,11 +60,16 @@
  *
  * Also here, because they are the rest of pmconfigd's kernel-facing code:
  * getRootDomain() (common/CommonLib.c), _setRootDomainProperty() and
- * _copyRootDomainProperty() (PrivateLib.m), getRootDomainConnect()
- * (PMConnection.m), and the root domain's general-interest listener,
- * initializeRootDomainInterestNotifications() and RootDomainInterest()
- * (pmconfigd.m). When an Apple file that owns one of these builds, its copy
- * here is deleted (the linker reports any left behind as a duplicate).
+ * _copyRootDomainProperty() (PrivateLib.m), and the root domain's
+ * general-interest listener, initializeRootDomainInterestNotifications() and
+ * RootDomainInterest() (pmconfigd.m). When an Apple file that owns one of
+ * these builds, its copy here is deleted (the linker reports any left behind
+ * as a duplicate). getRootDomainConnect() is PMConnection_freebsd.c's.
+ *
+ * And the two pieces of sleep policy that xnu's root domain or PMSettings.m
+ * would own but that NextBSD's kernel leaves to pmconfigd
+ * (nextbsd-userland#229): claiming the lid and power-button policy, and the
+ * low-battery ("Low Power Sleep") request. See the end of this file.
  */
 #include "PrivateLib_freebsd.h"
 
@@ -75,6 +80,7 @@
 #include <sys/ioctl.h>
 
 #include <errno.h>
+#include <notify.h>
 #include <string.h>
 
 /*
@@ -147,40 +153,6 @@ pmRootDomainServiceOpen(io_service_t service, mach_port_t owningTask __unused,
 
     *connect = IOPMFindPowerManagement(MACH_PORT_NULL);
     return (*connect != IO_OBJECT_NULL) ? kIOReturnSuccess : kIOReturnNoDevice;
-}
-
-/* ---- PMConnection.m ---------------------------------------------------- */
-
-/*
- * PMConnection_prime() opens gRootDomainConnect with IOServiceOpen on
- * getRootDomain(). Until PMConnection.m builds (nextbsd-userland#229) the
- * connection is opened here on first use, on pmconfigd's main queue.
- */
-static io_connect_t     gRootDomainConnect = IO_OBJECT_NULL;
-
-__private_extern__ io_connect_t getRootDomainConnect(void)
-{
-    static bool         tried = false;
-    io_service_t        rootDomainService;
-    kern_return_t       kr;
-
-    if (gRootDomainConnect == IO_OBJECT_NULL && !tried) {
-        tried = true;
-
-        rootDomainService = getRootDomain();
-        if (IO_OBJECT_NULL == rootDomainService) {
-            ERROR_LOG("Could not find IOPMrootDomain\n");
-            return IO_OBJECT_NULL;
-        }
-
-        kr = IOServiceOpen(rootDomainService, mach_task_self(), 0, &gRootDomainConnect);
-        if (KERN_SUCCESS != kr) {
-            ERROR_LOG("Could not open IOPMrootDomain (0x%x)\n", kr);
-            gRootDomainConnect = IO_OBJECT_NULL;
-        }
-    }
-
-    return gRootDomainConnect;
 }
 
 /* ---- IOConnectCallMethod: the kPM* selectors --------------------------- */
@@ -448,10 +420,11 @@ logRootDomainState(void)
 /*
  * Apple's handler acts on the driver-assertion, system-power-event,
  * dark-wake-thermal, spindump, feature-change and sleep/wake-UUID messages,
- * none of which NextBSD's root domain sends yet, and (on Apple silicon) on
- * kIOPMMessageClamshellStateChange, which it does send. The clamshell state
- * is logged here; acting on it (PMDisplay.m's updateClamshellState) is the
- * sleep/wake policy's (nextbsd-userland#229). kIOMessageServicePropertyChange,
+ * none of which NextBSD's root domain sends yet, and (on Apple silicon only)
+ * on kIOPMMessageClamshellStateChange, which it does send. On Intel Macs,
+ * whose path NextBSD follows, the root domain itself sleeps when the lid
+ * closes, under the policy pmconfigd claims (claimRootDomainSleepPolicy()
+ * below), so pmconfigd only logs the change. kIOMessageServicePropertyChange,
  * which follows every property update, is ignored, as on macOS.
  *
  * libIOKit hands a general-interest callback an
@@ -509,4 +482,160 @@ exit:
     // Do not release note_port: both must be kept around to receive this
     // notification. root_domain is getRootDomain()'s cached reference.
     return;
+}
+
+/* ---- Sleep policy the kernel leaves to pmconfigd (#229) ---------------- */
+
+/*
+ * The lid and the power button. xnu's root domain acts on them itself,
+ * under the policy pmconfigd gives it: PMSettings.m's activateSettings()
+ * pushes the "Sleep On Power Button" setting, and PMAssertions.c's
+ * setClamshellSleepState() sends kPMSetClamshellSleepState when an
+ * assertion or desktop mode should keep the system awake with the lid
+ * closed. NextBSD's root domain (nextbsd-kernel#243) does the same once one
+ * /dev/iopmroot descriptor has set either: that descriptor owns the policy,
+ * the kernel's own hw.acpi.lid_switch_state, power_button_state and
+ * sleep_button_state actions are switched off, and the root domain requests
+ * "Clamshell Sleep" and "Power Button Sleep" itself. A press that does not
+ * sleep is ignored, as on xnu; it still reaches userland as the HID power
+ * key, for loginwindow. Until a descriptor claims it, the kernel's ACPI
+ * defaults apply, so pmconfigd claims the policy at start, with PMSettings'
+ * default for the setting (the power button sleeps), ahead of PMSettings.m.
+ *
+ * _setRootDomainProperty() goes through libIOKit's one process-wide
+ * /dev/iopmroot descriptor, the one IOConnectCallMethod(
+ * kPMSetClamshellSleepState) uses too (see "One descriptor" above), so both
+ * rules stay pmconfigd's while it runs. When it exits the descriptor closes
+ * and the kernel hands the lid and buttons back to ACPI. The clamshell state
+ * itself is not sent here: setClamshellSleepState() sends it only when
+ * something disables clamshell sleep.
+ *
+ * NextBSD's "Sleep On Power Button" is true when the power button sleeps.
+ * Apple's activateSettings() writes the inverse, for its platform driver;
+ * the port of PMSettings.m (nextbsd-userland#228) writes the preference as
+ * the kernel reads it.
+ */
+__private_extern__ void
+claimRootDomainSleepPolicy(void)
+{
+    IOReturn        ret;
+
+    if (IO_OBJECT_NULL == getRootDomain()) {
+        return;
+    }
+
+    ret = _setRootDomainProperty(CFSTR(kIOPMSettingSleepOnPowerButtonKey), kCFBooleanTrue);
+    if (ret != kIOReturnSuccess) {
+        ERROR_LOG("Could not claim the lid and power button policy (0x%x)%s\n", ret,
+                  ret == kIOReturnExclusiveAccess ? ": another process owns it" : "");
+    }
+}
+
+/*
+ * Low-battery sleep. On a Mac the battery driver (AppleSmartBatteryManager)
+ * tells the root domain kIOPMPowerEmergency when the battery reaches its
+ * critical level, and xnu's handlePowerNotification() sleeps with
+ * kIOPMSleepReasonLowPower, "Low Power Sleep", for as long as the condition
+ * lasts, so a machine woken on a critical battery goes back to sleep.
+ * NextBSD's kernel publishes the battery (IOPMPowerSource, AtCriticalLevel)
+ * but does not act on it, so pmconfigd does, from its own power-source state
+ * (BatteryTimeRemaining, nextbsd-userland#227): kPSCriticalLevelBit in the
+ * kIOPSNotifyPercentChange state, posted on kIOPSNotifyCriticalLevel when it
+ * changes. Running on battery with that bit set, pmconfigd asks the root
+ * domain for a "Low Power Sleep", once per wake: the root domain's sleep
+ * count (IOPMROOT_GETSTATE) tells whether the machine has slept since the
+ * last request. It looks again after every power-source change and a few
+ * seconds after each wake, once the kernel has re-read the battery.
+ *
+ * Without a battery (QEMU, desktops, the RPi5) the critical bit is never
+ * set. Until the power sources are published nothing is posted, and this
+ * waits for them.
+ */
+#define kIOPSNotifyPercentChange_       "com.apple.system.powersources.percent"
+#define kIOPSNotifyCriticalLevel_       "com.apple.system.powersources.criticallevel"
+#define kPSPercentExternalBit           (1 << 16)
+#define kPSPercentValidBit              (1 << 19)
+#define kPSPercentCriticalLevelBit      (1 << 24)
+
+/* How long after a wake to look: the kernel re-reads the battery 2 s after
+ * resume, and pmconfigd's power sources follow at once. */
+#define kLowPowerWakeRecheckSecs        5
+
+static int          gPercentToken = 0;
+static bool         gLowPowerSleepRequested = false;
+static uint64_t     gLowPowerSleepCount = 0;
+
+static void
+lowPowerSleepEvaluate(void)
+{
+    struct iopmroot_state   st;
+    CFDictionaryRef         options;
+    const void              *key = CFSTR(kIOPMSleepReasonKey);
+    const void              *val = CFSTR(kIOPMLowPowerSleepKey);
+    uint64_t                state = 0;
+    IOReturn                ret;
+
+    if (gPercentToken == 0
+        || notify_get_state(gPercentToken, &state) != NOTIFY_STATUS_OK)
+    {
+        return;
+    }
+    if (!(state & kPSPercentValidBit)
+        || (state & kPSPercentExternalBit)
+        || !(state & kPSPercentCriticalLevelBit))
+    {
+        return;
+    }
+
+    memset(&st, 0, sizeof(st));
+    if (pmRootDomainIoctl(IOPMROOT_GETSTATE, &st) != kIOReturnSuccess
+        || st.phase != IOPMROOT_PHASE_ON)
+    {
+        return;
+    }
+    if (gLowPowerSleepRequested && st.sleep_count == gLowPowerSleepCount) {
+        // Asked already, and the machine has not slept since.
+        return;
+    }
+    gLowPowerSleepRequested = true;
+    gLowPowerSleepCount = st.sleep_count;
+
+    INFO_LOG("Battery at critical level on battery power: requesting %s\n", kIOPMLowPowerSleepKey);
+    options = CFDictionaryCreate(0, &key, &val, 1,
+                                 &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    ret = IOPMSleepSystemWithOptions(getRootDomainConnect(), options);
+    if (options) {
+        CFRelease(options);
+    }
+    if (ret != kIOReturnSuccess) {
+        ERROR_LOG("%s not performed: 0x%x%s\n", kIOPMLowPowerSleepKey, ret,
+                  ret == kIOReturnUnsupported ? " (this machine cannot sleep)" : "");
+    }
+}
+
+__private_extern__ void
+initializeLowPowerSleep(void)
+{
+    int             token;
+    uint32_t        status;
+
+    status = notify_register_check(kIOPSNotifyPercentChange_, &gPercentToken);
+    if (status != NOTIFY_STATUS_OK) {
+        ERROR_LOG("Low power sleep: notify_register_check(%s) failed: %u\n",
+                  kIOPSNotifyPercentChange_, status);
+        gPercentToken = 0;
+        return;
+    }
+
+    notify_register_dispatch(kIOPSNotifyCriticalLevel_, &token, _getPMMainQueue(),
+                             ^(int t __unused) { lowPowerSleepEvaluate(); });
+    notify_register_dispatch(kIOPSNotifyPercentChange_, &token, _getPMMainQueue(),
+                             ^(int t __unused) { lowPowerSleepEvaluate(); });
+    notify_register_dispatch(kIOPMSystemPowerStateNotify, &token, _getPMMainQueue(),
+                             ^(int t __unused) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, kLowPowerWakeRecheckSecs * NSEC_PER_SEC),
+                       _getPMMainQueue(), ^{ lowPowerSleepEvaluate(); });
+    });
+
+    lowPowerSleepEvaluate();
 }
