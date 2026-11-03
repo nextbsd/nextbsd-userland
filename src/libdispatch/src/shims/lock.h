@@ -316,8 +316,23 @@ void _dispatch_wake_by_address(uint32_t volatile *address);
  *
  * This locking primitive has no notion of ownership
  */
+/*
+ * NextBSD: a thread event is a 32-bit value waited on with _umtx_op(2), the
+ * way Linux waits on a futex and Darwin on a ulock. NextBSD builds with
+ * HAVE_MACH, so USE_MACH_SEM is set, and the semaphore fallback below would
+ * otherwise be used: it leaves dte_sema MACH_PORT_NULL (the semaphore is
+ * never created), so the first contended dispatch_sync() or dispatch_apply()
+ * got KERN_INVALID_ARGUMENT from semaphore_wait()/semaphore_signal() and
+ * died in DISPATCH_INTERNAL_CRASH ("mach semaphore API failure", SIGILL).
+ */
+#if HAVE_UL_COMPARE_AND_WAIT || HAVE_FUTEX || defined(__FreeBSD__)
+#define DISPATCH_THREAD_EVENT_USE_VALUE 1
+#else
+#define DISPATCH_THREAD_EVENT_USE_VALUE 0
+#endif
+
 typedef struct dispatch_thread_event_s {
-#if HAVE_UL_COMPARE_AND_WAIT || HAVE_FUTEX
+#if DISPATCH_THREAD_EVENT_USE_VALUE
 	// 1 means signalled but not waited on yet
 	// UINT32_MAX means waited on, but not signalled yet
 	// 0 is the initial and final state
@@ -335,7 +350,7 @@ DISPATCH_ALWAYS_INLINE
 static inline void
 _dispatch_thread_event_init(dispatch_thread_event_t dte)
 {
-#if HAVE_UL_COMPARE_AND_WAIT || HAVE_FUTEX
+#if DISPATCH_THREAD_EVENT_USE_VALUE
 	dte->dte_value = 0;
 #else
 	_dispatch_sema4_init(&dte->dte_sema, _DSEMA4_POLICY_FIFO);
@@ -346,7 +361,7 @@ DISPATCH_ALWAYS_INLINE
 static inline void
 _dispatch_thread_event_signal(dispatch_thread_event_t dte)
 {
-#if HAVE_UL_COMPARE_AND_WAIT || HAVE_FUTEX
+#if DISPATCH_THREAD_EVENT_USE_VALUE
 	if (os_atomic_inc_orig(&dte->dte_value, release) == 0) {
 		// 0 -> 1 transition doesn't need a signal
 		// force a wake even when the value is corrupt,
@@ -364,7 +379,7 @@ DISPATCH_ALWAYS_INLINE
 static inline void
 _dispatch_thread_event_wait(dispatch_thread_event_t dte)
 {
-#if HAVE_UL_COMPARE_AND_WAIT || HAVE_FUTEX
+#if DISPATCH_THREAD_EVENT_USE_VALUE
 	if (os_atomic_dec(&dte->dte_value, acquire) == 0) {
 		// 1 -> 0 is always a valid transition, so we can return
 		// for any other value, take the slow path which checks it's not corrupt
@@ -380,7 +395,7 @@ DISPATCH_ALWAYS_INLINE
 static inline void
 _dispatch_thread_event_destroy(dispatch_thread_event_t dte)
 {
-#if HAVE_UL_COMPARE_AND_WAIT || HAVE_FUTEX
+#if DISPATCH_THREAD_EVENT_USE_VALUE
 	// nothing to do
 	dispatch_assert(dte->dte_value == 0);
 #else
