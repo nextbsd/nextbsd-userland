@@ -36,8 +36,9 @@
  *   kPMGetSystemSleepType (11)        kIOPMSleepTypeNormalSleep, no timer
  *   kPMSetClamshellSleepState (12)    IOPMROOT_SETCLAMSHELL
  *   kPMSleepWakeWatchdogEnable (13), kPMSleepWakeDebugTrig (14),
- *   kPMSetDisplayPowerOn (15), kPMSetDisplayState (16)
- *                                     kIOReturnUnsupported
+ *   kPMSetDisplayPowerOn (15)         kIOReturnUnsupported
+ *   kPMSetDisplayState (16)           IOPMROOT_SETDISPLAY (nextbsd-kernel#405;
+ *                                     kIOReturnUnsupported on older kernels)
  *   kPMRequestIdleSleepRevert (17)    IOPMROOT_IDLEREVERT
  *   kPMSetLDMHibernationDisable (18), kPMGetAssertionLog (19),
  *   kPMSetAssertionLogThreshold (20)  kIOReturnUnsupported
@@ -228,7 +229,7 @@ static const struct {
     [kPMSleepWakeWatchdogEnable]    = { 0, 0, kStructNone, 0 },
     [kPMSleepWakeDebugTrig]         = { 0, 0, kStructNone, 0 },
     [kPMSetDisplayPowerOn]          = { 1, 0, kStructNone, 0 },
-    [kPMSetDisplayState]            = { 0, 0, kStructNone, 0 },
+    [kPMSetDisplayState]            = { 1, 0, kStructNone, 0 },
     [kPMRequestIdleSleepRevert]     = { 0, 1, kStructNone, 0 },
     [kPMSetLDMHibernationDisable]   = { 1, 0, kStructNone, 0 },
     [kPMGetAssertionLog]            = { 0, 0, kStructNone, 0 },
@@ -401,13 +402,26 @@ pmRootDomainCallMethod(
         return ret;
     }
 
+    case kPMSetDisplayState:
+    {
+        /*
+         * The display wrangler's state (RootDomainIdle_freebsd.c). While it
+         * is off, the kernel turns the first input into
+         * kIOPMMessageRequestUserActive at once. A kernel older than
+         * nextbsd-kernel#405 does not know the ioctl.
+         */
+        uint32_t        on = input[0] ? 1 : 0;
+
+        ret = pmRootDomainIoctl(IOPMROOT_SETDISPLAY, &on);
+        return (ret == kIOReturnSuccess) ? ret : kIOReturnUnsupported;
+    }
+
     case kPMShutdownSystem:
     case kPMRestartSystem:
         /* Deprecated on xnu too. */
     case kPMSleepWakeWatchdogEnable:
     case kPMSleepWakeDebugTrig:
     case kPMSetDisplayPowerOn:
-    case kPMSetDisplayState:
     case kPMSetLDMHibernationDisable:
     case kPMGetAssertionLog:
     case kPMSetAssertionLogThreshold:
