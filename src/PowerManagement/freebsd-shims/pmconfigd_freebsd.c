@@ -108,20 +108,18 @@ ESPrefsHaveChanged(void)
     SystemLoadPrefsHaveChanged();
 }
 
-/*
- * pmconfigd.m registers through IOPMRegisterPrefsChangeNotification(), a
- * notify_register_dispatch() on kIOPMPrefsChangeNotify; libIOKit does not
- * carry it yet (nextbsd-userland#233), so the same registration is made here.
- */
+/* pmconfigd.m's, through libIOKit's IOPMEnergyPrefs.c (kIOPMPrefsChangeNotify). */
+static IOPMNotificationHandle gESPreferences = 0;
+
 static void
 initializeESPrefsNotification(void)
 {
-    static int      token;
+    gESPreferences = IOPMRegisterPrefsChangeNotification(_getPMMainQueue(),
+                                                         ^(void) {
+                                                             ESPrefsHaveChanged();
+                                                         });
 
-    notify_register_dispatch(kIOPMPrefsChangeNotify, &token, _getPMMainQueue(),
-                             ^(int t __unused) {
-                                 ESPrefsHaveChanged();
-                             });
+    return;
 }
 
 /* dynamicStoreNotifyCallBack

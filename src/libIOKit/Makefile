@@ -18,24 +18,28 @@
 LIB=		IOKit
 SHLIB_MAJOR=	1
 
-SRCS=		IOKitLib.c IOKitMatching.c IOKitNotify.c IOPMAssertions.c
+SRCS=		IOKitLib.c IOKitMatching.c IOKitNotify.c
 SRCS+=		IOPMLib.c
 SRCS+=		IOHIDUserDevice.c
 
-# Power sources (nextbsd-userland#232): IOKitUser's ps.subproj client,
-# vendored from apple-oss-distributions/IOKitUser @ IOKitUser-100231.120.3
-# with __FreeBSD__ changes listed at the top of each file
-# (IOPowerSources.c, IOPowerSourcesPrivate.c; ps_freebsd.h stands in for the
-# Darwin-only headers, IOPMLibPrivate_freebsd.c for the connection to
-# pmconfigd that IOPMLibPrivate.c will carry). They reach pmconfigd over MIG,
-# through the user stub that build-userland.sh generates from
-# IOKit/pwr_mgt/powermanagement.defs, the same file pmconfigd's server stub
-# comes from; pass its directory as MIGOUT. Apple's sources compile with
-# pointer/integer conversions that clang 19 makes errors by default; Apple's
-# toolchain warns.
-SRCS+=		IOPowerSources.c IOPowerSourcesPrivate.c IOPMLibPrivate_freebsd.c
+# Power sources and power management (nextbsd-userland#232, #233):
+# IOKitUser's ps.subproj and pwr_mgt.subproj clients, vendored from
+# apple-oss-distributions/IOKitUser @ IOKitUser-100231.120.3 with
+# __FreeBSD__ changes listed at the top of each file (IOPowerSources.c,
+# IOPowerSourcesPrivate.c, IOPMAssertions.c, IOPMLibPrivate.c,
+# IOPMEnergyPrefs.c; ps_freebsd.h and pwr_mgt_freebsd.h stand in for the
+# Darwin-only headers). They reach pmconfigd over MIG, through the user stub
+# that build-userland.sh generates from IOKit/pwr_mgt/powermanagement.defs,
+# the same file pmconfigd's server stub comes from; pass its directory as
+# MIGOUT. Apple's sources compile with pointer/integer conversions that
+# clang 19 makes errors by default; Apple's toolchain warns.
+SRCS+=		IOPowerSources.c IOPowerSourcesPrivate.c
+SRCS+=		IOPMAssertions.c IOPMLibPrivate.c IOPMEnergyPrefs.c
 CFLAGS.IOPowerSources.c+=		-Wno-int-conversion
 CFLAGS.IOPowerSourcesPrivate.c+=	-Wno-int-conversion
+CFLAGS.IOPMAssertions.c+=		-Wno-int-conversion
+CFLAGS.IOPMLibPrivate.c+=		-Wno-int-conversion
+CFLAGS.IOPMEnergyPrefs.c+=		-Wno-int-conversion
 MIGOUT?=
 .if empty(MIGOUT)
 .error MIGOUT must name the directory holding powermanagementUser.c (build-userland.sh)
@@ -98,14 +102,25 @@ LDADD+=		-L${SYSROOT}/usr/lib/system
 .endif
 
 INCS=		IOKit/IOKitLib.h IOKit/IOMessage.h IOKit/IOReturn.h
-INCS+=		IOKit/pwr_mgt/IOPMLib.h IOKit/pwr_mgt/IOPMLibPrivate.h
 INCSDIR=	${PREFIX}/include/IOKit
 
 # <IOKit/hid/...>: IOHIDUserDevice (nextbsd-userland#521). A separate group
 # so the headers keep their hid/ directory, as in IOKit.framework.
-INCSGROUPS=	INCS HIDINCS PSINCS
+INCSGROUPS=	INCS HIDINCS PMINCS PSINCS
 HIDINCS=	IOKit/hid/IOHIDKeys.h IOKit/hid/IOHIDUserDevice.h
 HIDINCSDIR=	${PREFIX}/include/IOKit/hid
+
+# <IOKit/pwr_mgt/...> (nextbsd-userland#233): IOKitUser's power management
+# headers (IOPMLib.h, IOPMLibPrivate.h, IOPMKeys.h, IOPMAssertionCategories.h,
+# the MIG description and its types) and the xnu ones they include
+# (IOPM.h, IOPMPrivate.h, IOPMLibDefs.h; xnu-12377.121.6), as IOKit.framework
+# carries them.
+PMINCS=		IOKit/pwr_mgt/IOPM.h IOKit/pwr_mgt/IOPMAssertionCategories.h \
+		IOKit/pwr_mgt/IOPMKeys.h IOKit/pwr_mgt/IOPMLib.h \
+		IOKit/pwr_mgt/IOPMLibDefs.h IOKit/pwr_mgt/IOPMLibPrivate.h \
+		IOKit/pwr_mgt/IOPMPrivate.h IOKit/pwr_mgt/powermanagement.defs \
+		IOKit/pwr_mgt/powermanagement_mig.h
+PMINCSDIR=	${PREFIX}/include/IOKit/pwr_mgt
 
 # <IOKit/ps/...> (nextbsd-userland#232): IOKitUser's power source headers,
 # as IOKit.framework carries them.
@@ -123,10 +138,11 @@ LIBDIR=		${PREFIX}/lib/system
 # the IONotificationPort receive loop. -lpthread: pthread_once for the
 # lazy /dev/ioregistry fd + the IONotificationPort receive thread.
 LDADD+=		-lCoreFoundation
-# The power source client (IOPowerSources.c, IOPowerSourcesPrivate.c):
-# notify(3) for pmconfigd's state, SystemConfiguration for the low battery
-# warning level. libnotify is built ahead of libIOKit for this.
-LDADD+=		-lnotify -lSystemConfiguration
+# The power source and power management clients: notify(3) for pmconfigd's
+# state and the prefs-change notification, XPC for its powerdxpc service,
+# SystemConfiguration for the low battery warning level and the sleep/wake
+# failure record. libnotify is built ahead of libIOKit for this.
+LDADD+=		-lnotify -lxpc -lSystemConfiguration
 LDADD+=		-lsystem_dispatch -l:libsystem_blocks.so
 LDADD+=		-lsystem_kernel -llaunch
 LDADD+=		-Wl,--allow-shlib-undefined
@@ -140,6 +156,9 @@ PREFIX?=	/usr
 # the wire format matches. IOKitMatching.c decodes the bag with it. libxpc's
 # private nvlist copy has a different wire format and is not used here.
 LIBADD+=	pthread nv
+# execinfo: backtrace() for an assertion's creator backtrace, which
+# IOPMAssertions.c records when pmset asks for it (collectbt).
+LIBADD+=	execinfo
 
 # The kext API (nextbsd-userland#438): Apple's OSKext engine and KextManager
 # live in IOKit.framework, so libkext (src/kext_tools/kext.subproj, built

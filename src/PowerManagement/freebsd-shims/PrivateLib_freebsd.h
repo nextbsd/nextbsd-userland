@@ -43,6 +43,7 @@
 #include <IOKit/IOKitLib.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
 #include <IOKit/pwr_mgt/IOPMLibPrivate.h>
+#include <IOKit/pwr_mgt/IOPMPrivate.h>
 #include <IOKit/pwr_mgt/powermanagement_mig.h>
 #include <dispatch/dispatch.h>
 #include <mach/mach.h>
@@ -371,7 +372,6 @@ __private_extern__ CFTimeInterval	_getHIDIdleTime(void);
  * plugin applies from the active Energy Saver profile.
  */
 __private_extern__ void			cpuPowerActivateSettings(CFDictionaryRef settings);
-__private_extern__ bool			cpuPowerFeatureIsAvailable(CFStringRef feature);
 
 /* common/CommonLib.c */
 __private_extern__ io_registry_entry_t	getRootDomain(void);
@@ -696,7 +696,7 @@ typedef enum {
 #endif
 
 /* ---- IOKit/pwr_mgt/IOPMAssertionCategories.h (IOKitUser) ---------------- */
-#ifndef _IOPMAssertionCategories_h_
+#ifndef _IOPMASSERTIONCATEGORIES_H_
 typedef enum {
     kIOPMAssertionPolicyNone = 0,
     kIOPMAssertionPolicyActiveUse,
@@ -965,25 +965,6 @@ __private_extern__ bool			getUserActiveAssertionValid(void);
 __private_extern__ uint64_t		getUserActivePostedLevels(void);
 /* PMDisplay.m */
 __private_extern__ bool			isDesktopMode(void);
-/* IOKitUser pwr_mgt.subproj/IOPMLibPrivate.c (libIOKit, nextbsd-userland#233) */
-IOReturn IOPMCopySleepPreventersListWithID(int preventerType, CFArrayRef *outArray);
-/*
- * IOKitUser pwr_mgt.subproj/IOPMEnergyPrefs.c, read side: built into
- * pmconfigd from freebsd-shims/IOPMEnergyPrefs_freebsd.c until libIOKit
- * carries it (nextbsd-userland#233). Prototypes from IOPMLibPrivate.h.
- */
-CFMutableDictionaryRef IOPMCopyPreferencesOnFile(void);
-CFMutableDictionaryRef IOPMCopyPMPreferences(void);
-CFDictionaryRef IOPMCopyActivePMPreferences(void);
-CFDictionaryRef IOPMCopyDefaultPreferences(void);
-bool IOPMFeatureIsAvailable(CFStringRef feature, CFStringRef power_source);
-bool IOPMFeatureIsAvailableWithSupportedTable(
-                CFStringRef         feature,
-                CFStringRef         power_source,
-                CFDictionaryRef     supportedFeatures);
-void IOPMRemoveIrrelevantProperties(CFMutableDictionaryRef energyPrefs);
-CFTypeRef IOPMCopyFromPrefs(CFStringRef prefsPath, CFStringRef key);
-CFDictionaryRef IOPMCopySystemPowerSettings( void );
 
 /* ---- AutoWakeScheduler.c / RepeatingAutoWake.c ------------------------- */
 /* Served on io_pm_assertion_copy_details (powermanagement_stubs.c). */

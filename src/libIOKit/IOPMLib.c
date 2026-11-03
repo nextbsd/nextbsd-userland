@@ -389,28 +389,7 @@ IOPMSleepEnabled(void)
 	    (st.flags & IOPMROOT_F_SLEEP_DISABLED) == 0);
 }
 
-/*
- * The calendar time of the last wake, from kern.waketime as on Darwin.
- * kIOReturnNotReady before the first sleep. adjustedForPhysicalWake is
- * always 0: there is no dark wake to adjust for.
- */
-IOReturn
-IOPMGetLastWakeTime(CFAbsoluteTime *lastWakeTime,
-    CFTimeInterval *adjustedForPhysicalWake)
-{
-	struct timeval tv;
-	size_t len = sizeof(tv);
-
-	if (lastWakeTime == NULL || adjustedForPhysicalWake == NULL)
-		return (kIOReturnBadArgument);
-	if (sysctlbyname("kern.waketime", &tv, &len, NULL, 0) != 0 ||
-	    len != sizeof(tv) || tv.tv_sec == 0)
-		return (kIOReturnNotReady);
-	*lastWakeTime = (CFAbsoluteTime)tv.tv_sec -
-	    kCFAbsoluteTimeIntervalSince1970 + (CFAbsoluteTime)tv.tv_usec / 1e6;
-	*adjustedForPhysicalWake = 0;
-	return (kIOReturnSuccess);
-}
+/* IOPMGetLastWakeTime (kern.waketime) is Apple's, in IOPMLibPrivate.c. */
 
 /*
  * IORegistryEntrySetCFProperty. The root domain is the one entry that takes

@@ -630,8 +630,9 @@ test -f "$DESTDIR/usr/include/SystemConfiguration/SCDynamicStore.h" \
 # DROPPED: sctest/scnotifytest/scbridgetest (host-exec) + chroot ldconfig/ldd.
 
 # ---- Libnotify (libnotify) + notifyd ----------------------------------------
-# libnotify is built here, ahead of libIOKit: libIOKit's power source client
-# (IOPowerSources.c) reads pmconfigd's notify(3) state (nextbsd-userland#232).
+# libnotify is built here, ahead of libIOKit: libIOKit's power source and
+# power management clients (IOPowerSources.c, IOPMAssertions.c,
+# IOPMLibPrivate.c) link it (nextbsd-userland#232, #233).
 # build.sh ~2122-2177 (lib) and ~2221-2238 (daemon). Generate notify MIG stubs
 # (host mig) + the short-name symlinks notifyd/notify_proc include; build
 # libnotify (bsd.lib.mk), then notifyd (bsd.prog.mk) against the same MIGOUT.
@@ -734,8 +735,9 @@ run_buildenv "make -C $SRC/kext_tools/kext.subproj SYSROOT=$SYSROOT MIGOUT=$KEXT
 test -f "$SRC/kext_tools/kext.subproj/libkext.a" || { echo "FAIL: libkext.a not built"; exit 1; }
 
 # The power management MIG interface, IOKitUser's powermanagement.defs
-# (src/libIOKit/IOKit/pwr_mgt): libIOKit's power source client links the
-# user stub, pmconfigd (below) the server stub, both from this one generation.
+# (src/libIOKit/IOKit/pwr_mgt): libIOKit's power source and IOPMLib clients
+# link the user stub, pmconfigd (below) the server stub, both from this one
+# generation.
 comp "powermanagement MIG stubs (host mig)"
 PM_MIG="$MIGROOT/powermanagement"
 rm -rf "$PM_MIG"; mkdir -p "$PM_MIG"
@@ -750,7 +752,7 @@ done
 
 comp "libIOKit"
 mkdir -p "$DESTDIR/usr/include/IOKit" "$DESTDIR/usr/include/IOKit/hid" \
-    "$DESTDIR/usr/include/IOKit/ps"
+    "$DESTDIR/usr/include/IOKit/pwr_mgt" "$DESTDIR/usr/include/IOKit/ps"
 run_buildenv "make -C $SRC/libIOKit DESTDIR=$DESTDIR SYSROOT=$SYSROOT LIBKEXT=$SRC/kext_tools/kext.subproj/libkext.a MIGOUT=$PM_MIG all install"
 # The public kext API headers, as IOKit.framework ships them: KextManager.h
 # (and the libkern/OSReturn.h it includes) and the MIG types.
@@ -764,6 +766,7 @@ test -f "$DESTDIR/usr/lib/system/libIOKit.so.1" || { echo "FAIL: libIOKit.so.1 n
 test -f "$DESTDIR/usr/include/IOKit/IOKitLib.h" || { echo "FAIL: IOKit/IOKitLib.h not installed"; exit 1; }
 test -f "$DESTDIR/usr/include/IOKit/hid/IOHIDUserDevice.h" || { echo "FAIL: IOKit/hid/IOHIDUserDevice.h not installed"; exit 1; }
 test -f "$DESTDIR/usr/include/IOKit/ps/IOPowerSources.h" || { echo "FAIL: IOKit/ps/IOPowerSources.h not installed"; exit 1; }
+test -f "$DESTDIR/usr/include/IOKit/pwr_mgt/IOPMLibPrivate.h" || { echo "FAIL: IOKit/pwr_mgt/IOPMLibPrivate.h not installed"; exit 1; }
 needed_check "$DESTDIR/usr/lib/system/libIOKit.so.1" "libnotify"
 
 comp "ioreg(8)"

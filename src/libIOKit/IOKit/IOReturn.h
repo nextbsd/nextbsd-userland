@@ -10,8 +10,10 @@
  * compares against Apple's numbers (mDNSResponder's DebugServices.c,
  * vendored Apple sources, a value printed with %x) sees the same codes.
  *
- * Only the common codes are defined; family subsystems (sub_iokit_usb ...)
- * are added when a NextBSD family returns them.
+ * Only the common codes are defined. The family subsystem numbers
+ * (sub_iokit_usb ...) are all there, for headers such as <IOKit/pwr_mgt/IOPM.h>
+ * that build their own codes from them; a family's codes are added when a
+ * NextBSD family returns them.
  */
 #ifndef __IOKIT_IORETURN_H
 #define __IOKIT_IORETURN_H
@@ -29,6 +31,47 @@ typedef kern_return_t           IOReturn;
 #define sys_iokit                         err_system(0x38)
 #endif /* sys_iokit */
 #define sub_iokit_common                  err_sub(0)
+#define sub_iokit_usb                     err_sub(1)
+#define sub_iokit_firewire                err_sub(2)
+#define sub_iokit_block_storage           err_sub(4)
+#define sub_iokit_graphics                err_sub(5)
+#define sub_iokit_networking              err_sub(6)
+#define sub_iokit_bluetooth               err_sub(8)
+#define sub_iokit_pmu                     err_sub(9)
+#define sub_iokit_acpi                    err_sub(10)
+#define sub_iokit_smbus                   err_sub(11)
+#define sub_iokit_ahci                    err_sub(12)
+#define sub_iokit_powermanagement         err_sub(13)
+#define sub_iokit_hidsystem               err_sub(14)
+#define sub_iokit_scsi                    err_sub(16)
+#define sub_iokit_usbaudio                err_sub(17)
+#define sub_iokit_wirelesscharging        err_sub(18)
+//#define sub_iokit_pccard                err_sub(21)
+#ifdef PRIVATE
+#define sub_iokit_nvme                    err_sub(28)
+#endif
+#define sub_iokit_thunderbolt             err_sub(29)
+#define sub_iokit_graphics_acceleration   err_sub(30)
+#define sub_iokit_keystore                err_sub(31)
+#ifdef PRIVATE
+#define sub_iokit_smc                     err_sub(32)
+#endif
+#define sub_iokit_apfs                    err_sub(33)
+#define sub_iokit_acpiec                  err_sub(34)
+#define sub_iokit_timesync_avb            err_sub(35)
+
+#define sub_iokit_platform                err_sub(0x2A)
+#define sub_iokit_audio_video             err_sub(0x45)
+#define sub_iokit_cec                     err_sub(0x46)
+#define sub_iokit_arc                     err_sub(0x47)
+#define sub_iokit_baseband                err_sub(0x80)
+#define sub_iokit_HDA                     err_sub(0xFE)
+#define sub_iokit_hsic                    err_sub(0x147)
+#define sub_iokit_sdio                    err_sub(0x174)
+#define sub_iokit_wlan                    err_sub(0x208)
+#define sub_iokit_appleembeddedsleepwakehandler  err_sub(0x209)
+#define sub_iokit_appleppm                err_sub(0x20A)
+
 #define sub_iokit_vendor_specific         err_sub(-2)
 #define sub_iokit_reserved                err_sub(-1)
 
