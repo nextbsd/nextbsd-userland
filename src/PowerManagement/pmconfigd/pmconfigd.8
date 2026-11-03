@@ -182,6 +182,33 @@ system does not idle-sleep.
 Active remote logins
 .Pq Xr ssh 1
 hold off idle sleep while their terminals are in use.
+.Ss CPU power
+The processor's energy/performance policy follows the active profile, as
+the Mac's platform plugin applies it.
+On Intel processors with hardware P-states
+.Pq Xr hwpstate_intel 4
+the hardware chooses the frequency and
+.Nm
+sets every CPU's energy/performance preference,
+.Va dev.hwpstate_intel.N.epp :
+50 on AC power, 75 on battery or UPS power, 100 while the profile's
+.Ql LowPowerMode
+.Pq Xr pmset 1 Cm lowpowermode
+is on, and 0 while a
+.Ql CPUBoundAssertion
+forces full speed.
+It is set again at every power-source change; the kernel keeps it across
+sleep.
+On processors with only frequency levels
+.Pq Va dev.cpu.0.freq
+.Nm
+sets the lowest level while
+.Ql LowPowerMode
+is on and the highest when it goes off, and otherwise leaves the
+frequency alone.
+Machines with neither control are not touched, and
+.Ql LowPowerMode
+is not offered there.
 .Pp
 Every other MIG request is answered with
 .Dv kIOReturnUnsupported ;
@@ -205,6 +232,7 @@ the daemon's log
 .Xr launchctl 1 ,
 .Xr pmset 1 ,
 .Xr notify 3 ,
+.Xr hwpstate_intel 4 ,
 .Xr caffeinate 8 ,
 .Xr launchd 8 ,
 .Xr shutdown 8

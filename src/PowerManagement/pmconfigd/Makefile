@@ -11,8 +11,9 @@
 # Xcode project's powerd target is the source of truth for what the daemon
 # is made of, and SRCS below grows toward it. See ../VENDORED.md.
 #
-# The binary is pmconfigd, not powerd: /usr/sbin/powerd is still FreeBSD's
-# CPU-frequency daemon until pmconfigd owns CPU policy (nextbsd-userland#231).
+# The binary is pmconfigd. pmconfigd owns the CPU power policy
+# (nextbsd-userland#231, CPUPower_freebsd.c), so the base no longer ships
+# FreeBSD's powerd(8) (nextbsd-freebsd-compat scripts/superseded).
 #
 # Build:   make SYSROOT=/path/to/rootfs MIGOUT=/path/to/migout
 # Install: make DESTDIR=/path/to/rootfs install
@@ -46,6 +47,10 @@ BINDIR=		/usr/sbin
 #   IOPMEnergyPrefs_freebsd.c IOKitUser's IOPMEnergyPrefs.c, read side: the
 #                           Energy Saver defaults and saved settings, until
 #                           libIOKit carries it (nextbsd-userland#233)
+#   CPUPower_freebsd.c      the CPU energy/performance preference a Mac's
+#                           kernel platform plugin sets from the active
+#                           profile (hwpstate_intel(4) EPP), until the
+#                           kernel has a platform plugin
 #   PMSettings_freebsd.c    PMSettings.m, compiled as C
 #   PMStore_freebsd.c       Apple's PMStore.c, unmodified, compiled with the
 #                           PrivateLib.h declarations it needs
@@ -62,6 +67,7 @@ SRCS+=		RootDomain_freebsd.c
 SRCS+=		PMConnection_freebsd.c
 SRCS+=		RootDomainIdle_freebsd.c
 SRCS+=		IOPMEnergyPrefs_freebsd.c
+SRCS+=		CPUPower_freebsd.c
 
 # Apple's files, built as C under __FreeBSD__ (see ../VENDORED.md):
 #   AutoWakeScheduler.c     pmset schedule: one-shot power events
