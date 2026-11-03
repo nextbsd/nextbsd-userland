@@ -54,35 +54,6 @@
 
 __BEGIN_DECLS
 
-/*
- * IOReturn codes this API returns that IOKitLib.h does not define yet, with
- * the same bare common-error values IOKitLib.h uses.
- */
-#ifndef kIOReturnNoMemory
-#define kIOReturnNoMemory	0x2bd
-#endif
-#ifndef kIOReturnNoResources
-#define kIOReturnNoResources	0x2be
-#endif
-#ifndef kIOReturnNotPrivileged
-#define kIOReturnNotPrivileged	0x2c1
-#endif
-#ifndef kIOReturnIOError
-#define kIOReturnIOError	0x2ca
-#endif
-#ifndef kIOReturnTimeout
-#define kIOReturnTimeout	0x2d6
-#endif
-#ifndef kIOReturnOffline
-#define kIOReturnOffline	0x2d7
-#endif
-#ifndef kIOReturnNotReady
-#define kIOReturnNotReady	0x2d8
-#endif
-#ifndef kIOReturnAborted
-#define kIOReturnAborted	0x2eb
-#endif
-
 typedef struct __IOHIDUserDevice *IOHIDUserDeviceRef;
 
 /*
