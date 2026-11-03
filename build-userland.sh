@@ -1292,7 +1292,8 @@ echo "==> sw_vers built"
 # they hand the request to launchd (PID 1) with the BSD init(8) signal it
 # honours -- SIGINT reboot, SIGUSR1 halt, SIGUSR2 power off, SIGWINCH power
 # cycle -- in place of Darwin's reboot3(). They replace the base's copies at
-# the same paths (nextbsd-freebsd-compat scripts/collisions). Plain libc.
+# the same paths (nextbsd-freebsd-compat scripts/collisions). reboot is plain
+# libc; shutdown links libIOKit for -s (IOPMSleepSystem, #229).
 comp "reboot(8), shutdown(8)"
 mkdir -p "$DESTDIR/sbin" "$DESTDIR/usr/share/man/man8"
 run_buildenv "make -C $SRC/reboot DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
@@ -1300,6 +1301,7 @@ run_buildenv "make -C $SRC/shutdown DESTDIR=$DESTDIR SYSROOT=$SYSROOT all instal
 for b in reboot halt shutdown poweroff; do
     test -x "$DESTDIR/sbin/$b" || { echo "FAIL: /sbin/$b not installed"; exit 1; }
 done
+needed_check "$DESTDIR/sbin/shutdown" "libIOKit"
 echo "==> reboot, halt, shutdown, poweroff built"
 
 # ---- swapd (nextbsd/nextbsd-userland#178, E14 U1) --------------------------

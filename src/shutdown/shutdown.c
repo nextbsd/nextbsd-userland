@@ -43,10 +43,10 @@
  *
  *   - -h halts and powers off, as Darwin's does (shutdown.8), so it sends
  *     SIGUSR2 like -p; with -o it runs `halt -p`.
- *   - -s (sleep) is Darwin-only: it needs IOPMSleepSystem() from IOKit's
- *     power management, which arrives with pmconfigd and the root domain
- *     (E17, nextbsd/nextbsd#490). Until then it is not an option here.
- *   - One of -c, -h, -p, -r or -k is required, as on Darwin. Without
+ *   - -s sleeps the system, as Darwin's does: IOPMSleepSystem() on
+ *     IOPMFindPowerManagement(), which libIOKit sends to the kernel's
+ *     power management root domain (nextbsd/nextbsd-userland#229).
+ *   - One of -c, -h, -p, -r, -s or -k is required, as on Darwin. Without
  *     one, init(8) would get SIGTERM for single-user mode, which launchd
  *     does not have.
  *   - No audit record: audit_shutdown() is Darwin-only in this file.
@@ -100,6 +100,10 @@
 #define	BOOTTRACE(...)
 #endif /* __APPLE__ */
 
+#ifdef __FreeBSD__
+#include <IOKit/pwr_mgt/IOPMLib.h>
+#endif
+
 #ifdef DEBUG
 #undef _PATH_NOLOGIN
 #define	_PATH_NOLOGIN	"./nologin"
@@ -135,6 +139,9 @@ static int dohalt, doreboot, dosleep, killflg, oflag;
 static size_t mbuflen;
 #else
 static int docycle, dohalt, dopower, doreboot, killflg, mbuflen, oflag;
+#ifdef __FreeBSD__
+static int dosleep;
+#endif
 #endif
 static char mbuf[BUFSIZ];
 static const char *nosync, *whom;
@@ -202,6 +209,8 @@ main(int argc, char **argv)
 
 #ifdef __APPLE__
 	while ((ch = getopt(argc, argv, "-hknopqrsu")) != -1)
+#elif defined(__FreeBSD__)
+	while ((ch = getopt(argc, argv, "-chknopqrs")) != -1)
 #else
 	while ((ch = getopt(argc, argv, "-chknopqr")) != -1)
 #endif
@@ -251,6 +260,10 @@ main(int argc, char **argv)
 			/* ignored for compatibility */
 			warnx("-%c has no effect", ch);
 			break;
+#elif defined(__FreeBSD__)
+		case 's':
+			dosleep = 1;
+			break;
 #endif
 		case '?':
 		default:
@@ -263,8 +276,13 @@ main(int argc, char **argv)
 		usage((char *)NULL);
 
 #ifndef __APPLE__
+#ifdef __FreeBSD__
+	if (killflg + doreboot + dohalt + dopower + docycle + dosleep > 1)
+		usage("incompatible switches -c, -h, -k, -p, -r and -s");
+#else
 	if (killflg + doreboot + dohalt + dopower + docycle > 1)
 		usage("incompatible switches -c, -h, -k, -p and -r");
+#endif
 
 	if (oflag && !(dohalt || dopower || doreboot || docycle))
 		usage("-o requires -c, -h, -p or -r");
@@ -277,8 +295,8 @@ main(int argc, char **argv)
 	 * As on Darwin, an action is required. Without one, init(8) would get
 	 * SIGTERM for single-user, which launchd has no mode for.
 	 */
-	if (!(dohalt || dopower || doreboot || docycle || killflg))
-		usage("-c, -h, -p, -r or -k is required");
+	if (!(dohalt || dopower || doreboot || docycle || dosleep || killflg))
+		usage("-c, -h, -p, -r, -s or -k is required");
 #endif
 #else /* __APPLE__ */
 	if (killflg + doreboot + dohalt + dosleep > 1)
@@ -516,9 +534,16 @@ die_you_gravy_sucking_pig_dog(void)
 	BOOTTRACE("%s by %s",
 	    doreboot ? "reboot" : dohalt ? "halt" : dopower ? "power-down" :
 	   docycle ? "power-cycle" : "shutdown", whom);
+#ifdef __FreeBSD__
+	syslog(LOG_NOTICE, "%s by %s: %s",
+	    doreboot ? "reboot" : dohalt ? "halt" : dopower ? "power-down" :
+	    docycle ? "power-cycle" : dosleep ? "sleep" : "shutdown", whom,
+	    mbuf);
+#else
 	syslog(LOG_NOTICE, "%s by %s: %s",
 	    doreboot ? "reboot" : dohalt ? "halt" : dopower ? "power-down" :
 	    docycle ? "power-cycle" : "shutdown", whom, mbuf);
+#endif
 #endif
 
 	(void)printf("\r\nSystem shutdown time has arrived\007\007\r\n");
@@ -574,6 +599,18 @@ die_you_gravy_sucking_pig_dog(void)
 		}
 	}
 #else /* !__APPLE__ */
+#ifdef __FreeBSD__
+	if (dosleep) {
+		io_connect_t fb;
+		fb = IOPMFindPowerManagement(MACH_PORT_NULL);
+		if (fb != IO_OBJECT_NULL) {
+			IOReturn err = IOPMSleepSystem(fb);
+			if (err != kIOReturnSuccess)
+				fprintf(stderr, "shutdown: sleep failed (0x%08x)\n", err);
+		}
+		finish(0);
+	}
+#endif
 	if (!oflag) {
 		BOOTTRACE("signal to init(8)...");
 		(void)kill(1, doreboot ? SIGINT :	/* reboot */
@@ -785,6 +822,9 @@ usage(const char *cp)
 	(void)fprintf(stderr,
 #ifdef __APPLE__
 	    "usage: shutdown [-] [-h | -r | -s | -k] [-o [-n]] [-q] time [warning-message ...]\n");
+#elif defined(__FreeBSD__)
+	    "usage: shutdown [-] [-c | -h | -p | -r | -s | -k] [-o [-n]] [-q] time [warning-message ...]\n"
+	    "       poweroff\n");
 #else
 	    "usage: shutdown [-] [-c | -h | -p | -r | -k] [-o [-n]] [-q] time [warning-message ...]\n"
 	    "       poweroff\n");
