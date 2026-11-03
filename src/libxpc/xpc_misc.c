@@ -166,6 +166,8 @@ xpc_unpack(void *buf, size_t size)
 void
 xpc_object_destroy(struct xpc_object *xo)
 {
+	if (xo->xo_flags & _XPC_GLOBAL)		/* XPC_ERROR_* and friends */
+		return;
 	if (xo->xo_xpc_type == _XPC_TYPE_DICTIONARY)
 		xpc_dictionary_destroy(xo);
 
@@ -184,6 +186,8 @@ xpc_retain(xpc_object_t obj)
 	struct xpc_object *xo;
 
 	xo = obj;
+	if (xo->xo_flags & _XPC_GLOBAL)
+		return (obj);
 	atomic_add_int(&xo->xo_refcnt, 1);
 	return (obj);
 }
@@ -194,6 +198,8 @@ xpc_release(xpc_object_t obj)
 	struct xpc_object *xo;
 
 	xo = obj;
+	if (xo->xo_flags & _XPC_GLOBAL)
+		return;
 	if (atomic_fetchadd_int(&xo->xo_refcnt, -1) > 0)
 		return;
 
