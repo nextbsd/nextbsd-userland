@@ -25,6 +25,7 @@
 #define IOOBJ_KIND_ENTRY	1
 #define IOOBJ_KIND_ITERATOR	2
 #define IOOBJ_KIND_INTEREST	3	/* IOServiceAddInterestNotification */
+#define IOOBJ_KIND_CONNECT	4	/* io_connect_t: IOPMLib.c */
 
 struct __io_interest;
 
@@ -39,6 +40,10 @@ struct __IOObject {
 	uint32_t	cursor;
 	/* interest notification (IOKitNotify.c owns it): */
 	struct __io_interest *interest;
+	/* connection (IOPMLib.c): the /dev/iopmroot descriptor standing in for
+	 * the root domain's user client, -1 once IOServiceClose closed it.
+	 * node_id is the IOPMrootDomain entry. */
+	atomic_int	fd;
 };
 
 /*
@@ -47,6 +52,22 @@ struct __IOObject {
  * IONotificationPort and frees it (IOKitNotify.c).
  */
 void	__io_interest_release(struct __io_interest *interest);
+
+/*
+ * __io_connect_release — called by IOObjectRelease when the last reference
+ * to an IOOBJ_KIND_CONNECT object goes: closes its descriptor (IOPMLib.c).
+ */
+void	__io_connect_release(io_connect_t connect);
+
+/*
+ * __io_pmroot_fd — cached process-wide descriptor on /dev/iopmroot (the
+ * in-kernel IOPMrootDomain, nextbsd-kernel#243), opened O_RDWR | O_CLOEXEC on
+ * first call (pthread_once-guarded) and kept for the life of the process.
+ * IORegistryEntrySetCFProperty on the root domain and the acknowledgements
+ * libIOKit sends on behalf of a released registration go through it. -1 on
+ * a kernel without the root domain. IOPMLib.c.
+ */
+int	__io_pmroot_fd(void);
 
 /*
  * __io_ioregistry_fd — cached read-only fd to the kernel /dev/ioregistry
