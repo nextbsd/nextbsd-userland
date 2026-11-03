@@ -140,6 +140,11 @@ enum {
 #define kIOPMMessageClamshellStateChange \
 	iokit_family_msg(sub_iokit_powermanagement, 0x100)
 #endif
+/* IOPMPrivate.h: a HID driver saw the user (nextbsd-kernel IOHIDSystem). */
+#ifndef kIOPMMessageRequestUserActive
+#define kIOPMMessageRequestUserActive \
+	iokit_family_msg(sub_iokit_powermanagement, 0x460)
+#endif
 #ifndef kAppleClamshellStateKey
 #define kAppleClamshellStateKey		"AppleClamshellState"
 #define kAppleClamshellCausesSleepKey	"AppleClamshellCausesSleep"

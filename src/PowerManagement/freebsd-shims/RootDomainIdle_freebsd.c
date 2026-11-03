@@ -39,19 +39,38 @@
  *
  * HID idle time. The time of the last user input comes from the
  * IOHIDSystem registry entry's HIDIdleTime, as PrivateLib.m's
- * _getHIDIdleTime() reads it. NextBSD publishes no IOHIDSystem entry yet
- * (nextbsd-userland#239, V1). Without one, _getHIDIdleTime() returns 0, as
- * it does on macOS: the user counts as active right now, so the display
- * never goes idle and the system never idle-sleeps. That keeps headless
- * machines and the CI virtual machines awake until there is an input
- * source. V1 publishes HIDIdleTime and wakes the display on input with
- * pmIdleActivityTickle() (or kPMActivityTickle).
+ * _getHIDIdleTime() reads it. The kernel publishes that entry
+ * (nextbsd-kernel IOHIDSystem, nextbsd-userland#239) and computes
+ * HIDIdleTime on each read from the last evdev input. Like Darwin before
+ * the WindowServer opens the event system, it reads 0 while no input
+ * device has an open client (no window server). With no entry at all (an
+ * older kernel) _getHIDIdleTime() also returns 0. Either way the user
+ * counts as active right now, the display never goes idle and the system
+ * never idle-sleeps, which keeps headless machines and the CI virtual
+ * machines awake.
+ *
+ * Input wakes the display at once: after a quiet spell the kernel's
+ * IOHIDSystem has the root domain send kIOPMMessageRequestUserActive,
+ * which RootDomain_freebsd.c answers as PMConnection.m does, with a
+ * UserIsActive assertion whose kPMActivityTickle reaches
+ * pmIdleActivityTickle(). Input with no message is still seen whenever a
+ * timer looks at HIDIdleTime.
+ *
+ * Display state. xnu's IODisplayWrangler powers the displays down itself;
+ * on NextBSD the window server (XLibre, Gershwin) does the blanking, so
+ * the wrangler state is published for it as on Apple's HID event system:
+ * notify(3) kIOHIDEventSystemDisplayStatusNotifyKey,
+ * "com.apple.iokit.hid.displayStatus", whose state is 1 while the display
+ * is on and 0 once it should be off (posted on every change, set to 1 at
+ * start). A window server watches it and blanks (DPMS off) on 0 and
+ * unblanks on 1.
  *
  * Everything runs on pmconfigd's main queue; the entry points below hop onto
  * it, since Apple's code calls some of them from other queues.
  */
 #include "PrivateLib_freebsd.h"
 
+#include <notify.h>
 #include <time.h>
 
 /* xnu IOPMrootDomain.cpp */
@@ -61,6 +80,11 @@
 /* PrivateLib.m */
 #ifndef kIOHIDIdleTimeKey
 #define kIOHIDIdleTimeKey               "HIDIdleTime"
+#endif
+
+/* IOHIDEventSystemKeysPrivate.h: notify(3) state 1 display on, 0 off */
+#ifndef kIOHIDEventSystemDisplayStatusNotifyKey
+#define kIOHIDEventSystemDisplayStatusNotifyKey "com.apple.iokit.hid.displayStatus"
 #endif
 
 /* IOPMrootDomain state, as xnu names it */
@@ -80,6 +104,7 @@ static dispatch_source_t    extraSleepTimer;
 static uint32_t             displaySlider;          /* kPMMinutesToDim */
 static bool                 wranglerAsleep;
 static dispatch_source_t    displayIdleTimer;
+static int                  displayStatusToken = -1;
 
 /* NextBSD: the kernel root domain's sleep count, to notice a wake. */
 static uint64_t             sleepCountSeen;
@@ -153,6 +178,23 @@ hidIdleTimeAvailable(void)
         hidsys = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOHIDSystem"));
     }
     return (IO_OBJECT_NULL != hidsys);
+}
+
+/*
+ * NextBSD: publish the wrangler's state for the window server, which does
+ * the blanking (see "Display state" above).
+ */
+static void
+publishDisplayStatus(bool displayOn)
+{
+    if (displayStatusToken == -1 &&
+        notify_register_check(kIOHIDEventSystemDisplayStatusNotifyKey,
+                              &displayStatusToken) != NOTIFY_STATUS_OK) {
+        displayStatusToken = -1;
+        return;
+    }
+    notify_set_state(displayStatusToken, displayOn ? 1 : 0);
+    notify_post(kIOHIDEventSystemDisplayStatusNotifyKey);
 }
 
 /* ---- pmconfigd.m ------------------------------------------------------- */
@@ -453,9 +495,10 @@ handleSleepTimerExpiration(void)
     }
 
     /*
-     * NextBSD: HID input does not tickle the root domain yet (V1); look at
-     * HIDIdleTime before sleeping, and treat input since the user became
-     * inactive as the tickle xnu would have had.
+     * NextBSD: HID input reaches pmconfigd as kIOPMMessageRequestUserActive
+     * only after a quiet spell; look at HIDIdleTime before sleeping too, and
+     * treat input since the user became inactive as the tickle xnu would
+     * have had.
      */
     if (lastUserActivityTime(now) > ((userActivityTime > userBecameInactiveTime) ?
                                      userActivityTime : userBecameInactiveTime)) {
@@ -492,11 +535,17 @@ evaluatePolicy(int stimulus)
 
     switch (stimulus) {
     case kStimulusDisplayWranglerSleep:
-        wranglerAsleep = true;
+        if (!wranglerAsleep) {
+            wranglerAsleep = true;
+            publishDisplayStatus(false);
+        }
         break;
 
     case kStimulusDisplayWranglerWake:
-        wranglerAsleep = false;
+        if (wranglerAsleep) {
+            wranglerAsleep = false;
+            publishDisplayStatus(true);
+        }
         break;
 
     case kStimulusEnterUserActiveState:
@@ -614,8 +663,10 @@ pmIdleUserAssertionLevelsChanged(uint32_t levels)
 }
 
 /*
- * kPMActivityTickle (IOPMAssertionDeclareUserActivity, and V1's input): the
- * user is active now. The display wakes and the idle sleep timer stops.
+ * kPMActivityTickle (IOPMAssertionDeclareUserActivity, and the UserIsActive
+ * assertion pmconfigd takes for the kernel's kIOPMMessageRequestUserActive
+ * on input): the user is active now. The display wakes and the idle sleep
+ * timer stops.
  */
 __private_extern__ void
 pmIdleActivityTickle(void)
@@ -651,5 +702,6 @@ pmIdle_prime(void)
     if (pmRootDomainCopyState(&st) == kIOReturnSuccess) {
         sleepCountSeen = st.sleep_count;
     }
+    publishDisplayStatus(true);
     evaluateDisplayIdle();
 }

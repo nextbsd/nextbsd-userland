@@ -451,6 +451,15 @@ logRootDomainState(void)
  * below), so pmconfigd only logs the change. kIOMessageServicePropertyChange,
  * which follows every property update, is ignored, as on macOS.
  *
+ * kIOPMMessageRequestUserActive (nextbsd-userland#239): the kernel's
+ * IOHIDSystem saw input after a quiet spell. xnu sends it on a Mac without
+ * a display wrangler to pmconfigd's system-capability registration, and
+ * PMConnection.m's PMConnectionPowerCallBack() declares the user active;
+ * NextBSD's root domain sends it to general interest, so it is answered
+ * here, the same way. The UserIsActive assertion's kPMActivityTickle wakes
+ * the display (RootDomainIdle_freebsd.c). xnu's message data is the asking
+ * driver's "name:reason"; NextBSD's argument[0] is its registry id.
+ *
  * libIOKit hands a general-interest callback an
  * IOServiceInterestMessageArgument; Apple's kernel passes the clamshell bits
  * as the argument pointer itself. They are argument[0] here.
@@ -471,6 +480,23 @@ RootDomainInterest(
         INFO_LOG("Clamshell state changed: %s, closing %s\n",
                  (bits & kClamshellStateBit) ? "closed" : "open",
                  (bits & kClamshellSleepBit) ? "sleeps" : "does not sleep");
+    }
+    else if (messageType == kIOPMMessageRequestUserActive)
+    {
+        static IOPMAssertionID  requestUserActiveID = kIOPMNullAssertionID;
+        uint64_t                regID = (arg != NULL) ? arg->argument[0] : 0;
+        char                    reason[64];
+        CFStringRef             description;
+
+        snprintf(reason, sizeof(reason), "IOHIDSystem(0x%llx):HID activity",
+                 (unsigned long long)regID);
+        INFO_LOG("Request user active from kernel driver %s", reason);
+        description = CFStringCreateWithFormat(kCFAllocatorDefault, NULL,
+                        CFSTR("com.apple.powermanagement.kernel.useractive %s"), reason);
+        if (description) {
+            InternalDeclareUserActive(description, &requestUserActiveID);
+            CFRelease(description);
+        }
     }
 }
 
