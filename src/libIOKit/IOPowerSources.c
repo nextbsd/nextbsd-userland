@@ -25,11 +25,46 @@
  *
  */
 
+/*
+ * NextBSD: vendored from apple-oss-distributions/IOKitUser @
+ * IOKitUser-100231.120.3 (ps.subproj/IOPowerSources.c) for libIOKit
+ * (nextbsd-userland#232). pmconfigd serves the other end: the
+ * io_ps_copy_powersources_info MIG routine and the
+ * com.apple.system.powersources.* notify(3) state (nextbsd-userland#227).
+ *
+ * The __FreeBSD__ changes:
+ *  - The Darwin-only headers are replaced by ps_freebsd.h (os_log,
+ *    SystemConfiguration's isA_* helpers); the ps headers come from
+ *    <IOKit/ps/>, where libIOKit installs them.
+ *  - IOPSCopyExternalPowerAdapterDetails returns NULL, Apple's answer when
+ *    there are no adapter details: the kernel's IOPMPowerSource entries carry
+ *    no AdapterDetails, pmconfigd does not answer the kPSAdapterDetails XPC
+ *    request, and NextBSD's CF has no CF <-> XPC bridge to decode a reply.
+ *  - IOPSGetPercentRemaining is defined here. IOKitUser declares it in
+ *    IOPowerSourcesPrivate.h, but this drop of the source no longer carries
+ *    its body; it decodes kIOPSNotifyPercentChange's state the way
+ *    pmconfigd's publish_IOPSGetPercentRemaining() packs it.
+ *  - The run loop sources: Apple's are CFMachPort sources on a
+ *    notify_register_mach_port() port. NextBSD's CoreFoundation has no
+ *    CFMachPort, so the notification arrives through
+ *    notify_register_dispatch() and signals a version 0 source, as
+ *    IONotificationPortGetRunLoopSource, libDiskArbitration and SCDynamicStore
+ *    do. The callback still runs on the run loop's thread.
+ */
 
 #include <sys/cdefs.h>
 #include <notify.h>
 #include <mach/vm_map.h>
 
+#ifdef __FreeBSD__
+#include "ps_freebsd.h"
+#include <IOKit/ps/IOPSKeys.h>
+#include <IOKit/ps/IOPowerSources.h>
+#include <IOKit/ps/IOPowerSourcesPrivate.h>
+#include "powermanagement.h"
+#include <IOKit/pwr_mgt/IOPMLibPrivate.h>
+#include <notify.h>
+#else
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreFoundation/CFXPCBridge.h>
 #include "IOSystemConfiguration.h"
@@ -41,14 +76,17 @@
 #include <notify.h>
 #include <xpc/xpc.h>
 #include <os/log.h>
+#endif
 
 
 #ifndef kIOPSDynamicStoreLowBattPathKey
 #define kIOPSDynamicStoreLowBattPathKey "/IOKit/LowBatteryWarning"
 #endif
 
+#ifndef __FreeBSD__
 dispatch_queue_t  getPMQueue();
 #define POWERD_XPC_ID   "com.apple.iokit.powerdxpc"
+#endif
 
 IOPSLowBatteryWarningLevel IOPSGetBatteryWarningLevel(void)
 {
@@ -121,6 +159,58 @@ CFTimeInterval IOPSGetTimeRemainingEstimate(void)
     return (_kSecondsPerMinute * (CFTimeInterval)(packedBatteryData & 0xFFFF));
 }
 
+#ifdef __FreeBSD__
+/*
+ * NextBSD: not in this drop of IOKitUser (see the top of the file). The
+ * state is pmconfigd's: the percent (0-100) in the low bits, plus the
+ * kPSTimeRemainingNotify* bits. As the header says, a failure also reports
+ * 100%.
+ */
+IOReturn IOPSGetPercentRemaining(int *percent, bool *isCharging, bool *isFullyCharged)
+{
+    int                 token = 0;
+    uint64_t            packedBatteryBits = 0;
+    int                 status = 0;
+    IOReturn            ret = kIOReturnSuccess;
+
+    if (!percent) {
+        return kIOReturnBadArgument;
+    }
+
+    *percent = 100;
+    if (isCharging) {
+        *isCharging = false;
+    }
+    if (isFullyCharged) {
+        *isFullyCharged = false;
+    }
+
+    status = notify_register_check(kIOPSNotifyPercentChange, &token);
+    if (NOTIFY_STATUS_OK != status) {
+        return kIOReturnInternalError;
+    }
+    notify_get_state(token, &packedBatteryBits);
+    notify_cancel(token);
+
+    if (!(packedBatteryBits & kPSTimeRemainingNotifyValidBit)) {
+        return kIOReturnNotReady;
+    }
+
+    *percent = (int)(packedBatteryBits & 0xFF);
+    if (*percent > 100) {
+        *percent = 100;
+    }
+    if (isCharging) {
+        *isCharging = (packedBatteryBits & kPSTimeRemainingNotifyChargingBit) ? true : false;
+    }
+    if (isFullyCharged) {
+        *isFullyCharged = (packedBatteryBits & kPSTimeRemainingNotifyFullyChargedBit) ? true : false;
+    }
+
+    return ret;
+}
+#endif /* __FreeBSD__ */
+
 bool IOPSDrawingUnlimitedPower(void)
 {
     int                 token = 0;
@@ -178,6 +268,10 @@ IOReturn IOPSGetSupportedPowerSources(IOPSPowerSourceIndex *active,
 
 CFDictionaryRef IOPSCopyExternalPowerAdapterDetails(void)
 {
+#ifdef __FreeBSD__
+    /* NextBSD: no adapter details to ask for (see the top of the file). */
+    return NULL;
+#else
     xpc_object_t        connection = NULL;
     xpc_object_t        msg = NULL;
     xpc_object_t        respData = NULL;
@@ -226,7 +320,7 @@ exit:
 
 
     return ret_dict;
-
+#endif /* !__FreeBSD__ */
 }
 
 __private_extern__ IOReturn _pm_connect(mach_port_t *newConnection);
@@ -356,6 +450,156 @@ CFStringRef IOPSGetProvidingPowerSourceType(CFTypeRef ps_blob __unused)
 /***
  Support structures and functions for IOPSNotificationCreateRunLoopSource
 ***/
+#ifdef __FreeBSD__
+/*
+ * NextBSD: a version 0 run loop source, signalled from a notify(3) dispatch
+ * handler (see the top of the file). The context is the source's info; the
+ * source's release callback cancels the registration and frees the context
+ * on the handler's serial queue, behind any handler already queued.
+ */
+typedef struct {
+    IOPowerSourceCallbackType       callback;
+    void                            *context;
+    int                             token;
+    pthread_mutex_t                 lock;
+    CFRunLoopSourceRef              rls;        /* not retained; NULL once released */
+    CFMutableArrayRef               runloops;   /* where rls is scheduled */
+} IOPSNotifyCallbackContext;
+
+static dispatch_queue_t IOPSNotifyQueue(void)
+{
+    static dispatch_once_t  once;
+    static dispatch_queue_t q;
+
+    dispatch_once(&once, ^{
+        q = dispatch_queue_create("com.apple.iokit.powersources.notify", NULL);
+    });
+    return q;
+}
+
+static void IOPSRLSPerform(void *info)
+{
+    IOPSNotifyCallbackContext	*c = (IOPSNotifyCallbackContext *)info;
+    IOPowerSourceCallbackType cb;
+    
+    if (c && (cb = c->callback)) {
+        (*cb)(c->context);
+    }
+}
+
+static void IOPSRLSSchedule(void *info, CFRunLoopRef rl, CFStringRef mode __unused)
+{
+    IOPSNotifyCallbackContext	*c = (IOPSNotifyCallbackContext *)info;
+
+    pthread_mutex_lock(&c->lock);
+    CFArrayAppendValue(c->runloops, rl);
+    pthread_mutex_unlock(&c->lock);
+}
+
+static void IOPSRLSCancel(void *info, CFRunLoopRef rl, CFStringRef mode __unused)
+{
+    IOPSNotifyCallbackContext	*c = (IOPSNotifyCallbackContext *)info;
+    CFIndex                     idx;
+
+    pthread_mutex_lock(&c->lock);
+    idx = CFArrayGetFirstIndexOfValue(c->runloops,
+            CFRangeMake(0, CFArrayGetCount(c->runloops)), rl);
+    if (idx != kCFNotFound) {
+        CFArrayRemoveValueAtIndex(c->runloops, idx);
+    }
+    pthread_mutex_unlock(&c->lock);
+}
+
+static void IOPSRLSFree(void *info)
+{
+    IOPSNotifyCallbackContext	*c = (IOPSNotifyCallbackContext *)info;
+
+    CFRelease(c->runloops);
+    pthread_mutex_destroy(&c->lock);
+    free(c);
+}
+
+static void IOPSRLSRelease(const void *info)
+{
+    IOPSNotifyCallbackContext	*c = (IOPSNotifyCallbackContext *)info;
+    
+    if (c) {
+        pthread_mutex_lock(&c->lock);
+        c->rls = NULL;
+        pthread_mutex_unlock(&c->lock);
+        if (0 != c->token) {
+            notify_cancel(c->token);
+        }
+        dispatch_async_f(IOPSNotifyQueue(), c, IOPSRLSFree);
+    }
+}
+
+static void IOPSRLSNotify(IOPSNotifyCallbackContext *c)
+{
+    CFIndex     i, n;
+
+    pthread_mutex_lock(&c->lock);
+    if (c->rls) {
+        CFRunLoopSourceSignal(c->rls);
+        n = CFArrayGetCount(c->runloops);
+        for (i = 0; i < n; i++) {
+            CFRunLoopWakeUp((CFRunLoopRef)CFArrayGetValueAtIndex(c->runloops, i));
+        }
+    }
+    pthread_mutex_unlock(&c->lock);
+}
+
+static CFRunLoopSourceRef doCreatePSRLS(const char *notify_type, IOPowerSourceCallbackType callback, void *context)
+{
+    int                             status = 0;
+    int                             token = 0;
+    CFRunLoopSourceContext          rlsContext;
+    CFRunLoopSourceRef              rls = NULL;
+    IOPSNotifyCallbackContext       *ioContext;
+
+    ioContext = calloc(1, sizeof(IOPSNotifyCallbackContext));
+    if (!ioContext) {
+        return NULL;
+    }
+    ioContext->callback = callback;
+    ioContext->context = context;
+    pthread_mutex_init(&ioContext->lock, NULL);
+    ioContext->runloops = CFArrayCreateMutable(kCFAllocatorDefault, 0, NULL);
+    if (!ioContext->runloops) {
+        pthread_mutex_destroy(&ioContext->lock);
+        free(ioContext);
+        return NULL;
+    }
+
+    bzero(&rlsContext, sizeof(rlsContext));
+    rlsContext.version = 0;
+    rlsContext.info = (void *)ioContext;
+    rlsContext.release = IOPSRLSRelease;
+    rlsContext.schedule = IOPSRLSSchedule;
+    rlsContext.cancel = IOPSRLSCancel;
+    rlsContext.perform = IOPSRLSPerform;
+
+    rls = CFRunLoopSourceCreate(kCFAllocatorDefault, 0, &rlsContext);
+    if (!rls) {
+        IOPSRLSFree(ioContext);
+        return NULL;
+    }
+    /* From here the source owns ioContext: releasing it frees the context. */
+    ioContext->rls = rls;
+
+    status = notify_register_dispatch(notify_type, &token, IOPSNotifyQueue(),
+                                      ^(int t __unused) {
+                                          IOPSRLSNotify(ioContext);
+                                      });
+    if (NOTIFY_STATUS_OK != status) {
+        CFRelease(rls);
+        return NULL;
+    }
+    ioContext->token = token;
+
+    return rls;
+}
+#else /* !__FreeBSD__ */
 typedef struct {
     IOPowerSourceCallbackType       callback;
     void                            *context;
@@ -438,6 +682,7 @@ static CFRunLoopSourceRef doCreatePSRLS(const char *notify_type, IOPowerSourceCa
     
     return mpRLS;
 }
+#endif /* !__FreeBSD__ */
 
 CFRunLoopSourceRef IOPSNotificationCreateRunLoopSource(IOPowerSourceCallbackType callback, void *context) {
     return doCreatePSRLS(kIOPSNotifyTimeRemaining, callback, context);

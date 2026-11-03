@@ -21,6 +21,41 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+/*
+ * NextBSD: vendored from apple-oss-distributions/IOKitUser @
+ * IOKitUser-100231.120.3 (ps.subproj/IOPowerSourcesPrivate.c) for libIOKit
+ * (nextbsd-userland#232). pmconfigd serves the io_ps_* MIG routines
+ * (nextbsd-userland#227).
+ *
+ * The __FreeBSD__ changes:
+ *  - The Darwin-only headers are replaced by ps_freebsd.h (os_log, asl_log,
+ *    SystemConfiguration's isA_* helpers, the IOPMLibPrivate.h keys).
+ *  - IOPSRequestBatteryUpdate does nothing and succeeds. There is no
+ *    AppleSmartBatteryManager to ask: the kernel re-reads every battery on
+ *    each ACPI battery or AC event and every 60 s, and messages pmconfigd
+ *    when a value changes (nextbsd-kernel#244).
+ *  - IOPSPowerSourceSupported: NextBSD's registry has no IODeviceTree plane
+ *    ("builtin-battery", "system-type"), so battery support is answered from
+ *    the snapshot, as Apple does on the platforms without "system-type":
+ *    an internal battery in it means the machine has one.
+ *  - IOPSSetPowerSourceDetails sends the details as a binary property list.
+ *    NextBSD's libIOKit has no IOCFSerialize; pmconfigd parses them with
+ *    CFPropertyListCreateWithData.
+ */
+
+#ifdef __FreeBSD__
+#include "ps_freebsd.h"
+#include <IOKit/IOReturn.h>
+#include <IOKit/pwr_mgt/IOPMLibPrivate.h>
+#include <mach/mach_port.h>
+#include <mach/vm_map.h>
+#include <notify.h>
+
+#include <IOKit/ps/IOPowerSources.h>
+#include <IOKit/ps/IOPowerSourcesPrivate.h>
+#include <IOKit/ps/IOPSKeys.h>
+#include "powermanagement.h"
+#else
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreFoundation/CFXPCBridge.h>
 #include <IOKit/pwr_mgt/IOPMPrivate.h>
@@ -40,13 +75,23 @@
 #include "IOPowerSourcesPrivate.h"
 #include "IOPSKeys.h"
 #include "powermanagement.h"
+#endif
 
 #define ARRAY_COUNT(array) (sizeof((array)) / sizeof((array[0])))
 
+#ifndef __FreeBSD__
 dispatch_queue_t  getPMQueue();
 #define POWERD_XPC_ID   "com.apple.iokit.powerdxpc"
+#endif
 
 #define kSmartBattRequestUpdateIndex        4
+#ifdef __FreeBSD__
+/* NextBSD: the kernel keeps the batteries current (see the top of the file). */
+IOReturn IOPSRequestBatteryUpdate(int type __unused)
+{
+    return kIOReturnSuccess;
+}
+#else
 IOReturn IOPSRequestBatteryUpdate(int type)
 {
     io_registry_entry_t     battery_reg = IO_OBJECT_NULL;
@@ -70,6 +115,7 @@ IOReturn IOPSRequestBatteryUpdate(int type)
     }
     return ret;
 }
+#endif /* !__FreeBSD__ */
 
 
 /* IOPSCopyInternalBatteriesArray
@@ -251,6 +297,7 @@ CFBooleanRef IOPSPowerSourceSupported(CFTypeRef ps_blob, CFStringRef ps_type)
         return kCFBooleanTrue;
     }
 
+#ifndef __FreeBSD__
     if (CFEqual(ps_type, CFSTR(kIOPMBatteryPowerKey))) {
         io_registry_entry_t product = IORegistryEntryFromPath(kIOMainPortDefault, kIODeviceTreePlane ":/product");
         if (product) {
@@ -271,7 +318,9 @@ CFBooleanRef IOPSPowerSourceSupported(CFTypeRef ps_blob, CFStringRef ps_type)
         }
     }
 
-#if defined (__i386__) || defined (__x86_64__)
+#endif /* !__FreeBSD__ */
+
+#if (defined (__i386__) || defined (__x86_64__)) && !defined(__FreeBSD__)
     if (CFEqual(ps_type, CFSTR(kIOPMBatteryPowerKey)))
     {
         CFBooleanRef            ret = kCFBooleanFalse;
@@ -399,7 +448,13 @@ static IOReturn setPowerSourceDetails(
     if (!whichPS || !isA_CFDictionary(details) || whichPS->psid == 0)
         return kIOReturnBadArgument;
     
+#ifdef __FreeBSD__
+    flatDetails = CFPropertyListCreateData(kCFAllocatorDefault, details,
+                                           kCFPropertyListBinaryFormat_v1_0,
+                                           0, NULL);
+#else
     flatDetails = IOCFSerialize(details, 0);
+#endif
     if (!flatDetails) {
         ret = kIOReturnBadArgument;
         goto exit;

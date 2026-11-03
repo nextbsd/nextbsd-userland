@@ -30,6 +30,9 @@
 
 #include <sys/cdefs.h>
 #include <CoreFoundation/CoreFoundation.h> /* CFTimeInterval, CFArrayRef, CFDictionaryRef, CFRunLoopSourceRef */
+#ifdef __FreeBSD__	/* NextBSD: CF does not pull in __OSX_AVAILABLE_STARTING */
+#include <Availability.h>
+#endif
 __BEGIN_DECLS
 
 

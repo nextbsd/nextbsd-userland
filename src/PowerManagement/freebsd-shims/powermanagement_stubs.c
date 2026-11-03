@@ -2,7 +2,7 @@
  * powermanagement_stubs.c — interim server routines for powermanagement.defs.
  *
  * pmconfigd serves com.apple.PowerManagement.control (MIG subsystem 73000,
- * freebsd-shims/IOKit/pwr_mgt/powermanagement.defs). On macOS each _io_*
+ * libIOKit/IOKit/pwr_mgt/powermanagement.defs). On macOS each _io_*
  * routine is implemented in the pmconfigd source file that owns that
  * feature: assertions in PMAssertions.c, IOPMConnection in PMConnection.m,
  * power sources in BatteryTimeRemaining.m, scheduled events in

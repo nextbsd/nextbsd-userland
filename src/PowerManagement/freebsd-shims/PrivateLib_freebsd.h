@@ -68,7 +68,7 @@
 #include <xpc/xpc.h>
 
 /*
- * IOKitUser's <IOKit/ps/IOPowerSources.h> (freebsd-shims/IOKit/ps/) marks
+ * IOKitUser's <IOKit/ps/IOPowerSources.h> (libIOKit/IOKit/ps/) marks
  * one routine with __OSX_AVAILABLE_STARTING; NextBSD's CoreFoundation does
  * not pull in <Availability.h>, so define it away before the ps headers,
  * as Libnotify's and libxpc's shims do.

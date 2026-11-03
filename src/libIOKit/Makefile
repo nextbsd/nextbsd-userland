@@ -22,6 +22,29 @@ SRCS=		IOKitLib.c IOKitMatching.c IOKitNotify.c IOPMAssertions.c
 SRCS+=		IOPMLib.c
 SRCS+=		IOHIDUserDevice.c
 
+# Power sources (nextbsd-userland#232): IOKitUser's ps.subproj client,
+# vendored from apple-oss-distributions/IOKitUser @ IOKitUser-100231.120.3
+# with __FreeBSD__ changes listed at the top of each file
+# (IOPowerSources.c, IOPowerSourcesPrivate.c; ps_freebsd.h stands in for the
+# Darwin-only headers, IOPMLibPrivate_freebsd.c for the connection to
+# pmconfigd that IOPMLibPrivate.c will carry). They reach pmconfigd over MIG,
+# through the user stub that build-userland.sh generates from
+# IOKit/pwr_mgt/powermanagement.defs, the same file pmconfigd's server stub
+# comes from; pass its directory as MIGOUT. Apple's sources compile with
+# pointer/integer conversions that clang 19 makes errors by default; Apple's
+# toolchain warns.
+SRCS+=		IOPowerSources.c IOPowerSourcesPrivate.c IOPMLibPrivate_freebsd.c
+CFLAGS.IOPowerSources.c+=		-Wno-int-conversion
+CFLAGS.IOPowerSourcesPrivate.c+=	-Wno-int-conversion
+MIGOUT?=
+.if empty(MIGOUT)
+.error MIGOUT must name the directory holding powermanagementUser.c (build-userland.sh)
+.endif
+.PATH:		${MIGOUT}
+SRCS+=		powermanagementUser.c
+CFLAGS.powermanagementUser.c+=	-w
+CFLAGS+=	-I${MIGOUT}
+
 # WARNS=0: the public header pulls the whole CoreFoundation public
 # header tree (for later iters' CFDictionary / CFString surfaces).
 # At WARNS>0 the FreeBSD warning machinery adds -Wsystem-headers
@@ -64,6 +87,9 @@ CFLAGS+=	-I${.CURDIR}
 # public headers.
 CFLAGS+=	-I${.CURDIR}/../launchd/liblaunch
 CFLAGS+=	-I${.CURDIR}/../launchd/freebsd-shims
+# <notify.h> includes <os/base.h>, which only Libnotify's shims carry.
+# Searched after the sysroot, so it adds that header and shadows none.
+CFLAGS+=	-idirafter ${.CURDIR}/../Libnotify/freebsd-shims
 
 SYSROOT?=
 .if !empty(SYSROOT)
@@ -77,9 +103,15 @@ INCSDIR=	${PREFIX}/include/IOKit
 
 # <IOKit/hid/...>: IOHIDUserDevice (nextbsd-userland#521). A separate group
 # so the headers keep their hid/ directory, as in IOKit.framework.
-INCSGROUPS=	INCS HIDINCS
+INCSGROUPS=	INCS HIDINCS PSINCS
 HIDINCS=	IOKit/hid/IOHIDKeys.h IOKit/hid/IOHIDUserDevice.h
 HIDINCSDIR=	${PREFIX}/include/IOKit/hid
+
+# <IOKit/ps/...> (nextbsd-userland#232): IOKitUser's power source headers,
+# as IOKit.framework carries them.
+PSINCS=		IOKit/ps/IOPowerSources.h IOKit/ps/IOPowerSourcesPrivate.h \
+		IOKit/ps/IOPSKeys.h IOKit/ps/IOPSKeysPrivate.h
+PSINCSDIR=	${PREFIX}/include/IOKit/ps
 LIBDIR=		${PREFIX}/lib/system
 
 # -lCoreFoundation: the CFDictionary / CFString / CFNumber object
@@ -91,6 +123,10 @@ LIBDIR=		${PREFIX}/lib/system
 # the IONotificationPort receive loop. -lpthread: pthread_once for the
 # lazy /dev/ioregistry fd + the IONotificationPort receive thread.
 LDADD+=		-lCoreFoundation
+# The power source client (IOPowerSources.c, IOPowerSourcesPrivate.c):
+# notify(3) for pmconfigd's state, SystemConfiguration for the low battery
+# warning level. libnotify is built ahead of libIOKit for this.
+LDADD+=		-lnotify -lSystemConfiguration
 LDADD+=		-lsystem_dispatch -l:libsystem_blocks.so
 LDADD+=		-lsystem_kernel -llaunch
 LDADD+=		-Wl,--allow-shlib-undefined

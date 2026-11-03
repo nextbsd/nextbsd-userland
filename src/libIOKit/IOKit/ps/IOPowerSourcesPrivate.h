@@ -24,7 +24,9 @@
 #ifndef _IOPowerSourcesPrivate_h_
 #define _IOPowerSourcesPrivate_h_
 
+#ifndef __FreeBSD__	/* NextBSD: no AppleFeatures; nothing here tests it */
 #include <AppleFeatures/AppleFeatures.h>
+#endif
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
 #include <sys/cdefs.h>
