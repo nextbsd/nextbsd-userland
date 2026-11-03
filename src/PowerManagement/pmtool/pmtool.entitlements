@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.powerd.lowpowermode.allow</key>
+	<true/>
+	<key>com.apple.private.iokit.BDCDataCopy</key>
+	<true/>
+	<key>com.apple.private.iokit.darkwake-control</key>
+	<true/>
+	<key>com.apple.private.iokit.interactive-push</key>
+	<true/>
+	<key>com.apple.private.iokit.batteryTester</key>
+	<true/>
+	<key>com.apple.powerd.smartpowernap.tester</key>
+	<true/>
+	<key>com.apple.powerd.coresmartpowernap.tester</key>
+	<true/>
+	<key>com.apple.private.iokit.dominoservice</key>
+	<true/>
+	<key>com.apple.security.iokit-user-client-class</key>
+	<array>
+		<string>ApplePPMUserClient</string>
+		<string>RootDomainUserClient</string>
+		<string>AppleSMCClient</string>
+		<string>AppleSmartBatteryManagerUserClient</string>
+		<string>IOReportUserClient</string>
+	</array>
+	<key>com.apple.private.power.notifications</key>
+	<true/>
+	<key>com.apple.private.iokit.assertion-softwareupdate</key>
+	<true/>
+	<key>com.apple.security.exception.mach-lookup.global-name</key>
+	<array>
+		<string>com.apple.powerd.extendedbattery</string>
+	</array>
+	<key>com.apple.powerd.extendedbattery</key>
+	<true/>
+	<key>com.apple.powerd.extendedbattery.setInfo</key>
+	<true/>
+</dict>
+</plist>
