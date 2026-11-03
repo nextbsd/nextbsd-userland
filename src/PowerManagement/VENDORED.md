@@ -6,9 +6,10 @@
 **Imported:** 2026-11-02 (nextbsd-userland#224, E17 D1)
 **License:** APSL 2.0 (see `APPLE_LICENSE`)
 
-The whole tree is imported as Apple ships it, minus `.git`. The import is its
-own commit, so `git diff <import commit> -- src/PowerManagement` shows every
-NextBSD change.
+The whole tree is imported as Apple ships it, minus `.git`. Apple's files are
+unmodified except `pmconfigd/Makefile` (below); a diff against a checkout of
+the upstream tag shows exactly that file plus the NextBSD files listed at the
+end.
 
 Also vendored, into `freebsd-shims/IOKit/pwr_mgt/`:
 
