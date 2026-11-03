@@ -1071,6 +1071,14 @@ __private_extern__ IOReturn ActivatePMSettings(
 
     sendEnergySettingsToKernel(useSettings, removeUnsupportedSettings, &theFactors);
     sendEnergySettingsToIOPMPowerSource(useSettings);
+#ifdef __FreeBSD__
+    /*
+     * NextBSD: the CPU's energy/performance policy for this profile, which
+     * a Mac's kernel platform plugin derives from the same settings
+     * (CPUPower_freebsd.c).
+     */
+    cpuPowerActivateSettings(useSettings);
+#endif
 
     evalAllUserActivityAssertions(theFactors.fMinutesToDim);
     evalAllNetworkAccessAssertions();

@@ -103,7 +103,7 @@ Each change is under `#ifdef __FreeBSD__`, with Apple's code kept in the
 | `pmconfigd/PMAssertions.h` | includes `PrivateLib_freebsd.h`; no IOReport headers; no `CFMachPort` prototype |
 | `pmconfigd/PMAssertions.c` | the include list; without the async-offload XPC handlers, IOReport aggregates, `os_state`, CrashReporter and the CF/XPC bridge; no dark-wake proxies (every wake is a full wake) and no IOService busy-state interest |
 | `pmconfigd/PMAssertionLog.c` | the include list; without the powerlog activity buffer (its keys are not in the IOKitUser drop and its reader needs an entitlement), kdebug, IOReport and the CF/XPC bridge |
-| `pmconfigd/PMSettings.m` | the include list; no hibernation, PowerNap or pre-CFPreferences settings migration |
+| `pmconfigd/PMSettings.m` | the include list; no hibernation, PowerNap or pre-CFPreferences settings migration; `ActivatePMSettings()` hands each profile to `CPUPower_freebsd.c` |
 | `pmconfigd/TTYKeepAwake.c` | watches `/var/run/utx.active` with a vnode source, since NextBSD's libc posts no utmpx notification |
 
 The Xcode project also builds `pmset`, `caffeinate`, `pmtool`, `ioupsd` and
@@ -127,6 +127,7 @@ All in `freebsd-shims/` unless noted (the Libnotify pattern):
 | `RootDomainIdle_freebsd.c` | xnu's IOPMrootDomain idle sleep timer and IODisplayWrangler idle timer, fed by the aggressiveness, assertion levels and tickles pmconfigd sends the kernel |
 | `IOPMEnergyPrefs_freebsd.c` | IOKitUser's `IOPMEnergyPrefs.c`, read side only: defaults, saved settings, feature pruning; libIOKit takes it over (nextbsd-userland#233) |
 | `PMSettings_freebsd.c` | compiles `pmconfigd/PMSettings.m` as C |
+| `CPUPower_freebsd.c` | the CPU part of a Mac's kernel platform plugin: the active profile's energy/performance preference on `hwpstate_intel(4)` (`dev.hwpstate_intel.N.epp`), Low Power Mode on frequency-level CPUs, and the `LowPowerMode` feature for the energy prefs (nextbsd-userland#231) |
 | `libproc.h` | launchd's `libproc.h` shim plus `proc_name()` |
 | `os/log.h`, `os_log_shim.c` | `os_log()`: `%{public}` annotations and `%@` handled, written to stderr (`/var/log/pmconfigd.stderr`) |
 | `os/signpost.h` | `os_signpost_*()` as no-ops |

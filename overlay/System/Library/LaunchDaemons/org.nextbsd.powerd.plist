@@ -20,8 +20,8 @@
   DIFFERENCES FROM APPLE'S PLIST
 
   - ProgramArguments is /usr/sbin/pmconfigd. /System/Library holds data
-    only, never executables, and /usr/sbin/powerd is still FreeBSD's
-    CPU-frequency daemon until pmconfigd owns CPU policy.
+    only, never executables. pmconfigd also owns the CPU power policy, so
+    FreeBSD's CPU-frequency daemon, /usr/sbin/powerd, is not shipped.
   - RunAtLoad: Apple's job starts on demand at the first lookup of either
     service. pmconfigd also has to act without being asked (power sources,
     idle sleep, lid and button policy), so it starts at boot, as notifyd

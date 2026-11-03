@@ -361,6 +361,13 @@ __private_extern__ void			pmIdleActivityTickle(void);
 __private_extern__ void			pmIdleSystemDidWake(void);
 __private_extern__ CFTimeInterval	_getHIDIdleTime(void);
 
+/*
+ * CPUPower_freebsd.c: the CPU energy/performance policy a Mac's platform
+ * plugin applies from the active Energy Saver profile.
+ */
+__private_extern__ void			cpuPowerActivateSettings(CFDictionaryRef settings);
+__private_extern__ bool			cpuPowerFeatureIsAvailable(CFStringRef feature);
+
 /* common/CommonLib.c */
 __private_extern__ io_registry_entry_t	getRootDomain(void);
 /* PrivateLib.m */

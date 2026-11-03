@@ -1333,6 +1333,18 @@ bool IOPMFeatureIsAvailableWithSupportedTable(
 #if TARGET_OS_OSX
 #endif // TARGET_OS_OSX
 
+#ifdef __FreeBSD__
+    /*
+     * Low Power Mode is published by a Mac's platform plugin; on NextBSD
+     * pmconfigd's CPU power code says whether it can honour it.
+     */
+    if (CFEqual(PMFeature, CFSTR(kIOPMLowPowerModeKey)))
+    {
+        ret = cpuPowerFeatureIsAvailable(PMFeature);
+        goto exit;
+    }
+#endif
+
     // ***********************************
     // Generic code for all other settings
 
