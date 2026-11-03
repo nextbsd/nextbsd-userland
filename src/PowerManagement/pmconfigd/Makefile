@@ -47,6 +47,12 @@ BINDIR=		/usr/sbin
 #                           Energy Saver defaults and saved settings, until
 #                           libIOKit carries it (nextbsd-userland#233)
 #   PMSettings_freebsd.c    PMSettings.m, compiled as C
+#   PMStore_freebsd.c       Apple's PMStore.c, unmodified, compiled with the
+#                           PrivateLib.h declarations it needs
+#   BatteryTimeRemaining_freebsd.c
+#                           the power-source core of BatteryTimeRemaining.m
+#                           (IOPMPowerSource entries -> kIOPS dictionaries,
+#                           notify state, the io_ps_* routines)
 .PATH:		${.CURDIR}/../freebsd-shims ${.CURDIR}/../common
 SRCS=		pmconfigd_freebsd.c
 SRCS+=		powermanagement_stubs.c
@@ -80,6 +86,10 @@ PMRES=		Resources/com.apple.powerd.assertiontimeouts.plist
 PMRES+=		Resources/com.apple.powerd.assertioncategories.plist
 PMRESDIR=	/System/Library/CoreServices/powerd.bundle
 PMRESMODE=	0444
+
+# The power-source core of BatteryTimeRemaining.m, and Apple's PMStore.c:
+SRCS+=		PMStore_freebsd.c
+SRCS+=		BatteryTimeRemaining_freebsd.c
 
 # powermanagementServer.c — MIG server stub for powermanagement.defs.
 # build-userland.sh runs the host mig and passes MIGOUT=; a standalone build
@@ -145,10 +155,13 @@ LDFLAGS+=	-Wl,--allow-shlib-undefined
 #   -lCoreFoundation  %@ in os_log_shim.c (and, later, everything)
 #   -lsystem_kernel   mach_msg, vm_deallocate, the Mach port calls
 #   -l:libsystem_blocks.so  the XPC event-handler blocks
-#   -lSystemConfiguration  SCPreferences: com.apple.AutoWake.plist
-#   -lnotify          notify_post() of the scheduled-event notifications
+#   -lSystemConfiguration  SCPreferences: com.apple.AutoWake.plist; PMStore's
+#                     SCDynamicStore session
+#   -lnotify          notify_post() of the scheduled-event notifications and
+#                     the com.apple.system.powersources.* state
 #   -lIOKit           the root domain: registry lookup, interest
-#                     notifications, IOPMLib, /dev/iopmroot
+#                     notifications, IOPMLib, /dev/iopmroot; the
+#                     IOPMPowerSource notifications (BatteryTimeRemaining_freebsd.c)
 #   -lsystem_asl      PMAssertionLog.c's ASL messages
 # Use the system_* names and the exact-file -l: form for blocks, never
 # -ldispatch / -lBlocksRuntime (#378).
@@ -157,6 +170,7 @@ LDADD+=		-lsystem_kernel -l:libsystem_blocks.so
 LDADD+=		-lSystemConfiguration -lnotify -lIOKit -lsystem_asl
 
 # FreeBSD base libs: releng/15.1 src.libnames.mk requires LIBADD, not LDADD+=-lfoo.
-#   m                 ceil() in AutoWakeScheduler.c (libSystem has it on macOS)
+#   m                 ceil() in AutoWakeScheduler.c (libSystem has it on macOS),
+#                     lround() in BatteryTimeRemaining_freebsd.c
 LIBADD+=	pthread m
 .include <bsd.prog.mk>

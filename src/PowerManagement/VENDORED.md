@@ -11,13 +11,14 @@ unmodified except `pmconfigd/Makefile` (below) and the files listed under
 "Apple files changed"; a diff against a checkout of the upstream tag shows
 exactly those plus the NextBSD files listed at the end.
 
-Also vendored, into `freebsd-shims/IOKit/pwr_mgt/`:
+Also vendored, into `freebsd-shims/IOKit/pwr_mgt/` and `freebsd-shims/IOKit/ps/`:
 
 | File | Upstream |
 |---|---|
 | `powermanagement.defs` | apple-oss-distributions/IOKitUser @ `IOKitUser-100231.120.3` (commit `23a611d9d194b63465f6df2abfdda63d71c87e97`), `pwr_mgt.subproj/powermanagement.defs` |
 | `powermanagement_mig.h` | same tag, `pwr_mgt.subproj/powermanagement_mig.h`, unmodified |
 | `IOPMLibDefs.h` | apple-oss-distributions/xnu @ `xnu-12377.121.6` (commit `ac9718fb1af618d5ce8678d0dc6e8a58f252216f`), `iokit/IOKit/pwr_mgt/IOPMLibDefs.h`, unmodified: the root domain's user-client selectors (`kPM*`) |
+| `IOKit/ps/IOPSKeys.h`, `IOPSKeysPrivate.h`, `IOPowerSources.h`, `IOPowerSourcesPrivate.h` | same tag, `ps.subproj/`, unmodified: the kIOPS dictionary keys, the notify(3) names and the packed state bits pmconfigd publishes |
 
 `pmconfigd/powermanagement.defs` is a one-line
 `#include <IOKit/pwr_mgt/powermanagement.defs>`: Apple builds the daemon
@@ -118,7 +119,7 @@ All in `freebsd-shims/` unless noted (the Libnotify pattern):
 | `pmconfigd_freebsd.c` | `main()`, `powerd_init()` and the two listeners, in Apple's shape, until `pmconfigd.m` and `PrivateLib.m` build |
 | `powermanagement_stubs.c` | the `_io_*` MIG routines whose Apple files are not built yet; `io_pm_assertion_copy_details` serves only the two scheduled-event selectors |
 | `PrivateLib_freebsd.h` | the share of `PrivateLib.h` (and the IOKit private headers it includes) that the ported Apple files use, until `PrivateLib.h` builds |
-| `PrivateLib_freebsd.c` | `PrivateLib.m` functions those files call: scheduled shutdown/restart over launchd's init signals, scheduled sleep through the root domain, entitlement checks, ASL; IOKitUser's `IOPMSchedulePowerEvent` for the "Immediate" (RTC) types; and one interim block per Apple file not built yet (PMConnection.m, SystemLoad.c, BatteryTimeRemaining.m, PMStore.c, PMDisplay.m, Platform.c) |
+| `PrivateLib_freebsd.c` | `PrivateLib.m` functions those files call: scheduled shutdown/restart over launchd's init signals, scheduled sleep through the root domain, entitlement checks, ASL, `powerd_notify_and_log()`, `_getSharedPMDynamicStore()`; IOKitUser's `IOPMSchedulePowerEvent` for the "Immediate" (RTC) types; and one interim block per Apple file not built yet (PMConnection.m, SystemLoad.c, PMDisplay.m, Platform.c) |
 | `RootDomain_freebsd.c` | the kernel shim: `IOServiceOpen` / `IOConnectCallMethod` on the IOPMrootDomain as `/dev/iopmroot` ioctls (selector table), `getRootDomain()`, `_set`/`_copyRootDomainProperty()`, pmconfigd.m's root-domain general-interest listener, and the sleep policy the kernel leaves to pmconfigd: claiming the lid and power-button policy, and the low-battery sleep |
 | `PMConnection_freebsd.c` | `PMConnection.m`'s sleep/wake state machine (app-power messages as capability changes), the IOPMConnection MIG routines, `io_pm_get_capability_bits` and `getRootDomainConnect()`, until `PMConnection.m` builds |
 | `RootDomainIdle_freebsd.c` | xnu's IOPMrootDomain idle sleep timer and IODisplayWrangler idle timer, fed by the aggressiveness, assertion levels and tickles pmconfigd sends the kernel |
@@ -127,6 +128,10 @@ All in `freebsd-shims/` unless noted (the Libnotify pattern):
 | `libproc.h` | launchd's `libproc.h` shim plus `proc_name()` |
 | `os/log.h`, `os_log_shim.c` | `os_log()`: `%{public}` annotations and `%@` handled, written to stderr (`/var/log/pmconfigd.stderr`) |
 | `os/signpost.h` | `os_signpost_*()` as no-ops |
-| `IOKit/pwr_mgt/` | vendored from IOKitUser and xnu, see above |
+| `IOKit/pwr_mgt/`, `IOKit/ps/` | vendored from IOKitUser and xnu, see above |
+| `PMStore_freebsd.c` | compiles Apple's `pmconfigd/PMStore.c` unmodified, standing in for the `PrivateLib.h` it includes |
+| `BatteryTimeRemaining_freebsd.c` | the power-source core of `BatteryTimeRemaining.m` as C (nextbsd-userland#227): IOPMPowerSource notifications, the internal battery's kIOPS dictionary, the notify(3) state, the `io_ps_*` MIG routines. Apple's code where it does not touch Foundation; each NextBSD difference is marked |
+| `SystemConfiguration/SCValidation.h`, `SCDynamicStorePrivate.h` | `isA_CF*()` (as in `PrivateLib_freebsd.h`), and a no-op `SCDynamicStoreSetDisconnectCallBack()` (NextBSD's SystemConfiguration has no reconnect) |
+| `AppleFeatures/AppleFeatures.h` | empty; `IOPowerSourcesPrivate.h` includes it |
 
 The launchd job is `overlay/System/Library/LaunchDaemons/org.nextbsd.powerd.plist`.
