@@ -215,8 +215,9 @@ CFTypeRef	IORegistryEntryCreateCFProperty(io_registry_entry_t entry,
  * IOPMrootDomain::setProperties acts on, such as "SleepDisabled" and
  * "DisablePowerButtonSleep"; other keys are accepted and ignored); every
  * other entry returns kIOReturnUnsupported, IORegistryEntry's default.
- * Values may be CFBoolean, CFNumber or CFString (up to 63 bytes); other types
- * return kIOReturnUnsupported. Root only (kIOReturnNotPrivileged).
+ * Values may be CFBoolean, CFNumber, CFString (up to 63 bytes) or CFData (up
+ * to 64 bytes, e.g. "WakeByCalendarDate"); other types return
+ * kIOReturnUnsupported. Root only (kIOReturnNotPrivileged).
  * SetCFProperties takes a CFDictionary and returns the first error.
  */
 kern_return_t	IORegistryEntrySetCFProperty(io_registry_entry_t entry,

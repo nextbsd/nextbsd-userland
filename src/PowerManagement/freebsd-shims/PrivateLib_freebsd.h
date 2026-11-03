@@ -189,6 +189,37 @@ enum {
 #define kIOPMRootDomainWakeReasonKey	"Wake Reason"
 #define kIOPMRootDomainWakeTypeKey	"Wake Type"
 #endif
+
+/* ---- IOKit/pwr_mgt/IOPM.h, IOPMPrivate.h (xnu): RTC wake settings ------ */
+/*
+ * What IOKitUser's tellClockController() and doAMaintenanceWake() hand the
+ * root domain, which arms the RTC alarm with them (nextbsd-kernel#245).
+ */
+#ifndef kIOPMSettingAutoWakeSecondsKey
+#define kIOPMSettingAutoWakeSecondsKey		"wake"
+#define kIOPMSettingAutoWakeCalendarKey		"WakeByCalendarDate"
+#define kIOPMSettingAutoPowerSecondsKey		"poweron"
+#define kIOPMSettingAutoPowerCalendarKey	"PowerByCalendarDate"
+#endif
+#ifndef _IOKIT_IOPM_H
+struct IOPMCalendarStruct {
+	uint32_t    year;
+	uint8_t     month;
+	uint8_t     day;
+	uint8_t     hour;
+	uint8_t     minute;
+	uint8_t     second;
+	uint8_t     selector;
+};
+typedef struct IOPMCalendarStruct IOPMCalendarStruct;
+#endif
+#ifndef kIOPMSettingSleepServiceWakeCalendarKey	/* IOPMPrivate.h */
+enum {
+    kPMCalendarTypeInvalid = 0,
+    kPMCalendarTypeMaintenance = 1,
+    kPMCalendarTypeSleepService = 2
+};
+#endif
 #ifndef kIOPMSystemCapabilitiesKey
 #define kIOPMSystemCapabilitiesKey	"System Capabilities"
 #endif

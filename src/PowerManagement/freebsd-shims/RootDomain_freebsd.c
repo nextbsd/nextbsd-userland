@@ -30,7 +30,7 @@
  *   kPMShutdownSystem (5), kPMRestartSystem (6)
  *                                     kIOReturnUnsupported, as on xnu
  *   kPMSleepSystemOptions (7)         IOPMSleepSystemWithOptions (IOPMROOT_SLEEP)
- *   kPMSetMaintenanceWakeCalendar (8) kIOReturnUnsupported (no RTC alarm)
+ *   kPMSetMaintenanceWakeCalendar (8) IOPMROOT_SETMAINTWAKE (RTC wake alarm)
  *   kPMSetUserAssertionLevels (9)     IOPMROOT_SETASSERTIONS
  *   kPMActivityTickle (10)            IOPMROOT_TICKLE
  *   kPMGetSystemSleepType (11)        kIOPMSleepTypeNormalSleep, no timer
@@ -82,6 +82,10 @@
 #include <errno.h>
 #include <notify.h>
 #include <string.h>
+
+/* kPMSetMaintenanceWakeCalendar passes Apple's struct straight through. */
+_Static_assert(sizeof(struct iopmroot_calendar) == sizeof(IOPMCalendarStruct),
+    "struct iopmroot_calendar must match IOPMCalendarStruct");
 
 /*
  * libIOKit's process-wide /dev/iopmroot descriptor (IOPMLib.c), the one
@@ -355,6 +359,27 @@ pmRootDomainCallMethod(
         return (ret == kIOReturnNotPermitted) ? kIOReturnExclusiveAccess : ret;
     }
 
+    case kPMSetMaintenanceWakeCalendar:
+    {
+        /*
+         * An IOPMCalendarStruct for the maintenance or SleepService wake;
+         * the root domain arms the RTC alarm with it as the system sleeps
+         * (nextbsd-kernel#245). As RootDomainUserClient does, the call
+         * succeeds and carries the root domain's answer in the output
+         * structure: kIOReturnUnsupported where there is no RTC alarm.
+         */
+        struct iopmroot_calendar    cal;
+        uint32_t                    rc;
+
+        if (inputStructCnt != sizeof(cal) || inputStruct == NULL) {
+            return kIOReturnBadArgument;
+        }
+        memcpy(&cal, inputStruct, sizeof(cal));
+        rc = (uint32_t)pmRootDomainIoctl(IOPMROOT_SETMAINTWAKE, &cal);
+        memcpy(outputStruct, &rc, sizeof(rc));
+        return kIOReturnSuccess;
+    }
+
     case kPMRequestIdleSleepRevert:
     {
         /*
@@ -378,8 +403,6 @@ pmRootDomainCallMethod(
     case kPMShutdownSystem:
     case kPMRestartSystem:
         /* Deprecated on xnu too. */
-    case kPMSetMaintenanceWakeCalendar:
-        /* No RTC alarm behind the root domain (nextbsd-kernel#245). */
     case kPMSleepWakeWatchdogEnable:
     case kPMSleepWakeDebugTrig:
     case kPMSetDisplayPowerOn:
