@@ -11,20 +11,22 @@ unmodified except `pmconfigd/Makefile` (below) and the files listed under
 "Apple files changed"; a diff against a checkout of the upstream tag shows
 exactly those plus the NextBSD files listed at the end.
 
-Also vendored, into `freebsd-shims/IOKit/pwr_mgt/` and `freebsd-shims/IOKit/ps/`:
+Also vendored, into `freebsd-shims/IOKit/pwr_mgt/` (`IOPMLibDefs.h`) and,
+since nextbsd-userland#232, libIOKit's `src/libIOKit/IOKit/pwr_mgt/` and
+`src/libIOKit/IOKit/ps/` (the rest), where IOKit.framework has them:
 
 | File | Upstream |
 |---|---|
 | `powermanagement.defs` | apple-oss-distributions/IOKitUser @ `IOKitUser-100231.120.3` (commit `23a611d9d194b63465f6df2abfdda63d71c87e97`), `pwr_mgt.subproj/powermanagement.defs` |
 | `powermanagement_mig.h` | same tag, `pwr_mgt.subproj/powermanagement_mig.h`, unmodified |
 | `IOPMLibDefs.h` | apple-oss-distributions/xnu @ `xnu-12377.121.6` (commit `ac9718fb1af618d5ce8678d0dc6e8a58f252216f`), `iokit/IOKit/pwr_mgt/IOPMLibDefs.h`, unmodified: the root domain's user-client selectors (`kPM*`) |
-| `IOKit/ps/IOPSKeys.h`, `IOPSKeysPrivate.h`, `IOPowerSources.h`, `IOPowerSourcesPrivate.h` | same tag, `ps.subproj/`, unmodified: the kIOPS dictionary keys, the notify(3) names and the packed state bits pmconfigd publishes |
+| `IOKit/ps/IOPSKeys.h`, `IOPSKeysPrivate.h`, `IOPowerSources.h`, `IOPowerSourcesPrivate.h` | same tag, `ps.subproj/`: the kIOPS dictionary keys, the notify(3) names and the packed state bits pmconfigd publishes. Unmodified except two `__FreeBSD__` include lines (`IOPowerSources.h` pulls `<Availability.h>`; `IOPowerSourcesPrivate.h` skips `<AppleFeatures/AppleFeatures.h>`) |
 
 `pmconfigd/powermanagement.defs` is a one-line
 `#include <IOKit/pwr_mgt/powermanagement.defs>`: Apple builds the daemon
 against the copy in the IOKit SDK. Here that copy sits at the same include
-path under `freebsd-shims/`, and it is the one description of the wire for
-both ends, pmconfigd's server and libIOKit's IOPMLib client. It drops
+path in libIOKit's source tree, and it is the one description of the wire for
+both ends, pmconfigd's server and libIOKit's client. It drops
 `UseSpecialReplyPort 1;`, as configd's `config.defs` and Libnotify's
 `notify_ipc.defs` do; the routine order (the msgh_ids from 73000) is unchanged.
 
@@ -128,7 +130,7 @@ All in `freebsd-shims/` unless noted (the Libnotify pattern):
 | `libproc.h` | launchd's `libproc.h` shim plus `proc_name()` |
 | `os/log.h`, `os_log_shim.c` | `os_log()`: `%{public}` annotations and `%@` handled, written to stderr (`/var/log/pmconfigd.stderr`) |
 | `os/signpost.h` | `os_signpost_*()` as no-ops |
-| `IOKit/pwr_mgt/`, `IOKit/ps/` | vendored from IOKitUser and xnu, see above |
+| `IOKit/pwr_mgt/IOPMLibDefs.h` | vendored from xnu, see above |
 | `PMStore_freebsd.c` | compiles Apple's `pmconfigd/PMStore.c` unmodified, standing in for the `PrivateLib.h` it includes |
 | `BatteryTimeRemaining_freebsd.c` | the power-source core of `BatteryTimeRemaining.m` as C (nextbsd-userland#227): IOPMPowerSource notifications, the internal battery's kIOPS dictionary, the notify(3) state, the `io_ps_*` MIG routines. Apple's code where it does not touch Foundation; each NextBSD difference is marked |
 | `SystemConfiguration/SCValidation.h`, `SCDynamicStorePrivate.h` | `isA_CF*()` (as in `PrivateLib_freebsd.h`), and a no-op `SCDynamicStoreSetDisconnectCallBack()` (NextBSD's SystemConfiguration has no reconnect) |

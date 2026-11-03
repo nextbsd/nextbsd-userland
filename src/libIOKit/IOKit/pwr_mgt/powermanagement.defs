@@ -30,7 +30,7 @@
  * <IOKit/pwr_mgt/powermanagement.defs>. PowerManagement's own
  * pmconfigd/powermanagement.defs is a one-line #include of this file, so it
  * lives here under that SDK path and both ends of the wire are generated from
- * this one copy: pmconfigd's server stubs now, libIOKit's client stubs later.
+ * this one copy: pmconfigd's server stubs and libIOKit's client stubs.
  *
  * One change for NextBSD:
  *   - `UseSpecialReplyPort 1;` dropped — special reply ports need

@@ -629,96 +629,9 @@ test -f "$DESTDIR/usr/include/SystemConfiguration/SCDynamicStore.h" \
     || { echo "FAIL: SCDynamicStore.h not installed"; exit 1; }
 # DROPPED: sctest/scnotifytest/scbridgetest (host-exec) + chroot ldconfig/ldd.
 
-# ---- libIOKit + ioreg -------------------------------------------------------
-# build.sh ~1910-1939 (lib) and ~2059-2077 (ioreg). libIOKit is bsd.lib.mk;
-# pre-create the IOKit include dir. ioreg(8) in build.sh was a standalone `cc`
-# link of ioreg.c; cross-shape it through the build env with the cross clang.
-# ---- KextManager MIG stubs + libkext (before libIOKit) ----------------------
-# nextbsd-userland#438: KextManager is the client half of kextd's
-# org.nextbsd.KernelExtensionServer, and on Darwin it and the OSKext engine
-# live in IOKit.framework. So libkext (OSKext + KextManager + the MIG user
-# stubs) is built here, before libIOKit, which links it whole; kextd builds
-# the server stubs from the same MIGOUT later. The generated code imports
-# <IOKit/kext/kextmanager_types.h>, so MIGOUT gets that path too.
-# NO_SECURITY_FRAMEWORK drops the Authorization types (no Security.framework);
-# __DARWIN_64_BIT_INO_T sizes mountpoint_t to MAXPATHLEN, which is FreeBSD's
-# MNAMELEN (both 1024); mig's preprocessor sees no <sys/param.h>, so
-# MAXPATHLEN is passed in.
-comp "KextManager MIG stubs (host mig)"
-KEXTMGR_MIG="$MIGROOT/kextmanager"
-rm -rf "$KEXTMGR_MIG"; mkdir -p "$KEXTMGR_MIG/IOKit/kext"
-cp "$SRC/kext_tools/kext.subproj/kextmanager_types.h" "$KEXTMGR_MIG/IOKit/kext/"
-run_mig "$KEXTMGR_MIG" -I"$SRC/libmach/include" \
-    -DNO_SECURITY_FRAMEWORK -D__DARWIN_64_BIT_INO_T=1 -DMAXPATHLEN=1024 \
-    -header kextmanager_mig.h -user kextmanager_migUser.c \
-    -server kextmanager_migServer.c -sheader kextmanager_migServer.h \
-    "$SRC/kext_tools/kext.subproj/kextmanager_mig.defs" \
-    || { echo "FAIL: mig could not process kextmanager_mig.defs"; exit 1; }
-for f in kextmanager_mig.h kextmanager_migUser.c kextmanager_migServer.c; do
-    test -s "$KEXTMGR_MIG/$f" || { echo "FAIL: mig produced no $f"; exit 1; }
-done
-
-comp "libkext (OSKext + KextManager, for libIOKit)"
-run_buildenv "make -C $SRC/kext_tools/kext.subproj SYSROOT=$SYSROOT MIGOUT=$KEXTMGR_MIG all"
-test -f "$SRC/kext_tools/kext.subproj/libkext.a" || { echo "FAIL: libkext.a not built"; exit 1; }
-
-comp "libIOKit"
-mkdir -p "$DESTDIR/usr/include/IOKit" "$DESTDIR/usr/include/IOKit/hid"
-run_buildenv "make -C $SRC/libIOKit DESTDIR=$DESTDIR SYSROOT=$SYSROOT LIBKEXT=$SRC/kext_tools/kext.subproj/libkext.a all install"
-# The public kext API headers, as IOKit.framework ships them: KextManager.h
-# (and the libkern/OSReturn.h it includes) and the MIG types.
-mkdir -p "$DESTDIR/usr/include/IOKit/kext" "$DESTDIR/usr/include/libkern"
-install -m 0644 "$SRC/kext_tools/kext.subproj/KextManager.h" \
-    "$SRC/kext_tools/kext.subproj/kextmanager_types.h" \
-    "$SRC/kext_tools/kext.subproj/NBSDFilesystemKext.h" "$DESTDIR/usr/include/IOKit/kext/"
-install -m 0644 "$SRC/kext_tools/compat/libkern/OSReturn.h" "$DESTDIR/usr/include/libkern/"
-sync_sysroot
-test -f "$DESTDIR/usr/lib/system/libIOKit.so.1" || { echo "FAIL: libIOKit.so.1 not installed"; exit 1; }
-test -f "$DESTDIR/usr/include/IOKit/IOKitLib.h" || { echo "FAIL: IOKit/IOKitLib.h not installed"; exit 1; }
-test -f "$DESTDIR/usr/include/IOKit/hid/IOHIDUserDevice.h" || { echo "FAIL: IOKit/hid/IOHIDUserDevice.h not installed"; exit 1; }
-
-comp "ioreg(8)"
-mkdir -p "$DESTDIR/usr/sbin"
-# build.sh ~2064-2071 used a bare `cc -fblocks ... -lIOKit -lCoreFoundation
-# -lsystem_kernel -llaunch -lpthread`. Cross-shape: same flags, cross clang +
-# sysroot, --allow-shlib-undefined preserved. TODO verify under cross: if
-# ioreg gains a Makefile, prefer run_buildenv make over this hand link.
-$CROSS_CC -fblocks --sysroot="$SYSROOT" \
-    -I"$SYSROOT/usr/include" -L"$SYSROOT/usr/lib/system" \
-    -Wl,-rpath,/usr/lib/system -Wl,--allow-shlib-undefined \
-    -o "$DESTDIR/usr/sbin/ioreg" "$SRC/libIOKit/ioreg.c" \
-    -lIOKit -lCoreFoundation -lsystem_kernel -llaunch -lpthread
-test -x "$DESTDIR/usr/sbin/ioreg" || { echo "FAIL: /usr/sbin/ioreg not installed"; exit 1; }
-needed_check "$DESTDIR/usr/sbin/ioreg" "libIOKit"
-# DROPPED: iokittest/iokitmatchtest/iokitnotify* (host-exec).
-
-comp "caffeinate(8)"
-mkdir -p "$DESTDIR/usr/bin"
-run_buildenv "make -C $SRC/caffeinate DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
-test -x "$DESTDIR/usr/bin/caffeinate" || { echo "FAIL: /usr/bin/caffeinate not installed"; exit 1; }
-needed_check "$DESTDIR/usr/bin/caffeinate" "libIOKit"
-
-# ---- kext_tools (libkext + OSKext CLIs + kextd) -----------------------------
-# build.sh ~1941-2018. SUBDIR build (bsd.prog.mk + bsd.lib.mk) builds
-# kextload/kextunload/kextstat/kextdeps + libexec/kextd; installs sys/iocatalogue.h.
-comp "kext_tools"
-mkdir -p "$DESTDIR/usr/sbin" "$DESTDIR/usr/libexec" "$DESTDIR/usr/include/sys"
-run_buildenv "make -C $SRC/kext_tools DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$KEXTMGR_MIG all install"
-for b in kextload kextunload kextstat kextdeps; do
-    test -x "$DESTDIR/usr/sbin/$b" || { echo "FAIL: /usr/sbin/$b not installed"; exit 1; }
-done
-test -x "$DESTDIR/usr/libexec/kextd" || { echo "FAIL: kextd not installed"; exit 1; }
-needed_check "$DESTDIR/usr/sbin/kextload" "libCoreFoundation"
-needed_check "$DESTDIR/usr/libexec/kextd" "libCoreFoundation"
-# build.sh ~1982-1984 installs the IOCatalogue ABI header for other consumers.
-install -m 0644 "$SRC/kext_tools/kextd/iocatalogue.h" "$DESTDIR/usr/include/sys/iocatalogue.h"
-echo "==> kext_tools built; sys/iocatalogue.h installed"
-# RELOCATED (build.sh ~2000-2018): the kextdeps dependency-resolution smoke
-# RAN /usr/sbin/kextdeps under chroot to assert base-before-leaf load order.
-# That execs a cross binary — the assertion MOVES to the boot test.
-# DROPPED: test_kextd_mach (host-exec).
-
 # ---- Libnotify (libnotify) + notifyd ----------------------------------------
+# libnotify is built here, ahead of libIOKit: libIOKit's power source client
+# (IOPowerSources.c) reads pmconfigd's notify(3) state (nextbsd-userland#232).
 # build.sh ~2122-2177 (lib) and ~2221-2238 (daemon). Generate notify MIG stubs
 # (host mig) + the short-name symlinks notifyd/notify_proc include; build
 # libnotify (bsd.lib.mk), then notifyd (bsd.prog.mk) against the same MIGOUT.
@@ -786,6 +699,113 @@ run_buildenv "make -C $SRC/Libnotify DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$L
 sync_sysroot
 test -f "$DESTDIR/usr/lib/system/libnotify.so.1" || { echo "FAIL: libnotify.so.1 not installed"; exit 1; }
 echo "==> NOTIFY-LIB-OK"
+
+# ---- libIOKit + ioreg -------------------------------------------------------
+# build.sh ~1910-1939 (lib) and ~2059-2077 (ioreg). libIOKit is bsd.lib.mk;
+# pre-create the IOKit include dir. ioreg(8) in build.sh was a standalone `cc`
+# link of ioreg.c; cross-shape it through the build env with the cross clang.
+# ---- KextManager MIG stubs + libkext (before libIOKit) ----------------------
+# nextbsd-userland#438: KextManager is the client half of kextd's
+# org.nextbsd.KernelExtensionServer, and on Darwin it and the OSKext engine
+# live in IOKit.framework. So libkext (OSKext + KextManager + the MIG user
+# stubs) is built here, before libIOKit, which links it whole; kextd builds
+# the server stubs from the same MIGOUT later. The generated code imports
+# <IOKit/kext/kextmanager_types.h>, so MIGOUT gets that path too.
+# NO_SECURITY_FRAMEWORK drops the Authorization types (no Security.framework);
+# __DARWIN_64_BIT_INO_T sizes mountpoint_t to MAXPATHLEN, which is FreeBSD's
+# MNAMELEN (both 1024); mig's preprocessor sees no <sys/param.h>, so
+# MAXPATHLEN is passed in.
+comp "KextManager MIG stubs (host mig)"
+KEXTMGR_MIG="$MIGROOT/kextmanager"
+rm -rf "$KEXTMGR_MIG"; mkdir -p "$KEXTMGR_MIG/IOKit/kext"
+cp "$SRC/kext_tools/kext.subproj/kextmanager_types.h" "$KEXTMGR_MIG/IOKit/kext/"
+run_mig "$KEXTMGR_MIG" -I"$SRC/libmach/include" \
+    -DNO_SECURITY_FRAMEWORK -D__DARWIN_64_BIT_INO_T=1 -DMAXPATHLEN=1024 \
+    -header kextmanager_mig.h -user kextmanager_migUser.c \
+    -server kextmanager_migServer.c -sheader kextmanager_migServer.h \
+    "$SRC/kext_tools/kext.subproj/kextmanager_mig.defs" \
+    || { echo "FAIL: mig could not process kextmanager_mig.defs"; exit 1; }
+for f in kextmanager_mig.h kextmanager_migUser.c kextmanager_migServer.c; do
+    test -s "$KEXTMGR_MIG/$f" || { echo "FAIL: mig produced no $f"; exit 1; }
+done
+
+comp "libkext (OSKext + KextManager, for libIOKit)"
+run_buildenv "make -C $SRC/kext_tools/kext.subproj SYSROOT=$SYSROOT MIGOUT=$KEXTMGR_MIG all"
+test -f "$SRC/kext_tools/kext.subproj/libkext.a" || { echo "FAIL: libkext.a not built"; exit 1; }
+
+# The power management MIG interface, IOKitUser's powermanagement.defs
+# (src/libIOKit/IOKit/pwr_mgt): libIOKit's power source client links the
+# user stub, pmconfigd (below) the server stub, both from this one generation.
+comp "powermanagement MIG stubs (host mig)"
+PM_MIG="$MIGROOT/powermanagement"
+rm -rf "$PM_MIG"; mkdir -p "$PM_MIG"
+run_mig "$PM_MIG" -I"$SRC/libmach/include" -I"$SRC/libIOKit" \
+    -header powermanagement.h -user powermanagementUser.c \
+    -server powermanagementServer.c -sheader powermanagementServer.h \
+    "$SRC/libIOKit/IOKit/pwr_mgt/powermanagement.defs" \
+    || { echo "FAIL: mig could not process powermanagement.defs"; exit 1; }
+for f in powermanagementUser.c powermanagementServer.c; do
+    test -s "$PM_MIG/$f" || { echo "FAIL: mig produced no $f"; exit 1; }
+done
+
+comp "libIOKit"
+mkdir -p "$DESTDIR/usr/include/IOKit" "$DESTDIR/usr/include/IOKit/hid" \
+    "$DESTDIR/usr/include/IOKit/ps"
+run_buildenv "make -C $SRC/libIOKit DESTDIR=$DESTDIR SYSROOT=$SYSROOT LIBKEXT=$SRC/kext_tools/kext.subproj/libkext.a MIGOUT=$PM_MIG all install"
+# The public kext API headers, as IOKit.framework ships them: KextManager.h
+# (and the libkern/OSReturn.h it includes) and the MIG types.
+mkdir -p "$DESTDIR/usr/include/IOKit/kext" "$DESTDIR/usr/include/libkern"
+install -m 0644 "$SRC/kext_tools/kext.subproj/KextManager.h" \
+    "$SRC/kext_tools/kext.subproj/kextmanager_types.h" \
+    "$SRC/kext_tools/kext.subproj/NBSDFilesystemKext.h" "$DESTDIR/usr/include/IOKit/kext/"
+install -m 0644 "$SRC/kext_tools/compat/libkern/OSReturn.h" "$DESTDIR/usr/include/libkern/"
+sync_sysroot
+test -f "$DESTDIR/usr/lib/system/libIOKit.so.1" || { echo "FAIL: libIOKit.so.1 not installed"; exit 1; }
+test -f "$DESTDIR/usr/include/IOKit/IOKitLib.h" || { echo "FAIL: IOKit/IOKitLib.h not installed"; exit 1; }
+test -f "$DESTDIR/usr/include/IOKit/hid/IOHIDUserDevice.h" || { echo "FAIL: IOKit/hid/IOHIDUserDevice.h not installed"; exit 1; }
+test -f "$DESTDIR/usr/include/IOKit/ps/IOPowerSources.h" || { echo "FAIL: IOKit/ps/IOPowerSources.h not installed"; exit 1; }
+needed_check "$DESTDIR/usr/lib/system/libIOKit.so.1" "libnotify"
+
+comp "ioreg(8)"
+mkdir -p "$DESTDIR/usr/sbin"
+# build.sh ~2064-2071 used a bare `cc -fblocks ... -lIOKit -lCoreFoundation
+# -lsystem_kernel -llaunch -lpthread`. Cross-shape: same flags, cross clang +
+# sysroot, --allow-shlib-undefined preserved. TODO verify under cross: if
+# ioreg gains a Makefile, prefer run_buildenv make over this hand link.
+$CROSS_CC -fblocks --sysroot="$SYSROOT" \
+    -I"$SYSROOT/usr/include" -L"$SYSROOT/usr/lib/system" \
+    -Wl,-rpath,/usr/lib/system -Wl,--allow-shlib-undefined \
+    -o "$DESTDIR/usr/sbin/ioreg" "$SRC/libIOKit/ioreg.c" \
+    -lIOKit -lCoreFoundation -lsystem_kernel -llaunch -lpthread
+test -x "$DESTDIR/usr/sbin/ioreg" || { echo "FAIL: /usr/sbin/ioreg not installed"; exit 1; }
+needed_check "$DESTDIR/usr/sbin/ioreg" "libIOKit"
+# DROPPED: iokittest/iokitmatchtest/iokitnotify* (host-exec).
+
+comp "caffeinate(8)"
+mkdir -p "$DESTDIR/usr/bin"
+run_buildenv "make -C $SRC/caffeinate DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/bin/caffeinate" || { echo "FAIL: /usr/bin/caffeinate not installed"; exit 1; }
+needed_check "$DESTDIR/usr/bin/caffeinate" "libIOKit"
+
+# ---- kext_tools (libkext + OSKext CLIs + kextd) -----------------------------
+# build.sh ~1941-2018. SUBDIR build (bsd.prog.mk + bsd.lib.mk) builds
+# kextload/kextunload/kextstat/kextdeps + libexec/kextd; installs sys/iocatalogue.h.
+comp "kext_tools"
+mkdir -p "$DESTDIR/usr/sbin" "$DESTDIR/usr/libexec" "$DESTDIR/usr/include/sys"
+run_buildenv "make -C $SRC/kext_tools DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$KEXTMGR_MIG all install"
+for b in kextload kextunload kextstat kextdeps; do
+    test -x "$DESTDIR/usr/sbin/$b" || { echo "FAIL: /usr/sbin/$b not installed"; exit 1; }
+done
+test -x "$DESTDIR/usr/libexec/kextd" || { echo "FAIL: kextd not installed"; exit 1; }
+needed_check "$DESTDIR/usr/sbin/kextload" "libCoreFoundation"
+needed_check "$DESTDIR/usr/libexec/kextd" "libCoreFoundation"
+# build.sh ~1982-1984 installs the IOCatalogue ABI header for other consumers.
+install -m 0644 "$SRC/kext_tools/kextd/iocatalogue.h" "$DESTDIR/usr/include/sys/iocatalogue.h"
+echo "==> kext_tools built; sys/iocatalogue.h installed"
+# RELOCATED (build.sh ~2000-2018): the kextdeps dependency-resolution smoke
+# RAN /usr/sbin/kextdeps under chroot to assert base-before-leaf load order.
+# That execs a cross binary — the assertion MOVES to the boot test.
+# DROPPED: test_kextd_mach (host-exec).
 
 # configd builds AFTER libnotify — it posts network_change via -lnotify (#339).
 comp "configd"
@@ -955,24 +975,15 @@ echo "==> bluetoothd + bluetooth built"
 
 # ---- PowerManagement (pmconfigd) --------------------------------------------
 # Apple's power management daemon, PowerManagement-1846.120.8.0.1 vendored in
-# src/PowerManagement (see its VENDORED.md). Same shape as wland above: the
-# host mig generates the powermanagement.defs stubs, then bsd.prog.mk builds
-# the daemon with MIGOUT. Apple's pmconfigd/powermanagement.defs is a one-line
-# #include <IOKit/pwr_mgt/powermanagement.defs>, which resolves to IOKitUser's
-# copy in src/PowerManagement/freebsd-shims. The user stub is generated too,
-# for libIOKit's IOPMLib client to build from the same wire description.
-# Runs as org.nextbsd.powerd, serving com.apple.PowerManagement.control and
-# com.apple.iokit.powerdxpc.
+# src/PowerManagement (see its VENDORED.md). Same shape as wland above:
+# bsd.prog.mk builds the daemon with MIGOUT, the powermanagement.defs stubs
+# generated before libIOKit (Apple's pmconfigd/powermanagement.defs is a
+# one-line #include of IOKitUser's <IOKit/pwr_mgt/powermanagement.defs>,
+# which libIOKit carries), so the server and libIOKit's client come from the
+# same generation. Runs as org.nextbsd.powerd, serving
+# com.apple.PowerManagement.control and com.apple.iokit.powerdxpc.
 comp "pmconfigd"
 mkdir -p "$DESTDIR/usr/sbin" "$DESTDIR/System/Library/CoreServices/powerd.bundle"
-PM_MIG="$MIGROOT/powermanagement"
-rm -rf "$PM_MIG"; mkdir -p "$PM_MIG"
-run_mig "$PM_MIG" -I"$SRC/libmach/include" -I"$SRC/PowerManagement/freebsd-shims" \
-    -header powermanagement.h -user powermanagementUser.c \
-    -server powermanagementServer.c -sheader powermanagementServer.h \
-    "$SRC/PowerManagement/pmconfigd/powermanagement.defs" \
-    || { echo "FAIL: mig could not process powermanagement.defs"; exit 1; }
-test -s "$PM_MIG/powermanagementServer.c" || { echo "FAIL: mig produced no powermanagementServer.c"; exit 1; }
 run_buildenv "make -C $SRC/PowerManagement/pmconfigd DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$PM_MIG all install"
 test -x "$DESTDIR/usr/sbin/pmconfigd" || { echo "FAIL: /usr/sbin/pmconfigd not installed"; exit 1; }
 test -s "$DESTDIR/System/Library/CoreServices/powerd.bundle/com.apple.powerd.assertiontimeouts.plist" \
