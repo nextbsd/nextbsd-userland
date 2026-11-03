@@ -44,9 +44,6 @@ BINDIR=		/usr/sbin
 #   RootDomainIdle_freebsd.c the idle sleep and display sleep timers xnu's
 #                           IOPMrootDomain and IODisplayWrangler run in the
 #                           kernel, until NextBSD's root domain has them
-#   IOPMEnergyPrefs_freebsd.c IOKitUser's IOPMEnergyPrefs.c, read side: the
-#                           Energy Saver defaults and saved settings, until
-#                           libIOKit carries it (nextbsd-userland#233)
 #   CPUPower_freebsd.c      the CPU energy/performance preference a Mac's
 #                           kernel platform plugin sets from the active
 #                           profile (hwpstate_intel(4) EPP), until the
@@ -66,7 +63,6 @@ SRCS+=		PrivateLib_freebsd.c
 SRCS+=		RootDomain_freebsd.c
 SRCS+=		PMConnection_freebsd.c
 SRCS+=		RootDomainIdle_freebsd.c
-SRCS+=		IOPMEnergyPrefs_freebsd.c
 SRCS+=		CPUPower_freebsd.c
 
 # Apple's files, built as C under __FreeBSD__ (see ../VENDORED.md):

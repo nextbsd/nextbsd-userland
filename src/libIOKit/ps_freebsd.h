@@ -15,9 +15,6 @@
  *    NextBSD's libSystemConfiguration does not install.
  *    SCDynamicStoreKeyCreate, which NextBSD's SystemConfiguration lacks,
  *    is the CFStringCreateWithFormat it amounts to.
- *  - IOPMLibPrivate.h keys the ps sources use (kIOUserAssertionReSync,
- *    kIOPMServerBootstrapName), guarded, until libIOKit carries IOKitUser's
- *    full IOPMLibPrivate.h (nextbsd-userland#233).
  */
 #ifndef _LIBIOKIT_PS_FREEBSD_H_
 #define _LIBIOKIT_PS_FREEBSD_H_
@@ -67,14 +64,6 @@ isA_CFType(CFTypeRef obj, CFTypeID type)
 #endif
 #ifndef isA_CFString
 #define isA_CFString(obj)	isA_CFType((obj), CFStringGetTypeID())
-#endif
-
-/* ---- IOKit/pwr_mgt/IOPMLibPrivate.h ------------------------------------- */
-#ifndef kIOUserAssertionReSync
-#define kIOUserAssertionReSync	"com.apple.system.powermanagement.assertionresync"
-#endif
-#ifndef kIOPMServerBootstrapName
-#define kIOPMServerBootstrapName	"com.apple.PowerManagement.control"
 #endif
 
 /* IOPMLibPrivate.c: the shared connection to pmconfigd. */

@@ -494,20 +494,6 @@ const char * descriptiveKernelAssertions(uint32_t val) {
     return string;
 }
 
-/* ---- IOKitUser IOPMLibPrivate.c (nextbsd-userland#233) ------------------ */
-
-/*
- * The root domain's list of drivers holding sleep off. NextBSD's root
- * domain keeps none (nextbsd-kernel#243), so there is no list to copy.
- */
-IOReturn IOPMCopySleepPreventersListWithID(int preventerType __unused, CFArrayRef *outArray)
-{
-    if (outArray) {
-        *outArray = NULL;
-    }
-    return kIOReturnUnsupported;
-}
-
 /* ---- PrivateLib.m: the store PMStore.c opens, verbatim ---------------- */
 
 extern SCDynamicStoreRef gSCDynamicStore;	/* PMStore.c */

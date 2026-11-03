@@ -23,35 +23,43 @@
 
 /*
  * NextBSD: IOKitUser-100231.120.3 pwr_mgt.subproj/IOPMEnergyPrefs.c, the
- * Energy Saver preferences code that libIOKit will carry (IOPMLib, nextbsd-
- * userland#233). pmconfigd needs its read side now, to know the sleep and
- * display sleep timers (PMSettings.m): the default settings table, the
- * merge with the settings saved in CFPreferences (com.apple.PowerManagement
- * and com.apple.PowerManagement.<host UUID>, AnyUser/CurrentHost), and the
- * pruning of settings the platform does not support. The write side, the
- * prefs-change registration and the UPS/energy-mode calls are libIOKit's
- * clients' business and stay out (#ifndef __FreeBSD__) until L3 builds
- * this file into libIOKit; then this copy is deleted.
+ * Energy Saver preferences (nextbsd-userland#233): the default settings
+ * table, the settings saved in CFPreferences (com.apple.PowerManagement and
+ * com.apple.PowerManagement.<host UUID>, AnyUser/CurrentHost) and their
+ * merge, IOPMCopyPMPreferences / IOPMSetPMPreferences, the pruning of
+ * settings the platform does not support (IOPMFeatureIsAvailable), the
+ * prefs-change notification and the system power settings. pmset writes
+ * through it and pmconfigd (PMSettings.m) reads through it, as on macOS.
  *
- * The other __FreeBSD__ blocks:
+ * The __FreeBSD__ changes:
+ *  - The Darwin-only headers are replaced by pwr_mgt_freebsd.h.
  *  - NextBSD runs IOKitUser's Intel-Mac paths on every architecture, never
  *    the Apple silicon ones (TARGET_OS_OSX is defined on NextBSD).
  *  - No hibernation: the sleepimage settings are not in the defaults.
- *  - The root domain is found by class (getRootDomain()), not by its
- *    IOPower plane path, which NextBSD's registry does not have.
  *  - xnu's IOPMrootDomain always publishes a "Supported Features"
  *    dictionary, empty until a driver adds a feature. NextBSD's root domain
  *    (nextbsd-kernel#243) cannot publish a dictionary property, so a
  *    missing one reads as that empty dictionary.
- *  - pmconfigd is the power-source server, so it asks its own power-source
- *    code which sources exist instead of IOPSGetSupportedPowerSources().
+ *  - There is no IOPMCopyBatteryInfo(): a machine with a battery (in
+ *    IOPSGetSupportedPowerSources(), pmconfigd's notify(3) state) is a
+ *    portable, whose power button does not sleep it, as that call decides
+ *    on macOS.
  *  - The host UUID comes from kern.hostuuid; NextBSD has no gethostuuid().
+ *  - "LowPowerMode" is offered where the CPU has a power control pmconfigd
+ *    acts on (CPUPower_freebsd.c), as a Mac's platform plugin publishes it.
  */
 #ifdef __FreeBSD__
 #include <sys/types.h>
 #include <sys/sysctl.h>
-#include <CoreFoundation/CoreFoundation.h>
-#include <IOKit/IOKitLib.h>
+#include "pwr_mgt_freebsd.h"
+#include <IOKit/pwr_mgt/IOPM.h>
+#include <IOKit/pwr_mgt/IOPMPrivate.h>
+#include <IOKit/pwr_mgt/IOPMLib.h>
+#include <IOKit/pwr_mgt/IOPMLibPrivate.h>
+#include <IOKit/ps/IOPowerSources.h>
+#include <IOKit/ps/IOPowerSourcesPrivate.h>
+#include <mach/mach.h>
+#include <servers/bootstrap.h>
 #include <ctype.h>
 #include <notify.h>
 #include <stdint.h>
@@ -59,8 +67,57 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <uuid/uuid.h>
+#include <xpc/xpc.h>
+#include "powermanagement.h"
 
-#include "PrivateLib_freebsd.h"
+/*
+ * Whether this machine has a CPU power control pmconfigd's
+ * CPUPower_freebsd.c acts on: hardware P-states (dev.hwpstate_intel.0.epp)
+ * or at least two frequency levels (dev.cpu.0.freq_levels). The same probe
+ * as that file's, so pmset and pmconfigd agree on "LowPowerMode".
+ */
+static bool
+_pm_cpuPowerControlExists(void)
+{
+    char        *levels = NULL, *p, *end;
+    size_t      len;
+    long        mhz, lowest = 0, highest = 0;
+    int         value, count = 0;
+    bool        ok = false;
+
+    len = sizeof(value);
+    if (sysctlbyname("dev.hwpstate_intel.0.epp", &value, &len, NULL, 0) == 0)
+        return true;
+
+    len = 0;
+    if (sysctlbyname("dev.cpu.0.freq_levels", NULL, &len, NULL, 0) != 0 || len == 0)
+        return false;
+    levels = malloc(len + 1);
+    if (!levels)
+        return false;
+    if (sysctlbyname("dev.cpu.0.freq_levels", levels, &len, NULL, 0) != 0)
+        goto exit;
+    levels[len] = '\0';
+    for (p = levels; *p; ) {
+        mhz = strtol(p, &end, 10);
+        if (end == p)
+            break;
+        if (mhz > 0) {
+            if (count == 0 || mhz > highest)
+                highest = mhz;
+            if (count == 0 || mhz < lowest)
+                lowest = mhz;
+            count++;
+        }
+        p = end + strcspn(end, " ");
+        p += strspn(p, " ");
+    }
+    ok = (count > 1 && lowest < highest);
+exit:
+    free(levels);
+    return ok;
+}
 #else
 #include <sys/cdefs.h>
 #include <TargetConditionals.h>
@@ -208,10 +265,8 @@ static CFDictionaryRef copyDefaultPreferences(void);
 static CFMutableDictionaryRef copyActivePreferences();
 static bool checkPowerSourceSupported(CFStringRef str);
 
-#ifndef __FreeBSD__
 IOReturn _pm_connect(mach_port_t *newConnection);
 IOReturn _pm_disconnect(mach_port_t connection);
-#endif
 /******************************************************************************/
 /******************************************************************************/
 /******************************************************************************/
@@ -225,7 +280,6 @@ IOReturn _pm_disconnect(mach_port_t connection);
 
 /**************************************************/
 
-#ifndef __FreeBSD__     /* client side: libIOKit (nextbsd-userland#233) */
 typedef struct {
     int dtoken;
 } _PrefsChangeNotification;
@@ -267,8 +321,6 @@ void IOPMUnregisterPrefsChangeNotification(IOPMNotificationHandle handle)
 }
 
 
-
-#endif /* !__FreeBSD__ */
 
 /*
  * Energy settings that are safe to migrate between different systems/models
@@ -414,7 +466,6 @@ CFMutableDictionaryRef copyPreferencesForSrc(CFStringRef power_source)
     return settings;
 }
 
-#ifndef __FreeBSD__     /* write side: libIOKit (nextbsd-userland#233) */
 /*
  * setPreferencesForSrc - Separates the 'prefs' into generic and host specific
  * settings and writes those dictionaries to two separate prefs paths
@@ -536,8 +587,6 @@ exit:
 
 }
 
-#endif /* !__FreeBSD__ */
-
 // INTERNAL ONLY --- Returns settings that are saved to disk. This will have
 // all settings modified by user and may have some settings at default values
 //
@@ -594,7 +643,6 @@ CFDictionaryRef IOPMCopyDefaultPreferences(void)
     return getSystemProvidedPreferences();
 }
 
-#ifndef __FreeBSD__     /* write side and client calls: libIOKit (nextbsd-userland#233) */
 /**************************************************/
 #if !TARGET_OS_IPHONE
 
@@ -949,6 +997,15 @@ IOReturn IOPMSetEnergyModePreference(CFStringRef energyMode, CFStringRef pwr_src
         }
     }
 
+#ifdef __FreeBSD__
+    /*
+     * The energy mode goes to powerd over XPC with message keys that
+     * IOKitUser's open source does not carry, and pmconfigd has no
+     * energy modes to switch.
+     */
+    (void)connection; (void)msg; (void)str;
+    return kIOReturnUnsupported;
+#else
     connection = xpc_connection_create_mach_service(POWERD_XPC_ID,
                                                     dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), 0);
     if (!connection) {
@@ -979,6 +1036,7 @@ IOReturn IOPMSetEnergyModePreference(CFStringRef energyMode, CFStringRef pwr_src
     xpc_release(connection);
 
     return kIOReturnSuccess;
+#endif /* !__FreeBSD__ */
 }
 
 IOReturn IOPMSetGamingEnergyModePreference(CFStringRef energyMode)
@@ -1008,6 +1066,10 @@ IOReturn IOPMSetGamingEnergyModePreference(CFStringRef energyMode)
         }
     }
 
+#ifdef __FreeBSD__
+    (void)connection; (void)msg; (void)str;
+    return kIOReturnUnsupported;     /* as IOPMSetEnergyModePreference */
+#else
     connection = xpc_connection_create_mach_service(POWERD_XPC_ID,
                                                     dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), 0);
     if (!connection) {
@@ -1035,6 +1097,7 @@ IOReturn IOPMSetGamingEnergyModePreference(CFStringRef energyMode)
     xpc_release(connection);
 
     return kIOReturnSuccess;
+#endif /* !__FreeBSD__ */
 
 }
 
@@ -1078,7 +1141,6 @@ IOReturn IOPMWriteToPrefs(CFStringRef key, CFTypeRef value,
 
     return (result ? kIOReturnSuccess : kIOReturnError);
 }
-#endif /* !__FreeBSD__ */
 
 
 
@@ -1269,7 +1331,12 @@ bool IOPMFeatureIsAvailableWithSupportedTable(
         ret = false;
 #else
 #ifdef __FreeBSD__
-        ret = (_batteryCount() == 0);
+        /* No IOPMCopyBatteryInfo(): a battery is what the power source
+         * list says it is. */
+        bool hasBatt = false;
+
+        IOPSGetSupportedPowerSources(NULL, &hasBatt, NULL);
+        ret = !hasBatt;
 #else
         CFArrayRef  tmp_array = NULL;
         // Pressing the power button only causes sleep on desktop PowerMacs,
@@ -1301,11 +1368,7 @@ bool IOPMFeatureIsAvailableWithSupportedTable(
         // ReduceBrightness is never supported on AC Power.
         bool hasBatt = false;
         bool hasUPS = false;
-#ifdef __FreeBSD__
-        hasBatt = (_batteryCount() > 0);
-#else
         IOPSGetSupportedPowerSources(NULL, &hasBatt, &hasUPS);
-#endif
 
         if (hasBatt && !CFEqual(power_source, CFSTR(kIOPMACPowerKey))) {
             ret = true;
@@ -1336,11 +1399,12 @@ bool IOPMFeatureIsAvailableWithSupportedTable(
 #ifdef __FreeBSD__
     /*
      * Low Power Mode is published by a Mac's platform plugin; on NextBSD
-     * pmconfigd's CPU power code says whether it can honour it.
+     * it is offered where pmconfigd's CPU power code
+     * (CPUPower_freebsd.c) can honour it.
      */
     if (CFEqual(PMFeature, CFSTR(kIOPMLowPowerModeKey)))
     {
-        ret = cpuPowerFeatureIsAvailable(PMFeature);
+        ret = _pm_cpuPowerControlExists();
         goto exit;
     }
 #endif
@@ -1396,12 +1460,8 @@ __private_extern__ io_registry_entry_t  getPMRootDomainRef(void)
     static io_registry_entry_t cached_root_domain = MACH_PORT_NULL;
 
     if( MACH_PORT_NULL == cached_root_domain ) {
-#ifdef __FreeBSD__
-        cached_root_domain = getRootDomain();
-#else
         cached_root_domain = IORegistryEntryFromPath( kIOMasterPortDefault,
                         kIOPowerPlane ":/IOPowerConnection/IOPMrootDomain");
-#endif
 
     }
     return cached_root_domain;
@@ -1545,12 +1605,7 @@ static bool checkPowerSourceSupported(CFStringRef str)
         return true;
     }
 
-#ifdef __FreeBSD__
-    hasBatt = (_batteryCount() > 0);
-    hasUPS = false;
-#else
     IOPSGetSupportedPowerSources(NULL, &hasBatt, &hasUPS);
-#endif
 
     if (CFEqual(str, CFSTR(kIOPMBatteryPowerKey))) {
         return hasBatt;
@@ -1726,13 +1781,11 @@ exit:
 
 
 
-#ifndef __FreeBSD__     /* client calls: libIOKit (nextbsd-userland#233) */
 IOReturn IOPMActivateSystemPowerSettings( void )
 {
 
     return kIOReturnUnsupported;
 }
-#endif
 
 CFDictionaryRef IOPMCopySystemPowerSettings(void)
 {
@@ -1752,7 +1805,6 @@ CFDictionaryRef IOPMCopySystemPowerSettings(void)
     }
 }
 
-#ifndef __FreeBSD__     /* write side: libIOKit (nextbsd-userland#233) */
 IOReturn IOPMSetSystemPowerSetting(CFStringRef key, CFTypeRef value)
 {
     IOReturn                rc = kIOReturnError;
@@ -1808,8 +1860,6 @@ exit:
 #endif
     return rc;
 }
-
-#endif /* !__FreeBSD__ */
 
 /**************************************************
 *

@@ -33,7 +33,8 @@
  * kPMForceLowSpeedProfile override. Low Power Mode is a per-source Energy
  * Saver setting (pmset -b lowpowermode 1), offered only where this file can
  * act on it, the way a Mac's platform plugin publishes the "LowPowerMode"
- * feature (IOPMEnergyPrefs_freebsd.c asks cpuPowerFeatureIsAvailable()).
+ * feature (libIOKit's IOPMEnergyPrefs.c offers it where this file's probe
+ * finds a control: it makes the same check, for pmset and pmconfigd alike).
  *
  * Processors without HWP (Intel before Skylake through est(4), AMD through
  * hwpstate_amd(4)) have only discrete frequency levels, dev.cpu.0.freq.
@@ -276,21 +277,4 @@ cpuPowerActivateSettings(CFDictionaryRef settings)
     default:
         break;
     }
-}
-
-/*
- * IOPMEnergyPrefs_freebsd.c: whether the platform offers one of the CPU
- * settings. A Mac's platform plugin publishes "LowPowerMode" in the root
- * domain's "Supported Features" where it can honour it; NextBSD's root
- * domain cannot publish a dictionary, so the energy prefs code asks here.
- * The Intel-era "Reduce Processor Speed" and "Dynamic Power Step" settings
- * are not offered, as on current Macs; only the overrides above use them.
- */
-__private_extern__ bool
-cpuPowerFeatureIsAvailable(CFStringRef feature)
-{
-    if (!isA_CFString(feature) || !CFEqual(feature, CFSTR(kIOPMLowPowerModeKey)))
-        return false;
-    return (cpuPowerControl() == kCPUControlHWP
-            || cpuPowerControl() == kCPUControlFreqLevels);
 }
