@@ -45,11 +45,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Not in IOKitLib.h yet; Apple's value. */
-#ifndef kIOReturnBusy
-#define	kIOReturnBusy		0x2d5
-#endif
-
 #define	HOGP_INST_MAX		4	/* HID services on one device */
 #define	HOGP_REPORT_MAX		32
 #define	HOGP_GET_TIMEOUT_MS	900	/* under the transport's 1 s default */

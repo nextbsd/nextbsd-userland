@@ -25,6 +25,7 @@
  * as Apple's do when the service is missing.
  */
 #include <IOKit/IOKitLib.h>
+#include <IOKit/IOReturn.h>	/* kIOReturn*: Apple's values */
 #include <IOKit/pwr_mgt/IOPMLib.h>
 #include <IOKit/pwr_mgt/IOPMLibPrivate.h>
 #include "IOKitInternal.h"

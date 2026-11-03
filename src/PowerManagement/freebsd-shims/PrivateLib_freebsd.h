@@ -41,29 +41,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* ---- IOKit/IOReturn.h: the codes libIOKit's IOKitLib.h does not define -- */
-/*
- * Same numbering as libIOKit's (the low 14 bits of Apple's values), so a
- * libIOKit client compares them correctly. Note that libIOKit's own
- * kIOReturnBadArgument is 0x2c9, Apple's kIOReturnInternalError; the two
- * are indistinguishable until libIOKit's table is corrected.
- */
-#ifndef kIOReturnNoMemory
-#define kIOReturnNoMemory		0x2bd
-#endif
-#ifndef kIOReturnNotPrivileged
-#define kIOReturnNotPrivileged		0x2c1
-#endif
-#ifndef kIOReturnInternalError
-#define kIOReturnInternalError		0x2c9
-#endif
-#ifndef kIOReturnNoSpace
-#define kIOReturnNoSpace		0x2db
-#endif
-#ifndef kIOReturnIsoTooOld
-#define kIOReturnIsoTooOld		0x2ee
-#endif
-
 /* ---- SystemConfiguration/SCValidation.h -------------------------------- */
 #ifndef isA_CFType
 static __inline CFTypeRef

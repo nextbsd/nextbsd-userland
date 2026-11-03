@@ -95,37 +95,11 @@ typedef char io_string_t[512];
 typedef uint32_t IOOptionBits;
 
 /*
- * IOReturn — Apple's IOKit error code space. kern_return_t fits the
- * same range. iter 1 only needs a small subset (the rest exist on
- * macOS); add more as later iters grow the API.
+ * IOReturn and the kIOReturn* codes: <IOKit/IOReturn.h>, Apple's names
+ * and values (iokit_common_err(...), e.g. kIOReturnBadArgument is
+ * 0xe00002c2), as IOKit.framework's IOKitLib.h pulls it in.
  */
-typedef int IOReturn;
-#define kIOReturnSuccess     0
-#define kIOReturnError       0x2bc
-#define kIOReturnNoDevice    0x2c0
-#define kIOReturnUnsupported 0x2c7
-#define kIOReturnBadArgument 0x2c9
-#define kIOReturnNotFound    0x2f0
-/* More of Apple's common errors (the bare values, as above). Guarded:
- * IOHIDUserDevice.h and some consumers define a few of them too. */
-#ifndef kIOReturnNoMemory
-#define kIOReturnNoMemory	0x2bd
-#endif
-#ifndef kIOReturnNotPrivileged
-#define kIOReturnNotPrivileged	0x2c1
-#endif
-#ifndef kIOReturnExclusiveAccess
-#define kIOReturnExclusiveAccess 0x2c5
-#endif
-#ifndef kIOReturnBusy
-#define kIOReturnBusy		0x2d5
-#endif
-#ifndef kIOReturnNotReady
-#define kIOReturnNotReady	0x2d8
-#endif
-#ifndef kIOReturnNotPermitted
-#define kIOReturnNotPermitted	0x2e2
-#endif
+#include <IOKit/IOReturn.h>
 
 /*
  * "main port" sentinels. On macOS these select the IOKit master
