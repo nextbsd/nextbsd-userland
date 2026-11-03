@@ -211,6 +211,61 @@ __private_extern__ aslmsg new_msg_pmset_log(void)
 }
 
 /*
+ * PrivateLib.m. The root domain makes a new "SleepWakeUUID" for every sleep
+ * (nextbsd-kernel#243); pmset -g log starts a new sleep/wake cycle at each
+ * new one. Apple reads it with IOPMSleepWakeCopyUUID(), which libIOKit
+ * builds but its IOPMLibPrivate.h does not declare; the root domain
+ * property is the same value.
+ */
+__private_extern__ bool
+_getUUIDString(
+    char *buf,
+    int buflen)
+{
+    bool            ret = false;
+    CFStringRef     uuidString = NULL;
+
+    uuidString = _copyRootDomainProperty(CFSTR(kIOPMSleepWakeUUIDKey));
+    if (uuidString && !isA_CFString(uuidString)) {
+        CFRelease(uuidString);
+        uuidString = NULL;
+    }
+
+    if (uuidString) {
+        if (!CFStringGetCString(uuidString, buf, buflen,
+                                kCFStringEncodingUTF8))
+        {
+            goto exit;
+        }
+
+        ret = true;
+    }
+exit:
+    if (uuidString) CFRelease(uuidString);
+    return ret;
+}
+
+/*
+ * PrivateLib.m: the "Start" line pmset -g log opens each boot with. Apple
+ * also syslogs it in the OS installer environment, which NextBSD has not.
+ */
+__private_extern__ void logASLMessagePMStart(void)
+{
+    aslmsg                  m;
+    char                    uuidString[150];
+
+    m = new_msg_pmset_log();
+
+    if (_getUUIDString(uuidString, sizeof(uuidString))) {
+        asl_set(m, kPMASLUUIDKey, uuidString);
+    }
+    asl_set(m, kPMASLDomainKey, kPMASLDomainPMStart);
+    asl_set(m, ASL_KEY_MSG, "powerd process is started\n");
+    asl_send(NULL, m);
+    asl_release(m);
+}
+
+/*
  * The MT2 dark-wake recorder: PrivateLib.m only records while mt2 is set
  * up, which happens for PowerNap machines; NextBSD has no dark wake.
  */
