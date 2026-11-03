@@ -145,10 +145,24 @@ minutes without input the system is asked to sleep with the reason
 which lets any application veto it.
 The time of the last input comes from the
 .Ql HIDIdleTime
-of the
+of the kernel's
 .Ql IOHIDSystem
-registry entry; while there is none, the user counts as active and the
-system does not idle-sleep.
+registry entry.
+It reads 0 while no input device is open by a window server, and there is
+no such entry on older kernels; either way the user counts as active, and
+neither the display nor the system goes idle.
+Input after the display has gone off makes the kernel send
+.Dv kIOPMMessageRequestUserActive ,
+which
+.Nm
+answers by declaring the user active, as on macOS; the display comes back
+on at once.
+The display state is posted for the window server, which does the
+blanking, as the
+.Xr notify 3
+name
+.Ql com.apple.iokit.hid.displayStatus ,
+with state 1 while the display is on and 0 once it should be off.
 Active remote logins
 .Pq Xr ssh 1
 hold off idle sleep while their terminals are in use.
