@@ -953,6 +953,31 @@ $CROSS_CC --sysroot="$SYSROOT" \
 test -x "$DESTDIR/usr/sbin/bluetooth" || { echo "FAIL: /usr/sbin/bluetooth not built"; exit 1; }
 echo "==> bluetoothd + bluetooth built"
 
+# ---- PowerManagement (pmconfigd) --------------------------------------------
+# Apple's power management daemon, PowerManagement-1846.120.8.0.1 vendored in
+# src/PowerManagement (see its VENDORED.md). Same shape as wland above: the
+# host mig generates the powermanagement.defs stubs, then bsd.prog.mk builds
+# the daemon with MIGOUT. Apple's pmconfigd/powermanagement.defs is a one-line
+# #include <IOKit/pwr_mgt/powermanagement.defs>, which resolves to IOKitUser's
+# copy in src/PowerManagement/freebsd-shims. The user stub is generated too,
+# for libIOKit's IOPMLib client to build from the same wire description.
+# Runs as org.nextbsd.powerd, serving com.apple.PowerManagement.control and
+# com.apple.iokit.powerdxpc.
+comp "pmconfigd"
+mkdir -p "$DESTDIR/usr/sbin"
+PM_MIG="$MIGROOT/powermanagement"
+rm -rf "$PM_MIG"; mkdir -p "$PM_MIG"
+run_mig "$PM_MIG" -I"$SRC/libmach/include" -I"$SRC/PowerManagement/freebsd-shims" \
+    -header powermanagement.h -user powermanagementUser.c \
+    -server powermanagementServer.c -sheader powermanagementServer.h \
+    "$SRC/PowerManagement/pmconfigd/powermanagement.defs" \
+    || { echo "FAIL: mig could not process powermanagement.defs"; exit 1; }
+test -s "$PM_MIG/powermanagementServer.c" || { echo "FAIL: mig produced no powermanagementServer.c"; exit 1; }
+run_buildenv "make -C $SRC/PowerManagement/pmconfigd DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$PM_MIG all install"
+test -x "$DESTDIR/usr/sbin/pmconfigd" || { echo "FAIL: /usr/sbin/pmconfigd not installed"; exit 1; }
+needed_check "$DESTDIR/usr/sbin/pmconfigd" "libxpc"
+echo "==> pmconfigd built"
+
 # ---- mDNSResponder + libdns_sd ----------------------------------------------
 # build.sh ~2400-2461. mDNSResponder daemon (bsd.prog.mk) then libdns_sd
 # (bsd.lib.mk). No MIG surface in these blocks.

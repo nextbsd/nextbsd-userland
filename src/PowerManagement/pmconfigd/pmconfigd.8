@@ -1,0 +1,59 @@
+.\" pmconfigd(8) — NextBSD power management daemon.
+.\"
+.\" NextBSD-original. Apple ships no manual page for powerd.
+.\"
+.Dd November 2, 2026
+.Dt PMCONFIGD 8
+.Os NextBSD
+.Sh NAME
+.Nm pmconfigd
+.Nd power management daemon
+.Sh SYNOPSIS
+.Nm
+.Sh DESCRIPTION
+.Nm
+is Apple's power management daemon, built from PowerManagement-1846.120.8.0.1
+(macOS installs it as
+.Pa powerd ) .
+It owns power policy: power assertions, idle and display sleep, power
+sources, and the system sleep and wake sequence.
+.Pp
+It is started by
+.Xr launchd 8
+as the job
+.Ql org.nextbsd.powerd
+and is not intended to be run by hand.
+It vends the two Mach services Apple's IOKit power management client code
+looks up:
+.Bl -tag -width "com.apple.PowerManagement.control"
+.It Ql com.apple.PowerManagement.control
+the MIG interface of
+.In IOKit/pwr_mgt/IOPMLib.h ,
+.In IOKit/pwr_mgt/IOPMLibPrivate.h
+and
+.In IOKit/ps/IOPowerSources.h .
+.It Ql com.apple.iokit.powerdxpc
+the XPC interface used for asynchronous assertions and user activity.
+.El
+.Pp
+The daemon is being ported in stages.
+In this release it checks in both services and answers every MIG request
+with
+.Dv kIOReturnUnsupported ;
+XPC messages are accepted and ignored.
+.Sh FILES
+.Bl -tag -width "/System/Library/LaunchDaemons/org.nextbsd.powerd.plist" -compact
+.It Pa /System/Library/LaunchDaemons/org.nextbsd.powerd.plist
+the
+.Xr launchd 8
+job
+.It Pa /var/log/pmconfigd.stderr
+the daemon's log
+.El
+.Sh SEE ALSO
+.Xr launchctl 1 ,
+.Xr caffeinate 8 ,
+.Xr launchd 8
+.Sh HISTORY
+.Nm
+first appeared in NextBSD in 2026.
