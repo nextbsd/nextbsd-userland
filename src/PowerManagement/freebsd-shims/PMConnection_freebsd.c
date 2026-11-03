@@ -46,7 +46,7 @@
  * Left out with the dark wake: PowerNap and sleep services, background and
  * push-service tasks, silent running and perf restriction, TCP keep-alive,
  * auto power-off and standby, the dark-wake linger, the SMC, CoreAnalytics,
- * ASL and messagetracer logging, and wake-event claims over XPC. Their places
+ * messagetracer logging, and wake-event claims over XPC. Their places
  * in the state machine are marked "Apple:". Delete this file when
  * PMConnection.m builds.
  */
@@ -62,6 +62,7 @@
 #include <bsm/libbsm.h>
 #include <mach/mach_time.h>
 #include <notify.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -356,6 +357,292 @@ static void _updateWakeReason
     /* Apple: claimed wake events (IOPMDriverWakeEvents) and messagetracer. */
     *wakeReason = reasons.platformWakeReason;
     *wakeType = reasons.platformWakeType;
+}
+
+/* ---- PrivateLib.m: the sleep and wake ASL messages ---------------------- */
+
+/*
+ * What pmset -g log shows for each sleep and wake. As on macOS they are ASL
+ * messages in the com.apple.iokit.power facility (new_msg_pmset_log()),
+ * which /etc/asl/com.apple.iokit.power claims for /var/log/powermanagement,
+ * so they reach neither the console nor powerd's stderr. They live here
+ * with `reasons`, which they read, until PrivateLib.m builds.
+ *
+ * Left out with the dark wake and the hardware NextBSD has not: TCP
+ * keep-alive keys, claimed driver wake events, hibernation statistics and
+ * the OS installer's syslog copy.
+ */
+
+/*
+ * PrivateLib.m. xnu publishes "SleepRequestedByPID"; NextBSD's root domain
+ * keeps the requester in IOPMROOT_GETSTATE's last_sleep_pid (0 = the
+ * kernel's own request, -1 if unknown).
+ */
+static bool
+_getSleepReasonLogStr(
+    char *buf,
+    int buflen)
+{
+    bool                    ret = false;
+    struct iopmroot_state   st;
+    char                    reasonBuf[50];
+    int                     spid = -1;
+
+    if (pmRootDomainCopyState(&st) == kIOReturnSuccess) {
+        spid = st.last_sleep_pid;
+    }
+    if (reasons.sleepReason && isA_CFString(reasons.sleepReason))
+    {
+        if (CFStringGetCString(reasons.sleepReason, reasonBuf, sizeof(reasonBuf), kCFStringEncodingUTF8)
+            && reasonBuf[0])
+        {
+            if (!strncmp(kIOPMSoftwareSleepKey, reasonBuf, strlen(kIOPMSoftwareSleepKey)))
+            {
+                snprintf(buf, buflen, "\'%s pid=%d\'", reasonBuf, spid);
+            } else {
+                snprintf(buf, buflen, "\'%s\'", reasonBuf);
+            }
+            ret = true;
+        }
+    }
+    return ret;
+}
+
+/*
+ * PrivateLib.m's getSleepTypeString() names the kind of the last sleep
+ * (kIOPMSleepTypeNormalSleep, hibernation, standby, ...). NextBSD's root
+ * domain only does ACPI S3, kPMGetSystemSleepType's kIOPMSleepTypeNormalSleep.
+ */
+static const char * getSleepTypeString(void)
+{
+    return "Normal Sleep";
+}
+
+/* PrivateLib.m, verbatim. */
+static void printCapabilitiesToBuf(char *buf, int buf_size, IOPMCapabilityBits in_caps)
+{
+    uint64_t caps = (uint64_t)in_caps;
+
+    snprintf(buf, buf_size, " [%s%s%s%s%s%s%s]",
+                             (caps & kIOPMCapabilityCPU) ? "C":"<off> ",
+                             (caps & kIOPMCapabilityDisk) ? "D":"",
+                             (caps & kIOPMCapabilityNetwork) ? "N":"",
+                             (caps & kIOPMCapabilityVideo) ? "V":"",
+                             (caps & kIOPMCapabilityAudio) ? "A":"",
+                             (caps & kIOPMCapabilityPushServiceTask) ? "P":"",
+                             (caps & kIOPMCapabilityBackgroundTask) ? "B":"");
+}
+
+/*
+ * Apple builds the message up with snprintf(buf, ..., "%s...", buf, ...),
+ * which is undefined behaviour when the source and the destination overlap;
+ * these append instead, with the same result.
+ */
+static void
+_appendf(char *buf, size_t buflen, const char *fmt, ...) __printflike(3, 4);
+
+static void
+_appendf(char *buf, size_t buflen, const char *fmt, ...)
+{
+    size_t  len = strlen(buf);
+    va_list ap;
+
+    if (len + 1 >= buflen)
+        return;
+    va_start(ap, fmt);
+    vsnprintf(buf + len, buflen - len, fmt, ap);
+    va_end(ap);
+}
+
+/* PrivateLib.m: "Entering Sleep state due to 'Clamshell Sleep'". */
+__private_extern__ void logASLMessageSleep(
+    const char *sig,
+    const char *uuidStr,
+    const char *failureStr,
+    int   sleepType
+)
+{
+    aslmsg                  m;
+    char                    uuidString[150];
+    uint32_t                percentage = 0;
+    char                    numbuf[15];
+    bool                    success = true;
+    char                    messageString[200];
+    char                    reasonString[100];
+    PowerSources            pwrSrc = kACPowered;
+
+    numbuf[0] = 0;
+
+    reasonString[0] = messageString[0] = 0;
+
+    _getSleepReasonLogStr(reasonString, sizeof(reasonString));
+
+    if (!strncmp(sig, kPMASLSigSuccess, sizeof(kPMASLSigSuccess)))
+    {
+        success = true;
+        if (sleepType == kIsS0Sleep) {
+            snprintf(messageString, sizeof(messageString), "Entering Sleep state");
+        } else {
+           snprintf(messageString, sizeof(messageString), "Entering DarkWake state");
+        }
+
+        if (reasonString[0] != 0) {
+            _appendf(messageString, sizeof(messageString), " due to %s", reasonString);
+        }
+
+    } else {
+        success = false;
+        snprintf(messageString, sizeof(messageString), "Failure during sleep: %s : %s", failureStr, (sig) ? sig : "");
+    }
+
+    /* Apple: INFO_LOG of the same line; powerd's stderr has "Sleep:". */
+    getPowerState(&pwrSrc, &percentage);
+    m = new_msg_pmset_log();
+    if (success) {
+        asl_set(m, kPMASLDomainKey, kPMASLDomainPMSleep);
+
+        snprintf(numbuf, 10, "%d", percentage);
+        asl_set(m, kPMASLBatteryPercentageKey, numbuf);
+
+        asl_set(m, kPMASLPowerSourceKey, (pwrSrc == kACPowered) ? "AC" : "Batt");
+
+        /* Apple: attachTCPKeepAliveKeys() adds ":TCPKeepAlive=..." here. */
+    }
+    else {
+        asl_set(m, kPMASLDomainKey, kPMASLDomainSWFailure);
+    }
+
+    // UUID
+    if (uuidStr) {
+        asl_set(m, kPMASLUUIDKey, uuidStr);  // Caller Provided
+    } else if (_getUUIDString(uuidString, sizeof(uuidString))) {
+        asl_set(m, kPMASLUUIDKey, uuidString);
+    }
+
+
+    asl_set(m, kPMASLSignatureKey, sig);
+    asl_set(m, ASL_KEY_MSG, messageString);
+    asl_send(NULL, m);
+    asl_release(m);
+}
+
+/*
+ * PrivateLib.m: "Wake from Normal Sleep [CDNVA] : due to PWRB (User)/User".
+ */
+__private_extern__ void logASLMessageWake(
+    const char *sig,
+    const char *uuidStr __unused,
+    const char *failureStr,
+    IOPMCapabilityBits in_capabilities,
+    WakeTypeEnum dark_wake
+)
+{
+    aslmsg                  m;
+    char                    numbuf[15];
+    uint32_t                percentage = 0;
+    char                    buf[200];
+    char                    wakeReasonBuf[512];
+    char                    cBuf[50];
+    const char *            detailString = NULL;
+    static int              darkWakeCnt = 0;
+    char                    battCap[15];
+    static char             prev_uuid[50];
+    CFStringRef             wakeType = NULL;
+    const char *            sleepTypeString;
+    bool                    success = true;
+    PowerSources            pwrSrc = kACPowered;
+
+    m = new_msg_pmset_log();
+    asl_set(m, kPMASLSignatureKey, sig);
+
+    if (_getUUIDString(buf, sizeof(buf))) {
+        asl_set(m, kPMASLUUIDKey, buf);
+        if (strncmp(buf, prev_uuid, sizeof(prev_uuid))) {
+              // New sleep/wake cycle.
+              snprintf(prev_uuid, sizeof(prev_uuid), "%s", buf);
+              darkWakeCnt = 0;
+        }
+    }
+
+    buf[0] = battCap[0] = 0;
+    wakeReasonBuf[0] = 0;
+    getPowerState(&pwrSrc, &percentage);
+    if (!strncmp(sig, kPMASLSigSuccess, sizeof(kPMASLSigSuccess)))
+    {
+        char  wakeTypeBuf[50];
+
+        wakeTypeBuf[0] = 0;
+        if (isA_CFString(reasons.platformWakeReason)) {
+            CFStringGetCString(reasons.platformWakeReason, wakeReasonBuf, sizeof(wakeReasonBuf), kCFStringEncodingUTF8);
+        }
+        if (isA_CFString(reasons.platformWakeType)) {
+            CFStringGetCString(reasons.platformWakeType, wakeTypeBuf, sizeof(wakeTypeBuf), kCFStringEncodingUTF8);
+        }
+        _appendf(wakeReasonBuf, sizeof(wakeReasonBuf), "/%s", wakeTypeBuf);
+        detailString = wakeReasonBuf;
+
+        snprintf(battCap, 10, "%d", percentage);
+        asl_set(m, kPMASLBatteryPercentageKey, battCap);
+        asl_set(m, kPMASLPowerSourceKey, (pwrSrc == kACPowered) ? "AC" : "BATT");
+    } else {
+        snprintf(buf, sizeof(buf), "Failure during wake: %s : %s",
+                 failureStr, (sig) ? sig : "");
+        success = false;
+
+    }
+
+    /* Apple: the drivers' claimed wake events, kPMASLClaimedEventKey-N. */
+
+    if (!success)
+    {
+        asl_set(m, kPMASLDomainKey, kPMASLDomainSWFailure);
+    }
+    else if (dark_wake == kIsDarkWake)
+    {
+        darkWakeCnt++;
+        snprintf(buf, sizeof(buf), "%s", "DarkWake");
+        asl_set(m, kPMASLDomainKey, kPMASLDomainPMDarkWake);
+        snprintf(numbuf, sizeof(numbuf), "%d", darkWakeCnt);
+        asl_set(m, kPMASLValueKey, numbuf);
+    }
+    else if (dark_wake == kIsDarkToFullWake)
+    {
+        wakeType = _copyRootDomainProperty(CFSTR(kIOPMRootDomainWakeTypeKey));
+        if (isA_CFString(wakeType)) {
+            CFStringGetCString(wakeType, wakeReasonBuf, sizeof(wakeReasonBuf), kCFStringEncodingUTF8);
+        }
+        if (wakeType) {
+            CFRelease(wakeType);
+        }
+        asl_set(m, kPMASLDomainKey, kPMASLDomainPMWake);
+        snprintf(buf, sizeof(buf), "%s", "DarkWake to FullWake");
+    }
+    else
+    {
+        asl_set(m, kPMASLDomainKey, kPMASLDomainPMWake);
+        snprintf(buf, sizeof(buf), "%s", "Wake");
+    }
+
+    if (success)
+    {
+        if ((sleepTypeString = getSleepTypeString()))
+        {
+            _appendf(buf, sizeof(buf), " from %s", sleepTypeString);
+        }
+
+        printCapabilitiesToBuf(cBuf, sizeof(cBuf), in_capabilities);
+        _appendf(buf, sizeof(buf), "%s", cBuf);
+    }
+
+    _appendf(buf, sizeof(buf), " %s %s\n",
+          detailString ? ": due to" : "",
+          detailString ? detailString : "");
+
+    /* Apple: INFO_LOG of the same line; powerd's stderr has "Wake:". */
+    asl_set(m, ASL_KEY_MSG, buf);
+    asl_send(NULL, m);
+    /* Apple: logASLMessageHibernateStatistics(); NextBSD does not hibernate. */
+    asl_release(m);
 }
 
 /************************************************************************************/
@@ -1128,6 +1415,7 @@ static void PMConnectionPowerCallBack(
          *      _io_pm_connection_acknowledge_event
          */
         INFO_LOG("Sleep: %@\n", sleepReason);
+        logASLMessageSleep(kPMASLSigSuccess, NULL, NULL, kIsS0Sleep);
         slp_logd = true;
 
         responseController = connectionFireNotification(_kSleepStateBits, (long)capArgs->notifyRef);
@@ -1192,6 +1480,7 @@ static void PMConnectionPowerCallBack(
 
             if (slp_logd) {
                 INFO_LOG("Wake: %@ (%@)\n", wakeReason, wakeType);
+                logASLMessageWake(kPMASLSigSuccess, NULL, NULL, deliverCapabilityBits, kIsFullWake);
             }
             slp_logd = false;
 

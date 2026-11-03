@@ -457,6 +457,15 @@ typedef enum {
    kACPowered
 } PowerSources;
 
+/* PrivateLib.h: what logASLMessageSleep() / logASLMessageWake() log. */
+typedef enum {
+    kIsFullWake = 0,
+    kIsDarkWake = 1,
+    kIsDarkToFullWake = 2,
+    kIsS0Sleep = 3,
+    kIsUserWake = 4 // All FullWakes that are not notification wakes
+} WakeTypeEnum;
+
 /*
  * PrivateLib.h's struct IOPMBattery, plus the two fields
  * BatteryTimeRemaining.m reads in this drop but PrivateLib.h's copy lacks
@@ -922,6 +931,21 @@ __private_extern__ bool			xpcConnectionHasEntitlement(xpc_object_t connection,
 					    CFStringRef entitlement);
 __private_extern__ bool			isA_installEnvironment(void);
 __private_extern__ aslmsg		new_msg_pmset_log(void);
+__private_extern__ bool			_getUUIDString(char *buf, int buflen);
+/*
+ * The power management log (pmset -g log): ASL messages in the
+ * com.apple.iokit.power facility, which /etc/asl/com.apple.iokit.power
+ * stores in /var/log/powermanagement.
+ */
+__private_extern__ void			logASLMessagePMStart(void);
+/* PMConnection_freebsd.c, beside the sleep and wake reasons they log: */
+__private_extern__ void			logASLMessageSleep(const char *sig,
+					    const char *uuidStr, const char *failureStr,
+					    int sleepType);
+__private_extern__ void			logASLMessageWake(const char *sig,
+					    const char *uuidStr, const char *failureStr,
+					    IOPMCapabilityBits in_capabilities,
+					    WakeTypeEnum dark_wake);
 __private_extern__ SCDynamicStoreRef	_getSharedPMDynamicStore(void);
 __private_extern__ IOReturn		getNvramArgInt(char *key, int *value);
 /* pmconfigd.m */

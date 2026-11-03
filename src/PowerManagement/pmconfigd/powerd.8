@@ -36,10 +36,9 @@ and
 .It Ql com.apple.iokit.powerdxpc
 the XPC interface used for asynchronous assertions and user activity.
 .El
-.Pp
-The daemon is being ported in stages.
-In this release it checks in both services and keeps the system's
-scheduled power events
+.Ss Scheduled power events
+.Nm
+keeps the system's scheduled power events
 .Po
 .Xr pmset 1
 .Cm schedule
@@ -62,13 +61,31 @@ to power off or reboot, as
 does.
 A scheduled
 .Cm sleep
-asks the kernel's power management root domain to sleep the machine; it
-is logged and not performed where the machine cannot sleep.
+asks the kernel's power management root domain to sleep the machine with
+the reason
+.Dq Scheduled Sleep ;
+it is logged and not performed where the machine cannot sleep.
+.Pp
 .Cm wake
 and
 .Cm poweron
-events are kept and listed, but no hardware alarm is set for them yet, so
-they do not wake or power on the machine.
+events go to the root domain, which sets the real-time clock's alarm, as
+xnu hands them to the platform's RTC driver.
+Each time the system goes to sleep,
+.Nm
+gives the root domain the earliest wake time still ahead, and the alarm
+wakes the system then; the root domain publishes
+.Ql Wake Reason
+.Dq RTC (Alarm)
+for such a wake.
+The earliest power-on time is armed when the system powers off, and turns
+it back on.
+How far ahead the alarm reaches depends on the firmware's RTC: 24 hours
+with the time registers alone, 28 days with a day-of-month alarm, and a
+year with a month alarm as well.
+An event beyond that, or on a machine with no RTC alarm (arm64), is kept
+and listed but sets no alarm, and the kernel logs
+.Dq IOPMrootDomain: RTC alarm for ... not set .
 .Ss Power sources
 .Nm
 watches the kernel's
@@ -217,7 +234,12 @@ and
 minutes and the rest
 .Pc
 are Apple's defaults
-.Pq 10 and 10 minutes on AC power
+.Po
+.Cm sleep
+10 minutes,
+.Cm displaysleep
+10 minutes on AC power and 2 on battery
+.Pc
 merged with the settings saved in the
 .Ql com.apple.PowerManagement
 preferences, and are re-read when
@@ -280,8 +302,50 @@ frequency alone.
 Machines with neither control are not touched, and
 .Ql LowPowerMode
 is not offered there.
+.Ss Logging
+As on macOS,
+.Nm
+records sleeps, wakes, its own start and the assertion activity as
+.Xr asl 3
+messages in the
+.Ql com.apple.iokit.power
+facility.
+.Pa /etc/asl/com.apple.iokit.power
+claims that facility for the store
+.Pa /var/log/powermanagement ,
+which
+.Xr pmset 1
+.Fl g Cm log
+reads; they go neither to the console nor to the system log.
+A sleep is logged as, for example,
+.Dq Entering Sleep state due to 'Clamshell Sleep' ,
+with the battery level and power source, and the wake that follows as
+.Dq Wake from Normal Sleep [CDNVA] \&: due to EC.LidOpen (User)/User .
+Each sleep and its wake carry the root domain's
+.Ql SleepWakeUUID ,
+which
+.Xr pmset 1
+uses to group them.
 .Pp
-Every other MIG request is answered with
+Diagnostics go to
+.Pa /var/log/powerd.stderr .
+.Ss MIG and XPC requests
+.Nm
+serves the MIG routines behind the power assertions
+.Po
+.Fn IOPMAssertionCreateWithProperties
+and the rest
+.Pc ,
+the power sources
+.Pq Fn IOPSCopyPowerSourcesInfo , Fn IOPSCreatePowerSource ,
+the scheduled power events,
+.Fn IOPMConnectionCreate
+and its notifications, and the display sleep request of
+.Xr pmset 1
+.Cm displaysleepnow .
+Requests for what NextBSD does not have
+.Pq dark wake and sleep services, the HID event history, debug flags
+are answered with
 .Dv kIOReturnUnsupported ;
 XPC messages are accepted and ignored.
 .Sh FILES
@@ -299,13 +363,25 @@ Apple's assertion timeout and category lists
 .It Pa /dev/iopmroot
 the kernel's power management root domain
 .It Pa /var/log/powerd.stderr
-the daemon's log
+the daemon's diagnostics
+.It Pa /var/log/powermanagement
+the power management log
+.Po
+.Xr pmset 1
+.Fl g Cm log
+.Pc
+.It Pa /etc/asl/com.apple.iokit.power
+the
+.Xr asl.conf 5
+rule that stores it
 .El
 .Sh SEE ALSO
 .Xr launchctl 1 ,
 .Xr pmset 1 ,
+.Xr asl 3 ,
 .Xr notify 3 ,
 .Xr hwpstate_intel 4 ,
+.Xr asl.conf 5 ,
 .Xr caffeinate 8 ,
 .Xr configd 8 ,
 .Xr ioreg 8 ,

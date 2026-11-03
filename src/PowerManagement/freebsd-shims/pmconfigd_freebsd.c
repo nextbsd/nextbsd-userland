@@ -367,6 +367,9 @@ powerd_init(void *__unused context)
     /* xnu's kIOPMPowerEmergency, which NextBSD's kernel leaves to pmconfigd. */
     initializeLowPowerSleep();
 
+    /* The "Start" line pmset -g log opens each boot with. */
+    logASLMessagePMStart();
+
     BatteryTimeRemaining_finish();
 
     os_log(OS_LOG_DEFAULT, "powerd started: %s%s, %s\n",
