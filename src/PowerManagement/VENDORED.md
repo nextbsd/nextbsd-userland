@@ -37,7 +37,9 @@ Xcode project, not Apple's `pmconfigd/Makefile`, is the source of truth for
 what it contains. That Makefile predates the Xcode project (i386/ppc, files
 that no longer exist), so it has been **replaced** by NextBSD's bsd.prog.mk
 Makefile, which `build-userland.sh` drives. It is the one Apple file
-overwritten in place.
+overwritten in place. Like the Xcode target, it builds `powerd` and installs
+it where macOS does, `/System/Library/CoreServices/powerd.bundle/powerd`
+(nextbsd-userland#240; before that it was `/usr/sbin/pmconfigd`).
 
 The daemon is ported in stages (epic nextbsd/nextbsd#490). The first stage,
 D1, builds a pmconfigd that runs under launchd as `org.nextbsd.powerd`, checks
@@ -117,7 +119,7 @@ All in `freebsd-shims/` unless noted (the Libnotify pattern):
 | File | Purpose |
 |---|---|
 | `pmconfigd/Makefile` | the build (replaces Apple's stale Makefile, see above) |
-| `pmconfigd/pmconfigd.8` | manual page; Apple ships none for powerd |
+| `pmconfigd/powerd.8` | manual page; Apple ships none for powerd |
 | `pmconfigd_freebsd.c` | `main()`, `powerd_init()` and the two listeners, in Apple's shape, until `pmconfigd.m` and `PrivateLib.m` build |
 | `powermanagement_stubs.c` | the `_io_*` MIG routines whose Apple files are not built yet; `io_pm_assertion_copy_details` serves only the two scheduled-event selectors |
 | `PrivateLib_freebsd.h` | the share of `PrivateLib.h` (and the IOKit private headers it includes) that the ported Apple files use, until `PrivateLib.h` builds |
@@ -128,7 +130,7 @@ All in `freebsd-shims/` unless noted (the Libnotify pattern):
 | `PMSettings_freebsd.c` | compiles `pmconfigd/PMSettings.m` as C |
 | `CPUPower_freebsd.c` | the CPU part of a Mac's kernel platform plugin: the active profile's energy/performance preference on `hwpstate_intel(4)` (`dev.hwpstate_intel.N.epp`), Low Power Mode on frequency-level CPUs, and the `LowPowerMode` feature for the energy prefs (nextbsd-userland#231) |
 | `libproc.h` | launchd's `libproc.h` shim plus `proc_name()` |
-| `os/log.h`, `os_log_shim.c` | `os_log()`: `%{public}` annotations and `%@` handled, written to stderr (`/var/log/pmconfigd.stderr`) |
+| `os/log.h`, `os_log_shim.c` | `os_log()`: `%{public}` annotations and `%@` handled, written to stderr (`/var/log/powerd.stderr`) |
 | `os/signpost.h` | `os_signpost_*()` as no-ops |
 | `PMStore_freebsd.c` | compiles Apple's `pmconfigd/PMStore.c` unmodified, standing in for the `PrivateLib.h` it includes |
 | `BatteryTimeRemaining_freebsd.c` | the power-source core of `BatteryTimeRemaining.m` as C (nextbsd-userland#227): IOPMPowerSource notifications, the internal battery's kIOPS dictionary, the notify(3) state, the `io_ps_*` MIG routines. Apple's code where it does not touch Foundation; each NextBSD difference is marked |

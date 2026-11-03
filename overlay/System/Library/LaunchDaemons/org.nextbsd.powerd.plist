@@ -3,9 +3,10 @@
 <!--
   org.nextbsd.powerd.plist
 
-  Boot-time launchd plist for pmconfigd, Apple's power management daemon
-  (PowerManagement-1846.120.8.0.1, src/PowerManagement). macOS ships it as
-  com.apple.powerd; see PowerManagement/pmconfigd/com.apple.powerd.plist.
+  Boot-time launchd plist for powerd, Apple's power management daemon
+  (PowerManagement-1846.120.8.0.1, src/PowerManagement, built from its
+  pmconfigd sources). macOS ships it as com.apple.powerd; see
+  PowerManagement/pmconfigd/com.apple.powerd.plist.
 
   THE LABEL IS NEXTBSD'S, THE SERVICES ARE APPLE'S
 
@@ -19,26 +20,25 @@
 
   DIFFERENCES FROM APPLE'S PLIST
 
-  - ProgramArguments is /usr/sbin/pmconfigd. /System/Library holds data
-    only, never executables. pmconfigd also owns the CPU power policy, so
-    FreeBSD's CPU-frequency daemon, /usr/sbin/powerd, is not shipped.
+  - Program is Apple's, /System/Library/CoreServices/powerd.bundle/powerd.
+    (It was /usr/sbin/pmconfigd until nextbsd-userland#240.) powerd also
+    owns the CPU power policy, so FreeBSD's CPU-frequency daemon,
+    /usr/sbin/powerd, is not shipped.
   - RunAtLoad: Apple's job starts on demand at the first lookup of either
-    service. pmconfigd also has to act without being asked (power sources,
+    service. powerd also has to act without being asked (power sources,
     idle sleep, lid and button policy), so it starts at boot, as notifyd
     and the other system daemons here do.
   - No JetsamProperties or POSIXSpawnType: NextBSD has no jetsam.
 
-  KeepAlive restarts it if it exits. stderr goes to /var/log/pmconfigd.stderr
-  (pmconfigd's os_log lands there), never the console.
+  KeepAlive restarts it if it exits. stderr goes to /var/log/powerd.stderr
+  (powerd's os_log lands there), never the console.
 -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
     <string>org.nextbsd.powerd</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/sbin/pmconfigd</string>
-    </array>
+    <key>Program</key>
+    <string>/System/Library/CoreServices/powerd.bundle/powerd</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -51,8 +51,8 @@
         <true/>
     </dict>
     <key>StandardOutPath</key>
-    <string>/var/log/pmconfigd.stderr</string>
+    <string>/var/log/powerd.stderr</string>
     <key>StandardErrorPath</key>
-    <string>/var/log/pmconfigd.stderr</string>
+    <string>/var/log/powerd.stderr</string>
 </dict>
 </plist>

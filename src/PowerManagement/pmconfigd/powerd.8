@@ -1,20 +1,21 @@
-.\" pmconfigd(8) — NextBSD power management daemon.
+.\" powerd(8) — NextBSD power management daemon.
 .\"
 .\" NextBSD-original. Apple ships no manual page for powerd.
 .\"
 .Dd November 3, 2026
-.Dt PMCONFIGD 8
+.Dt POWERD 8
 .Os NextBSD
 .Sh NAME
-.Nm pmconfigd
+.Nm powerd
 .Nd power management daemon
 .Sh SYNOPSIS
 .Nm
 .Sh DESCRIPTION
 .Nm
-is Apple's power management daemon, built from PowerManagement-1846.120.8.0.1
-(macOS installs it as
-.Pa powerd ) .
+is Apple's power management daemon, built from the pmconfigd sources of
+PowerManagement-1846.120.8.0.1.
+As on macOS, it is installed inside its bundle,
+.Pa /System/Library/CoreServices/powerd.bundle .
 It owns power policy: power assertions, idle and display sleep, power
 sources, and the system sleep and wake sequence.
 .Pp
@@ -235,11 +236,13 @@ the
 job
 .It Pa /Local/Library/Preferences/SystemConfiguration/com.apple.AutoWake.plist
 the scheduled and repeating power events
+.It Pa /System/Library/CoreServices/powerd.bundle/powerd
+the daemon
 .It Pa /System/Library/CoreServices/powerd.bundle
 Apple's assertion timeout and category lists
 .It Pa /dev/iopmroot
 the kernel's power management root domain
-.It Pa /var/log/pmconfigd.stderr
+.It Pa /var/log/powerd.stderr
 the daemon's log
 .El
 .Sh SEE ALSO

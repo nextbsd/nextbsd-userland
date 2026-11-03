@@ -985,14 +985,23 @@ echo "==> bluetoothd + bluetooth built"
 # which libIOKit carries), so the server and libIOKit's client come from the
 # same generation. Runs as org.nextbsd.powerd, serving
 # com.apple.PowerManagement.control and com.apple.iokit.powerdxpc.
-comp "pmconfigd"
-mkdir -p "$DESTDIR/usr/sbin" "$DESTDIR/System/Library/CoreServices/powerd.bundle"
+# Installed as macOS installs it, /System/Library/CoreServices/powerd.bundle/
+# powerd, with the bundle's assertion plists; until nextbsd-userland#240 it
+# was /usr/sbin/pmconfigd, which must not come back into the package.
+comp "powerd (pmconfigd)"
+PM_BUNDLE="$DESTDIR/System/Library/CoreServices/powerd.bundle"
+# bsd.prog.mk installs the split debug file under /usr/lib/debug + BINDIR.
+mkdir -p "$PM_BUNDLE" "$DESTDIR/usr/lib/debug/System/Library/CoreServices/powerd.bundle"
 run_buildenv "make -C $SRC/PowerManagement/pmconfigd DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$PM_MIG all install"
-test -x "$DESTDIR/usr/sbin/pmconfigd" || { echo "FAIL: /usr/sbin/pmconfigd not installed"; exit 1; }
-test -s "$DESTDIR/System/Library/CoreServices/powerd.bundle/com.apple.powerd.assertiontimeouts.plist" \
+test -x "$PM_BUNDLE/powerd" || { echo "FAIL: powerd.bundle/powerd not installed"; exit 1; }
+test -s "$PM_BUNDLE/com.apple.powerd.assertiontimeouts.plist" \
     || { echo "FAIL: powerd.bundle assertion plists not installed"; exit 1; }
-needed_check "$DESTDIR/usr/sbin/pmconfigd" "libxpc"
-echo "==> pmconfigd built"
+test ! -e "$DESTDIR/usr/sbin/pmconfigd" \
+    || { echo "FAIL: stale /usr/sbin/pmconfigd in DESTDIR"; exit 1; }
+test ! -e "$DESTDIR/usr/sbin/powerd" \
+    || { echo "FAIL: /usr/sbin/powerd in DESTDIR (powerd lives in its bundle)"; exit 1; }
+needed_check "$PM_BUNDLE/powerd" "libxpc"
+echo "==> powerd built"
 
 # ---- mDNSResponder + libdns_sd ----------------------------------------------
 # build.sh ~2400-2461. mDNSResponder daemon (bsd.prog.mk) then libdns_sd

@@ -393,10 +393,10 @@ _pm_os_log(os_log_t log, os_log_type_t type, const char *fmt, ...)
 		line[--lb.len] = '\0';
 
 	if (log != OS_LOG_DEFAULT && log->category[0] != '\0')
-		(void)fprintf(stderr, "%s pmconfigd[%d] [%s] %s%s\n", tbuf,
+		(void)fprintf(stderr, "%s powerd[%d] [%s] %s%s\n", tbuf,
 		    (int)getpid(), log->category, tag, line);
 	else
-		(void)fprintf(stderr, "%s pmconfigd[%d] %s%s\n", tbuf,
+		(void)fprintf(stderr, "%s powerd[%d] %s%s\n", tbuf,
 		    (int)getpid(), tag, line);
 	(void)fflush(stderr);
 	errno = saved_errno;
