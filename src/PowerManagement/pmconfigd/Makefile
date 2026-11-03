@@ -30,10 +30,19 @@ BINDIR=		/usr/sbin
 #   powermanagement_stubs.c the powermanagement.defs routines whose Apple
 #                           files are not built yet
 #   os_log_shim.c           os_log() for every file (os/log.h)
+#   PrivateLib_freebsd.c    the PrivateLib.m / PMAssertions.c functions the
+#                           ported files call (PrivateLib_freebsd.h)
 .PATH:		${.CURDIR}/../freebsd-shims ${.CURDIR}/../common
 SRCS=		pmconfigd_freebsd.c
 SRCS+=		powermanagement_stubs.c
 SRCS+=		os_log_shim.c
+SRCS+=		PrivateLib_freebsd.c
+
+# Apple's files, built as C under __FreeBSD__ (see ../VENDORED.md):
+#   AutoWakeScheduler.c     pmset schedule: one-shot power events
+#   RepeatingAutoWake.c     pmset repeat: repeating power events
+SRCS+=		AutoWakeScheduler.c
+SRCS+=		RepeatingAutoWake.c
 
 # powermanagementServer.c — MIG server stub for powermanagement.defs.
 # build-userland.sh runs the host mig and passes MIGOUT=; a standalone build
@@ -71,6 +80,9 @@ CFLAGS+=	-I${.CURDIR} -I${.CURDIR}/../common
 CFLAGS+=	-I${.CURDIR}/../../libIOKit
 CFLAGS+=	-I${.CURDIR}/../../launchd/liblaunch
 CFLAGS+=	-I${.CURDIR}/../../launchd/freebsd-shims
+#   5. <notify.h> includes <os/base.h>, which only Libnotify's shims carry.
+#      Searched after the sysroot, so it adds that header and shadows none.
+CFLAGS+=	-idirafter ${.CURDIR}/../../Libnotify/freebsd-shims
 
 # pmconfigd's MIG listener is Apple's: dispatch_mach_create_f() and
 # dispatch_mach_mig_demux(), libdispatch SPI that NextBSD's libdispatch
@@ -92,11 +104,15 @@ LDFLAGS+=	-Wl,--allow-shlib-undefined
 #   -lCoreFoundation  %@ in os_log_shim.c (and, later, everything)
 #   -lsystem_kernel   mach_msg, vm_deallocate, the Mach port calls
 #   -l:libsystem_blocks.so  the XPC event-handler blocks
+#   -lSystemConfiguration  SCPreferences: com.apple.AutoWake.plist
+#   -lnotify          notify_post() of the scheduled-event notifications
 # Use the system_* names and the exact-file -l: form for blocks, never
 # -ldispatch / -lBlocksRuntime (#378).
 LDADD+=		-llaunch -lxpc -lsystem_dispatch -lCoreFoundation
 LDADD+=		-lsystem_kernel -l:libsystem_blocks.so
+LDADD+=		-lSystemConfiguration -lnotify
 
 # FreeBSD base libs: releng/15.1 src.libnames.mk requires LIBADD, not LDADD+=-lfoo.
-LIBADD+=	pthread
+#   m                 ceil() in AutoWakeScheduler.c (libSystem has it on macOS)
+LIBADD+=	pthread m
 .include <bsd.prog.mk>

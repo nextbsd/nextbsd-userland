@@ -43,6 +43,9 @@
 #include <IOKit/pwr_mgt/powermanagement_mig.h>
 #include "powermanagementServer.h"	/* MIG: _powermanagement_subsystem */
 
+#include "PrivateLib_freebsd.h"
+#include "AutoWakeScheduler.h"		/* AutoWake_prime() */
+
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -176,6 +179,7 @@ powerd_init(void *__unused context)
      * SystemLoad, BatteryTimeRemaining, TTYKeepAwake, ...). Each is added
      * here, in Apple's order, by the ticket that ports it.
      */
+    AutoWake_prime();
 
     os_log(OS_LOG_DEFAULT, "pmconfigd started: %s%s, %s\n",
            kIOPMServerBootstrapName,

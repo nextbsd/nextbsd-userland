@@ -23,7 +23,11 @@
 #ifndef _RepeatingAutoWake_h_
 #define _RepeatingAutoWake_h_
 
+#ifdef __FreeBSD__
+#include "PrivateLib_freebsd.h"	/* NextBSD: PrivateLib.h does not build yet */
+#else
 #include "PrivateLib.h"
+#endif
 
 __private_extern__ CFDictionaryRef copyNextRepeatingEvent(CFStringRef type);
 

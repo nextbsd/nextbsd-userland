@@ -7,9 +7,9 @@
 **License:** APSL 2.0 (see `APPLE_LICENSE`)
 
 The whole tree is imported as Apple ships it, minus `.git`. Apple's files are
-unmodified except `pmconfigd/Makefile` (below); a diff against a checkout of
-the upstream tag shows exactly that file plus the NextBSD files listed at the
-end.
+unmodified except `pmconfigd/Makefile` (below) and the files listed under
+"Apple files changed"; a diff against a checkout of the upstream tag shows
+exactly those plus the NextBSD files listed at the end.
 
 Also vendored, into `freebsd-shims/IOKit/pwr_mgt/`:
 
@@ -48,6 +48,22 @@ in Apple's two MachServices and stays up:
 Later stages add Apple's files to `SRCS` in `pmconfigd/Makefile` and delete
 the matching NextBSD stand-in from `freebsd-shims/`.
 
+S2 (nextbsd-userland#238) adds `AutoWakeScheduler.c` and
+`RepeatingAutoWake.c`: `pmset schedule` / `pmset repeat`, persisted through
+SCPreferences to `com.apple.AutoWake.plist` in
+`/Local/Library/Preferences/SystemConfiguration/`.
+
+## Apple files changed
+
+Each change is under `#ifdef __FreeBSD__`, with Apple's code kept in the
+`#else`:
+
+| File | Change |
+|---|---|
+| `pmconfigd/AutoWakeScheduler.c` | includes `PrivateLib_freebsd.h` in place of `PrivateLib.h`, `PMAssertions.h` and `PMSettings.h` |
+| `pmconfigd/RepeatingAutoWake.h` | the same, for `PrivateLib.h` |
+| `pmconfigd/RepeatingAutoWake.c` | the same; the Gregorian `CFCalendar` calls become `localtime_r(3)` / `mktime(3)` in the same local time zone |
+
 The Xcode project also builds `pmset`, `caffeinate`, `pmtool`, `ioupsd` and
 the Low Power Mode and battery-health pieces. None is built from this tree
 yet. `src/caffeinate` is a separate, older import (PowerManagement-1049).
@@ -61,7 +77,10 @@ All in `freebsd-shims/` unless noted (the Libnotify pattern):
 | `pmconfigd/Makefile` | the build (replaces Apple's stale Makefile, see above) |
 | `pmconfigd/pmconfigd.8` | manual page; Apple ships none for powerd |
 | `pmconfigd_freebsd.c` | `main()`, `powerd_init()` and the two listeners, in Apple's shape, until `pmconfigd.m` and `PrivateLib.m` build |
-| `powermanagement_stubs.c` | the `_io_*` MIG routines whose Apple files are not built yet |
+| `powermanagement_stubs.c` | the `_io_*` MIG routines whose Apple files are not built yet; `io_pm_assertion_copy_details` serves only the two scheduled-event selectors |
+| `PrivateLib_freebsd.h` | the share of `PrivateLib.h` (and the IOKit private headers it includes) that the ported Apple files use, until `PrivateLib.h` builds |
+| `PrivateLib_freebsd.c` | `PrivateLib.m` / `PMAssertions.c` functions those files call: scheduled shutdown/restart over launchd's init signals, scheduled sleep (not supported until the root domain lands), entitlement checks, internal assertions; and IOKitUser's `IOPMSchedulePowerEvent` for the "Immediate" (RTC) types |
+| `libproc.h` | launchd's `libproc.h` shim plus `proc_name()` |
 | `os/log.h`, `os_log_shim.c` | `os_log()`: `%{public}` annotations and `%@` handled, written to stderr (`/var/log/pmconfigd.stderr`) |
 | `os/signpost.h` | `os_signpost_*()` as no-ops |
 | `IOKit/pwr_mgt/` | vendored from IOKitUser, see above |

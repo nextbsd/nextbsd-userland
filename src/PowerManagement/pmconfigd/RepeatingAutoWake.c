@@ -24,7 +24,12 @@
 #include <syslog.h>
 #include <bsm/libbsm.h>
 #include "RepeatingAutoWake.h"
+#ifdef __FreeBSD__
+#include "PrivateLib_freebsd.h"	/* NextBSD: PrivateLib.h does not build yet */
+#include <time.h>
+#else
 #include "PrivateLib.h"
+#endif
 #include "AutoWakeScheduler.h"
 
 /*
@@ -152,7 +157,16 @@ upcomingToday(CFDictionaryRef event, int today_cf)
     
     // get gregorian date for right now
     int hour, minute;
+#ifdef __FreeBSD__
+    // NextBSD: the local wall-clock time from localtime_r(3), not CFCalendar.
+    time_t now_t = time(NULL);
+    struct tm now_tm;
+    localtime_r(&now_t, &now_tm);
+    hour = now_tm.tm_hour;
+    minute = now_tm.tm_min;
+#else
     CFCalendarDecomposeAbsoluteTime(_gregorian(), CFAbsoluteTimeGetCurrent(), "Hm", &hour, &minute);
+#endif
     
     secondsToday = 60 * (hour*60 + minute);
     secondsScheduled = 60 * getRepeatingDictionaryMinutes(event);
@@ -288,7 +302,17 @@ copyNextRepeatingEvent(CFStringRef type)
         if (!repeatDictCopy)
             return NULL;
 
+#ifdef __FreeBSD__
+        // NextBSD: localtime_r(3) and mktime(3) in place of the Gregorian
+        // CFCalendar, in the same local time zone. tm_wday counts from
+        // Sunday = 0, CF's weekday from Sunday = 1.
+        time_t now_t = time(NULL);
+        struct tm ev_tm;
+        localtime_r(&now_t, &ev_tm);
+        day_of_week = ev_tm.tm_wday + 1;
+#else
         CFCalendarDecomposeAbsoluteTime(_gregorian(), CFAbsoluteTimeGetCurrent(), "E", &day_of_week);
+#endif
 
         // CFCalendarDecomposeAbsoluteTime starts week with Sunday as "1".
         // IOPMScheduleRepeatingPowerEvent() is defined to start week with Monday as "1".
@@ -297,9 +321,11 @@ copyNextRepeatingEvent(CFStringRef type)
         day_of_week = (day_of_week == 1) ? 7 : (day_of_week - 1);
         days_until_event = daysUntil(repeatDict, day_of_week);
 
+#ifndef __FreeBSD__
         adjustedForDays = CFAbsoluteTimeGetCurrent();
         CFCalendarAddComponents(_gregorian(), &adjustedForDays, 0, "d", days_until_event);
         CFCalendarDecomposeAbsoluteTime(_gregorian(), adjustedForDays, "yMd", &year, &month, &day);
+#endif
 
         minutes_scheduled = getRepeatingDictionaryMinutes(repeatDict);
 
@@ -307,7 +333,20 @@ copyNextRepeatingEvent(CFStringRef type)
         myminute = minutes_scheduled%60;
         mysecond = 0;
 
+#ifdef __FreeBSD__
+        // mktime() carries tm_mday past the end of the month, and with
+        // tm_isdst = -1 picks the DST offset in force on that day, as
+        // CFCalendarAddComponents("d") does.
+        (void)adjustedForDays; (void)year; (void)month; (void)day;
+        ev_tm.tm_mday += days_until_event;
+        ev_tm.tm_hour = myhour;
+        ev_tm.tm_min = myminute;
+        ev_tm.tm_sec = mysecond;
+        ev_tm.tm_isdst = -1;
+        ev_time = (CFAbsoluteTime)mktime(&ev_tm) - kCFAbsoluteTimeIntervalSince1970;
+#else
         CFCalendarComposeAbsoluteTime(_gregorian(), &ev_time, "yMdHms", year, month, day, myhour, myminute, mysecond);
+#endif
         
         ev_date = CFDateCreate(0, ev_time);
         if (ev_date) {

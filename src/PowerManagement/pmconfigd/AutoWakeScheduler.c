@@ -32,11 +32,21 @@
 #include <syslog.h>
 #include <notify.h>
 #include <bsm/libbsm.h>
+#ifdef __FreeBSD__
+/*
+ * NextBSD: PrivateLib.h, PMAssertions.h and PMSettings.h do not build yet;
+ * this file's share of them is in freebsd-shims/PrivateLib_freebsd.h.
+ */
+#include "PrivateLib_freebsd.h"
+#include "AutoWakeScheduler.h"
+#include "RepeatingAutoWake.h"
+#else
 #include "PrivateLib.h"
 #include "AutoWakeScheduler.h"
 #include "RepeatingAutoWake.h"
 #include "PMAssertions.h"
 #include "PMSettings.h"
+#endif
 #include <libproc.h>
 
 
