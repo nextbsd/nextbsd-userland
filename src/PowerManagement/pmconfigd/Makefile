@@ -54,7 +54,7 @@ BINDIR=		/System/Library/CoreServices/powerd.bundle
 #                           kernel has a platform plugin
 #   PMSettings_freebsd.c    PMSettings.m, compiled as C
 #   PMDisplay_freebsd.c     the clamshell part of PMDisplay.m: the lid state
-#                           for notify(3) and the dynamic store
+#                           for notify(3)
 #   PMStore_freebsd.c       Apple's PMStore.c, unmodified, compiled with the
 #                           PrivateLib.h declarations it needs
 #   BatteryTimeRemaining_freebsd.c

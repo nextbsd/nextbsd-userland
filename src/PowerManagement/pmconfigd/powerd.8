@@ -135,15 +135,21 @@ the Energy Saver settings in effect.
 the system's power capabilities: 0 from the moment the system is going to
 sleep until it wakes.
 It is first written at the first sleep.
-.It Ql State:/IOKit/PowerManagement/Clamshell
-on a machine with a lid:
-.Ql AppleClamshellState ,
-true while the lid is closed, and
-.Ql AppleClamshellCausesSleep .
-This key is NextBSD's; the others have the names macOS uses.
 .El
 .Pp
-The lid state is also posted as the
+As on macOS, the lid is not in the dynamic store.
+Its state is the
+.Ql AppleClamshellState
+.Pq true while closed
+and
+.Ql AppleClamshellCausesSleep
+properties of the
+.Ql IOPMrootDomain
+registry entry, present only on a machine with a lid
+.Pq Xr ioreg 8 ,
+and
+.Nm
+posts it as the
 .Xr notify 3
 name
 .Ql com.apple.system.powermanagement.clamshellstate ,
@@ -302,6 +308,7 @@ the daemon's log
 .Xr hwpstate_intel 4 ,
 .Xr caffeinate 8 ,
 .Xr configd 8 ,
+.Xr ioreg 8 ,
 .Xr launchd 8 ,
 .Xr scutil 8 ,
 .Xr shutdown 8
