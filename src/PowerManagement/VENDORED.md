@@ -17,6 +17,7 @@ Also vendored, into `freebsd-shims/IOKit/pwr_mgt/`:
 |---|---|
 | `powermanagement.defs` | apple-oss-distributions/IOKitUser @ `IOKitUser-100231.120.3` (commit `23a611d9d194b63465f6df2abfdda63d71c87e97`), `pwr_mgt.subproj/powermanagement.defs` |
 | `powermanagement_mig.h` | same tag, `pwr_mgt.subproj/powermanagement_mig.h`, unmodified |
+| `IOPMLibDefs.h` | apple-oss-distributions/xnu @ `xnu-12377.121.6` (commit `ac9718fb1af618d5ce8678d0dc6e8a58f252216f`), `iokit/IOKit/pwr_mgt/IOPMLibDefs.h`, unmodified: the root domain's user-client selectors (`kPM*`) |
 
 `pmconfigd/powermanagement.defs` is a one-line
 `#include <IOKit/pwr_mgt/powermanagement.defs>`: Apple builds the daemon
@@ -53,6 +54,15 @@ S2 (nextbsd-userland#238) adds `AutoWakeScheduler.c` and
 SCPreferences to `com.apple.AutoWake.plist` in
 `/Local/Library/Preferences/SystemConfiguration/`.
 
+D2 (nextbsd-userland#226) adds the one kernel shim, `RootDomain_freebsd.c`.
+pmconfigd reaches the in-kernel IOPMrootDomain (nextbsd-kernel#243) as it
+does on macOS: Apple's `IOServiceOpen` / `IOConnectCallMethod` calls on the
+root domain are routed there by `PrivateLib_freebsd.h`, and each `kPM*`
+selector becomes a `/dev/iopmroot` ioctl or the libIOKit IOPMLib call over
+it. Root-domain properties go through libIOKit's
+`IORegistryEntrySetCFProperty`, and the root domain's general interest
+(clamshell changes) through `IOServiceAddInterestNotification`.
+
 ## Apple files changed
 
 Each change is under `#ifdef __FreeBSD__`, with Apple's code kept in the
@@ -79,10 +89,11 @@ All in `freebsd-shims/` unless noted (the Libnotify pattern):
 | `pmconfigd_freebsd.c` | `main()`, `powerd_init()` and the two listeners, in Apple's shape, until `pmconfigd.m` and `PrivateLib.m` build |
 | `powermanagement_stubs.c` | the `_io_*` MIG routines whose Apple files are not built yet; `io_pm_assertion_copy_details` serves only the two scheduled-event selectors |
 | `PrivateLib_freebsd.h` | the share of `PrivateLib.h` (and the IOKit private headers it includes) that the ported Apple files use, until `PrivateLib.h` builds |
-| `PrivateLib_freebsd.c` | `PrivateLib.m` / `PMAssertions.c` functions those files call: scheduled shutdown/restart over launchd's init signals, scheduled sleep (not supported until the root domain lands), entitlement checks, internal assertions; and IOKitUser's `IOPMSchedulePowerEvent` for the "Immediate" (RTC) types |
+| `PrivateLib_freebsd.c` | `PrivateLib.m` / `PMAssertions.c` functions those files call: scheduled shutdown/restart over launchd's init signals, scheduled sleep through the root domain, entitlement checks, internal assertions; and IOKitUser's `IOPMSchedulePowerEvent` for the "Immediate" (RTC) types |
+| `RootDomain_freebsd.c` | the kernel shim: `IOServiceOpen` / `IOConnectCallMethod` on the IOPMrootDomain as `/dev/iopmroot` ioctls (selector table), `getRootDomain()`, `getRootDomainConnect()`, `_set`/`_copyRootDomainProperty()`, and pmconfigd.m's root-domain general-interest listener |
 | `libproc.h` | launchd's `libproc.h` shim plus `proc_name()` |
 | `os/log.h`, `os_log_shim.c` | `os_log()`: `%{public}` annotations and `%@` handled, written to stderr (`/var/log/pmconfigd.stderr`) |
 | `os/signpost.h` | `os_signpost_*()` as no-ops |
-| `IOKit/pwr_mgt/` | vendored from IOKitUser, see above |
+| `IOKit/pwr_mgt/` | vendored from IOKitUser and xnu, see above |
 
 The launchd job is `overlay/System/Library/LaunchDaemons/org.nextbsd.powerd.plist`.

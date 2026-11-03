@@ -56,24 +56,14 @@ __private_extern__ void _askNicelyThenRestartSystem(void)
 }
 
 /*
- * Sleep: pmconfigd asks the root domain with
- * IOPMSleepSystemWithOptions(getRootDomainConnect(), options), the reason in
- * kIOPMSleepReasonKey (pmconfigd.m and PMAssertions.c do the same for their
- * own sleeps). Both ends are still to come: the kernel root domain and
- * /dev/iopmroot's IOPMROOT_SLEEP (K4, nextbsd-kernel#243), and libIOKit's
- * IOPMLib calls over it (L4, nextbsd-userland#234). Until they land a
- * scheduled sleep is logged as not supported and the system stays awake;
- * the event is consumed like any other that has fired.
- *
- * When L4 lands, replace pmSleepSystemWithOptions() with
- * IOPMSleepSystemWithOptions() on the root-domain connection.
+ * Sleep: pmconfigd asks the root domain itself, with
+ * IOPMSleepSystemWithOptions() on its root-domain connection and the reason
+ * in kIOPMSleepReasonKey, as pmconfigd.m and PMAssertions.c do for their own
+ * sleeps. The kernel sends kIOMessageSystemWillSleep to every app, waits
+ * for their answers and then sleeps (nextbsd-kernel#243). "Scheduled Sleep"
+ * is not one of xnu's sleep reasons, so the root domain records it as a
+ * "Software Sleep", as xnu does.
  */
-static IOReturn
-pmSleepSystemWithOptions(CFDictionaryRef options __unused)
-{
-    return kIOReturnUnsupported;
-}
-
 __private_extern__ void _askNicelyThenSleepSystem(void)
 {
     CFMutableDictionaryRef  options = NULL;
@@ -86,10 +76,10 @@ __private_extern__ void _askNicelyThenSleepSystem(void)
     }
 
     INFO_LOG("Scheduled sleep: asking the root domain to sleep\n");
-    ret = pmSleepSystemWithOptions(options);
+    ret = IOPMSleepSystemWithOptions(getRootDomainConnect(), options);
     if (ret != kIOReturnSuccess) {
         ERROR_LOG("Scheduled sleep not performed: 0x%x%s\n", ret,
-                  ret == kIOReturnUnsupported ? " (system sleep is not supported yet)" : "");
+                  ret == kIOReturnUnsupported ? " (this machine cannot sleep)" : "");
     }
 
     if (options) {

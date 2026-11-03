@@ -2,7 +2,7 @@
 .\"
 .\" NextBSD-original. Apple ships no manual page for powerd.
 .\"
-.Dd November 2, 2026
+.Dd November 3, 2026
 .Dt PMCONFIGD 8
 .Os NextBSD
 .Sh NAME
@@ -61,12 +61,22 @@ to power off or reboot, as
 does.
 A scheduled
 .Cm sleep
-is logged and not performed until system sleep is supported.
+asks the kernel's power management root domain to sleep the machine; it
+is logged and not performed where the machine cannot sleep.
 .Cm wake
 and
 .Cm poweron
 events are kept and listed, but no hardware alarm is set for them yet, so
 they do not wake or power on the machine.
+.Pp
+.Nm
+is a client of the kernel's power management root domain, the
+.Ql IOPMrootDomain
+registry entry, which it reaches through
+.Pa /dev/iopmroot .
+It logs the lid
+.Pq clamshell
+state at start and whenever the lid opens or closes.
 .Pp
 Every other MIG request is answered with
 .Dv kIOReturnUnsupported ;
@@ -79,6 +89,8 @@ the
 job
 .It Pa /Local/Library/Preferences/SystemConfiguration/com.apple.AutoWake.plist
 the scheduled and repeating power events
+.It Pa /dev/iopmroot
+the kernel's power management root domain
 .It Pa /var/log/pmconfigd.stderr
 the daemon's log
 .El

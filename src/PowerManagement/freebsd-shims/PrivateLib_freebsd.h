@@ -22,7 +22,8 @@
  * copy wins once it exists. When PrivateLib.h builds, the #ifdef above goes
  * away and so does this file. Add to it as more Apple files are ported.
  *
- * The functions declared at the end live in PrivateLib_freebsd.c.
+ * The functions declared at the end live in PrivateLib_freebsd.c, except
+ * the root-domain ones, which live in RootDomain_freebsd.c.
  */
 #ifndef _PM_SHIM_PRIVATELIB_FREEBSD_H_
 #define _PM_SHIM_PRIVATELIB_FREEBSD_H_
@@ -105,6 +106,23 @@ enum {
 	kIOPMSystemCapabilityNetwork    = 0x08,
 	kIOPMSystemCapabilityAOT        = 0x10,
 };
+
+/* kIOPMMessageClamshellStateChange's argument. */
+enum {
+	kClamshellStateBit = (1 << 0),
+	kClamshellSleepBit = (1 << 1)
+};
+#endif
+#ifndef sub_iokit_powermanagement
+#define sub_iokit_powermanagement	0x34000		/* err_sub(13) */
+#endif
+#ifndef kIOPMMessageClamshellStateChange
+#define kIOPMMessageClamshellStateChange \
+	iokit_family_msg(sub_iokit_powermanagement, 0x100)
+#endif
+#ifndef kAppleClamshellStateKey
+#define kAppleClamshellStateKey		"AppleClamshellState"
+#define kAppleClamshellCausesSleepKey	"AppleClamshellCausesSleep"
 #endif
 
 /* ---- IOKit/pwr_mgt/IOPMKeys.h (IOKitUser) ------------------------------ */
@@ -174,6 +192,63 @@ enum {
 #ifndef kIOPMSleepReasonKey
 #define kIOPMSleepReasonKey		"Sleep Reason"
 #endif
+#ifndef _IOKIT_IOPM_H	/* IOPMPrivate.h includes IOPM.h */
+/* System Sleep Types (kPMGetSystemSleepType) */
+enum {
+    kIOPMSleepTypeInvalid                   = 0,
+    kIOPMSleepTypeAbortedSleep              = 1,
+    kIOPMSleepTypeNormalSleep               = 2,
+    kIOPMSleepTypeSafeSleep                 = 3,
+    kIOPMSleepTypeHibernate                 = 4,
+    kIOPMSleepTypeStandby                   = 5,
+    kIOPMSleepTypePowerOff                  = 6,
+    kIOPMSleepTypeDeepIdle                  = 7,
+    kIOPMSleepTypeLast                      = 8
+};
+#endif
+
+/* ---- The root domain's user client (RootDomain_freebsd.c) -------------- */
+/*
+ * On macOS pmconfigd opens the IOPMrootDomain's user client with
+ * IOServiceOpen() and calls it with IOConnectCallMethod() and the
+ * kPM* selectors of xnu's IOPMLibDefs.h. NextBSD's root domain is in the
+ * kernel too (nextbsd-kernel#243), but its user client is /dev/iopmroot and
+ * libIOKit has no IOServiceOpen() or IOConnectCallMethod(). These two names
+ * are routed to RootDomain_freebsd.c, which serves the root domain's
+ * selectors over the device and nothing else, so the Apple call sites build
+ * unchanged. Drop the two #defines when libIOKit grows the real calls.
+ */
+#include <IOKit/pwr_mgt/IOPMLibDefs.h>
+
+__private_extern__ kern_return_t	pmRootDomainServiceOpen(
+					    io_service_t service,
+					    mach_port_t owningTask,
+					    uint32_t type,
+					    io_connect_t *connect);
+__private_extern__ kern_return_t	pmRootDomainCallMethod(
+					    io_connect_t connection,
+					    uint32_t selector,
+					    const uint64_t *input,
+					    uint32_t inputCnt,
+					    const void *inputStruct,
+					    size_t inputStructCnt,
+					    uint64_t *output,
+					    uint32_t *outputCnt,
+					    void *outputStruct,
+					    size_t *outputStructCnt);
+#define IOServiceOpen		pmRootDomainServiceOpen
+#define IOConnectCallMethod	pmRootDomainCallMethod
+
+/* common/CommonLib.c */
+__private_extern__ io_registry_entry_t	getRootDomain(void);
+/* PrivateLib.m */
+__private_extern__ IOReturn		_setRootDomainProperty(CFStringRef key,
+					    CFTypeRef val);
+__private_extern__ CFTypeRef		_copyRootDomainProperty(CFStringRef key);
+/* PMConnection.m */
+__private_extern__ io_connect_t		getRootDomainConnect(void);
+/* pmconfigd.m */
+__private_extern__ void			initializeRootDomainInterestNotifications(void);
 
 /* ---- PrivateLib.h ------------------------------------------------------ */
 #define BIT_IS_SET(x,b)                     ((x & b)==b)
