@@ -25,6 +25,8 @@
  *                           domain's sleep/wake messages, as any app's
  *   initializeSleepWakeNotifications() pmconfigd.m, verbatim
  *   _getPMMainQueue()       PrivateLib.m, verbatim
+ *   ESPrefsHaveChanged(),   pmconfigd.m: re-read the Energy Saver settings
+ *   initializeESPrefsNotification()  on kIOPMPrefsChangeNotify
  *
  * When pmconfigd.m and PrivateLib.m are added to SRCS, this file is deleted.
  *
@@ -49,8 +51,11 @@
 #include "PrivateLib_freebsd.h"
 #include "AutoWakeScheduler.h"		/* AutoWake_prime(), checkPendingWakeReqs() */
 #include "PMConnection.h"		/* PMConnection_prime() */
+#include "PMSettings.h"			/* PMSettings_prime() */
+#include "TTYKeepAwake.h"		/* TTYKeepAwake_prime() */
 
 #include <IOKit/IOMessage.h>
+#include <notify.h>
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -83,6 +88,36 @@ _getPMMainQueue(void)
     }
 
     return pmRLS;
+}
+
+/*
+ * pmconfigd.m. Someone "applied" new Energy Saver preferences (pmset, or
+ * IOPMSetPMPreferences(), which posts kIOPMPrefsChangeNotify): re-read them
+ * and tell each subsystem that keeps a copy. Apple's handler also tells
+ * MT2, UPSLowPower and the proximity-wake code, none of which is built.
+ */
+static void
+ESPrefsHaveChanged(void)
+{
+    PMSettingsPrefsHaveChanged();
+    TTYKeepAwakePrefsHaveChanged();
+    SystemLoadPrefsHaveChanged();
+}
+
+/*
+ * pmconfigd.m registers through IOPMRegisterPrefsChangeNotification(), a
+ * notify_register_dispatch() on kIOPMPrefsChangeNotify; libIOKit does not
+ * carry it yet (nextbsd-userland#233), so the same registration is made here.
+ */
+static void
+initializeESPrefsNotification(void)
+{
+    static int      token;
+
+    notify_register_dispatch(kIOPMPrefsChangeNotify, &token, _getPMMainQueue(),
+                             ^(int t __unused) {
+                                 ESPrefsHaveChanged();
+                             });
 }
 
 static void
@@ -161,15 +196,27 @@ xpc_register(void)
  * Receives notifications on system sleep and system wake.
  * This callback is not called for maintenance sleep/wake.
  *
- * pmconfigd answers the root domain here like any app, at once; holding a
- * sleep for its IOPMConnection clients is PMConnection's registration
- * (PMConnection_freebsd.c). Apple's WillSleep also hands the sleep to
- * user-activity tracking and stops the system-assertion timer, and its
- * CanSystemSleep waits for async assertions (checkForAsyncAssertions());
- * those belong to PMAssertions.c (nextbsd-userland#228). Until it builds a
- * CanSystemSleep is allowed here at once, as checkForAsyncAssertions() does
- * when no async assertion is pending.
+ * pmconfigd answers the root domain here like any app; holding a sleep for
+ * its IOPMConnection clients is PMConnection's registration
+ * (PMConnection_freebsd.c). As in pmconfigd.m, WillSleep hands the sleep to
+ * user-activity tracking and stops the system-assertion timer, and
+ * CanSystemSleep is answered by PMAssertions.c's checkForAsyncAssertions()
+ * through sendSleepNotificationResponse(), at once when no async-assertion
+ * client is connected (none can be on NextBSD yet).
  */
+void sendSleepNotificationResponse(void *acknowledgementToken, bool allow)
+{
+    if (allow) {
+        IOAllowPowerChange(_pm_ack_port, (long)acknowledgementToken);
+    }
+    else {
+        INFO_LOG("Cancelling sleep due to async assertions\n");
+        /* Apple also marks the sleep revertible (_set_sleep_revert, PMConnection.m). */
+        IOCancelPowerChange(_pm_ack_port, (long)acknowledgementToken);
+    }
+
+}
+
 static void
 SleepWakeCallback(
     void            *port __unused,
@@ -181,12 +228,19 @@ SleepWakeCallback(
     switch ( messageType ) {
         case kIOMessageSystemWillSleep:
             INFO_LOG("Received kIOMessageSystemWillSleep\n");
+            if (userActiveRootDomain()) {
+                userActiveHandleSleep();
+            }
             IOAllowPowerChange(_pm_ack_port, (long)acknowledgementToken);
+            /* handleSoftwareSleep() acts on Apple silicon only. */
+            INFO_LOG("Cancelling system assertion timer on sleep");
+            cancelSystemAssertionTimer();
             break;
 
         case kIOMessageCanSystemSleep:
             INFO_LOG("Received kIOMessageCanSystemSleep\n");
-            IOAllowPowerChange(_pm_ack_port, (long)acknowledgementToken);
+            checkForAsyncAssertions(acknowledgementToken);
+            // Response is sent thru sendSleepNotificationResponse()
             break;
 
         case kIOMessageSystemWillPowerOn:
@@ -200,6 +254,8 @@ SleepWakeCallback(
 
         case kIOMessageSystemHasPoweredOn:
             INFO_LOG("Received kIOMessageSystemHasPoweredOn\n");
+            /* NextBSD: restart the idle timers the kernel does not run. */
+            pmIdleSystemDidWake();
             break;
 
         default:
@@ -250,20 +306,39 @@ powerd_init(void *__unused context)
      * SystemLoad, BatteryTimeRemaining, TTYKeepAwake, ...). Each is added
      * here, in Apple's order, by the ticket that ports it.
      */
+    initializeESPrefsNotification();
     initializeRootDomainInterestNotifications();
 
     PMConnection_prime();
     initializeSleepWakeNotifications();
 
     /*
-     * PMSettings_prime() goes here (nextbsd-userland#228); its first
-     * activateSettings() is what hands the root domain the power-button
-     * setting. Until it builds, the lid and power-button policy is claimed
-     * with PMSettings' default.
+     * The lid and power-button policy, claimed with PMSettings' default.
+     * PMSettings' activateSettings() sends "Sleep On Power Button" only where
+     * the root domain lists it as supported, which NextBSD's does not, so the
+     * policy is claimed here first.
      */
     claimRootDomainSleepPolicy();
 
+    /*
+     * NextBSD: the idle sleep and display sleep timers xnu's root domain
+     * runs (RootDomainIdle_freebsd.c) start before the settings reach them.
+     */
+    pmIdle_prime();
+
+    PMSettings_prime();
     AutoWake_prime();
+    PMAssertions_prime();
+    /*
+     * The assertion timeout and category lists (powerd.bundle). Apple's
+     * system assertion timeout is off in this drop and nothing loads them;
+     * they are read once here so pmconfigd has them when it is turned on.
+     */
+    initSystemAssertionTimeoutList();
+    initAssertionCategories();
+    TTYKeepAwake_prime();
+
+    createOnBootAssertions();
 
     /* xnu's kIOPMPowerEmergency, which NextBSD's kernel leaves to pmconfigd. */
     initializeLowPowerSleep();

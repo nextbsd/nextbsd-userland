@@ -73,6 +73,20 @@ client. `RootDomain_freebsd.c` claims the lid and power-button policy at
 start and requests "Low Power Sleep" on a critical battery, which xnu's
 root domain does itself.
 
+D4 (nextbsd-userland#228) adds the assertion engine and the idle-sleep
+policy: Apple's `PMAssertions.c`, `PMAssertionLog.c`, `TTYKeepAwake.c` and
+`PMSettings.m` (as C). They serve the `io_pm_assertion_*`,
+`io_pm_declare_*`, `io_pm_ctl_assertion_type`, `io_pm_assertion_notify`
+and `io_pm_set_exception_limits` MIG routines and push the Energy Saver
+settings and the assertion levels to the root domain. xnu runs the idle
+sleep and display sleep timers in the kernel (IOPMrootDomain,
+IODisplayWrangler); NextBSD's root domain stores those inputs but has no
+timer, so `RootDomainIdle_freebsd.c` runs xnu's timer logic in pmconfigd
+and asks the root domain for an "Idle Sleep" when it runs out. Left out:
+the iOS async-offload assertion protocol (XPC), IOReport aggregates,
+energytrace, RunningBoard App Nap, the powerlog activity buffer and SMC
+battery commands.
+
 ## Apple files changed
 
 Each change is under `#ifdef __FreeBSD__`, with Apple's code kept in the
@@ -83,6 +97,11 @@ Each change is under `#ifdef __FreeBSD__`, with Apple's code kept in the
 | `pmconfigd/AutoWakeScheduler.c` | includes `PrivateLib_freebsd.h` in place of `PrivateLib.h`, `PMAssertions.h` and `PMSettings.h` |
 | `pmconfigd/RepeatingAutoWake.h` | the same, for `PrivateLib.h` |
 | `pmconfigd/RepeatingAutoWake.c` | the same; the Gregorian `CFCalendar` calls become `localtime_r(3)` / `mktime(3)` in the same local time zone |
+| `pmconfigd/PMAssertions.h` | includes `PrivateLib_freebsd.h`; no IOReport headers; no `CFMachPort` prototype |
+| `pmconfigd/PMAssertions.c` | the include list; without the async-offload XPC handlers, IOReport aggregates, `os_state`, CrashReporter and the CF/XPC bridge; no dark-wake proxies (every wake is a full wake) and no IOService busy-state interest |
+| `pmconfigd/PMAssertionLog.c` | the include list; without the powerlog activity buffer (its keys are not in the IOKitUser drop and its reader needs an entitlement), kdebug, IOReport and the CF/XPC bridge |
+| `pmconfigd/PMSettings.m` | the include list; no hibernation, PowerNap or pre-CFPreferences settings migration |
+| `pmconfigd/TTYKeepAwake.c` | watches `/var/run/utx.active` with a vnode source, since NextBSD's libc posts no utmpx notification |
 
 The Xcode project also builds `pmset`, `caffeinate`, `pmtool`, `ioupsd` and
 the Low Power Mode and battery-health pieces. None is built from this tree
@@ -99,9 +118,12 @@ All in `freebsd-shims/` unless noted (the Libnotify pattern):
 | `pmconfigd_freebsd.c` | `main()`, `powerd_init()` and the two listeners, in Apple's shape, until `pmconfigd.m` and `PrivateLib.m` build |
 | `powermanagement_stubs.c` | the `_io_*` MIG routines whose Apple files are not built yet; `io_pm_assertion_copy_details` serves only the two scheduled-event selectors |
 | `PrivateLib_freebsd.h` | the share of `PrivateLib.h` (and the IOKit private headers it includes) that the ported Apple files use, until `PrivateLib.h` builds |
-| `PrivateLib_freebsd.c` | `PrivateLib.m` / `PMAssertions.c` functions those files call: scheduled shutdown/restart over launchd's init signals, scheduled sleep through the root domain, entitlement checks, internal assertions; and IOKitUser's `IOPMSchedulePowerEvent` for the "Immediate" (RTC) types |
+| `PrivateLib_freebsd.c` | `PrivateLib.m` functions those files call: scheduled shutdown/restart over launchd's init signals, scheduled sleep through the root domain, entitlement checks, ASL; IOKitUser's `IOPMSchedulePowerEvent` for the "Immediate" (RTC) types; and one interim block per Apple file not built yet (PMConnection.m, SystemLoad.c, BatteryTimeRemaining.m, PMStore.c, PMDisplay.m, Platform.c) |
 | `RootDomain_freebsd.c` | the kernel shim: `IOServiceOpen` / `IOConnectCallMethod` on the IOPMrootDomain as `/dev/iopmroot` ioctls (selector table), `getRootDomain()`, `_set`/`_copyRootDomainProperty()`, pmconfigd.m's root-domain general-interest listener, and the sleep policy the kernel leaves to pmconfigd: claiming the lid and power-button policy, and the low-battery sleep |
 | `PMConnection_freebsd.c` | `PMConnection.m`'s sleep/wake state machine (app-power messages as capability changes), the IOPMConnection MIG routines, `io_pm_get_capability_bits` and `getRootDomainConnect()`, until `PMConnection.m` builds |
+| `RootDomainIdle_freebsd.c` | xnu's IOPMrootDomain idle sleep timer and IODisplayWrangler idle timer, fed by the aggressiveness, assertion levels and tickles pmconfigd sends the kernel |
+| `IOPMEnergyPrefs_freebsd.c` | IOKitUser's `IOPMEnergyPrefs.c`, read side only: defaults, saved settings, feature pruning; libIOKit takes it over (nextbsd-userland#233) |
+| `PMSettings_freebsd.c` | compiles `pmconfigd/PMSettings.m` as C |
 | `libproc.h` | launchd's `libproc.h` shim plus `proc_name()` |
 | `os/log.h`, `os_log_shim.c` | `os_log()`: `%{public}` annotations and `%@` handled, written to stderr (`/var/log/pmconfigd.stderr`) |
 | `os/signpost.h` | `os_signpost_*()` as no-ops |

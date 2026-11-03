@@ -964,7 +964,7 @@ echo "==> bluetoothd + bluetooth built"
 # Runs as org.nextbsd.powerd, serving com.apple.PowerManagement.control and
 # com.apple.iokit.powerdxpc.
 comp "pmconfigd"
-mkdir -p "$DESTDIR/usr/sbin"
+mkdir -p "$DESTDIR/usr/sbin" "$DESTDIR/System/Library/CoreServices/powerd.bundle"
 PM_MIG="$MIGROOT/powermanagement"
 rm -rf "$PM_MIG"; mkdir -p "$PM_MIG"
 run_mig "$PM_MIG" -I"$SRC/libmach/include" -I"$SRC/PowerManagement/freebsd-shims" \
@@ -975,6 +975,8 @@ run_mig "$PM_MIG" -I"$SRC/libmach/include" -I"$SRC/PowerManagement/freebsd-shims
 test -s "$PM_MIG/powermanagementServer.c" || { echo "FAIL: mig produced no powermanagementServer.c"; exit 1; }
 run_buildenv "make -C $SRC/PowerManagement/pmconfigd DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$PM_MIG all install"
 test -x "$DESTDIR/usr/sbin/pmconfigd" || { echo "FAIL: /usr/sbin/pmconfigd not installed"; exit 1; }
+test -s "$DESTDIR/System/Library/CoreServices/powerd.bundle/com.apple.powerd.assertiontimeouts.plist" \
+    || { echo "FAIL: powerd.bundle assertion plists not installed"; exit 1; }
 needed_check "$DESTDIR/usr/sbin/pmconfigd" "libxpc"
 echo "==> pmconfigd built"
 

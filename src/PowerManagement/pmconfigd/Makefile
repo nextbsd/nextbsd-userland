@@ -30,8 +30,9 @@ BINDIR=		/usr/sbin
 #   powermanagement_stubs.c the powermanagement.defs routines whose Apple
 #                           files are not built yet
 #   os_log_shim.c           os_log() for every file (os/log.h)
-#   PrivateLib_freebsd.c    the PrivateLib.m / PMAssertions.c functions the
-#                           ported files call (PrivateLib_freebsd.h)
+#   PrivateLib_freebsd.c    the PrivateLib.m functions the ported files call,
+#                           and interim versions of the functions they call
+#                           in Apple files not built yet (PrivateLib_freebsd.h)
 #   RootDomain_freebsd.c    the kernel shim: IOServiceOpen/IOConnectCallMethod
 #                           on the IOPMrootDomain as /dev/iopmroot ioctls,
 #                           the root domain's general interest, and the lid,
@@ -39,6 +40,13 @@ BINDIR=		/usr/sbin
 #   PMConnection_freebsd.c  PMConnection.m's sleep/wake state machine and
 #                           the IOPMConnection routines, until PMConnection.m
 #                           builds
+#   RootDomainIdle_freebsd.c the idle sleep and display sleep timers xnu's
+#                           IOPMrootDomain and IODisplayWrangler run in the
+#                           kernel, until NextBSD's root domain has them
+#   IOPMEnergyPrefs_freebsd.c IOKitUser's IOPMEnergyPrefs.c, read side: the
+#                           Energy Saver defaults and saved settings, until
+#                           libIOKit carries it (nextbsd-userland#233)
+#   PMSettings_freebsd.c    PMSettings.m, compiled as C
 .PATH:		${.CURDIR}/../freebsd-shims ${.CURDIR}/../common
 SRCS=		pmconfigd_freebsd.c
 SRCS+=		powermanagement_stubs.c
@@ -46,12 +54,32 @@ SRCS+=		os_log_shim.c
 SRCS+=		PrivateLib_freebsd.c
 SRCS+=		RootDomain_freebsd.c
 SRCS+=		PMConnection_freebsd.c
+SRCS+=		RootDomainIdle_freebsd.c
+SRCS+=		IOPMEnergyPrefs_freebsd.c
 
 # Apple's files, built as C under __FreeBSD__ (see ../VENDORED.md):
 #   AutoWakeScheduler.c     pmset schedule: one-shot power events
 #   RepeatingAutoWake.c     pmset repeat: repeating power events
+#   PMAssertions.c          IOPMAssertions: the assertion engine
+#   PMAssertionLog.c        assertion logging (pmset -g log)
+#   PMSettings.m            Energy Saver settings -> the root domain
+#                           (via PMSettings_freebsd.c, as C)
+#   TTYKeepAwake.c          active remote logins hold off idle sleep
 SRCS+=		AutoWakeScheduler.c
 SRCS+=		RepeatingAutoWake.c
+SRCS+=		PMAssertions.c
+SRCS+=		PMAssertionLog.c
+SRCS+=		PMSettings_freebsd.c
+SRCS+=		TTYKeepAwake.c
+
+# Apple's assertion timeout and category lists, in powerd's bundle as the
+# Xcode project installs them (initSystemAssertionTimeoutList(),
+# initAssertionCategories()).
+FILESGROUPS+=	PMRES
+PMRES=		Resources/com.apple.powerd.assertiontimeouts.plist
+PMRES+=		Resources/com.apple.powerd.assertioncategories.plist
+PMRESDIR=	/System/Library/CoreServices/powerd.bundle
+PMRESMODE=	0444
 
 # powermanagementServer.c — MIG server stub for powermanagement.defs.
 # build-userland.sh runs the host mig and passes MIGOUT=; a standalone build
@@ -84,13 +112,16 @@ CFLAGS+=	-O2 -pipe -fblocks
 #   3. libIOKit's source headers (<IOKit/IOKitLib.h>, the real one, and its
 #      vendored <sys/iopmroot.h>, "iopmroot.h"), ahead of
 #      launchd/freebsd-shims' IOKit stub, as wland and DiskArbitration do;
-#   4. liblaunch for <servers/bootstrap.h> and its launchd/freebsd-shims pair.
+#   4. syslog's <asl.h> (PMAssertionLog.c logs assertions to ASL, as pmset
+#      -g log reads them), ahead of launchd/freebsd-shims' empty asl.h;
+#   5. liblaunch for <servers/bootstrap.h> and its launchd/freebsd-shims pair.
 CFLAGS+=	-I${.CURDIR}/../freebsd-shims
 CFLAGS+=	-I${.CURDIR} -I${.CURDIR}/../common
 CFLAGS+=	-I${.CURDIR}/../../libIOKit
+CFLAGS+=	-I${.CURDIR}/../../syslog/libsystem_asl.tproj/include
 CFLAGS+=	-I${.CURDIR}/../../launchd/liblaunch
 CFLAGS+=	-I${.CURDIR}/../../launchd/freebsd-shims
-#   5. <notify.h> includes <os/base.h>, which only Libnotify's shims carry.
+#   6. <notify.h> includes <os/base.h>, which only Libnotify's shims carry.
 #      Searched after the sysroot, so it adds that header and shadows none.
 CFLAGS+=	-idirafter ${.CURDIR}/../../Libnotify/freebsd-shims
 
@@ -118,11 +149,12 @@ LDFLAGS+=	-Wl,--allow-shlib-undefined
 #   -lnotify          notify_post() of the scheduled-event notifications
 #   -lIOKit           the root domain: registry lookup, interest
 #                     notifications, IOPMLib, /dev/iopmroot
+#   -lsystem_asl      PMAssertionLog.c's ASL messages
 # Use the system_* names and the exact-file -l: form for blocks, never
 # -ldispatch / -lBlocksRuntime (#378).
 LDADD+=		-llaunch -lxpc -lsystem_dispatch -lCoreFoundation
 LDADD+=		-lsystem_kernel -l:libsystem_blocks.so
-LDADD+=		-lSystemConfiguration -lnotify -lIOKit
+LDADD+=		-lSystemConfiguration -lnotify -lIOKit -lsystem_asl
 
 # FreeBSD base libs: releng/15.1 src.libnames.mk requires LIBADD, not LDADD+=-lfoo.
 #   m                 ceil() in AutoWakeScheduler.c (libSystem has it on macOS)

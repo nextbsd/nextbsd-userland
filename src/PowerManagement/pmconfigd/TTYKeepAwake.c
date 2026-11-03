@@ -46,6 +46,12 @@
  *
  ******************************************************************************/
 
+#ifdef __FreeBSD__
+/* First: PrivateLib_freebsd.h prepares <asl.h> for NextBSD. */
+#include "PrivateLib_freebsd.h"
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 #include <notify.h>
 #include <utmpx.h>
 #include <sys/stat.h>
@@ -53,7 +59,9 @@
 #include <asl.h>
 #include <sys/queue.h>
 #include <sys/param.h>
+#ifndef __FreeBSD__
 #include "PrivateLib.h"
+#endif
 #include "TTYKeepAwake.h"
 #include "PMAssertions.h"
 #include "PMSettings.h"
@@ -84,6 +92,14 @@ static time_t                   settingIdleSleepSeconds = 0;
 static bool                     settingTTYSPreventSleep = true;
 static IOPMAssertionID          s_assertion = 0;
 static int                      s_utmpx_notify_token = -1;
+#ifdef __FreeBSD__
+/* The active-login database; libc's private utxdb.h names it. */
+#ifndef _PATH_UTX_ACTIVE
+#define _PATH_UTX_ACTIVE        "/var/run/utx.active"
+#endif
+static dispatch_source_t        s_utmpx_source;
+static void watch_utmpx(dispatch_queue_t q);
+#endif
 static dispatch_source_t        s_timer_source;
 static dispatch_queue_t         s_tty_queue;
 
@@ -115,12 +131,23 @@ void TTYKeepAwake_prime(void)
         goto finish;
     }
 
+#ifdef __FreeBSD__
+    /*
+     * NextBSD's libc does not post UTMPX_CHANGE_NOTIFICATION when the login
+     * records change. Watch the active-login database itself instead: a
+     * kqueue vnode source on utx.active, which pututxline(3) rewrites on
+     * every login and logout.
+     */
+    (void)status;
+    watch_utmpx(q_default);
+#else
     status = notify_register_dispatch(UTMPX_CHANGE_NOTIFICATION,
         &s_utmpx_notify_token, q_default, ^(int t){ read_logins(); });
     if (status != NOTIFY_STATUS_OK) {
         result = -1;
         goto finish;
     }
+#endif
 
     s_timer_source = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
         q_default);
@@ -230,6 +257,64 @@ bool  TTYKeepAwakeConsiderAssertion( void )
 
     return allow_sleep;
 }
+
+#ifdef __FreeBSD__
+/*
+ * The vnode source on _PATH_UTX_ACTIVE (<utmpx.h>). If the file is missing
+ * (no login since boot) or replaced, its directory is watched until the
+ * file is there again; each change re-reads the logins, as the utmpx
+ * notification does on macOS.
+ */
+static void watch_utmpx(dispatch_queue_t q)
+{
+    static char         dirpath[MAXPATHLEN];
+    const char          *watched = _PATH_UTX_ACTIVE;
+    unsigned long       mask;
+    int                 fd;
+    char                *slash;
+
+    if (s_utmpx_source) {
+        dispatch_source_cancel(s_utmpx_source);
+        dispatch_release(s_utmpx_source);
+        s_utmpx_source = NULL;
+    }
+
+    fd = open(_PATH_UTX_ACTIVE, O_RDONLY | O_CLOEXEC);
+    if (fd >= 0) {
+        mask = DISPATCH_VNODE_WRITE | DISPATCH_VNODE_EXTEND |
+               DISPATCH_VNODE_DELETE | DISPATCH_VNODE_RENAME | DISPATCH_VNODE_REVOKE;
+    } else {
+        strlcpy(dirpath, _PATH_UTX_ACTIVE, sizeof(dirpath));
+        if ((slash = strrchr(dirpath, '/')) != NULL) {
+            *slash = '\0';
+        }
+        watched = dirpath;
+        fd = open(dirpath, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (fd < 0) {
+            ERROR_LOG("TTYKeepAwake: cannot watch %s: %d\n", dirpath, errno);
+            return;
+        }
+        mask = DISPATCH_VNODE_WRITE;
+    }
+
+    s_utmpx_source = dispatch_source_create(DISPATCH_SOURCE_TYPE_VNODE, fd, mask, q);
+    if (!s_utmpx_source) {
+        close(fd);
+        return;
+    }
+    dispatch_source_set_event_handler(s_utmpx_source, ^{
+        unsigned long events = dispatch_source_get_data(s_utmpx_source);
+
+        if ((watched == dirpath) ||
+            (events & (DISPATCH_VNODE_DELETE | DISPATCH_VNODE_RENAME | DISPATCH_VNODE_REVOKE))) {
+            watch_utmpx(q);
+        }
+        read_logins();
+    });
+    dispatch_source_set_cancel_handler(s_utmpx_source, ^{ close(fd); });
+    dispatch_resume(s_utmpx_source);
+}
+#endif
 
 static void read_logins(void)
 {
@@ -419,6 +504,13 @@ static void cleanup_tty_tracking(void)
                 notify_cancel(s_utmpx_notify_token);
                 s_utmpx_notify_token = -1;
             }
+#ifdef __FreeBSD__
+            if (s_utmpx_source) {
+                dispatch_source_cancel(s_utmpx_source);
+                dispatch_release(s_utmpx_source);
+                s_utmpx_source = NULL;
+            }
+#endif
 
             if (s_timer_source) {
                 dispatch_release(s_timer_source);

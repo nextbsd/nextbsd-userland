@@ -21,6 +21,20 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+#ifdef __FreeBSD__
+/*
+ * NextBSD: built as C, without the CF<->XPC bridge, kdebug signposts or
+ * IOReport (see the __FreeBSD__ blocks below). The pmconfigd headers come
+ * from ../freebsd-shims (PrivateLib_freebsd.h) until PrivateLib.h builds.
+ */
+#include <CoreFoundation/CoreFoundation.h>
+#include <mach/mach.h>
+#include <notify.h>
+#include <xpc/xpc.h>
+
+#include "PrivateLib_freebsd.h"
+#include "PMAssertions.h"
+#else
 #include <CoreFoundation/CoreFoundation.h>
 #include <asl.h>
 #include <mach/mach.h>
@@ -34,6 +48,7 @@
 #include "PowerManagementSignposts.h"
 
 #include <IOReport.h>
+#endif /* !__FreeBSD__ */
 
 #define DISPLAY_ON_ASSERTION_LOG_DELAY         (60LL)
 #define DISPLAY_OFF_ASSERTION_LOG_DELAY        (10LL)
@@ -115,6 +130,26 @@ static void logAssertionActivity(assertLogAction  action,
     CFMutableDictionaryRef  entry = NULL;
     CFDictionaryRef         props = assertion->props;
 
+#ifdef __FreeBSD__
+    /*
+     * NextBSD: the activity ring buffer is read only by a client with the
+     * com.apple.private.iokit.powerlogging entitlement (powerlog), which no
+     * NextBSD process has, and its entry keys (kIOPMAssertionActivityTime,
+     * kIOPMAssertionActivityAction, ...) are not in the IOKitUser drop. The
+     * buffer is not kept; _io_pm_assertion_activity_log refuses the read as
+     * it does for any unentitled caller.
+     */
+    (void)logBT; (void)time; (void)createTime; (void)actionStr; (void)pid_cf;
+    (void)retain_cf; (void)uniqueAID; (void)category; (void)type; (void)name;
+    (void)btSymbols; (void)onBehalfPid; (void)onBehalfPidStr;
+    (void)onBehalfBundleID; (void)usingFrameworkBundleID;
+    (void)instanceMetadata; (void)wasCoalesced; (void)procName; (void)entry;
+    (void)props;
+    if ((action == kACreateLog) || (action == kASessionStartLog)) {
+        gNumAssertions++;
+    }
+    return;
+#else
     switch(action) {
 
     case kACreateLog:
@@ -307,6 +342,7 @@ static void logAssertionActivity(assertLogAction  action,
         activity.unreadCnt = UINT_MAX;
         INFO_LOG("Assertion bufffer has reached capacity. Sending high water mark notification");
     }
+#endif /* !__FreeBSD__ */
 }
 
 
@@ -620,6 +656,7 @@ static void logAssertionToASL(assertLogAction  action,
                 (((uint64_t)assertion->kassert) << 32) | (assertion->assertionId), assertionsBuf, assertionQualifierBuf);
     }
 
+#ifndef __FreeBSD__     /* no kdebug tracing; no OS install environment */
     if (gDebugFlags & kIOPMDebugTraceAssertionActivity) {
         union {
             struct {
@@ -646,6 +683,7 @@ static void logAssertionToASL(assertLogAction  action,
         syslog(LOG_INFO | LOG_INSTALL, "Assertion %s. Type:%s Name:\'%s\' Id:%s Process:%s %s\n",
                 assertionAction, assertionTypeCString, assertionNameCString, aslAssertionId, proc_name_buf, aslMessageString);
     }
+#endif /* !__FreeBSD__ */
 }
 
 
@@ -741,6 +779,10 @@ void logAssertionEvent(assertLogAction  action,
 
 void logAsyncAssertionActivity(ProcessInfo *pinfo, CFArrayRef assertionActivity)
 {
+#ifdef __FreeBSD__
+    /* NextBSD: async-offload clients only (see PMAssertions.c), never called. */
+    (void)pinfo; (void)assertionActivity;
+#else
     assertion_t *assertion = NULL;
     assertion = calloc(1, sizeof(assertion_t));
     int length = (int)CFArrayGetCount(assertionActivity);
@@ -779,6 +821,7 @@ void logAsyncAssertionActivity(ProcessInfo *pinfo, CFArrayRef assertionActivity)
         }
     }
     free(assertion);
+#endif /* !__FreeBSD__ */
 }
 
 void setAssertionActivityLog(int value)
@@ -988,13 +1031,15 @@ void _sendAssertionActivityUpdate(CFArrayRef processes, bool client_overflow)
     }
 #endif
     xpc_object_t data = NULL;
+    xpc_object_t timedout_processes = NULL;
+#ifndef __FreeBSD__     /* no CF->XPC bridge; the reply carries no data */
     if (updates) {
         data = _CFXPCCreateXPCObjectFromCFObject(updates);
     }
-    xpc_object_t timedout_processes = NULL;
     if (processes) {
         timedout_processes = _CFXPCCreateXPCObjectFromCFObject(processes);
     }
+#endif
 #ifndef XCTEST
     xpc_dictionary_set_uint64(reply_msg, kAssertionCopyActivityUpdateRefCntKey, refCnt);
     xpc_dictionary_set_bool(reply_msg, kAssertionCopyActivityUpdateOverflowKey, overflow);
@@ -1097,9 +1142,11 @@ void _sendActiveAssertions(CFMutableDictionaryRef assertions)
         goto exit;
     }
 #endif
+#ifndef __FreeBSD__     /* no CF->XPC bridge; the reply carries no data */
     if (assertions) {
         data = _CFXPCCreateXPCObjectFromCFObject(assertions);
     }
+#endif
 
 #ifndef XCTEST
     xpc_dictionary_set_value(reply_msg, kAssertionCopyActiveAsyncAssertionsKey, data);
@@ -1190,6 +1237,12 @@ void updateProcAssertionStats(ProcessInfo *pinfo, struct aggregateStats *aggStat
     static CFStringRef      providerName = NULL;
     static CFMutableDictionaryRef  unitInfo = NULL;
 
+#ifdef __FreeBSD__
+    /* NextBSD: no IOReport; reportBuf is never allocated (PMAssertions.c). */
+    (void)ptr2cpy; (void)size2cpy; (void)duration; (void)chType; (void)ret;
+    (void)stats; (void)providerName; (void)unitInfo; (void)aggStats;
+    return;
+#else
     if (pinfo->reportBuf == NULL) return;
 
     if (aggStats->reportBufs == NULL) {
@@ -1241,6 +1294,7 @@ void updateProcAssertionStats(ProcessInfo *pinfo, struct aggregateStats *aggStat
 
     SIMPLEARRAY_UPDATEPREP(pinfo->reportBuf, ptr2cpy, size2cpy);
     CFDataAppendBytes(aggStats->reportBufs, ptr2cpy, size2cpy);
+#endif /* !__FreeBSD__ */
 }
 
 int qcompare(const void *p1, const void*p2)
@@ -1267,6 +1321,15 @@ IOReturn copyAssertionActivityAggregate(CFDictionaryRef *data)
 
     memset(&aggStats, 0, sizeof(aggStats));
 
+#ifdef __FreeBSD__
+    /*
+     * NextBSD: the per-process aggregate is an IOReport sample set, and
+     * there is no IOReport. pmset -g assertionsactivity gets "unsupported".
+     */
+    (void)procs; (void)samples; (void)j; (void)cnt; (void)data;
+    rc = kIOReturnUnsupported;
+    goto exit;
+#endif
     if (gActivityAggCnt == 0) {
         asl_log(0,0,ASL_LEVEL_ERR,
                 "gActivityAggCnt = 0; IOPMCopyAssertionActivityAggregate()"
@@ -1294,7 +1357,9 @@ IOReturn copyAssertionActivityAggregate(CFDictionaryRef *data)
         updateProcAssertionStats(procs[j], &aggStats);
     }
 
+#ifndef __FreeBSD__
     samples = IOReportCreateSamplesRaw(aggStats.legend, aggStats.reportBufs, NULL);
+#endif
     free(procs);
 
     *data = samples;

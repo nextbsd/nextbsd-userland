@@ -28,6 +28,16 @@
 #ifndef _PM_SHIM_PRIVATELIB_FREEBSD_H_
 #define _PM_SHIM_PRIVATELIB_FREEBSD_H_
 
+/*
+ * PrivateLib.h's own include guard. Apple's smaller headers that a ported
+ * file uses for their prototypes (PMSettings.h, PMConnection.h, Platform.h
+ * ...) #include "PrivateLib.h" first; with the guard taken, that include is
+ * empty and this file stands in for it.
+ */
+#ifndef _privatelib_h_
+#define _privatelib_h_
+#endif
+
 #include <CoreFoundation/CoreFoundation.h>
 #include <SystemConfiguration/SystemConfiguration.h>
 #include <IOKit/IOKitLib.h>
@@ -40,6 +50,22 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+
+/*
+ * syslog's <asl.h> (libsystem_asl, which CommonLib.h includes) marks its
+ * routines with __API_DEPRECATED and __not_tail_called; the
+ * <Availability.h> pmconfigd sees defines neither, so define them away, as
+ * syslog's own freebsd-shims/Availability.h does.
+ */
+#ifndef __API_DEPRECATED
+#define __API_DEPRECATED(...)
+#endif
+#ifndef __not_tail_called
+#define __not_tail_called
+#endif
+
+#include <asl.h>
+#include <xpc/xpc.h>
 
 /* ---- SystemConfiguration/SCValidation.h -------------------------------- */
 #ifndef isA_CFType
@@ -293,6 +319,31 @@ __private_extern__ kern_return_t	pmRootDomainCallMethod(
 #define IOServiceOpen		pmRootDomainServiceOpen
 #define IOConnectCallMethod	pmRootDomainCallMethod
 
+/*
+ * IOPMSetAggressiveness() goes through the shim too, so the idle timers
+ * that xnu's root domain runs in the kernel (RootDomainIdle_freebsd.c) see
+ * the sleep and display sleep minutes the kernel is sent. libIOKit's call
+ * does the rest.
+ */
+__private_extern__ IOReturn		pmRootDomainSetAggressiveness(
+					    io_connect_t fb,
+					    unsigned long type,
+					    unsigned long aggressiveness);
+#define IOPMSetAggressiveness	pmRootDomainSetAggressiveness
+
+/* The kernel root domain's state (IOPMROOT_GETSTATE), from the shim. */
+#include "iopmroot.h"		/* libIOKit's vendored <sys/iopmroot.h> */
+__private_extern__ IOReturn		pmRootDomainCopyState(struct iopmroot_state *st);
+
+/* RootDomainIdle_freebsd.c: the root domain's and wrangler's idle timers */
+__private_extern__ void			pmIdle_prime(void);
+__private_extern__ void			pmIdleAggressivenessChanged(unsigned long type,
+					    unsigned long value);
+__private_extern__ void			pmIdleUserAssertionLevelsChanged(uint32_t levels);
+__private_extern__ void			pmIdleActivityTickle(void);
+__private_extern__ void			pmIdleSystemDidWake(void);
+__private_extern__ CFTimeInterval	_getHIDIdleTime(void);
+
 /* common/CommonLib.c */
 __private_extern__ io_registry_entry_t	getRootDomain(void);
 /* PrivateLib.m */
@@ -317,7 +368,26 @@ __private_extern__ void			initializeLowPowerSleep(void);
         ((((c)->fromCapabilities & (f)) != 0) && \
          (((c)->toCapabilities & (f)) == 0))
 
+#define CAPABILITY_BIT_CHANGED(x, y, b)     ((x ^ y) & b)
+#define CHANGED_CAP_BITS(x, y)              ((x) ^ (y))
+
+/* gDebugFlags bits */
+#define kIOPMDebugAssertionASLLog           0x01
+#define kIOPMDebugLogAssertionSynchronous   0x02
+#define kIOPMDebugLogCallbacks              0x04
+#define kIOPMDebugLogWakeRequests           0x08
+#define kIOPMDebugLogUserActivity           0x10
+#define kIOPMDebugEnableSpindumpOnFullwake  0x20
+#define kIOPMDebugLogAssertionActivity      0x40  // Logs assertion data to log archive
+#define kIOPMDebugLogAssertionNameChange    0x80
+#define kIOPMDebugTraceAssertionActivity    0x100 // Logs assertion data to log archive
+
+#define kProcNameBufLen 64
+
 #define PM_LOG_SYSTEM               "com.apple.powerd"
+#define ASSERTIONS_LOG              "assertions"
+#define PMSETTINGS_LOG              "pmSettings"
+#define DISPLAY_LOG                 "displayState"
 #define WAKEREQUESTS_LOG            "wakeRequests"
 #define SLEEPWAKE_LOG               "sleepWake"
 
@@ -347,20 +417,458 @@ __private_extern__ bool			auditTokenHasEntitlement(
 					    audit_token_t token,
 					    CFStringRef entitlement);
 
-/* ---- PMAssertions.h ---------------------------------------------------- */
-__private_extern__ IOReturn InternalCreateAssertion(
-                                CFMutableDictionaryRef properties,
-                                IOPMAssertionID *outID);
-__private_extern__ IOReturn
-InternalCreateAssertionWithTimeout(CFStringRef type, CFStringRef name, int timerSecs, IOPMAssertionID *outID);
-__private_extern__ CFMutableDictionaryRef	_IOPMAssertionDescriptionCreate(
-                            CFStringRef AssertionType,
-                            CFStringRef Name,
-                            CFStringRef Details,
-                            CFStringRef HumanReadableReason,
-                            CFStringRef LocalizationBundlePath,
-                            CFTimeInterval Timeout,
-                            CFStringRef TimeoutBehavior);
+/* ---- IOKit/pwr_mgt/IOPMLib.h (IOKitUser): assertions -------------------- */
+#ifndef kIOPMAssertionFrameworkIDKey
+enum {
+    kIOPMNullAssertionID = 0
+};
+#define kIOPMAssertionFrameworkIDKey		CFSTR("FrameworkBundleID")
+#define kIOPMAssertNetworkClientActive		CFSTR("NetworkClientActive")
+#define kIOPMAssertionTypeNoIdleSleep		CFSTR("NoIdleSleepAssertion")
+#define kIOPMAssertionTypeNoDisplaySleep	CFSTR("NoDisplaySleepAssertion")
+#endif
+
+/* ---- IOKit/pwr_mgt/IOPMLibPrivate.h (IOKitUser): assertions ------------- */
+#ifndef kIOPMAssertionTypeApplePushServiceTask
+/* Entitlements (no NextBSD caller holds one; see auditTokenHasEntitlement) */
+#define kIOPMDarkWakeControlEntitlement		CFSTR("com.apple.private.iokit.darkwake-control")
+#define kIOPMInteractivePushEntitlement		CFSTR("com.apple.private.iokit.interactive-push")
+#define kIOPMReservePwrCtrlEntitlement		CFSTR("com.apple.private.iokit.reservepower-control")
+#define kIOPMAssertOnBatteryEntitlement		CFSTR("com.apple.private.iokit.assertonbattery")
+#define kIOPMAssertOnLidCloseEntitlement	CFSTR("com.apple.private.iokit.assertonlidclose")
+#define kIOPMAssertionSuspendResumeEntitlement	CFSTR("com.apple.private.iokit.assertion-suspendresume")
+#define kIOPMAssertionTypeSoftwareUpdateEntitlement CFSTR("com.apple.private.iokit.assertion-softwareupdate")
+
+/* Assertion types */
+#define kIOPMAssertionTypeApplePushServiceTask	CFSTR("ApplePushServiceTask")
+#define kIOPMAssertInteractivePushServiceTask	CFSTR("InteractivePushServiceTask")
+#define kIOPMAssertionTypeBackgroundTask	CFSTR("BackgroundTask")
+#define kIOPMAssertAwakeReservePower		CFSTR("AwakeOnReservePower")
+#define kIOPMAssertionTypeDenySystemSleep	CFSTR("DenySystemSleep")
+#define kIOPMAssertDisplayWake			CFSTR("DisplayWake")
+#define kIOPMAssertInternalPreventDisplaySleep	CFSTR("InternalPreventDisplaySleep")
+#define kIOPMAssertRequiresDisplayAudio		CFSTR("RequiresDisplayAudio")
+#define kIOPMAssertMaintenanceActivity		CFSTR("MaintenanceWake")
+#define kIOPMAssertionTypeSystemIsActive	CFSTR("SystemIsActive")
+#define kIOPMAssertionTypeSoftwareUpdateTask	CFSTR("SoftwareUpdateTask")
+#define kIOPMAssertionTypeDisableInflow		CFSTR("DisableInflow")
+#define kIOPMInflowDisableAssertion		kIOPMAssertionTypeDisableInflow
+#define kIOPMAssertionTypeInhibitCharging	CFSTR("ChargeInhibit")
+#define kIOPMChargeInhibitAssertion		kIOPMAssertionTypeInhibitCharging
+#define kIOPMAssertionTypeDisableLowBatteryWarnings CFSTR("DisableLowPowerBatteryWarnings")
+#define kIOPMAssertionTypeEnableIdleSleep	CFSTR("EnableIdleSleep")
+#define kIOPMAssertionTypeNeedsCPU		CFSTR("CPUBoundAssertion")
+
+/* Assertion dictionary keys */
+#define kIOPMAssertionCreateDateKey		CFSTR("AssertStartWhen")
+#define kIOPMAssertionTimedOutDateKey		CFSTR("AssertTimedOutWhen")
+#define kIOPMAssertionTimeoutTimeLeftKey	CFSTR("AssertTimeoutTimeLeft")
+#define kIOPMAssertionTimeoutUpdateTimeKey	CFSTR("AssertTimeoutUpdateTime")
+#define kIOPMAssertionPIDKey			CFSTR("AssertPID")
+#define kIOPMAssertionGlobalUniqueIDKey		CFSTR("GlobalUniqueID")
+#define kIOPMAssertionAppliesToLimitedPowerKey	CFSTR("AppliesToLimitedPower")
+#define kIOPMAssertionAppliesOnLidClose		CFSTR("AppliesOnLidClose")
+#define kIOPMAssertionExitSilentRunning		CFSTR("ExitSilentRunning")
+#define kIOPMAssertionResourcesUsed		CFSTR("ResourcesUsed")
+#define kIOPMAssertionResourceAudioIn		CFSTR("audio-in")
+#define kIOPMAssertionResourceAudioOut		CFSTR("audio-out")
+#define kIOPMAssertionResourceGPS		CFSTR("GPS")
+#define kIOPMAssertionResourceBaseband		CFSTR("baseband")
+#define kIOPMAssertionResourceBluetooth		CFSTR("bluetooth")
+#define kIOPMAssertionResourcePerfUnrestricted	CFSTR("perf-unrestricted")
+#define kIOPMAssertionResourceCamera		CFSTR("Camera")
+#define kIOPMAssertionCategoryKey		CFSTR("Category")
+#define kIOPMAssertionActivityBudgeted		CFSTR("ActivityBudgeted")
+#define kIOPMAssertionAllowsDeviceRestart	CFSTR("AllowsDeviceRestart")
+#define kIOPMAssertionOnBehalfOfBundleID	CFSTR("AssertionOnBehalfOfBundleID")
+#define kIOPMAssertionTrueTypeKey		CFSTR("AssertionTrueType")
+#define kIOPMAssertionIdKey			CFSTR("AssertionId")
+#define kIOPMAsyncClientAssertionIdKey		CFSTR("AsyncClientAssertionId")
+#define kIOPMAssertionIsStateSuspendedKey	CFSTR("AssertionIsStateSuspended")
+#define kIOPMAssertionIsCoalescedKey		CFSTR("IsCoalesced")
+#define kIOPMAssertionTimeoutActionKillProcess	CFSTR("TimeoutActionKillProcess")
+
+/* notify(3) names */
+#define kIOPMAssertionTimedOutNotifyString	"com.apple.system.powermanagement.assertions.timeout"
+#define kIOPMAssertionsAnyChangedNotifyString	"com.apple.system.powermanagement.assertions.anychange"
+#define kIOPMAssertionsChangedNotifyString	"com.apple.system.powermanagement.assertions"
+#define kIOPMAssertionsCollectBTString		"com.apple.powermanagement.collectbt"
+#define kIOPMDisableAppSleepPrefix		"com.apple.system.powermanagement.disableappsleep"
+#define kIOPMEnableAppSleepPrefix		"com.apple.system.powermanagement.enableappsleep"
+#define kIOPMAssertionExceptionNotifyName	"com.apple.powermanagement.assertionexception"
+
+/* Assertion exception limits (IOPMSetAssertionExceptionLimits) */
+#define kIOPMAssertionDurationLimit		CFSTR("Asssertion Duration Limit")
+#define kIOPMAggregateAssertionLimit		CFSTR("Aggregate Assertion Limit")
+#define kIOPMDefaultLimtsKey			CFSTR("Default Limits")
+#define kIOPMFrequentSleepWakeLimit		CFSTR("Frequent SW Limit")
+
+typedef enum  {
+    kIOPMAssertionDurationException = 1,
+    kIOPMAssertionAggregateException,
+    kIOPMFrequentSleepWakeException,
+    kIOPMAssertionSystemTimeoutException,
+} IOPMAssertionException;
+
+typedef uintptr_t IOPMNotificationHandle;
+
+typedef enum {
+    kIOPMSystemSleepReverted,
+    kIOPMSystemSleepNotReverted
+} IOPMSystemState;
+
+enum
+{
+    kIOPMIdleSleepPreventers    = 0,
+    kIOPMSystemSleepPreventers  = 1
+};
+
+/* io_pm_ctl_assertion_type() actions */
+#define kIOPMDisableAssertionType 0x1
+#define kIOPMEnableAssertionType 0x2
+
+/* Request type(req_type) for IOPMAssertionNotify() */
+enum {
+    kIOPMNotifyRegister = 0x1,
+    kIOPMNotifyDeRegister = 0x2
+};
+
+typedef enum {
+    kIOPMAssertionProcessStateSuspend = 0x1, /* Set State to Suspended */
+    kIOPMAssertionProcessStateResume = 0x2, /* Set State to Resumed */
+} IOPMAssertionProcessStateType;
+#endif /* !kIOPMAssertionTypeApplePushServiceTask */
+
+/*
+ * The ASL "Action" values PMAssertionLog.c writes for each assertion event
+ * (what pmset -g log shows). IOKitUser's public IOPMLibPrivate.h carried
+ * the first ten; the IOKitUser-100231.120.3 drop has none of them, and the
+ * last five are newer than any public copy, so those use the same wording.
+ * Log text only: no client parses them.
+ */
+#ifndef kPMASLAssertionActionCreate
+#define kPMASLAssertionActionCreate		"Created"
+#define kPMASLAssertionActionRetain		"Retained"
+#define kPMASLAssertionActionRelease		"Released"
+#define kPMASLAssertionActionClientDeath	"ClientDied"
+#define kPMASLAssertionActionTimeOut		"TimedOut"
+#define kPMASLAssertionActionSummary		"Summary"
+#define kPMASLAssertionActionTurnOff		"TurnedOff"
+#define kPMASLAssertionActionTurnOn		"TurnedOn"
+#define kPMASlAssertionActionCapTimeOut		"CapExpired"
+#define kPMASLAssertionActionNameChange		"NameChanged"
+#define kPMASLAssertionActionSuspend		"Suspended"
+#define kPMASLAssertionActionResume		"Resumed"
+#define kPMASLAssertionActionSystemTimeout	"SystemTimedOut"
+#define kPMASLAssertionActionSessionStart	"SessionStarted"
+#define kPMASLAssertionActionSessionEnd		"SessionEnded"
+#endif
+
+/* ---- IOKit/pwr_mgt/IOPMAssertionCategories.h (IOKitUser) ---------------- */
+#ifndef _IOPMAssertionCategories_h_
+typedef enum {
+    kIOPMAssertionPolicyNone = 0,
+    kIOPMAssertionPolicyActiveUse,
+    kIOPMAssertionPolicyInactive,
+    kIOPMAssertionPolicyDisplayOff,
+} IOPMAssertionPolicy;
+#endif
+
+/* ---- IOKit/pwr_mgt/IOPM.h (xnu): driver assertions ---------------------- */
+#ifndef _IOKIT_IOPM_H
+enum {
+    kIOPMDriverAssertionCPUBit                      = 0x01,
+    kIOPMDriverAssertionUSBExternalDeviceBit        = 0x04,
+    kIOPMDriverAssertionBluetoothHIDDevicePairedBit = 0x08,
+    kIOPMDriverAssertionExternalMediaMountedBit     = 0x10,
+    kIOPMDriverAssertionReservedBit5                = 0x20,
+    kIOPMDriverAssertionPreventDisplaySleepBit      = 0x40,
+    kIOPMDriverAssertionReservedBit7                = 0x80,
+    kIOPMDriverAssertionMagicPacketWakeEnabledBit   = 0x100,
+    kIOPMDriverAssertionNetworkKeepAliveActiveBit   = 0x200
+};
+#define kIOPMDriverAssertionIDKey               "ID"
+#define kIOPMDriverAssertionCreatedTimeKey      "CreatedTime"
+#define kIOPMDriverAssertionModifiedTimeKey     "ModifiedTime"
+#define kIOPMDriverAssertionOwnerStringKey      "Owner"
+#define kIOPMDriverAssertionOwnerServiceKey     "ServicePtr"
+#define kIOPMDriverAssertionRegistryEntryIDKey  "RegistryEntryID"
+#define kIOPMDriverAssertionLevelKey            "Level"
+#define kIOPMDriverAssertionAssertedKey         "Assertions"
+#endif
+
+/* ---- IOKit/pwr_mgt/IOPM.h (xnu): IOPMPowerSource keys ------------------- */
+#ifndef kIOPMPSExternalConnectedKey
+#define kIOPMPSExternalConnectedKey		"ExternalConnected"
+#define kIOPMPSIsChargingKey			"IsCharging"
+#endif
+
+/* ---- IOKit/pwr_mgt/IOPMLibPrivate.h (IOKitUser): energy settings -------- */
+#ifndef kIOPMDisplaySleepKey
+#define kIOPMDynamicStoreSettingsKey		"State:/IOKit/PowerManagement/CurrentSettings"
+#define kIOPMDisplaySleepKey			"Display Sleep Timer"
+#define kIOPMDiskSleepKey			"Disk Sleep Timer"
+#define kIOPMSystemSleepKey			"System Sleep Timer"
+#define kIOPMWakeOnLANKey			"Wake On LAN"
+#define kIOPMWakeOnRingKey			"Wake On Modem Ring"
+#define kIOPMRestartOnPowerLossKey		"Automatic Restart On Power Loss"
+#define kIOPMRestartOnPowerConnectKey		"Automatic Restart On Power Connect"
+#define kIOPMWakeOnACChangeKey			"Wake On AC Change"
+#define kIOPMSleepOnPowerButtonKey		"Sleep On Power Button"
+#define kIOPMWakeOnClamshellKey			"Wake On Clamshell Open"
+#define kIOPMReduceBrightnessKey		"ReduceBrightness"
+#define kIOPMDisplaySleepUsesDimKey		"Display Sleep Uses Dim"
+#define kIOPMMobileMotionModuleKey		"Mobile Motion Module"
+#define kIOPMTTYSPreventSleepKey		"TTYSPreventSleep"
+#define kIOPMGPUSwitchKey			"GPUSwitch"
+#define kIOPMDarkWakeBackgroundTaskKey		"DarkWakeBackgroundTasks"
+#define kIOPMPowerNapSupportedKey		"PowerNap"
+#define kIOPMSleepServicesKey			"SleepServices"
+#define kIOPMUnifiedSleepSliderPrefKey		"UnifiedSleepSliderPref"
+#define kIOPMTCPKeepAlivePrefKey		"TCPKeepAlivePref"
+#define kIOPMProximityDarkWakeKey		"ProximityDarkWake"
+#define kIOPMLowPowerModeKey			"LowPowerMode"
+#define kIOPMHighPowerModeKey			"HighPowerMode"
+#define kIOPMUpdateDarkWakeBGSettingKey		"Update DarkWakeBG Setting"
+#define kIOPMDarkWakeLingerDurationKey		"DarkWake Linger Duration"
+#define kIOPMCarrierMode			"Carrier Mode"
+#define kIOPMCarrierModeVh			"Carrier Mode High Voltage"
+#define kIOPMCarrierModeVl			"Carrier Mode Low Voltage"
+#define kIOPMVact				"VAC-T"
+#define kIOPMRestartOnKernelPanicKey		"RestartAfterKernelPanic"
+#define kIOPMPrioritizeNetworkReachabilityOverSleepKey "PrioritizeNetworkReachabilityOverSleep"
+#define kIOPMReduceSpeedKey			"Reduce Processor Speed"
+#define kIOPMDynamicPowerStepKey		"Dynamic Power Step"
+#define kIOPMCFPrefsPath			"com.apple.PowerManagement"
+#define kIOPMSystemPowerSettingsKey		"SystemPowerSettings"
+#define kIOPMPrefsChangeNotify			"com.apple.system.powermanagement.prefschange"
+#define kIOPMSleepDisabledKey			CFSTR("SleepDisabled")
+#endif
+
+/* The older names for the capability bits (IOPMLibPrivate.h). */
+#ifndef kIOPMSystemPowerStateCapabilityCPU
+typedef uint32_t IOPMSystemPowerStateCapabilities;
+#define kIOPMSystemPowerStateCapabilityCPU              kIOPMCapabilityCPU
+#define kIOPMSystemPowerStateCapabilityVideo            kIOPMCapabilityVideo
+#define kIOPMSystemPowerStateCapabilityAudio            kIOPMCapabilityAudio
+#define kIOPMSystemPowerStateCapabilityNetwork          kIOPMCapabilityNetwork
+#define kIOPMSystemPowerStateCapabilityDisk             kIOPMCapabilityDisk
+#define kIOPMSystemPowerStateCapabilitiesMask           kIOPMCapabilityBitsMask
+#endif
+
+/* ---- IOKit/pwr_mgt/IOPMUPSPrivate.h (IOKitUser) ------------------------- */
+#ifndef kIOPMDefaultUPSThresholds
+#define kIOPMDefaultUPSThresholds		"UPSDefaultThresholds"
+#endif
+
+/* ---- IOKit/ps/IOPowerSources.h, IOPowerSourcesPrivate.h (IOKitUser) ----- */
+#ifndef kIOPMACPowerKey
+#define kIOPMACPowerKey				"AC Power"
+#define kIOPMBatteryPowerKey			"Battery Power"
+#define kIOPMUPSPowerKey			"UPS Power"
+#endif
+#ifndef _IOKIT_PS_IOPOWERSOURCESPRIVATE_H
+enum {
+    kIOPSProvidedByAC = 1,
+    kIOPSProvidedByBattery,
+    kIOPSProvidedByExternalBattery
+};
+#endif
+
+/* ---- IOKit/pwr_mgt/IOPM.h, IOPMPrivate.h (xnu): settings ---------------- */
+#ifndef _IOKIT_IOPM_H
+/* SetAggressiveness types */
+enum {
+	kPMGeneralAggressiveness = 0,
+	kPMMinutesToDim,
+	kPMMinutesToSpinDown,
+	kPMMinutesToSleep,
+	kPMEthernetWakeOnLANSettings,
+	kPMSetProcessorSpeed,
+	kPMPowerSource,
+	kPMMotionSensor,
+	kPMLastAggressivenessType
+};
+/* SetAggressiveness values for the kPMPowerSource aggressiveness type */
+enum {
+	kIOPMInternalPower = 1,
+	kIOPMExternalPower
+};
+#define kIOPMDeepSleepEnabledKey		"Standby Enabled"
+#define kIOPMDeepSleepDelayKey			"Standby Delay"
+#define kIOPMDeepSleepDelayHighKey		"High Standby Delay"
+#define kIOPMStandbyBatteryThresholdKey		"Standby Battery Threshold"
+#define kIOPMDestroyFVKeyOnStandbyKey		"DestroyFVKeyOnStandby"
+#define kIOPMSettingWakeOnRingKey		"Wake On Modem Ring"
+#define kIOPMSettingRestartOnPowerLossKey	"Automatic Restart On Power Loss"
+#define kIOPMSettingWakeOnACChangeKey		"Wake On AC Change"
+#define kIOPMSettingSleepOnPowerButtonKey	"Sleep On Power Button"
+#define kIOPMSettingWakeOnClamshellKey		"Wake On Clamshell Open"
+#define kIOPMSettingDisplaySleepUsesDimKey	"Display Sleep Uses Dim"
+#define kIOPMSettingMobileMotionModuleKey	"MobileMotionModule"
+#define kIOPMAutoPowerOffEnabledKey		"AutoPowerOff Enabled"
+#define kIOPMAutoPowerOffDelayKey		"AutoPowerOff Delay"
+#endif
+
+/* ---- IOKit/IOTypes.h ---------------------------------------------------- */
+#ifndef kNilOptions
+enum {
+    kNilOptions = 0
+};
+#endif
+
+/* ---- IOKit/IOKitKeys.h -------------------------------------------------- */
+#ifndef kIOServicePlane
+#define kIOServicePlane			"IOService"
+#endif
+
+/* ---- energytrace.h: no energy tracing on NextBSD ------------------------ */
+/*
+ * PMAssertions.c tags each assertion type with an energytrace quality and
+ * reports assertion ends with entr_act_end(). NextBSD has no energytrace;
+ * the qualities are kept as zeros and the call does nothing.
+ */
+#ifndef kEnTrQualNone
+enum {
+    kEnTrCompSysPower = 0,
+    kEnTrActSPPMAssertion = 0,
+    kEnTrQualNone = 0,
+    kEnTrQualTimedOut = 0,
+    kEnTrQualSPKeepSystemAwake = 0,
+    kEnTrQualSPKeepDisplayAwake = 0,
+    kEnTrQualSPPreventSleepSystem = 0,
+    kEnTrQualSPWakeDisplay = 0,
+    kEnTrValNone = 0
+};
+#define entr_act_end(comp, act, id, qual, val)	((void)(id))
+#endif
+
+/* ---- RunningBoardServices: no App Nap on NextBSD ------------------------ */
+/*
+ * PMAssertions.c asks RunningBoard whether an app takes part in App Nap
+ * before it tells it about the app's assertions. NextBSD has no App Nap,
+ * so no app does: the answer goes back to the caller in disableAppSleep /
+ * enableAppSleep, as on a macOS without RunningBoard.
+ */
+#ifndef RBSAppNapSubFeatureIOPM
+#define RBSAppNapSubFeatureIOPM				0
+#define rbs_appnap_enabled_for_pid(pid, feature)	((void)(pid), false)
+#define rbs_set_iopm_appnap_state(pid, reason, state)	do { } while (0)
+#endif
+
+/* ---- PrivateLib.h: power sources, settings, the powerd bundle ---------- */
+typedef enum {
+   kBatteryPowered = 0,
+   kACPowered
+} PowerSources;
+
+/* IOPMAggressivenessFactors: the form of data that the kernel understands. */
+typedef struct {
+    unsigned int        fMinutesToDim;
+    unsigned int        fMinutesToSpin;
+    unsigned int        fMinutesToSleep;
+
+    unsigned int        fWakeOnLAN;
+    unsigned int        fWakeOnRing;
+    unsigned int        fAutomaticRestart;
+    unsigned int        fAutomaticRestartAtConnect;
+    unsigned int        fSleepOnPowerButton;
+    unsigned int        fWakeOnClamshell;
+    unsigned int        fWakeOnACChange;
+    unsigned int        fDisplaySleepUsesDimming;
+    unsigned int        fMobileMotionModule;
+    unsigned int        fGPU;
+    unsigned int        fDeepSleepEnable;
+    unsigned int        fDeepSleepDelay;
+    unsigned int        fAutoPowerOffEnable;
+    unsigned int        fAutoPowerOffDelay;
+} IOPMAggressivenessFactors;
+
+/*
+ * The powerd bundle holds Apple's assertion timeout and category plists
+ * (pmconfigd/Resources), installed by pmconfigd's Makefile.
+ */
+#define kPowerManagementBundlePathCString       "/System/Library/CoreServices/powerd.bundle"
+#define kPowerdBundleIdentifier                 CFSTR("com.apple.powerd")
+#define kPowerManagementBundlePathString        CFSTR(kPowerManagementBundlePathCString)
+
+/* ---- PrivateLib.m ------------------------------------------------------ */
+__private_extern__ int			callerIsRoot(int uid);
+__private_extern__ int			callerIsAdmin(int uid, int gid);
+__private_extern__ uint64_t		getMonotonicTime(void);
+__private_extern__ bool			auditTokenIsRunningboardd(audit_token_t token);
+__private_extern__ bool			xpcConnectionHasEntitlement(xpc_object_t connection,
+					    CFStringRef entitlement);
+__private_extern__ bool			isA_installEnvironment(void);
+__private_extern__ aslmsg		new_msg_pmset_log(void);
+__private_extern__ SCDynamicStoreRef	_getSharedPMDynamicStore(void);
+__private_extern__ IOReturn		getNvramArgInt(char *key, int *value);
+/* pmconfigd.m */
+__private_extern__ bool			isDisplayAsleep(void);
+
+/* ---- PMStore.h -------------------------------------------------------- */
+#include "PMStore.h"
+
+/* ---- CommonLib.h (../common) ------------------------------------------- */
+#include "CommonLib.h"
+
+/* ---- PMAssertions.h, as PrivateLib.h includes it ----------------------- */
+#include "PMAssertions.h"
+
+/* PMAssertions.c functions PMAssertions.h does not declare. */
+void initSystemAssertionTimeoutList(void);
+void initAssertionCategories(void);
+
+/* PrivateLib.m: the MT2 (dark-wake telemetry) recorder. */
+__private_extern__ void			mt2RecordAssertionEvent(assertionOps action,
+					    assertion_t *theAssertion);
+
+/* ---- Interim functions of Apple files that are not built yet ----------- */
+/*
+ * PMAssertions.c calls into most of pmconfigd. Until the Apple file that
+ * owns a function is ported, PrivateLib_freebsd.c carries a version of it
+ * that answers the way that file does on a running Intel Mac which is fully
+ * awake, on AC power, with no display wrangler, SMC or PowerNap. Each block
+ * names its file; the ticket that ports the file deletes the block there
+ * (the linker reports a leftover as a duplicate symbol). Prototypes for
+ * PMSettings.m, PMConnection.m and Platform.c come from Apple's own
+ * headers, which PMAssertions.c includes.
+ */
+/* BatteryTimeRemaining.m (nextbsd-userland#227) */
+__private_extern__ PowerSources		_getPowerSource(void);
+__private_extern__ int			getActivePSType(void);
+__private_extern__ int			_batteryCount(void);
+__private_extern__ bool			getPowerState(PowerSources *source, uint32_t *percentage);
+/* SystemLoad.c */
+__private_extern__ void			SystemLoadUserActiveAssertions(bool _userActiveAssertions);
+__private_extern__ bool			userActiveRootDomain(void);
+__private_extern__ void			userActiveHandleRootDomainActivity(bool active);
+__private_extern__ void			userActiveHandlePowerAssertionsChanged(void);
+__private_extern__ void			userActiveHandleSleep(void);
+__private_extern__ void			SystemLoadPrefsHaveChanged(void);
+__private_extern__ bool			getUserActiveAssertionValid(void);
+__private_extern__ uint64_t		getUserActivePostedLevels(void);
+/* PMDisplay.m */
+__private_extern__ bool			isDesktopMode(void);
+/* IOKitUser pwr_mgt.subproj/IOPMLibPrivate.c (libIOKit, nextbsd-userland#233) */
+IOReturn IOPMCopySleepPreventersListWithID(int preventerType, CFArrayRef *outArray);
+/*
+ * IOKitUser pwr_mgt.subproj/IOPMEnergyPrefs.c, read side: built into
+ * pmconfigd from freebsd-shims/IOPMEnergyPrefs_freebsd.c until libIOKit
+ * carries it (nextbsd-userland#233). Prototypes from IOPMLibPrivate.h.
+ */
+CFMutableDictionaryRef IOPMCopyPreferencesOnFile(void);
+CFMutableDictionaryRef IOPMCopyPMPreferences(void);
+CFDictionaryRef IOPMCopyActivePMPreferences(void);
+CFDictionaryRef IOPMCopyDefaultPreferences(void);
+bool IOPMFeatureIsAvailable(CFStringRef feature, CFStringRef power_source);
+bool IOPMFeatureIsAvailableWithSupportedTable(
+                CFStringRef         feature,
+                CFStringRef         power_source,
+                CFDictionaryRef     supportedFeatures);
+void IOPMRemoveIrrelevantProperties(CFMutableDictionaryRef energyPrefs);
+CFTypeRef IOPMCopyFromPrefs(CFStringRef prefsPath, CFStringRef key);
+CFDictionaryRef IOPMCopySystemPowerSettings( void );
 
 /* ---- AutoWakeScheduler.c / RepeatingAutoWake.c ------------------------- */
 /* Served on io_pm_assertion_copy_details (powermanagement_stubs.c). */

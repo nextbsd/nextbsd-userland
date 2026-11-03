@@ -9,16 +9,25 @@
  *
  *   _askNicelyThen{Sleep,Shutdown,Restart}System   PrivateLib.m
  *   auditTokenHasEntitlement                        PrivateLib.m
- *   _IOPMAssertionDescriptionCreate                 PMAssertions.c, verbatim
- *   InternalCreateAssertion{,WithTimeout}           PMAssertions.c
  *   IOPMSchedulePowerEvent, tellClockController,    IOKitUser IOPMAutoWake.c,
  *   doAMaintenanceWake                              the "Immediate" types only
+ *
+ * and the interim versions of the functions PMAssertions.c, PMSettings.m
+ * and PMAssertionLog.c call in Apple files that are not built yet, one
+ * block per Apple file at the end (see PrivateLib_freebsd.h).
  */
 #include "PrivateLib_freebsd.h"
+#include "PMConnection.h"
+#include "Platform.h"
 
+#include <grp.h>
+#include <limits.h>
 #include <math.h>
+#include <pwd.h>
 #include <signal.h>
+#include <stdlib.h>
 #include <strings.h>
+#include <time.h>
 #include <unistd.h>
 
 /* ---- PrivateLib.m: scheduled sleep, shutdown and restart --------------- */
@@ -102,82 +111,6 @@ __private_extern__ bool auditTokenHasEntitlement(
                                      CFStringRef entitlement __unused)
 {
     return false;
-}
-
-/* ---- PMAssertions.c ---------------------------------------------------- */
-
-__private_extern__ CFMutableDictionaryRef _IOPMAssertionDescriptionCreate(
-                                                                          CFStringRef AssertionType,
-                                                                          CFStringRef Name,
-                                                                          CFStringRef Details,
-                                                                          CFStringRef HumanReadableReason,
-                                                                          CFStringRef LocalizationBundlePath,
-                                                                          CFTimeInterval Timeout,
-                                                                          CFStringRef TimeoutBehavior)
-{
-    CFMutableDictionaryRef  descriptor = NULL;
-
-    if (!AssertionType || !Name) {
-        return NULL;
-    }
-
-    descriptor = CFDictionaryCreateMutable(0, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    if (!descriptor) {
-        return NULL;
-    }
-
-    CFDictionarySetValue(descriptor, kIOPMAssertionNameKey, Name);
-
-    int _on = kIOPMAssertionLevelOn;
-    CFNumberRef _on_num = CFNumberCreate(0, kCFNumberIntType, &_on);
-    CFDictionarySetValue(descriptor, kIOPMAssertionLevelKey, _on_num);
-    CFRelease(_on_num);
-
-    CFDictionarySetValue(descriptor, kIOPMAssertionTypeKey, AssertionType);
-
-    if (Details) {
-        CFDictionarySetValue(descriptor, kIOPMAssertionDetailsKey, Details);
-    }
-    if (HumanReadableReason) {
-        CFDictionarySetValue(descriptor, kIOPMAssertionHumanReadableReasonKey, HumanReadableReason);
-    }
-    if (LocalizationBundlePath) {
-        CFDictionarySetValue(descriptor, kIOPMAssertionLocalizationBundlePathKey, LocalizationBundlePath);
-    }
-    if (Timeout) {
-        CFNumberRef Timeout_num = CFNumberCreate(0, kCFNumberDoubleType, &Timeout);
-        CFDictionarySetValue(descriptor, kIOPMAssertionTimeoutKey, Timeout_num);
-        CFRelease(Timeout_num);
-    }
-    if (TimeoutBehavior)
-    {
-        CFDictionarySetValue(descriptor, kIOPMAssertionTimeoutActionKey, TimeoutBehavior);
-    }
-
-    return descriptor;
-}
-
-/*
- * pmconfigd's own assertions are PMAssertions.c's, which is not built yet
- * (nextbsd-userland#233). Until it is, an internal assertion is not taken.
- * AutoWakeScheduler.c takes two, both short-lived: the 2 s UserIsActive
- * that lights the display when a wake event comes due while the system is
- * already awake, and the PreventUserIdleSystemSleep that holds off idle
- * sleep until an imminent wake request. Neither changes whether a
- * scheduled event fires.
- */
-__private_extern__ IOReturn InternalCreateAssertion(
-                                CFMutableDictionaryRef properties __unused,
-                                IOPMAssertionID *outID __unused)
-{
-    return kIOReturnUnsupported;
-}
-
-__private_extern__ IOReturn
-InternalCreateAssertionWithTimeout(CFStringRef type __unused, CFStringRef name __unused,
-                                   int timerSecs __unused, IOPMAssertionID *outID __unused)
-{
-    return kIOReturnUnsupported;
 }
 
 /* ---- IOKitUser IOPMAutoWake.c: IOPMSchedulePowerEvent ------------------ */
@@ -412,4 +345,271 @@ IOReturn IOPMSchedulePowerEvent(
     }
 
     return ret;
+}
+
+/* ---- PrivateLib.m: more of it, verbatim where it can be ---------------- */
+
+__private_extern__ int callerIsRoot(int uid)
+{
+    return (0 == uid);
+}
+
+__private_extern__ int
+callerIsAdmin(
+    int uid,
+    int gid
+)
+{
+    int         ngroups = NGROUPS_MAX+1;
+    int         group_list[NGROUPS_MAX+1];
+    int         i;
+    struct group    *adminGroup;
+    struct passwd   *pw;
+
+
+    pw = getpwuid(uid);
+    if (!pw)
+        return false;
+
+    getgrouplist(pw->pw_name, pw->pw_gid, group_list, &ngroups);
+
+    adminGroup = getgrnam("admin");
+    if (adminGroup != NULL) {
+        gid_t    adminGid = adminGroup->gr_gid;
+        for(i=0; i<ngroups; i++)
+        {
+            if (group_list[i] == adminGid) {
+                return TRUE;    // if a member of group "admin"
+            }
+        }
+    }
+    return false;
+
+}
+
+/*
+ * Returns monotonic time in secs. Apple converts mach_absolute_time(), which
+ * stops while the system sleeps; CLOCK_UPTIME is the same clock.
+ */
+__private_extern__ uint64_t getMonotonicTime(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_UPTIME, &ts);
+    return (uint64_t)ts.tv_sec;
+}
+
+/* No RunningBoard on NextBSD (and no entitlements to recognise it by). */
+__private_extern__ bool auditTokenIsRunningboardd(audit_token_t token __unused)
+{
+    return false;
+}
+
+/* No entitlements on NextBSD: see auditTokenHasEntitlement. */
+__private_extern__ bool xpcConnectionHasEntitlement(xpc_object_t connection,
+                                                    CFStringRef entitlement)
+{
+    ERROR_LOG("PID %d doesnt have entitlement %@\n",
+              xpc_connection_get_pid(connection), entitlement);
+    return false;
+}
+
+/*
+ * Apple reads boot-args from IODeviceTree:/options (NVRAM). NextBSD has no
+ * device tree plane in its registry; nothing is set.
+ */
+__private_extern__ IOReturn getNvramArgInt(char *key __unused, int *value __unused)
+{
+    return kIOReturnError;
+}
+
+__private_extern__ bool isA_installEnvironment(void)
+{
+    static int installEnv = -1;
+
+    if (installEnv == -1) {
+        installEnv = (getenv("__OSINSTALL_ENVIRONMENT") != NULL) ? 1 : 0;
+    }
+
+    return (installEnv);
+}
+
+__private_extern__ aslmsg new_msg_pmset_log(void)
+{
+    aslmsg m = asl_new(ASL_TYPE_MSG);
+
+    asl_set(m, ASL_KEY_LEVEL, ASL_STRING_NOTICE);
+    asl_set(m, ASL_KEY_FACILITY, kPMFacility);
+
+    return m;
+}
+
+/*
+ * The MT2 dark-wake recorder: PrivateLib.m only records while mt2 is set
+ * up, which happens for PowerNap machines; NextBSD has no dark wake.
+ */
+void mt2RecordAssertionEvent(assertionOps action __unused, assertion_t *theAssertion __unused)
+{
+}
+
+/* Sleep services (PowerNap) never run on NextBSD, so they never end. */
+__private_extern__ void logASLMessageSleepServiceTerminated(int forcedTimeoutCnt __unused)
+{
+}
+
+/* ---- common/CommonLib.c, verbatim -------------------------------------- */
+
+const char * descriptiveKernelAssertions(uint32_t val) {
+
+    const char *string = "";
+    if (val&kIOPMDriverAssertionCPUBit) {
+        string = "CPU";
+    }
+    if (val&kIOPMDriverAssertionUSBExternalDeviceBit) {
+        string = "USB";
+    }
+    if (val&kIOPMDriverAssertionBluetoothHIDDevicePairedBit) {
+        string = "BT-HID";
+    }
+    if (val&kIOPMDriverAssertionExternalMediaMountedBit) {
+        string = "MEDIA";
+    }
+    if (val&kIOPMDriverAssertionReservedBit5) {
+        string = "THNDR";
+    }
+    if (val&kIOPMDriverAssertionPreventDisplaySleepBit) {
+        string = "DSPLY";
+    }
+    if (val&kIOPMDriverAssertionReservedBit7) {
+        string = "STORAGE";
+    }
+    if (val&kIOPMDriverAssertionMagicPacketWakeEnabledBit) {
+        string = "MAGICWAKE";
+    }
+    if (val&kIOPMDriverAssertionNetworkKeepAliveActiveBit) {
+        string = "NETWORK";
+    }
+    return string;
+}
+
+/* ---- IOKitUser IOPMLibPrivate.c (nextbsd-userland#233) ------------------ */
+
+/*
+ * The root domain's list of drivers holding sleep off. NextBSD's root
+ * domain keeps none (nextbsd-kernel#243), so there is no list to copy.
+ */
+IOReturn IOPMCopySleepPreventersListWithID(int preventerType __unused, CFArrayRef *outArray)
+{
+    if (outArray) {
+        *outArray = NULL;
+    }
+    return kIOReturnUnsupported;
+}
+
+/*
+ * ---- PMStore.c and PrivateLib.m's store (nextbsd-userland#227) ---------
+ * D3 builds Apple's PMStore.c; until then the current settings go to
+ * SCDynamicStore directly, through one session opened on first use.
+ */
+__private_extern__ SCDynamicStoreRef _getSharedPMDynamicStore(void)
+{
+    static SCDynamicStoreRef gSCDynamicStore = NULL;
+
+    if (!gSCDynamicStore) {
+        gSCDynamicStore = SCDynamicStoreCreate(0, CFSTR("PM configd"), NULL, NULL);
+    }
+    return gSCDynamicStore;
+}
+
+bool PMStoreSetValue(CFStringRef key, CFTypeRef value)
+{
+    SCDynamicStoreRef   store = _getSharedPMDynamicStore();
+
+    if (!store || !key || !value) {
+        return false;
+    }
+    return SCDynamicStoreSetValue(store, key, value);
+}
+
+/*
+ * ---- BatteryTimeRemaining.m (nextbsd-userland#227) ---------------------
+ * Until D3's power sources land: an AC-powered machine with no battery.
+ */
+__private_extern__ PowerSources _getPowerSource(void)
+{
+    return kACPowered;
+}
+
+__private_extern__ int getActivePSType(void)
+{
+    return kIOPSProvidedByAC;
+}
+
+__private_extern__ int _batteryCount(void)
+{
+    return 0;
+}
+
+__private_extern__ bool getPowerState(PowerSources *source, uint32_t *percentage)
+{
+    if (source) {
+        *source = kACPowered;
+    }
+    if (percentage) {
+        *percentage = 100;
+    }
+    return false;
+}
+
+/*
+ * ---- PMConnection.m (nextbsd-userland#229) -----------------------------
+ * The parts PMConnection_freebsd.c (nextbsd-userland#229) does not carry:
+ * no silent running, dark wake, sleep services or perf restriction.
+ */
+uint32_t gDebugFlags = kIOPMDebugAssertionASLLog|
+                       kIOPMDebugEnableSpindumpOnFullwake|
+                       kIOPMDebugLogAssertionActivity;
+
+__private_extern__ IOReturn _unclamp_silent_running(bool sendNewCapBits __unused,
+                                                    bool forceUpdate __unused)
+{
+    return kIOReturnSuccess;
+}
+__private_extern__ bool isInSilentRunningMode(void) { return false; }
+__private_extern__ void evaluatePerfMode(void) { }
+__private_extern__ bool isA_BTMtnceWake(void) { return false; }
+__private_extern__ bool isA_SleepSrvcWake(void) { return false; }
+__private_extern__ void cancelPowerNapStates(void) { }
+__private_extern__ bool isA_NotificationDisplayWake(void) { return false; }
+__private_extern__ void set_NotificationDisplayWake(void) { }
+__private_extern__ void cancel_NotificationDisplayWake(void) { }
+__private_extern__ int getCurrentSleepServiceCapTimeout(void) { return 0; }
+__private_extern__ void setVMDarkwakeMode(bool darkwakeMode __unused) { }
+__private_extern__ void setDwlInterval(uint32_t newInterval __unused) { }
+
+/*
+ * ---- SystemLoad.c ------------------------------------------------------
+ * The user-activity levels SystemLoad.c keeps. Until it is ported the root
+ * domain's view of the user is "active", as on a Mac in full wake.
+ */
+__private_extern__ void SystemLoadUserActiveAssertions(bool _userActiveAssertions __unused) { }
+__private_extern__ bool userActiveRootDomain(void) { return true; }
+__private_extern__ void userActiveHandleRootDomainActivity(bool active __unused) { }
+__private_extern__ void userActiveHandlePowerAssertionsChanged(void) { }
+__private_extern__ void userActiveHandleSleep(void) { }
+__private_extern__ void SystemLoadPrefsHaveChanged(void) { }
+bool getUserActiveAssertionValid(void) { return false; }
+uint64_t getUserActivePostedLevels(void) { return 0; }
+
+/* ---- PMDisplay.m: no desktop (lid closed, external display) mode ------- */
+__private_extern__ bool isDesktopMode(void) { return false; }
+
+/* ---- Platform.c: no TCP keepalive during sleep ------------------------- */
+__private_extern__ tcpKeepAliveStates_et getTCPKeepAliveState(char *buf, int buflen,
+                                                            bool quiet __unused)
+{
+    if (buf && buflen > 0) {
+        buf[0] = '\0';
+    }
+    return kNotSupported;
 }
