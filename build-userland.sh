@@ -1262,6 +1262,21 @@ test -x "$DESTDIR/usr/bin/sw_vers" || { echo "FAIL: /usr/bin/sw_vers not install
 needed_check "$DESTDIR/usr/bin/sw_vers" "libCoreFoundation"
 echo "==> sw_vers built"
 
+# ---- reboot, halt, shutdown, poweroff (nextbsd/nextbsd-userland#237, E17 S1)
+# Apple's, from system_cmds-1042.120.1, built with their own !__APPLE__ code:
+# they hand the request to launchd (PID 1) with the BSD init(8) signal it
+# honours -- SIGINT reboot, SIGUSR1 halt, SIGUSR2 power off, SIGWINCH power
+# cycle -- in place of Darwin's reboot3(). They replace the base's copies at
+# the same paths (nextbsd-freebsd-compat scripts/collisions). Plain libc.
+comp "reboot(8), shutdown(8)"
+mkdir -p "$DESTDIR/sbin" "$DESTDIR/usr/share/man/man8"
+run_buildenv "make -C $SRC/reboot DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+run_buildenv "make -C $SRC/shutdown DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+for b in reboot halt shutdown poweroff; do
+    test -x "$DESTDIR/sbin/$b" || { echo "FAIL: /sbin/$b not installed"; exit 1; }
+done
+echo "==> reboot, halt, shutdown, poweroff built"
+
 # ---- swapd (nextbsd/nextbsd-userland#178, E14 U1) --------------------------
 # NextBSD's dynamic_pager: grows and reclaims /private/var/vm/swapfile<N> on the
 # kernel's default_pager_space_alert (macx_triggers, nextbsd-kernel#218). The
