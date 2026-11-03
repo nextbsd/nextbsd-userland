@@ -446,10 +446,14 @@ logRootDomainState(void)
  * dark-wake-thermal, spindump, feature-change and sleep/wake-UUID messages,
  * none of which NextBSD's root domain sends yet, and (on Apple silicon only)
  * on kIOPMMessageClamshellStateChange, which it does send. On Intel Macs,
- * whose path NextBSD follows, the root domain itself sleeps when the lid
- * closes, under the policy pmconfigd claims (claimRootDomainSleepPolicy()
- * below), so pmconfigd only logs the change. kIOMessageServicePropertyChange,
- * which follows every property update, is ignored, as on macOS.
+ * whose path NextBSD follows for sleep, the root domain itself sleeps when
+ * the lid closes, under the policy pmconfigd claims
+ * (claimRootDomainSleepPolicy() below). pmconfigd logs the change and, as
+ * on Apple silicon (where it owns the display, as on NextBSD), hands it to
+ * PMDisplay's updateClamshellState() (PMDisplay_freebsd.c), which posts
+ * the lid state and declares the user active when the lid opens.
+ * kIOMessageServicePropertyChange, which follows every property update, is
+ * ignored, as on macOS.
  *
  * kIOPMMessageRequestUserActive (nextbsd-userland#239): the kernel's
  * IOHIDSystem saw input after a quiet spell. xnu sends it on a Mac without
@@ -480,6 +484,7 @@ RootDomainInterest(
         INFO_LOG("Clamshell state changed: %s, closing %s\n",
                  (bits & kClamshellStateBit) ? "closed" : "open",
                  (bits & kClamshellSleepBit) ? "sleeps" : "does not sleep");
+        updateClamshellState((void *)(uintptr_t)bits);
     }
     else if (messageType == kIOPMMessageRequestUserActive)
     {
@@ -526,6 +531,7 @@ initializeRootDomainInterestNotifications(void)
 
     IONotificationPortSetDispatchQueue(note_port, _getPMMainQueue());
     logRootDomainState();
+    initializeClamshellState();
 
 exit:
     // Do not release notification_object, would uninstall notification

@@ -99,6 +99,62 @@ On a machine with no battery
 publishes an AC-only state: the power source is
 .Dq AC Power
 and the source list is empty.
+.Ss Dynamic store
+For processes that do not use Mach,
+.Nm
+also keeps the power state in the
+.Xr configd 8
+dynamic store
+.Pq Xr scutil 8 :
+.Bl -tag -width Ds
+.It Ql State:/IOKit/PowerSources/InternalBattery-0
+the internal battery, as
+.Fn IOPSCopyPowerSourcesInfo
+describes it: among others
+.Ql Current Capacity
+in percent,
+.Ql Power Source State
+.Po
+.Dq AC Power
+or
+.Dq Battery Power
+.Pc ,
+.Ql Is Charging
+and
+.Ql Time to Empty .
+Every power source registered with
+.Fn IOPSCreatePowerSource
+is published the same way under its name.
+.It Ql State:/IOKit/PowerAdapter
+present while the battery runs on AC power.
+.It Ql State:/IOKit/LowBatteryWarning
+the low battery warning level: 1 none, 2 early, 3 final.
+.It Ql State:/IOKit/PowerManagement/CurrentSettings
+the Energy Saver settings in effect.
+.It Ql State:/IOKit/SystemPowerCapabilities
+the system's power capabilities: 0 from the moment the system is going to
+sleep until it wakes.
+It is first written at the first sleep.
+.El
+.Pp
+As on macOS, the lid is not in the dynamic store.
+Its state is the
+.Ql AppleClamshellState
+.Pq true while closed
+and
+.Ql AppleClamshellCausesSleep
+properties of the
+.Ql IOPMrootDomain
+registry entry, present only on a machine with a lid
+.Pq Xr ioreg 8 ,
+and
+.Nm
+posts it as the
+.Xr notify 3
+name
+.Ql com.apple.system.powermanagement.clamshellstate ,
+with state 1 while the lid is closed.
+A machine with no battery has no power source or adapter key.
 .Pp
 .Nm
 is a client of the kernel's power management root domain, the
@@ -251,7 +307,10 @@ the daemon's log
 .Xr notify 3 ,
 .Xr hwpstate_intel 4 ,
 .Xr caffeinate 8 ,
+.Xr configd 8 ,
+.Xr ioreg 8 ,
 .Xr launchd 8 ,
+.Xr scutil 8 ,
 .Xr shutdown 8
 .Sh HISTORY
 .Nm
