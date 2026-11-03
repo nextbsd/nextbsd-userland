@@ -27,19 +27,24 @@ SRCS+=		IOHIDUserDevice.c
 # apple-oss-distributions/IOKitUser @ IOKitUser-100231.120.3 with
 # __FreeBSD__ changes listed at the top of each file (IOPowerSources.c,
 # IOPowerSourcesPrivate.c, IOPMAssertions.c, IOPMLibPrivate.c,
-# IOPMEnergyPrefs.c; ps_freebsd.h and pwr_mgt_freebsd.h stand in for the
-# Darwin-only headers). They reach pmconfigd over MIG, through the user stub
+# IOPMEnergyPrefs.c; for pmset, #235: the scheduled and repeating power
+# events of IOPMAutoWake.c and IOPMRepeatingPower.c and the warning levels
+# of IOPMPowerNotifications.c; ps_freebsd.h and pwr_mgt_freebsd.h stand in
+# for the Darwin-only headers). They reach powerd over MIG, through the user stub
 # that build-userland.sh generates from IOKit/pwr_mgt/powermanagement.defs,
 # the same file pmconfigd's server stub comes from; pass its directory as
 # MIGOUT. Apple's sources compile with pointer/integer conversions that
 # clang 19 makes errors by default; Apple's toolchain warns.
 SRCS+=		IOPowerSources.c IOPowerSourcesPrivate.c
 SRCS+=		IOPMAssertions.c IOPMLibPrivate.c IOPMEnergyPrefs.c
+SRCS+=		IOPMAutoWake.c IOPMRepeatingPower.c IOPMPowerNotifications.c
 CFLAGS.IOPowerSources.c+=		-Wno-int-conversion
 CFLAGS.IOPowerSourcesPrivate.c+=	-Wno-int-conversion
 CFLAGS.IOPMAssertions.c+=		-Wno-int-conversion
 CFLAGS.IOPMLibPrivate.c+=		-Wno-int-conversion
 CFLAGS.IOPMEnergyPrefs.c+=		-Wno-int-conversion
+CFLAGS.IOPMAutoWake.c+=			-Wno-int-conversion
+CFLAGS.IOPMRepeatingPower.c+=		-Wno-int-conversion
 MIGOUT?=
 .if empty(MIGOUT)
 .error MIGOUT must name the directory holding powermanagementUser.c (build-userland.sh)
@@ -159,6 +164,8 @@ LIBADD+=	pthread nv
 # execinfo: backtrace() for an assertion's creator backtrace, which
 # IOPMAssertions.c records when pmset asks for it (collectbt).
 LIBADD+=	execinfo
+# m: lround() in IOPMAutoWake.c's tellClockController (libSystem on macOS).
+LIBADD+=	m
 
 # The kext API (nextbsd-userland#438): Apple's OSKext engine and KextManager
 # live in IOKit.framework, so libkext (src/kext_tools/kext.subproj, built

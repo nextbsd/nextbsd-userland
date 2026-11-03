@@ -116,4 +116,18 @@ enum {
 #define kInactivityWindowDuration   "inactivityWindowDuration"
 #define kStandbyAccelerationDelay   "standbyAccelerationDelay"
 
+#ifdef __FreeBSD__
+/*
+ * NextBSD: an io_pm_set_value_int selector (nextbsd-userland#235). On an
+ * Intel Mac, pmset displaysleepnow sets "IORequestIdle" on the kernel's
+ * IODisplayWrangler. NextBSD's display wrangler is powerd's (the idle
+ * timer xnu's IODisplayWrangler runs, RootDomainIdle_freebsd.c), so pmset
+ * asks powerd instead when there is no IODisplayWrangler entry. The
+ * value is outside the range of Apple's private selectors.
+ */
+enum {
+    kIOPMSetDisplaySleepNow                             = 0x4e420001
+};
+#endif /* __FreeBSD__ */
+
 #endif // _powermanagement_mig_h_

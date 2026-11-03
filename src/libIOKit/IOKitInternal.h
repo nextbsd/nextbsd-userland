@@ -70,6 +70,18 @@ void	__io_connect_release(io_connect_t connect);
 int	__io_pmroot_fd(void);
 
 /*
+ * __io_pmroot_set_maintenance_wake — kPMSetMaintenanceWakeCalendar: hand the
+ * root domain a maintenance or SleepService wake time (IOPMCalendarStruct,
+ * UTC) through IOPMROOT_SETMAINTWAKE on __io_pmroot_fd(). Like xnu's
+ * RootDomainUserClient method it returns KERN_SUCCESS once the call is made
+ * and the root domain's own result in *result. IOPMAutoWake.c's
+ * doAMaintenanceWake. IOPMLib.c.
+ */
+struct IOPMCalendarStruct;
+kern_return_t	__io_pmroot_set_maintenance_wake(
+	    const struct IOPMCalendarStruct *date, IOReturn *result);
+
+/*
  * __io_ioregistry_fd — cached read-only fd to the kernel /dev/ioregistry
  * device (the K1 in-kernel registry, nextbsd#214), opened with
  * O_CLOEXEC on first call (pthread_once-guarded). Returns -1 if the

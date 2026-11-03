@@ -32,6 +32,9 @@
 
 #include "iopmroot.h"		/* vendored: /dev/iopmroot ioctls */
 
+#include <SystemConfiguration/SystemConfiguration.h>
+#include <notify.h>
+
 #include <sys/ioctl.h>
 #include <sys/sysctl.h>
 #include <sys/time.h>
@@ -390,6 +393,103 @@ IOPMSleepEnabled(void)
 }
 
 /* IOPMGetLastWakeTime (kern.waketime) is Apple's, in IOPMLibPrivate.c. */
+
+/*
+ * ---- IOKitUser IOPMLib.c: System Load Advisory -------------------------
+ * Apple's code: the level is powerd's notify(3) state, the details its
+ * dynamic store entry. NextBSD's powerd does not build SystemLoad.c yet,
+ * so the level reads as kIOSystemLoadAdvisoryLevelOK and there are no
+ * details, as Apple's code answers when it finds nothing. The one change:
+ * SCDynamicStoreKeyCreate, which NextBSD's SystemConfiguration lacks, is
+ * the CFStringCreateWithFormat it amounts to.
+ */
+#define kSLALevelPath       CFSTR("/IOKit/PowerManagement/SystemLoad")
+#define kSLADetailedPath    CFSTR("/IOKit/PowerManagement/SystemLoad/Detailed")
+
+/* IOGetSystemLoadAdvisory
+ * In case of error, or inability to find system load advisory level,
+ * returns kIOSystemLoadAdvisoryLevelOK.
+ */
+IOSystemLoadAdvisoryLevel IOGetSystemLoadAdvisory( void )
+{
+    IOSystemLoadAdvisoryLevel   _gt = kIOSystemLoadAdvisoryLevelOK;
+    int                         notifyToken = 0;
+    int                         status;
+    uint64_t                    newval;
+
+    status = notify_register_check(kIOSystemLoadAdvisoryNotifyName, &notifyToken);
+    if (NOTIFY_STATUS_OK == status)
+    {
+        notify_get_state(notifyToken, &newval);
+        notify_cancel(notifyToken);
+        _gt = (IOSystemLoadAdvisoryLevel)newval;
+    }
+    
+    return _gt;
+}
+
+/* IOCopyLoadAdvisoryLevelDetailed
+ * In case of error, or inability to find system load advisory level,
+ * returns NULL.
+ */
+CFDictionaryRef IOCopySystemLoadAdvisoryDetailed(void)
+{
+    CFDictionaryRef     gtDetailed = NULL;
+    SCDynamicStoreRef   storage = NULL;
+    CFStringRef         gtDetailedKey = CFStringCreateWithFormat(
+                            kCFAllocatorDefault, NULL,
+                            CFSTR("%@%@"),
+                            kSCDynamicStoreDomainState, 
+                            kSLADetailedPath);
+
+    storage = SCDynamicStoreCreate(
+                            kCFAllocatorDefault,
+                            CFSTR("IOKit IOGetSystemLoadAdvisoryDetailed"),
+                            NULL,
+                            NULL);
+
+    if (!storage || !gtDetailedKey) {
+        goto exit;
+    }
+    gtDetailed = SCDynamicStoreCopyValue(storage, gtDetailedKey);
+    if(gtDetailed)
+    {
+        if(CFGetTypeID(gtDetailed) != CFDictionaryGetTypeID()) {
+            CFRelease(gtDetailed);
+            gtDetailed = NULL;
+        }
+    }
+exit:    
+    if (gtDetailedKey) CFRelease(gtDetailedKey);
+    if (storage) CFRelease(storage);    
+    return gtDetailed;
+}
+
+/*
+ * kPMSetMaintenanceWakeCalendar, for IOKitUser's doAMaintenanceWake()
+ * (IOPMAutoWake.c): the calendar goes to IOPMROOT_SETMAINTWAKE unchanged.
+ * Root only; kIOReturnUnsupported on a machine without an RTC wake alarm.
+ */
+_Static_assert(sizeof(struct iopmroot_calendar) == sizeof(IOPMCalendarStruct),
+    "struct iopmroot_calendar must match IOPMCalendarStruct");
+
+kern_return_t
+__io_pmroot_set_maintenance_wake(const IOPMCalendarStruct *date,
+    IOReturn *result)
+{
+	struct iopmroot_calendar cal;
+	int fd;
+
+	if (date == NULL || result == NULL)
+		return (kIOReturnBadArgument);
+	fd = __io_pmroot_fd();
+	if (fd < 0)
+		return (kIOReturnNoDevice);
+	memcpy(&cal, date, sizeof(cal));
+	*result = (ioctl(fd, IOPMROOT_SETMAINTWAKE, &cal) == 0) ?
+	    kIOReturnSuccess : pmroot_ioreturn(errno);
+	return (KERN_SUCCESS);
+}
 
 /*
  * IORegistryEntrySetCFProperty. The root domain is the one entry that takes

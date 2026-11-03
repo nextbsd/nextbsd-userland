@@ -59,11 +59,22 @@ _io_pm_get_value_int(mach_port_t server, audit_token_t token, int selector,
 	return (KERN_SUCCESS);
 }
 
+/*
+ * Apple's selectors here (pmconfigd.m) are not built yet. NextBSD's
+ * kIOPMSetDisplaySleepNow is pmset displaysleepnow: powerd is the display
+ * wrangler (RootDomainIdle_freebsd.c), and any user may ask it to turn the
+ * display off, as any user may set IORequestIdle on xnu's IODisplayWrangler.
+ */
 kern_return_t
 _io_pm_set_value_int(mach_port_t server, audit_token_t token, int selector,
     int value, int *return_val)
 {
-	(void)server; (void)token; (void)selector; (void)value;
+	(void)server; (void)token;
+	if (selector == kIOPMSetDisplaySleepNow && value != 0) {
+		pmIdleDisplaySleepNow();
+		*return_val = kIOReturnSuccess;
+		return (KERN_SUCCESS);
+	}
 	*return_val = PM_UNSUPPORTED;
 	return (KERN_SUCCESS);
 }

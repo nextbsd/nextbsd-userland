@@ -92,6 +92,20 @@ the iOS async-offload assertion protocol (XPC), IOReport aggregates,
 energytrace, RunningBoard App Nap, the powerlog activity buffer and SMC
 battery commands.
 
+C1 (nextbsd-userland#235) builds Apple's `pmset` (`pmset/pmset.m`, as C,
+through `freebsd-shims/pmset_freebsd.c`) into `/usr/bin/pmset`, with its
+`pmset.1`. It talks to powerd only through libIOKit, which now also
+carries IOKitUser's client halves of `pmset schedule` / `repeat`
+(`IOPMAutoWake.c`, `IOPMRepeatingPower.c`) and the warning levels
+(`IOPMPowerNotifications.c`); powerd's interim copy of
+`IOPMSchedulePowerEvent` is gone. `pmset displaysleepnow` reaches
+powerd's display wrangler (`RootDomainIdle_freebsd.c`) through
+`io_pm_set_value_int(kIOPMSetDisplaySleepNow)`, since the kernel has no
+IODisplayWrangler. `overlay/private/etc/asl/com.apple.iokit.power` is
+Apple's ASL rule for powerd's log (`com.apple.iokit.power`, installed by
+the powerd target on macOS), which puts it in `/var/log/powermanagement`
+for `pmset -g log`.
+
 ## Apple files changed
 
 Each change is under `#ifdef __FreeBSD__`, with Apple's code kept in the
@@ -106,11 +120,11 @@ Each change is under `#ifdef __FreeBSD__`, with Apple's code kept in the
 | `pmconfigd/PMAssertions.c` | the include list; without the async-offload XPC handlers, IOReport aggregates, `os_state`, CrashReporter and the CF/XPC bridge; no dark-wake proxies (every wake is a full wake) and no IOService busy-state interest |
 | `pmconfigd/PMAssertionLog.c` | the include list; without the powerlog activity buffer (its keys are not in the IOKitUser drop and its reader needs an entitlement), kdebug, IOReport and the CF/XPC bridge |
 | `pmconfigd/PMSettings.m` | the include list; no hibernation, PowerNap or pre-CFPreferences settings migration; `ActivatePMSettings()` hands each profile to `CPUPower_freebsd.c` |
+| `pmset/pmset.m` | includes `pmset_freebsd.h` in place of its include list; `displaysleepnow` asks powerd when there is no IODisplayWrangler |
 | `pmconfigd/TTYKeepAwake.c` | watches `/var/run/utx.active` with a vnode source, since NextBSD's libc posts no utmpx notification |
 
-The Xcode project also builds `pmset`, `caffeinate`, `pmtool`, `ioupsd` and
-the Low Power Mode and battery-health pieces. None is built from this tree
-yet. `src/caffeinate` is a separate, older import (PowerManagement-1049).
+The Xcode project also builds `caffeinate`, `pmtool`, `ioupsd` and the Low
+Power Mode and battery-health pieces. None is built from this tree yet. `src/caffeinate` is a separate, older import (PowerManagement-1049).
 
 ## NextBSD files
 
@@ -123,7 +137,7 @@ All in `freebsd-shims/` unless noted (the Libnotify pattern):
 | `pmconfigd_freebsd.c` | `main()`, `powerd_init()` and the two listeners, in Apple's shape, until `pmconfigd.m` and `PrivateLib.m` build |
 | `powermanagement_stubs.c` | the `_io_*` MIG routines whose Apple files are not built yet; `io_pm_assertion_copy_details` serves only the two scheduled-event selectors |
 | `PrivateLib_freebsd.h` | the share of `PrivateLib.h` (and the IOKit private headers it includes) that the ported Apple files use, until `PrivateLib.h` builds |
-| `PrivateLib_freebsd.c` | `PrivateLib.m` functions those files call: scheduled shutdown/restart over launchd's init signals, scheduled sleep through the root domain, entitlement checks, ASL, `powerd_notify_and_log()`, `_getSharedPMDynamicStore()`; IOKitUser's `IOPMSchedulePowerEvent` for the "Immediate" (RTC) types; and one interim block per Apple file not built yet (PMConnection.m, SystemLoad.c, PMDisplay.m, Platform.c) |
+| `PrivateLib_freebsd.c` | `PrivateLib.m` functions those files call: scheduled shutdown/restart over launchd's init signals, scheduled sleep through the root domain, entitlement checks, ASL, `powerd_notify_and_log()`, `_getSharedPMDynamicStore()`; and one interim block per Apple file not built yet (PMConnection.m, SystemLoad.c, PMDisplay.m, Platform.c) |
 | `RootDomain_freebsd.c` | the kernel shim: `IOServiceOpen` / `IOConnectCallMethod` on the IOPMrootDomain as `/dev/iopmroot` ioctls (selector table), `getRootDomain()`, `_set`/`_copyRootDomainProperty()`, pmconfigd.m's root-domain general-interest listener, and the sleep policy the kernel leaves to pmconfigd: claiming the lid and power-button policy, and the low-battery sleep |
 | `PMConnection_freebsd.c` | `PMConnection.m`'s sleep/wake state machine (app-power messages as capability changes), the IOPMConnection MIG routines, `io_pm_get_capability_bits` and `getRootDomainConnect()`, until `PMConnection.m` builds |
 | `RootDomainIdle_freebsd.c` | xnu's IOPMrootDomain idle sleep timer and IODisplayWrangler idle timer, fed by the aggressiveness, assertion levels and tickles pmconfigd sends the kernel |
@@ -136,5 +150,8 @@ All in `freebsd-shims/` unless noted (the Libnotify pattern):
 | `BatteryTimeRemaining_freebsd.c` | the power-source core of `BatteryTimeRemaining.m` as C (nextbsd-userland#227): IOPMPowerSource notifications, the internal battery's kIOPS dictionary, the notify(3) state, the `io_ps_*` MIG routines. Apple's code where it does not touch Foundation; each NextBSD difference is marked |
 | `SystemConfiguration/SCValidation.h`, `SCDynamicStorePrivate.h` | `isA_CF*()` (as in `PrivateLib_freebsd.h`), and a no-op `SCDynamicStoreSetDisconnectCallBack()` (NextBSD's SystemConfiguration has no reconnect) |
 | `AppleFeatures/AppleFeatures.h` | empty; `IOPowerSourcesPrivate.h` includes it |
+| `pmset/Makefile` | the pmset build (replaces Apple's stale Makefile) |
+| `pmset_freebsd.c` | compiles `pmset/pmset.m` as C, plus the two `common/CommonLib.c` functions pmset calls |
+| `pmset_freebsd.h` | what `pmset.m` takes from Darwin: TargetConditionals as on an Intel Mac, no-op IOReport, SkyLight/DisplayServices/MobileGestalt answers, the hibernation and UPS keys, registry-path lookups by class, and `CFDateFormatter`/`CFCalendar` as `strptime(3)`/`strftime(3)` |
 
 The launchd job is `overlay/System/Library/LaunchDaemons/org.nextbsd.powerd.plist`.

@@ -21,6 +21,15 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+#ifdef __FreeBSD__
+/*
+ * NextBSD: built as C (pmset_freebsd.c). The headers, and what pmset takes
+ * from the Darwin frameworks NextBSD does not have (IOReport, SkyLight,
+ * DisplayServices, MobileGestalt, hibernation, UPS preferences), come from
+ * ../freebsd-shims/pmset_freebsd.h.
+ */
+#include "pmset_freebsd.h"
+#else
 #include <CoreFoundation/CoreFoundation.h>
 #include <Foundation/Foundation.h>
 #include <CoreFoundation/CFDateFormatter.h>
@@ -77,6 +86,7 @@
 #endif
 
 #include <MobileGestalt.h>
+#endif /* !__FreeBSD__ */
 
 /*
  * This is the command line interface to Energy Saver Preferences in
@@ -997,6 +1007,28 @@ static void displaySleepNow(void)
     disp_wrangler = IORegistryEntryFromPath(
                             kIOMainPortDefault,
                             kIOServicePlane ":/IOResources/IODisplayWrangler");
+#ifdef __FreeBSD__
+    /*
+     * NextBSD: no IODisplayWrangler in the kernel. powerd runs the
+     * wrangler's idle timer and turns the display off when asked.
+     */
+    if(disp_wrangler == IO_OBJECT_NULL) {
+        mach_port_t pm_server = MACH_PORT_NULL;
+        int         rc = kIOReturnError;
+
+        kr = _pm_connect(&pm_server);
+        if (kIOReturnSuccess == kr) {
+            kr = io_pm_set_value_int(pm_server, kIOPMSetDisplaySleepNow, 1, &rc);
+            _pm_disconnect(pm_server);
+            if (KERN_SUCCESS == kr) {
+                kr = rc;
+            }
+        }
+        if(kr)
+            fprintf(stderr, "pmset: Failed to set the display to sleep(err:0x%x)\n", kr);
+        return ;
+    }
+#endif
     if(disp_wrangler == IO_OBJECT_NULL)
         return ;
 
