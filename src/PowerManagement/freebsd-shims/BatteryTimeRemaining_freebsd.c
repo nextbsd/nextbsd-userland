@@ -25,6 +25,9 @@
  *     publish_IOPSGetPercentRemaining       ...powersources.percent
  *     publish_IOPSBatteryGetWarningLevel    State:/IOKit/LowBatteryWarning
  *                                           + ...powersources.lowbattery
+ *     publish_IOPSDynamicStore              State:/IOKit/PowerSources/<name>
+ *                                           + State:/IOKit/PowerAdapter
+ *                                           (NextBSD; see there)
  *   _io_ps_new_pspowersource / _io_ps_update_pspowersource /
  *   _io_ps_release_pspowersource / _io_ps_copy_powersources_info
  *                                 the MIG back end of IOPSCreatePowerSource,
@@ -185,6 +188,7 @@ static int              _batteryCountSync(void);
 static PowerSources     _getPowerSourceSync(void);
 static void             BatteryTimeRemaining_finishSync(void);
 static void             _foldInternalBattery(void);
+static void             BatteryTimeRemaining_storeSetValue(CFStringRef key, CFTypeRef value);
 
 // Arguments For startBatteryPoll()
 typedef enum {
@@ -1076,7 +1080,8 @@ static void publish_IOPSBatteryGetWarningLevel(
             }
 
             if (lowBatteryKey) {
-                PMStoreSetValue(lowBatteryKey, newlevel );
+                /* NextBSD: Apple calls PMStoreSetValue() from this queue. */
+                BatteryTimeRemaining_storeSetValue(lowBatteryKey, newlevel);
             } else {
                 ERROR_LOG("Failed to create lowBatteryKey\n");
             }
@@ -1350,6 +1355,134 @@ __private_extern__ void kernelPowerSourcesDidChange(IOPMBattery *b)
     HandlePublishAllPowerSources();
 }
 
+/*
+ * NextBSD: the power sources in the dynamic store (nextbsd-userland#230).
+ *
+ * Mac OS X published every power source in the SCDynamicStore, under
+ * State:/IOKit/PowerSources/<kIOPSNameKey> (kIOPSDynamicStorePath; the
+ * "PUBLISH: SCDynamicStoreSetValue" banner in kernelPowerSourcesDidChange()
+ * is from then), and the attached power adapter's details under
+ * State:/IOKit/PowerAdapter (kIOPSDynamicStorePowerAdapterKey, still in
+ * BatteryTimeRemaining.h). PowerManagement-1846 serves the same descriptions
+ * through io_ps_copy_powersources_info() and no longer writes either key.
+ * NextBSD writes both again, with those names and the same dictionaries
+ * IOPSCopyPowerSourcesInfo() returns, so that a client without Mach (the
+ * window server's process, scutil) can read and watch the power sources:
+ *
+ *   State:/IOKit/PowerSources/InternalBattery-0   the internal battery
+ *   State:/IOKit/PowerSources/<name>              each IOPSCreatePowerSource()
+ *                                                 source (a UPS, an accessory)
+ *   State:/IOKit/PowerAdapter                     present while the internal
+ *                                                 battery is on AC power: the
+ *                                                 adapter's details, or an
+ *                                                 empty dictionary (the kernel
+ *                                                 publishes no AdapterDetails)
+ *
+ * A key is removed when its source goes away. A machine with no battery
+ * publishes neither, as a Mac desktop does.
+ *
+ * PMStore.c's cache is not shared with this queue: Apple's PMSettings and
+ * PMConnection use it on the main queue. So the writes are handed to the
+ * main queue, in order, as PMSettingsPSChange() hands its work there.
+ */
+static CFMutableSetRef  gPublishedStoreKeys = NULL;	/* this queue only */
+
+static void BatteryTimeRemaining_storeSetValue(CFStringRef key, CFTypeRef value)
+{
+    CFRetain(key);
+    if (value) {
+        CFRetain(value);
+    }
+    dispatch_async(_getPMMainQueue(), ^() {
+        if (value) {
+            PMStoreSetValue(key, value);
+            CFRelease(value);
+        } else {
+            PMStoreRemoveValue(key);
+        }
+        CFRelease(key);
+    });
+}
+
+static void publish_IOPSDynamicStore(IOPMBattery *b, bool externalConnected)
+{
+    CFMutableSetRef     keys = NULL;
+    CFStringRef         key = NULL;
+    CFIndex             count;
+
+    _internal_dispatch_assert_queue_barrier(batteryTimeRemainingQ);
+
+    keys = CFSetCreateMutable(kCFAllocatorDefault, 0, &kCFTypeSetCallBacks);
+    if (!keys) {
+        return;
+    }
+
+    for (int i = 0; i < kPSMaxCount; i++) {
+        CFDictionaryRef     desc = isA_CFDictionary(gPSList[i].description);
+        CFStringRef         name = NULL;
+
+        if (!desc) {
+            continue;
+        }
+        name = isA_CFString(CFDictionaryGetValue(desc, CFSTR(kIOPSNameKey)));
+        if (!name) {
+            continue;
+        }
+        key = CFStringCreateWithFormat(kCFAllocatorDefault, NULL,
+                        CFSTR("%@%@/%@"), kSCDynamicStoreDomainState,
+                        CFSTR(kIOPSDynamicStorePath), name);
+        if (!key) {
+            continue;
+        }
+        BatteryTimeRemaining_storeSetValue(key, desc);
+        CFSetAddValue(keys, key);
+        CFRelease(key);
+    }
+
+    if (b && externalConnected) {
+        CFDictionaryRef     adapter = adapterDetails;
+        CFDictionaryRef     empty = NULL;
+
+        if (!adapter) {
+            adapter = empty = CFDictionaryCreate(kCFAllocatorDefault, NULL, NULL, 0,
+                        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        }
+        key = CFStringCreateWithFormat(kCFAllocatorDefault, NULL,
+                        CFSTR("%@%@"), kSCDynamicStoreDomainState,
+                        CFSTR(kIOPSDynamicStorePowerAdapterKey));
+        if (key && adapter) {
+            BatteryTimeRemaining_storeSetValue(key, adapter);
+            CFSetAddValue(keys, key);
+        }
+        if (key) {
+            CFRelease(key);
+        }
+        if (empty) {
+            CFRelease(empty);
+        }
+    }
+
+    /* Remove what was published last time and is gone now. */
+    if (gPublishedStoreKeys && (count = CFSetGetCount(gPublishedStoreKeys)) > 0) {
+        const void **old = calloc(count, sizeof(void *));
+
+        if (old) {
+            CFSetGetValues(gPublishedStoreKeys, old);
+            for (CFIndex i = 0; i < count; i++) {
+                if (!CFSetContainsValue(keys, old[i])) {
+                    BatteryTimeRemaining_storeSetValue((CFStringRef)old[i], NULL);
+                }
+            }
+            free(old);
+        }
+    }
+
+    if (gPublishedStoreKeys) {
+        CFRelease(gPublishedStoreKeys);
+    }
+    gPublishedStoreKeys = keys;
+}
+
 static void HandlePublishAllPowerSources(void)
 {
     _internal_dispatch_assert_queue_barrier(batteryTimeRemainingQ);
@@ -1495,6 +1628,9 @@ static void HandlePublishAllPowerSources(void)
     }
 
     batteryTimeRemaining_setPercentRemaining(percentRemaining);
+
+    /* NextBSD: State:/IOKit/PowerSources/... and State:/IOKit/PowerAdapter. */
+    publish_IOPSDynamicStore(b, externalConnected);
 
     /************************************************************************
      *

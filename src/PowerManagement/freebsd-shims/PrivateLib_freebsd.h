@@ -975,6 +975,12 @@ __private_extern__ CFDictionaryRef	copyRepeatPowerEvents(void);
 IOReturn IOPMSchedulePowerEvent(CFDateRef time_to_wake, CFStringRef my_id,
     CFStringRef type);
 
+/* ---- PMDisplay.h (the clamshell part, PMDisplay_freebsd.c) ------------- */
+__private_extern__ void updateClamshellState(void *message);
+uint32_t rootDomainClamshellState(void);
+void initializeClamshellState(void);
+void postClamshellStateNotification(void);
+
 /* ---- BatteryTimeRemaining.h (the parts built so far) ------------------- */
 
 __private_extern__ IOPMBattery **_batteries(void);
@@ -1001,6 +1007,11 @@ __private_extern__ dispatch_queue_t BatteryTimeRemaining_getQ(void);
 
 #ifndef kIOPSDynamicStoreLowBattPathKey
 #define kIOPSDynamicStoreLowBattPathKey         "/IOKit/LowBatteryWarning"
+#endif
+
+/* BatteryTimeRemaining.h */
+#ifndef kIOPSDynamicStorePowerAdapterKey
+#define kIOPSDynamicStorePowerAdapterKey        "/IOKit/PowerAdapter"
 #endif
 
 typedef enum {

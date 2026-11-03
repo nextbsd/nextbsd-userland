@@ -53,6 +53,8 @@ BINDIR=		/System/Library/CoreServices/powerd.bundle
 #                           profile (hwpstate_intel(4) EPP), until the
 #                           kernel has a platform plugin
 #   PMSettings_freebsd.c    PMSettings.m, compiled as C
+#   PMDisplay_freebsd.c     the clamshell part of PMDisplay.m: the lid state
+#                           for notify(3) and the dynamic store
 #   PMStore_freebsd.c       Apple's PMStore.c, unmodified, compiled with the
 #                           PrivateLib.h declarations it needs
 #   BatteryTimeRemaining_freebsd.c
@@ -68,6 +70,7 @@ SRCS+=		RootDomain_freebsd.c
 SRCS+=		PMConnection_freebsd.c
 SRCS+=		RootDomainIdle_freebsd.c
 SRCS+=		CPUPower_freebsd.c
+SRCS+=		PMDisplay_freebsd.c
 
 # Apple's files, built as C under __FreeBSD__ (see ../VENDORED.md):
 #   AutoWakeScheduler.c     pmset schedule: one-shot power events
