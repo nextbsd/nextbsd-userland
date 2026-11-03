@@ -253,6 +253,18 @@ static uint16_t                 gWranglerGenerationCount = 0;
 
 bool                            gMachineStateRevertible = true;
 
+/*
+ * The wake handed to the RTC at the last sleep (gPendingScheduledWakeLog:
+ * time, pid, name and event type), and, after a wake the RTC alarm caused
+ * ("Wake Reason" "RTC (Alarm)", nextbsd-kernel#245), the one that woke us
+ * (gCurrentScheduledWakeLog). Apple serves the latter over XPC
+ * (getScheduledWake); NextBSD has no CF/XPC bridge for that yet, so it is
+ * logged.
+ */
+static CFMutableDictionaryRef   gPendingScheduledWakeLog;
+static CFMutableDictionaryRef   gCurrentScheduledWakeLog;
+static CFAbsoluteTime           leeway = 5.0;
+
 /************************************************************************************/
 
 #define IS_DARK_CAPABILITIES(x) \
@@ -1174,6 +1186,38 @@ static void PMConnectionPowerCallBack(
     {
         _updateWakeReason(&wakeReason, &wakeType);
 
+        // if wake reason is rtc, track responsible process
+        if ((CFStringFind(wakeReason, CFSTR("RTC"), 0).location != kCFNotFound) || (CFStringFind(wakeReason, CFSTR("rtc"), 0).location != kCFNotFound)) {
+            if (gPendingScheduledWakeLog) {
+
+                CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+                CFNumberRef cf_wake = isA_CFNumber(CFDictionaryGetValue(gPendingScheduledWakeLog, CFSTR(kIOPMPowerEventTimeKey)));
+                CFAbsoluteTime wake_time = 0;
+                if (cf_wake) {
+                    CFNumberGetValue(cf_wake,kCFNumberDoubleType, &wake_time);
+                }
+                if ((wake_time > now) && (wake_time - now) >= leeway) {
+                    DEBUG_LOG("Not the current wake %f > now %f", wake_time, now);
+                } else {
+                    if (!gCurrentScheduledWakeLog) {
+                        gCurrentScheduledWakeLog = CFDictionaryCreateMutableCopy(NULL, 0, gPendingScheduledWakeLog);
+                        /* Apple: adds the sleep/wake UUID. */
+#ifdef __FreeBSD__
+                        INFO_LOG("Scheduled wake: %@ by %@\n",
+                                 CFDictionaryGetValue(gCurrentScheduledWakeLog, CFSTR(kIOPMPowerEventTypeKey)),
+                                 CFDictionaryGetValue(gCurrentScheduledWakeLog, CFSTR(kIOPMPowerEventAppNameKey)));
+#endif
+                    }
+                }
+            }
+        }
+
+        // reset on wake
+        if (gPendingScheduledWakeLog) {
+            CFRelease(gPendingScheduledWakeLog);
+            gPendingScheduledWakeLog = NULL;
+        }
+
         gMachineStateRevertible = true;
 
         if (BatteryTimeRemainingWakeNotification)
@@ -1543,6 +1587,9 @@ static bool checkResponses_ScheduleWakeEvents(PMResponseWrangler *wrangler)
     CFAbsoluteTime          userWake = 0.0;
     CFAbsoluteTime          earliestWake = kCFAbsoluteTimeIntervalSince1904; // Invalid value
     wakeType_e              type = kChooseWakeTypeCount; // Invalid value
+    CFNumberRef             chosen_cf_pid = NULL;
+    CFStringRef             chosen_cf_name = NULL;
+    CFStringRef             chosen_type = NULL;
 
     if (wrangler) {
         responsesCount = CFArrayGetCount(wrangler->awaitingResponses);
@@ -1577,13 +1624,19 @@ static bool checkResponses_ScheduleWakeEvents(PMResponseWrangler *wrangler)
         }
     }
 
-    if (!complete) {
+    if ( !complete || (wrangler && BIT_IS_SET(wrangler->notificationType, kIOPMSystemCapabilityCPU)))
+    {
+        // Either some clients haven't responded yet, or
+        // system is not going to sleep. So, no need to schedule wake yet
+        if (gPendingScheduledWakeLog) {
+            CFRelease(gPendingScheduledWakeLog);
+            gPendingScheduledWakeLog = NULL;
+        }
         goto exit;
     }
 
-    if (wrangler && BIT_IS_SET(wrangler->notificationType, kIOPMSystemCapabilityCPU)) {
-        // Not a sleep: nothing to schedule.
-        goto exit;
+    if (!gPendingScheduledWakeLog) {
+        gPendingScheduledWakeLog = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     }
 
     /* Check for user wake requests in the end to give highest priority, in case of conflict */
@@ -1596,6 +1649,12 @@ static bool checkResponses_ScheduleWakeEvents(PMResponseWrangler *wrangler)
             if (userWake <= earliestWake) {
                 earliestWake = userWake;
                 type = kChooseFullWake;
+                chosen_cf_pid = isA_CFNumber(CFDictionaryGetValue(event, CFSTR(kIOPMPowerEventAppPIDKey)));
+                chosen_cf_name = isA_CFString(CFDictionaryGetValue(event, CFSTR(kIOPMPowerEventAppNameKey)));
+                chosen_type = isA_CFString(CFDictionaryGetValue(event, CFSTR(kIOPMPowerEventTypeKey)));
+                if (chosen_cf_pid) CFRetain(chosen_cf_pid);
+                if (chosen_cf_name) CFRetain(chosen_cf_name);
+                if (chosen_type) CFRetain(chosen_type);
             }
         }
         CFRelease(event);
@@ -1613,14 +1672,59 @@ static bool checkResponses_ScheduleWakeEvents(PMResponseWrangler *wrangler)
             if (userWake <= earliestWake) {
                 earliestWake = userWake;
                 type = kChooseMaintenance;
+                if (chosen_cf_pid) CFRelease(chosen_cf_pid);
+                if (chosen_cf_name) CFRelease(chosen_cf_name);
+                if (chosen_type) CFRelease(chosen_type);
+                chosen_cf_pid = NULL;
+                chosen_cf_name = (CFStringRef)CFRetain(CFSTR("powerd"));
+                chosen_type = isA_CFString(CFDictionaryGetValue(event, CFSTR(kIOPMPowerEventTypeKey)));
+                if (chosen_type) CFRetain(chosen_type);
             }
         }
         CFRelease(event);
     }
 
+    if (earliestWake != kCFAbsoluteTimeIntervalSince1904) {
+        // time
+        CFNumberRef cf_time = CFNumberCreate(NULL, kCFNumberDoubleType, &earliestWake);
+        if (cf_time) {
+            CFDictionarySetValue(gPendingScheduledWakeLog, CFSTR(kIOPMPowerEventTimeKey), cf_time);
+            CFRelease(cf_time);
+        }
+        // pid
+        if (chosen_cf_pid) {
+            CFDictionarySetValue(gPendingScheduledWakeLog, CFSTR(kIOPMPowerEventAppPIDKey), chosen_cf_pid);
+        }
+        //name
+        if (chosen_cf_name) {
+            CFDictionarySetValue(gPendingScheduledWakeLog, CFSTR(kIOPMPowerEventAppNameKey), chosen_cf_name);
+        }
+        // type
+        if (chosen_type) {
+            CFDictionarySetValue(gPendingScheduledWakeLog, CFSTR(kIOPMPowerEventTypeKey), chosen_type);
+        } else {
+            CFDictionarySetValue(gPendingScheduledWakeLog, CFSTR(kIOPMPowerEventTypeKey), CFSTR(kIOPMAutoWake));
+        }
+    } else {
+        // not scheduling any wake
+        if (gPendingScheduledWakeLog) {
+            CFRelease(gPendingScheduledWakeLog);
+            gPendingScheduledWakeLog = NULL;
+        }
+    }
+
+    // clear current entry on sleep
+    if (gCurrentScheduledWakeLog){
+        CFRelease(gCurrentScheduledWakeLog);
+        gCurrentScheduledWakeLog = NULL;
+    }
+
     PMScheduleWakeEventChooseBest(earliestWake, type);
 
 exit:
+    if (chosen_cf_pid) CFRelease(chosen_cf_pid);
+    if (chosen_cf_name) CFRelease(chosen_cf_name);
+    if (chosen_type) CFRelease(chosen_type);
     return complete;
 }
 

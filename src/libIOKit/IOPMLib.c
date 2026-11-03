@@ -416,8 +416,10 @@ IOPMGetLastWakeTime(CFAbsoluteTime *lastWakeTime,
  * IORegistryEntrySetCFProperty. The root domain is the one entry that takes
  * properties (xnu's IOPMrootDomain::setProperties); the others answer
  * kIOReturnUnsupported, IORegistryEntry::setProperties' default. Values a
- * root domain key can hold: CFBoolean, CFNumber (as a 64-bit integer) and
- * CFString (up to 63 bytes of UTF-8). Root only. The request goes through the
+ * root domain key can hold: CFBoolean, CFNumber (as a 64-bit integer),
+ * CFString (up to 63 bytes of UTF-8) and CFData (up to 64 bytes, e.g. the
+ * IOPMCalendarStruct of "WakeByCalendarDate"; a kernel older than
+ * nextbsd-kernel#245 refuses it with kIOReturnBadArgument). Root only. The request goes through the
  * process-wide descriptor, so the power-button policy a key like
  * "DisablePowerButtonSleep" claims stays with this process until it exits.
  */
@@ -446,6 +448,13 @@ pmroot_setprop(CFStringRef key, CFTypeRef value)
 		if (!CFStringGetCString(value, pr.string, sizeof(pr.string),
 		    kCFStringEncodingUTF8))
 			return (kIOReturnBadArgument);
+	} else if (CFGetTypeID(value) == CFDataGetTypeID()) {
+		pr.type = IOPMROOT_PROP_DATA;
+		pr.number = CFDataGetLength(value);
+		if (pr.number > (int64_t)sizeof(pr.string))
+			return (kIOReturnBadArgument);
+		CFDataGetBytes(value, CFRangeMake(0, pr.number),
+		    (UInt8 *)pr.string);
 	} else
 		return (kIOReturnUnsupported);
 
