@@ -179,6 +179,11 @@ powerd_init(void *__unused context)
      * SystemLoad, BatteryTimeRemaining, TTYKeepAwake, ...). Each is added
      * here, in Apple's order, by the ticket that ports it.
      */
+    initializeRootDomainInterestNotifications();
+
+    /* PMConnection_prime() opens the root domain's user client here. */
+    (void)getRootDomainConnect();
+
     AutoWake_prime();
 
     os_log(OS_LOG_DEFAULT, "pmconfigd started: %s%s, %s\n",

@@ -32,11 +32,15 @@ BINDIR=		/usr/sbin
 #   os_log_shim.c           os_log() for every file (os/log.h)
 #   PrivateLib_freebsd.c    the PrivateLib.m / PMAssertions.c functions the
 #                           ported files call (PrivateLib_freebsd.h)
+#   RootDomain_freebsd.c    the kernel shim: IOServiceOpen/IOConnectCallMethod
+#                           on the IOPMrootDomain as /dev/iopmroot ioctls,
+#                           and the root domain's general interest
 .PATH:		${.CURDIR}/../freebsd-shims ${.CURDIR}/../common
 SRCS=		pmconfigd_freebsd.c
 SRCS+=		powermanagement_stubs.c
 SRCS+=		os_log_shim.c
 SRCS+=		PrivateLib_freebsd.c
+SRCS+=		RootDomain_freebsd.c
 
 # Apple's files, built as C under __FreeBSD__ (see ../VENDORED.md):
 #   AutoWakeScheduler.c     pmset schedule: one-shot power events
@@ -72,8 +76,9 @@ CFLAGS+=	-O2 -pipe -fblocks
 #      <IOKit/pwr_mgt/powermanagement*.h> resolve to pmconfigd's shims ahead
 #      of launchd's freebsd-shims/os and the sysroot;
 #   2. this directory and ../common for Apple's own headers;
-#   3. libIOKit's source headers (<IOKit/IOKitLib.h>, the real one), ahead
-#      of launchd/freebsd-shims' IOKit stub, as wland and DiskArbitration do;
+#   3. libIOKit's source headers (<IOKit/IOKitLib.h>, the real one, and its
+#      vendored <sys/iopmroot.h>, "iopmroot.h"), ahead of
+#      launchd/freebsd-shims' IOKit stub, as wland and DiskArbitration do;
 #   4. liblaunch for <servers/bootstrap.h> and its launchd/freebsd-shims pair.
 CFLAGS+=	-I${.CURDIR}/../freebsd-shims
 CFLAGS+=	-I${.CURDIR} -I${.CURDIR}/../common
@@ -106,11 +111,13 @@ LDFLAGS+=	-Wl,--allow-shlib-undefined
 #   -l:libsystem_blocks.so  the XPC event-handler blocks
 #   -lSystemConfiguration  SCPreferences: com.apple.AutoWake.plist
 #   -lnotify          notify_post() of the scheduled-event notifications
+#   -lIOKit           the root domain: registry lookup, interest
+#                     notifications, IOPMLib, /dev/iopmroot
 # Use the system_* names and the exact-file -l: form for blocks, never
 # -ldispatch / -lBlocksRuntime (#378).
 LDADD+=		-llaunch -lxpc -lsystem_dispatch -lCoreFoundation
 LDADD+=		-lsystem_kernel -l:libsystem_blocks.so
-LDADD+=		-lSystemConfiguration -lnotify
+LDADD+=		-lSystemConfiguration -lnotify -lIOKit
 
 # FreeBSD base libs: releng/15.1 src.libnames.mk requires LIBADD, not LDADD+=-lfoo.
 #   m                 ceil() in AutoWakeScheduler.c (libSystem has it on macOS)
