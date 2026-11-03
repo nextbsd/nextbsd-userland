@@ -32,6 +32,14 @@
 #define _PMAssertions_h_
 
 #include "XCTest_FunctionDefinitions.h"
+#ifdef __FreeBSD__
+/*
+ * NextBSD: the IOKit power-management keys and types come from the shim
+ * (see ../freebsd-shims/PrivateLib_freebsd.h); there is no IOReport.
+ */
+#include "PrivateLib_freebsd.h"
+#include <sys/queue.h>
+#else
 #include <IOKit/pwr_mgt/IOPM.h>
 #include <IOKit/pwr_mgt/IOPMLibPrivate.h>
 #include <IOKit/pwr_mgt/powermanagement_mig.h>
@@ -47,6 +55,7 @@ do {    \
 
 #include <IOKit/IOReportMacros.h>
 #include <IOKit/IOReportTypes.h>
+#endif /* !__FreeBSD__ */
 #include <xpc/xpc.h>
 
 /* ExternalMedia assertion
@@ -469,7 +478,9 @@ __private_extern__ IOReturn _IOPMAssertionCreateRequiresRoot(
                                 int level, 
                                 int *assertion_id);
 
+#ifndef __FreeBSD__     /* NextBSD's CoreFoundation has no CFMachPort; nothing defines it */
 __private_extern__ void _TaskPortInvalidatedCallout(CFMachPortRef port, void *info);
+#endif
 
 __private_extern__ void _PMAssertionsDriverAssertionsHaveChanged(uint32_t changedDriverAssertions);
 

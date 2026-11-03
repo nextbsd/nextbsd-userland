@@ -105,6 +105,54 @@ When
 .Nm
 exits, the kernel's ACPI actions apply again.
 .Pp
+.Nm
+keeps the system's power assertions
+.Po
+.Xr caffeinate 8 ,
+.Fn IOPMAssertionCreateWithName
+.Pc
+and applies them as macOS does:
+.Bl -tag -width "PreventUserIdleDisplaySleep"
+.It Ql PreventUserIdleSystemSleep
+holds off idle sleep;
+.It Ql PreventUserIdleDisplaySleep
+holds off display sleep, and so idle sleep too;
+.It Ql PreventSystemSleep
+holds off idle sleep as a CPU assertion in the root domain.
+.El
+.Pp
+The Energy Saver settings
+.Po
+the
+.Cm sleep
+and
+.Cm displaysleep
+minutes and the rest
+.Pc
+are Apple's defaults
+.Pq 10 and 10 minutes on AC power
+merged with the settings saved in the
+.Ql com.apple.PowerManagement
+preferences, and are re-read when
+.Ql com.apple.system.powermanagement.prefschange
+is posted.
+After
+.Cm displaysleep
+minutes without user input the display is considered off; after
+.Cm sleep
+minutes without input the system is asked to sleep with the reason
+.Ql Idle Sleep ,
+which lets any application veto it.
+The time of the last input comes from the
+.Ql HIDIdleTime
+of the
+.Ql IOHIDSystem
+registry entry; while there is none, the user counts as active and the
+system does not idle-sleep.
+Active remote logins
+.Pq Xr ssh 1
+hold off idle sleep while their terminals are in use.
+.Pp
 Every other MIG request is answered with
 .Dv kIOReturnUnsupported ;
 XPC messages are accepted and ignored.
@@ -116,6 +164,8 @@ the
 job
 .It Pa /Local/Library/Preferences/SystemConfiguration/com.apple.AutoWake.plist
 the scheduled and repeating power events
+.It Pa /System/Library/CoreServices/powerd.bundle
+Apple's assertion timeout and category lists
 .It Pa /dev/iopmroot
 the kernel's power management root domain
 .It Pa /var/log/pmconfigd.stderr

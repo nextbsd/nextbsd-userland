@@ -20,6 +20,33 @@
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
+#ifdef __FreeBSD__
+/*
+ * NextBSD: built as C. The frameworks below that NextBSD lacks (Foundation,
+ * IOReport, energytrace, RunningBoard, CrashReporter, os_state, feature
+ * flags, SecTask) are left out, and so is the code that uses them; see the
+ * __FreeBSD__ blocks further down. The pmconfigd headers come from
+ * ../freebsd-shims (PrivateLib_freebsd.h) until PrivateLib.h builds.
+ */
+#include <CoreFoundation/CoreFoundation.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <notify.h>
+#include <mach/mach.h>
+#include <mach/mach_error.h>
+#include <servers/bootstrap.h>
+#include <dispatch/dispatch.h>
+#include <bsm/libbsm.h>
+#include <libproc.h>
+#include <xpc/xpc.h>
+
+#include "PrivateLib_freebsd.h"
+#include "PMConnection.h"
+#include "PMSettings.h"
+#include "PMAssertions.h"
+#include "powermanagementServer.h"
+#include "Platform.h"
+#else
 #include <IOKit/pwr_mgt/IOPMLibPrivate.h>
 #include <Foundation/Foundation.h>
 #include <CoreFoundation/CFXPCBridge.h>
@@ -65,6 +92,9 @@
 #if TARGET_OS_OSX
 #include "PMDisplay.h"
 #endif
+
+
+#endif /* !__FreeBSD__ */
 
 
 #if __has_include (<CoreAnalytics/CoreAnalytics.h>)
@@ -236,6 +266,18 @@ static CFAbsoluteTime previousWakeTime = 0.0;
 /******************************************************************************
   * XPC Handlers
  *****************************************************************************/
+#ifndef __FreeBSD__
+/*
+ * NextBSD: the async-offload assertion protocol is not built. IOKitUser's
+ * IOPMAssertions.c turns it on only for TARGET_OS_IOS (checkFeatureEnabled),
+ * so a macOS client never sends these messages; its assertions come over
+ * MIG (_io_pm_assertion_create and friends below). The handlers also need
+ * the CF<->XPC bridge (_CFXPCCreateCFObjectFromXPCMessage), SecTask and
+ * xpc_connection_get_audit_token, which NextBSD's libxpc does not have.
+ * Without them no ProcessInfo ever gets a remoteConnection, and the
+ * remote-connection code that stays below (assertion checks, activity
+ * updates, timeout messages) has no peer to talk to, as on macOS.
+ */
 void asyncAssertionCreate(xpc_object_t remoteConnection, xpc_object_t msg)
 {
 
@@ -569,6 +611,8 @@ exit:
     }
 }
 
+#endif /* !__FreeBSD__ */
+
 void releaseConnectionAssertions(xpc_object_t remoteConnection)
 {
     pid_t deadPID = xpc_connection_get_pid(remoteConnection);
@@ -847,6 +891,7 @@ void processAssertionActivityUpdateResp(xpc_object_t reply, pid_t pid, bool acti
     }
     
     DEBUG_LOG("Process %d replied to update assertion activity", pid);
+#ifndef __FreeBSD__     /* async-offload clients only; see asyncAssertionCreate */
     if (actives_only) {
         xpc_object_t active_assertions = xpc_dictionary_get_value(reply, kAssertionUpdateActivesMsg);
         if (active_assertions) {
@@ -862,6 +907,7 @@ void processAssertionActivityUpdateResp(xpc_object_t reply, pid_t pid, bool acti
         // get the data from reply
         _asyncAssertionLogging(pinfo, reply);
     }
+#endif /* !__FreeBSD__ */
 
     bool overflow = xpc_dictionary_get_bool(reply, kAssertionCopyActivityUpdateOverflowKey);
     if (overflow) {
@@ -2197,9 +2243,19 @@ static notifyRegInfo_st * _RegisterForNotification(
     if ( !notifyInfo->port )
         goto exit;
 
+#ifdef __FreeBSD__
+    /*
+     * NextBSD's registry has no IOService plane path lookup and no busy-state
+     * interest, so registration fails here the way it does on macOS when the
+     * path is missing: the caller then drops its proxy assertion at once.
+     */
+    (void)path;
+    goto exit;
+#else
     obj = IORegistryEntryFromPath(kIOMainPortDefault, path);
     if ( !obj )
         goto exit;
+#endif
 
     kr = IOServiceAddInterestNotification(
                                           notifyInfo->port,
@@ -2418,8 +2474,17 @@ __private_extern__ void _ProxyAssertions(const struct IOPMSystemCapabilityChange
         return;
 
 
+#ifdef __FreeBSD__
+    /*
+     * NextBSD: there is no dark wake yet; every wake is a full wake
+     * (nextbsd-userland#229), so there is never a sleep -> dark wake
+     * transition to proxy for.
+     */
+    if (false)
+#else
     if ( IOPMIsADarkWake(capArgs->toCapabilities) &&
          IOPMIsASleep(capArgs->fromCapabilities) )
+#endif
     {
         wakeType = _copyRootDomainProperty(CFSTR(kIOPMRootDomainWakeTypeKey));
         wakeReason = _copyRootDomainProperty(CFSTR(kIOPMRootDomainWakeReasonKey));
@@ -2593,6 +2658,14 @@ static bool callerIsEntitledToAssertion(
 
 static void checkProcAggregates(void)
 {
+#ifdef __FreeBSD__
+    /*
+     * NextBSD: no IOReport, so no per-process aggregates
+     * (copyAssertionActivityAggregate() returns kIOReturnUnsupported) and
+     * nothing to compare against gProcAggregateBasis.
+     */
+    return;
+#else
     CFDictionaryRef update = NULL;
     IOReportSampleRef   delta = NULL;
 
@@ -2661,7 +2734,7 @@ exit:
     if (delta) {
         CFRelease(delta);
     }
-
+#endif /* !__FreeBSD__ */
 }
 
 static void setProcessAssertionLimits(ProcessInfo *pinfo)
@@ -3336,7 +3409,9 @@ void updateAppStats(assertion_t *assertion, assertionOps op)
         if (stats && (stats->cnt) && (assertion->state & kAssertionStateAddsToProcStats)) {
             if (--stats->cnt == 0) {
                 duration = (getMonotonicTime() - stats->startTime);
+#ifndef __FreeBSD__     /* no IOReport: reportBuf is never allocated */
                 SIMPLEARRAY_INCREMENTVALUE(pinfo->reportBuf, assertType->effectIdx, duration);
+#endif
             }
             assertion->state &= ~kAssertionStateAddsToProcStats;
         }
@@ -3872,6 +3947,11 @@ static void allocStatsBuf(ProcessInfo *pinfo)
 
     if (gActivityAggCnt == 0) return;
     if (pinfo->reportBuf) return;
+#ifdef __FreeBSD__
+    /* NextBSD: no IOReport simple arrays; the aggregate stays unsupported. */
+    (void)i;
+    return;
+#else
 
     size_t nbytes = SIMPLEARRAY_BUFSIZE(kMaxEffectStats);
     pinfo->reportBuf = malloc(nbytes);
@@ -3886,6 +3966,7 @@ static void allocStatsBuf(ProcessInfo *pinfo)
         memset(pinfo->stats, 0, sizeof(pinfo->stats));
         processInfoRetain(pinfo->pid);
     }
+#endif /* !__FreeBSD__ */
 }
 
 void setAssertionActivityAggregate(pid_t callerPID, int value)
@@ -7341,11 +7422,20 @@ __private_extern__ void systemAssertionTimerFired(void)
                 }
             } else {
                 pid_t pid = assertion->pinfo->pid;
+#ifdef __FreeBSD__
+                /* NextBSD: no Foundation; the same text as a CFString. */
+                CFStringRef description = CFStringCreateWithFormat(0, NULL, CFSTR(" System Assertion Timeout: Device became inactive more than %llu seconds ago."
+                                         "%@ is not on the allow list. Dropping assertion %lld:%@ for pid %d %@. age:%llu."), \
+                                         kPMSystemAssertionTimeoutValue, process_name, \
+                                         (((uint64_t)assertion->kassert) << 32) | assertion->assertionId, \
+                                         name, pid, process_name, age);
+#else
                 NSString *description = [NSString stringWithFormat:@" System Assertion Timeout: Device became inactive more than %llu seconds ago."
                                          "%@ is not on the allow list. Dropping assertion %lld:%@ for pid %d %@. age:%llu.", \
                                          kPMSystemAssertionTimeoutValue, process_name, \
                                          (((uint64_t)assertion->kassert) << 32) | assertion->assertionId, \
                                          name, pid, process_name, age];
+#endif
                 ERROR_LOG("%@", description);
 
                 //Notify of exception
@@ -7372,11 +7462,18 @@ __private_extern__ void systemAssertionTimerFired(void)
 
                 handleAssertionDrop(assertion);
 
+#ifdef __FreeBSD__
+                /* NextBSD: no CrashReporter; the log line above is the report. */
+                if (description) {
+                    CFRelease(description);
+                }
+#else
                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^ {
                     if (!SimulateCrash(pid, 0xBAD2510, description)) {
                         ERROR_LOG("Failed to generate simulated crash for %d\n", pid);
                     }
                 });
+#endif
             }
         }
     });
@@ -7512,7 +7609,7 @@ void fetchAssertionCategories(xpc_object_t remote, xpc_object_t msg)
         rc = kIOReturnBadArgument;
     }
     xpc_object_t reply = xpc_dictionary_create_reply(msg);
-    xpc_object_t data = nil;
+    xpc_object_t data = NULL;
     if (!reply) {
         ERROR_LOG("Cannot create reply dictionary");
         rc = kIOReturnInternalError;
@@ -7528,8 +7625,17 @@ void fetchAssertionCategories(xpc_object_t remote, xpc_object_t msg)
             if (CFDictionaryContainsKey(gAssertionCategoriesDict, processName)) {
                 // policies exist for process
                 CFDictionaryRef policies = CFDictionaryGetValue(gAssertionCategoriesDict, processName);
+#ifdef __FreeBSD__
+                /*
+                 * NextBSD: no CF->XPC bridge, so the policies are not sent;
+                 * the client keeps its defaults, as for a process that is
+                 * not in the categories plist.
+                 */
+                (void)policies;
+#else
                 data = _CFXPCCreateXPCObjectFromCFObject(policies);
                 xpc_dictionary_set_value(reply, kAssertionUpdateCategoryPolicyMsg, data);
+#endif
             }
         }
     }
@@ -7567,6 +7673,14 @@ void sendUpdateAssertionPolicy(IOPMAssertionPolicy policy) {
 
 void updateSystemAssertionTimeout(xpc_object_t peer, xpc_object_t msg)
 {
+#ifdef __FreeBSD__
+    /*
+     * NextBSD: kSystemAssertionTimeoutKey is not in the IOKitUser drop
+     * (IOKitUser-100231.120.3), so no client can send this message, and the
+     * system assertion timeout is disabled anyway (PMAssertions_prime()).
+     */
+    (void)peer; (void)msg;
+#else
     if (!peer || !msg) {
         ERROR_LOG("Invalid args to update system assertion timeout");
         return;
@@ -7577,6 +7691,7 @@ void updateSystemAssertionTimeout(xpc_object_t peer, xpc_object_t msg)
         kPMSystemAssertionTimeoutValue = value;
         INFO_LOG("System Assertion Timer: setting timeout value to %llu", value);
     }
+#endif /* !__FreeBSD__ */
 }
 
 __private_extern__ void PMAssertions_prime(void)
@@ -7638,8 +7753,10 @@ __private_extern__ void PMAssertions_prime(void)
                              _getPMMainQueue(),
                              ^(int t) { /*Dummy registration to keep the key/value valid with notifyd */ });
 
+#ifndef __FreeBSD__     /* no os_state: there is no sysdiagnose to dump into */
     os_state_add_handler(_getPMMainQueue(), ^os_state_data_t(os_state_hints_t hints) {
             logASLAllAssertions(); return NULL; });
+#endif
 
     INFO_LOG("System Assertion Timer: feature disabled");
 

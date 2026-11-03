@@ -73,8 +73,6 @@
  */
 #include "PrivateLib_freebsd.h"
 
-#include "iopmroot.h"		/* libIOKit's vendored <sys/iopmroot.h> */
-
 #include <IOKit/IOMessage.h>
 
 #include <sys/ioctl.h>
@@ -338,10 +336,13 @@ pmRootDomainCallMethod(
     {
         uint64_t        levels = (uint32_t)input[0];
 
+        /* The kernel stores the levels; the idle timers act on them. */
+        pmIdleUserAssertionLevelsChanged((uint32_t)levels);
         return pmRootDomainIoctl(IOPMROOT_SETASSERTIONS, &levels);
     }
 
     case kPMActivityTickle:
+        pmIdleActivityTickle();
         return pmRootDomainIoctl(IOPMROOT_TICKLE, NULL);
 
     case kPMGetSystemSleepType:
@@ -661,4 +662,29 @@ initializeLowPowerSleep(void)
     });
 
     lowPowerSleepEvaluate();
+}
+
+/* ---- the idle timers' view of the kernel (RootDomainIdle_freebsd.c) ---- */
+
+/*
+ * IOPMSetAggressiveness, as xnu's root domain receives it: the kernel stores
+ * the value and, for the sleep and display sleep minutes, the idle timers
+ * that run here instead of in the kernel are told.
+ */
+#undef IOPMSetAggressiveness
+__private_extern__ IOReturn
+pmRootDomainSetAggressiveness(io_connect_t fb, unsigned long type, unsigned long aggressiveness)
+{
+    IOReturn    ret = IOPMSetAggressiveness(fb, type, aggressiveness);
+
+    pmIdleAggressivenessChanged(type, aggressiveness);
+    return ret;
+}
+
+/* IOPMROOT_GETSTATE: phase, flags and sleep count of the kernel root domain. */
+__private_extern__ IOReturn
+pmRootDomainCopyState(struct iopmroot_state *st)
+{
+    memset(st, 0, sizeof(*st));
+    return pmRootDomainIoctl(IOPMROOT_GETSTATE, st);
 }

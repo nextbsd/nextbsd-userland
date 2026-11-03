@@ -29,6 +29,26 @@
  *
  */
 
+#ifdef __FreeBSD__
+/*
+ * NextBSD: built as C (-x c). No LowPowerMode, LockdownMode, hibernation
+ * or platform-support headers; the pmconfigd headers come from
+ * ../freebsd-shims (PrivateLib_freebsd.h) until PrivateLib.h builds.
+ */
+#include <sys/stat.h>
+#include <sys/fcntl.h>
+#include <sys/sysctl.h>
+#include <sys/mount.h>
+#include <errno.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <notify.h>
+
+#include "PrivateLib_freebsd.h"
+#include "PMSettings.h"
+#include "PMAssertions.h"
+#include "PMConnection.h"
+#else
 #include <sys/stat.h>
 #include <sys/fcntl.h>
 #include <sys/sysctl.h>
@@ -55,6 +75,8 @@
 #include "StandbyTimer.h"
 #include "adaptiveDisplay.h"
 
+
+#endif /* !__FreeBSD__ */
 
 #define kIOPMSCPrefsPath    CFSTR("com.apple.PowerManagement.xml")
 #define kIOPMAppName        CFSTR("PowerManagement configd")
@@ -566,7 +588,9 @@ static int ProcessHibernateSettings(CFDictionaryRef dict, bool standby, bool isD
     int        fd;
     long long    size;
     size_t    len;
+#ifndef __FreeBSD__
     fstore_t    prealloc;
+#endif
     off_t    filesize = 0;
     off_t    minFileSize = 0;
     off_t    maxFileSize = 0;
@@ -576,6 +600,20 @@ static int ProcessHibernateSettings(CFDictionaryRef dict, bool standby, bool isD
 
     if (!platformPluginLoaded()) return (0);
 
+#ifdef __FreeBSD__
+    /*
+     * NextBSD: no hibernation (no S4 and no sleepimage), and no platform
+     * plugin to publish SystemPowerProfileOverrideDict, so Apple's code
+     * returned above anyway.
+     */
+    (void)dict; (void)standby; (void)isDesktop; (void)rootDomain;
+    (void)obj; (void)modeNum; (void)num; (void)modeValue; (void)url;
+    (void)createFile; (void)haveFile; (void)deleteFile; (void)statBuf;
+    (void)path; (void)fd; (void)size; (void)len; (void)filesize;
+    (void)minFileSize; (void)maxFileSize; (void)apo_available;
+    (void)apo_enabled; (void)apo_enabled_cf;
+    return (0);
+#else
     if ( !IOPMFeatureIsAvailable( CFSTR(kIOHibernateFeatureKey), NULL ) )
     {
         // Hibernation is not supported; return before we touch anything.
@@ -749,6 +787,7 @@ static int ProcessHibernateSettings(CFDictionaryRef dict, bool standby, bool isD
         CFRelease(url);
 
     return (0);
+#endif /* !__FreeBSD__ */
 }
 
 static void sendEnergySettingsToKernel(
@@ -835,6 +874,7 @@ static void sendEnergySettingsToKernel(
                                     (p->fAutomaticRestart?number1:number0));
     }
 
+#ifndef __FreeBSD__     /* kIOPMSettingRestartOnPowerConnectKey: not in xnu's IOPM.h drop */
     // Automatic Restart On Power Connect
     if( !removeUnsupportedSettings
        || IOPMFeatureIsAvailableWithSupportedTable(CFSTR(kIOPMRestartOnPowerConnectKey), providing_power, _supportedCached))
@@ -843,6 +883,7 @@ static void sendEnergySettingsToKernel(
                                     CFSTR(kIOPMSettingRestartOnPowerConnectKey),
                                     (p->fAutomaticRestartAtConnect?number1:number0));
     }
+#endif
 
     // Wake on change of AC state -- battery to AC or vice versa
     if( !removeUnsupportedSettings
@@ -858,9 +899,20 @@ static void sendEnergySettingsToKernel(
     if( !removeUnsupportedSettings
        || IOPMFeatureIsAvailableWithSupportedTable(CFSTR(kIOPMSleepOnPowerButtonKey), providing_power, _supportedCached))
     {
+#ifdef __FreeBSD__
+        /*
+         * NextBSD's root domain reads "Sleep On Power Button" as true when
+         * the button sleeps (nextbsd-kernel#243); Apple writes the inverse
+         * for its platform driver.
+         */
+        IORegistryEntrySetCFProperty(PMRootDomain,
+                                     CFSTR(kIOPMSettingSleepOnPowerButtonKey),
+                                     (p->fSleepOnPowerButton?kCFBooleanTrue:kCFBooleanFalse));
+#else
         IORegistryEntrySetCFProperty(PMRootDomain,
                                      CFSTR(kIOPMSettingSleepOnPowerButtonKey),
                                      (p->fSleepOnPowerButton?kCFBooleanFalse:kCFBooleanTrue));
+#endif
     }
 
     // Wakeup on clamshell open
@@ -946,6 +998,7 @@ static void sendEnergySettingsToKernel(
         }
     }
 
+#ifndef __FreeBSD__     /* no PowerNap (dark wake) on NextBSD yet */
     if ( !_platformSleepServiceSupport && !_platformBackgroundTaskSupport)
     {
         bool ssupdate, btupdate, pnupdate;
@@ -976,6 +1029,7 @@ static void sendEnergySettingsToKernel(
             mt2EvaluateSystemSupport();
         }
     }
+#endif
 
     if (useSettings)
     {
@@ -1209,6 +1263,14 @@ PMSettingsSupportedPrefsListHasChanged(void)
 
 static void updatePowerNapSetting(void)
 {
+#ifdef __FreeBSD__
+    /*
+     * NextBSD: this one-time rewrite turns PowerNap on for some iMac and
+     * Mac mini models (by IOCopyModel()); NextBSD has no PowerNap and none
+     * of those models, so there is nothing to update.
+     */
+}
+#else
     char     *model = NULL;
     uint32_t majorRev;
     uint32_t minorRev;
@@ -1289,6 +1351,7 @@ exit:
     }
     return;
 }
+#endif /* !__FreeBSD__ */
 
 bool mergePrefsForSrc(CFMutableDictionaryRef current, CFMutableDictionaryRef cachedPrefs)
 {
@@ -1486,6 +1549,16 @@ _activateForcedSettings(CFDictionaryRef forceSettings)
 }
 
 
+#ifdef __FreeBSD__
+/*
+ * NextBSD: pmconfigd has always kept its settings in CFPreferences
+ * (com.apple.PowerManagement), so there are no pre-10.13 SCPreferences
+ * settings to migrate.
+ */
+void migrateSCPrefs(void)
+{
+}
+#else
 /****************** SCPrefs to CFPrefs conversion **********************/
 /*
  * List of keys that appear in the energy saver preferences
@@ -1751,6 +1824,8 @@ exit:
 
 }
 
+
+#endif /* !__FreeBSD__ */
 
 /***********************************************************************/
 
