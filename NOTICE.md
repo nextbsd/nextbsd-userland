@@ -36,6 +36,7 @@ provenance; it does not relicense anything.
 | `caffeinate` | apple-oss-distributions/PowerManagement | APSL-2.0 |
 | `reboot` (+ halt) | apple-oss-distributions/system_cmds (`system_cmds-1042.120.1`, `reboot/`); NextBSD changes listed in `reboot.c` | BSD-3-Clause *(per file header)* |
 | `shutdown` (+ poweroff) | apple-oss-distributions/system_cmds (`system_cmds-1042.120.1`, `shutdown/`); NextBSD changes listed in `shutdown.c` | BSD-3-Clause *(per file header)* |
+| `PowerManagement` (pmconfigd) | apple-oss-distributions/PowerManagement (`PowerManagement-1846.120.8.0.1`); `powermanagement.defs` from apple-oss-distributions/IOKitUser (`IOKitUser-100231.120.3`). See `src/PowerManagement/VENDORED.md` | APSL-2.0 |
 | `pam_launchd` | apple-oss-distributions/pam_modules (`pam_modules-126`) | APSL-2.0 |
 | `libffi` | apple-oss-distributions/libffi (`libffi-40`, libffi 3.4.0-rc2) | MIT |
 | `libxml2` (+ xmllint, xmlcatalog) | apple-oss-distributions/libxml2 (`libxml2-39.10`, libxml2 2.9.13) | MIT (`src/libxml2/Copyright`) |

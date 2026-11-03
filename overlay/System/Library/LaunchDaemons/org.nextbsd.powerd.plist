@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  org.nextbsd.powerd.plist
+
+  Boot-time launchd plist for pmconfigd, Apple's power management daemon
+  (PowerManagement-1846.120.8.0.1, src/PowerManagement). macOS ships it as
+  com.apple.powerd; see PowerManagement/pmconfigd/com.apple.powerd.plist.
+
+  THE LABEL IS NEXTBSD'S, THE SERVICES ARE APPLE'S
+
+  The job is ours, so its label is org.nextbsd.powerd. The two MachServices
+  keep Apple's names because Apple's IOKit client code looks them up by name:
+  IOPMLib's MIG calls go to com.apple.PowerManagement.control
+  (kIOPMServerBootstrapName) and its asynchronous assertion and user-activity
+  calls to com.apple.iokit.powerdxpc. Renaming them would mean patching every
+  client. Apple's third service, com.apple.powerd.lowpowermode, belongs to
+  Low Power Mode, which NextBSD does not build.
+
+  DIFFERENCES FROM APPLE'S PLIST
+
+  - ProgramArguments is /usr/sbin/pmconfigd. /System/Library holds data
+    only, never executables, and /usr/sbin/powerd is still FreeBSD's
+    CPU-frequency daemon until pmconfigd owns CPU policy.
+  - RunAtLoad: Apple's job starts on demand at the first lookup of either
+    service. pmconfigd also has to act without being asked (power sources,
+    idle sleep, lid and button policy), so it starts at boot, as notifyd
+    and the other system daemons here do.
+  - No JetsamProperties or POSIXSpawnType: NextBSD has no jetsam.
+
+  KeepAlive restarts it if it exits. stderr goes to /var/log/pmconfigd.stderr
+  (pmconfigd's os_log lands there), never the console.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.nextbsd.powerd</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/sbin/pmconfigd</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>MachServices</key>
+    <dict>
+        <key>com.apple.PowerManagement.control</key>
+        <true/>
+        <key>com.apple.iokit.powerdxpc</key>
+        <true/>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/var/log/pmconfigd.stderr</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/pmconfigd.stderr</string>
+</dict>
+</plist>
