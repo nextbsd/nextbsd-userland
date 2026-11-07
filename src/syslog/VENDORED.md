@@ -44,9 +44,13 @@ Per https://pkgdemon.github.io/freebsd-asl-plan.html:
    `asl_syslog_input_convert()`. FreeBSD libc emits RFC 5424
    (`<pri>1 timestamp ...`); Apple's existing parser hard-checks for
    RFC 3164 (`Mmm dd HH:MM:SS`). Both must coexist.
-3. **`syslogd.tproj/com.apple.syslogd.plist`** — add a `Sockets`
-   entry for `/var/run/log` so launchd creates and hands the dgram
-   socket to syslogd at check-in.
+3. **`com.apple.syslogd.plist`** — `Sockets` entries
+   `BSDSystemLogger` (`/var/run/log`, 0666) and `BSDSystemLoggerPriv`
+   (`/var/run/logpriv`, 0600) so launchd creates the dgram sockets and
+   hands them to syslogd at check-in; `bsd_in.c` adopts them and binds
+   its own only as a fallback. Done in nextbsd-userland#494, in the
+   installed copy under `overlay/System/Library/LaunchDaemons/`; the
+   vendored `syslogd.tproj` copy is left as upstream ships it.
 4. **Build system** — Apple ships Xcode project; we build via
    `bsd.lib.mk` / `bsd.prog.mk` Makefiles mirroring our libxpc /
    libdispatch / libCoreFoundation setup.

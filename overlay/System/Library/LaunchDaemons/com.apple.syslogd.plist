@@ -71,6 +71,33 @@
 	</dict>
 	<key>Sockets</key>
 	<dict>
+		<!-- launchd owns the BSD syslog(3) sockets (nextbsd-userland#494),
+		     as Darwin's syslogd plist does for /var/run/syslog. launchctl
+		     binds them when this job is loaded, before getty and login run,
+		     so a message sent before syslogd is up queues in the socket.
+		     Without them libc's LOG_CONS fallback wrote login(1)'s
+		     "login on console as ..." line to /dev/console on every boot.
+		     syslogd's bsd_in adopts both at check-in. Modes match what
+		     bsd_in set when it bound them itself: 0666 (438) for
+		     /var/run/log, root-only 0600 (384) for /var/run/logpriv. -->
+		<key>BSDSystemLogger</key>
+		<dict>
+			<key>SockPathName</key>
+			<string>/var/run/log</string>
+			<key>SockPathMode</key>
+			<integer>438</integer>
+			<key>SockType</key>
+			<string>dgram</string>
+		</dict>
+		<key>BSDSystemLoggerPriv</key>
+		<dict>
+			<key>SockPathName</key>
+			<string>/var/run/logpriv</string>
+			<key>SockPathMode</key>
+			<integer>384</integer>
+			<key>SockType</key>
+			<string>dgram</string>
+		</dict>
 <!--
 	Un-comment the following lines to enable the network syslog protocol listener.
 -->

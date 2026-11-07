@@ -7,10 +7,22 @@
  * calls libc's syslog(3)) writes RFC3164 datagrams to /var/run/log
  * (world-writable) and /var/run/logpriv (root-only).
  *
- * This module binds those two sockets and feeds each datagram into
+ * This module takes those two sockets and feeds each datagram into
  * asl_input_parse(), the same entry point klog_in / udp_in use.
- * That makes Apple's syslogd a drop-in replacement for FreeBSD's
+ * That makes Apple's syslogd a drop-in replacement for the stock
  * /usr/sbin/syslogd for plain BSD syslog(3) clients.
+ *
+ * launchd owns the sockets (nextbsd-userland#494), the way Darwin's
+ * syslogd gets /var/run/syslog: the job plist declares them under
+ * Sockets (BSDSystemLogger, BSDSystemLoggerPriv), launchctl binds them
+ * when the job is loaded, and this module adopts the descriptors from
+ * the launchd check-in reply (global.launch_dict), as udp_in does for
+ * NetworkListener. The paths therefore exist from the moment the
+ * LaunchDaemons are loaded, and anything logged before syslogd is
+ * running queues in the socket instead of failing. That matters for
+ * LOG_CONS callers such as login(1): a failed send makes libc write
+ * the line to /dev/console. Binding the sockets here is kept only as
+ * a fallback for when the check-in carries no descriptor.
  *
  * Phase J3 of the ASL port: pkgdemon.github.io/freebsd-asl-plan.html
  */
@@ -36,6 +48,11 @@ static int sockfd[NSOCK] = { -1, -1 };
 static dispatch_source_t in_src[NSOCK];
 static dispatch_queue_t in_queue;
 static const char *sock_path[NSOCK] = { BSD_SOCK_PATH, BSD_PRIV_PATH };
+/* launchd Sockets keys in the job plist, one per path above. */
+static const char *sock_name[NSOCK] = { "BSDSystemLogger", "BSDSystemLoggerPriv" };
+/* Set when sockfd[i] came from launchd: launchd owns the path, so
+ * bsd_in_close() must not unlink it. */
+static int sock_from_launchd[NSOCK];
 
 static char dline[MAXLINE + 1];
 
@@ -84,6 +101,75 @@ bsd_in_acceptmsg(int fd)
 	process_message(m, SOURCE_BSD_SOCK);
 	_d = _syslogd_trace_open("/tmp/bsd_in_recv.log");
 	if (_d) { fprintf(_d, "[%d]   process_message OK\n", getpid()); fclose(_d); }
+}
+
+/*
+ * Adopt the launchd-created socket for sock_name[idx] from the check-in
+ * reply. Returns 0 and sets sockfd[idx] on success, -1 if launchd did
+ * not hand one over (no check-in, or no such Sockets entry).
+ */
+static int
+bsd_in_adopt_one(int idx)
+{
+	launch_data_t sockets_dict, fd_array, fd_dict;
+	int fd, fl;
+
+	if (global.launch_dict == NULL)
+	{
+		asldebug("%s: launchd dict is NULL\n", MY_ID);
+		return -1;
+	}
+
+	sockets_dict = launch_data_dict_lookup(global.launch_dict, LAUNCH_JOBKEY_SOCKETS);
+	if (sockets_dict == NULL)
+	{
+		asldebug("%s: launchd lookup of LAUNCH_JOBKEY_SOCKETS failed\n", MY_ID);
+		return -1;
+	}
+
+	fd_array = launch_data_dict_lookup(sockets_dict, sock_name[idx]);
+	if (fd_array == NULL)
+	{
+		asldebug("%s: launchd lookup of %s failed\n", MY_ID, sock_name[idx]);
+		return -1;
+	}
+
+	fd_dict = fd_array;
+	if (launch_data_get_type(fd_array) == LAUNCH_DATA_ARRAY)
+	{
+		if (launch_data_array_get_count(fd_array) == 0)
+		{
+			asldebug("%s: launchd fd array for %s is empty\n", MY_ID, sock_name[idx]);
+			return -1;
+		}
+		fd_dict = launch_data_array_get_index(fd_array, 0);
+	}
+
+	if (fd_dict == NULL || launch_data_get_type(fd_dict) != LAUNCH_DATA_FD)
+	{
+		asldebug("%s: launchd entry for %s is not a descriptor\n", MY_ID, sock_name[idx]);
+		return -1;
+	}
+
+	fd = launch_data_get_fd(fd_dict);
+	if (fd < 0)
+	{
+		asldebug("%s: launchd descriptor for %s is invalid\n", MY_ID, sock_name[idx]);
+		return -1;
+	}
+
+	/* The recv-loop thread uses blocking recvfrom(). */
+	fl = fcntl(fd, F_GETFL, 0);
+	if (fl != -1) (void)fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
+
+	/* Ours now: a later re-init must not pick up a stale number. */
+	launch_data_set_fd(fd_dict, -1);
+
+	sockfd[idx] = fd;
+	sock_from_launchd[idx] = 1;
+	asldebug("%s: adopted launchd socket %s for %s (fd %d)\n", MY_ID,
+	    sock_name[idx], sock_path[idx], fd);
+	return 0;
 }
 
 static int
@@ -176,7 +262,8 @@ bsd_in_init(void)
 
 	for (i = 0; i < NSOCK; i++) {
 		if (sockfd[i] >= 0) { ok++; continue; }
-		int rc = bsd_in_open_one(i);
+		int rc = bsd_in_adopt_one(i);
+		if (rc != 0) rc = bsd_in_open_one(i);
 		dbg = _syslogd_trace_open("/tmp/bsd_in_init.log");
 		if (dbg) {
 			fprintf(dbg, "[%d] bsd_in_init: open(%s) rc=%d errno=%d (%s)\n",
@@ -214,7 +301,9 @@ bsd_in_close(void)
 	for (i = 0; i < NSOCK; i++) {
 		if (sockfd[i] < 0) continue;
 		close(sockfd[i]);
-		(void)unlink(sock_path[i]);
+		/* A launchd-owned path stays; launchd still holds the socket. */
+		if (!sock_from_launchd[i]) (void)unlink(sock_path[i]);
+		sock_from_launchd[i] = 0;
 		sockfd[i] = -1;
 		did++;
 	}
