@@ -42,13 +42,14 @@
 /*
  * Verbose diagnostic trace for xpc_pipe_try_receive / send. Read once
  * (lazily, on first call) from kenv "launchd_trace=1" — same flag
- * the launchd binary uses, set at the FreeBSD loader. Off by default.
+ * the launchd binary uses, set at the loader. Off by default.
  * libxpc is a shared library used by more than just launchd, so this
  * goes through its own check rather than depending on launchd's global.
+ * debugf() (xpc_internal.h) and the stub notes (stubs.c) share it.
  */
 static int xpc_trace_enabled = -1;
-static inline int
-xpc_trace_check(void)
+int
+_xpc_trace_check(void)
 {
 	if (xpc_trace_enabled == -1) {
 		char buf[8];
@@ -59,7 +60,7 @@ xpc_trace_check(void)
 	return xpc_trace_enabled;
 }
 #define XPC_TRACE(fmt, ...) do {					\
-	if (xpc_trace_check())						\
+	if (_xpc_trace_check())						\
 		fprintf(stderr, fmt "\n", ##__VA_ARGS__);		\
 } while (0)
 

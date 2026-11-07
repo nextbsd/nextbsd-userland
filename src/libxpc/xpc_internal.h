@@ -55,11 +55,24 @@
 
 #include <nv.h>
 
+/*
+ * launchd tracing gate (kenv launchd_trace=1), in xpc_misc.c. Hidden:
+ * internal to libxpc.so, not part of its ABI.
+ */
+__attribute__((visibility("hidden"))) int _xpc_trace_check(void);
+
+/*
+ * debugf() is developer tracing. It prints only under launchd tracing,
+ * the same gate as XPC_TRACE; otherwise it is silent, so libxpc never
+ * writes to a process's stderr (PID 1's is the console on the live ISO).
+ */
 #define debugf(...) 				\
     do { 					\
-    	fprintf(stderr, "%s: ", __func__);	\
-    	fprintf(stderr, __VA_ARGS__);		\
-    	fprintf(stderr, "\n");			\
+	if (_xpc_trace_check()) {		\
+		fprintf(stderr, "%s: ", __func__);	\
+		fprintf(stderr, __VA_ARGS__);		\
+		fprintf(stderr, "\n");			\
+	}					\
     } while(0);
 
 #define _XPC_TYPE_INVALID		0
