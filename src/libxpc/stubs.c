@@ -16,9 +16,11 @@
  *     on FreeBSD without launchd-as-PID-1 there's nothing to
  *     coordinate, so they're no-ops.
  *
- * All stubs surface a runtime warning so anyone who actually depends
- * on the missing capability sees the gap early instead of debugging
- * silently-broken behavior. Promote a stub to a real implementation
+ * The fileport stubs fail with ENOSYS, which their callers see. The
+ * one-shot "stub" note is developer tracing: it prints only under
+ * launchd tracing (kenv launchd_trace=1, the XPC_TRACE gate), because
+ * PID 1 reaches these through xpc_domain_server and its stderr is the
+ * console on the live ISO. Promote a stub to a real implementation
  * (or a kernel feature) when a caller needs it.
  */
 
@@ -28,13 +30,16 @@
 #include <xpc/xpc.h>
 #include <xpc/launchd.h>
 
+/* xpc_misc.c; hidden, see xpc_internal.h. */
+__attribute__((visibility("hidden"))) int _xpc_trace_check(void);
+
 #ifndef LIBXPC_STUB_WARN
 #define LIBXPC_STUB_WARN(fn) \
 	do { \
 		static int warned = 0; \
-		if (!warned) { \
+		if (!warned && _xpc_trace_check()) { \
 			fprintf(stderr, \
-			    "libxpc: " fn ": stub (not implemented on FreeBSD)\n"); \
+			    "libxpc: " fn ": stub (not implemented on NextBSD)\n"); \
 			warned = 1; \
 		} \
 	} while (0)
