@@ -37,20 +37,132 @@
  */
 
 /*
- * NextBSD: of Apple's tests.c only the "-w" key wait is carried. The
- * rest backs options whose APIs our libSystemConfiguration does not
- * have yet -- "-r" (SCNetworkReachabilityCreateWithName/WithAddress),
+ * NextBSD: of Apple's tests.c the "-w" key wait and "--renew" are
+ * carried. The rest backs options whose APIs our libSystemConfiguration
+ * does not have yet -- "-r" (SCNetworkReachabilityCreateWithName/WithAddress),
  * "--dns" (dnsinfo), "--proxy" (SCDynamicStoreCopyProxies), "--nwi"
- * (network_information), "--renew"
- * (SCNetworkInterfaceForceConfigurationRefresh), "--snapshot",
- * "--advisory" and "--rank".
+ * (network_information), "--snapshot", "--advisory" and "--rank".
  */
 
 #include <signal.h>
 #include <sys/time.h>
 
 #include "scutil.h"
+#include "prefs.h"
 #include "tests.h"
+
+
+__private_extern__
+void
+do_renew(char *if_name)
+{
+	CFArrayRef	interfaces;
+	CFStringRef	match_name;
+	CFArrayRef	services;
+	Boolean		ok	= FALSE;
+
+	if ((if_name == NULL) || (strlen(if_name) == 0)) {
+		SCPrint(TRUE, stderr, CFSTR("No interface name\n"));
+		exit(1);
+	}
+
+	match_name = CFStringCreateWithCString(NULL, if_name, kCFStringEncodingUTF8);
+	if (match_name == NULL) {
+		SCPrint(TRUE, stderr, CFSTR("No interface\n"));
+		exit(1);
+	}
+
+	/*
+	 * NextBSD: Apple keeps this SCNetworkInterfaceCopyAll path behind
+	 * ATTEMPT_DHCP_RENEW_WITH_SCDYNAMICSTORE. Here it always runs: an
+	 * interface DHCP'd from the link watch need not have a network
+	 * service, and the prefs path below would report "No interface".
+	 */
+	interfaces = SCNetworkInterfaceCopyAll();
+	if (interfaces != NULL) {
+		CFIndex		i;
+		CFIndex		n;
+
+		n = CFArrayGetCount(interfaces);
+		for (i = 0; i < n; i++) {
+			CFStringRef		bsd_name;
+			SCNetworkInterfaceRef	interface;
+
+			interface = CFArrayGetValueAtIndex(interfaces, i);
+			bsd_name = SCNetworkInterfaceGetBSDName(interface);
+			if ((bsd_name != NULL) && CFEqual(bsd_name, match_name)) {
+				// if match
+				ok = SCNetworkInterfaceForceConfigurationRefresh(interface);
+				if (!ok) {
+					int	status;
+
+					status = SCError();
+					if (status != kSCStatusAccessError) {
+						SCPrint(TRUE, stderr, CFSTR("%s\n"), SCErrorString(status));
+						exit(1);
+					}
+
+					// ... and if can't write the SCDynamicStore, try w/prefs
+				}
+
+				break;
+			}
+		}
+
+		CFRelease(interfaces);
+	}
+
+	if (ok) {
+		exit(0);
+	}
+
+	do_prefs_init();	/* initialization */
+	do_prefs_open(0, NULL);	/* open default prefs */
+
+	services = SCNetworkServiceCopyAll(prefs);
+	if (services != NULL) {
+		CFIndex		i;
+		CFIndex		n;
+
+		n = CFArrayGetCount(services);
+		for (i = 0; i < n; i++) {
+			CFStringRef		bsd_name;
+			SCNetworkInterfaceRef	interface;
+			SCNetworkServiceRef	service;
+
+			service = CFArrayGetValueAtIndex(services, i);
+			interface = SCNetworkServiceGetInterface(service);
+			if (interface == NULL) {
+				// if no interface
+				continue;
+			}
+
+			bsd_name = SCNetworkInterfaceGetBSDName(interface);
+			if ((bsd_name != NULL) && CFEqual(bsd_name, match_name)) {
+				// if match
+				ok = SCNetworkInterfaceForceConfigurationRefresh(interface);
+				if (!ok) {
+					SCPrint(TRUE, stderr, CFSTR("%s\n"), SCErrorString(SCError()));
+					exit(1);
+				}
+
+				break;
+			}
+		}
+
+		CFRelease(services);
+	}
+
+	CFRelease(match_name);
+
+	if (!ok) {
+		SCPrint(TRUE, stderr, CFSTR("No interface\n"));
+		exit(1);
+	}
+
+	_prefs_close();
+	exit(0);
+}
 
 
 static void __attribute__((noreturn))

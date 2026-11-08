@@ -5,7 +5,7 @@
 # the interactive dynamic-store session, -w, --prefs, --get / --set
 # (ComputerName, HostName, LocalHostName) and --error. Each source file
 # notes what it drops and why; the --net / --dns / --proxy / --nwi /
-# --renew / -r sources (net*.c, nc.c, most of tests.c) are not carried.
+# -r sources (net*.c, nc.c, most of tests.c) are not carried.
 #
 #   scutil.c, commands.c, dictionary.c, session.c,
 #   cache.c, notifications.c, prefs.c, tests.c	— Apple, trimmed

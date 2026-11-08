@@ -580,3 +580,69 @@ __SCNetworkInterfaceCreateWithBSDName(CFAllocatorRef allocator,
 	ip->supported_protocol_types = __SCNetworkInterfaceCopyProtocolTypes();
 	return (SCNetworkInterfaceRef)ip;
 }
+
+
+#pragma mark -
+#pragma mark SCNetworkInterface configuration refresh
+
+#ifndef kSCEntNetRefreshConfiguration
+#define kSCEntNetRefreshConfiguration	CFSTR("RefreshConfiguration")
+#endif	// kSCEntNetRefreshConfiguration
+
+/*
+ * Ask the configuration agent to renew `ifName`'s configuration: a
+ * notify-only change on State:/Network/Interface/<if>/RefreshConfiguration,
+ * which ipconfigd watches. Apple's passes a NULL store and relies on its
+ * null-session; ours opens a temporary session, since
+ * SCDynamicStoreNotifyValue here needs a real one.
+ */
+Boolean
+_SCNetworkInterfaceForceConfigurationRefresh(CFStringRef ifName)
+{
+	CFStringRef		key;
+	Boolean			ok	= FALSE;
+	SCDynamicStoreRef	store;
+
+	if ((ifName == NULL) ||
+	    (CFGetTypeID(ifName) != CFStringGetTypeID())) {
+		_SCErrorSet(kSCStatusInvalidArgument);
+		return FALSE;
+	}
+
+	store = SCDynamicStoreCreate(NULL,
+				     CFSTR("SCNetworkInterfaceForceConfigurationRefresh"),
+				     NULL,
+				     NULL);
+	if (store == NULL) {
+		return FALSE;
+	}
+
+	key = SCDynamicStoreKeyCreateNetworkInterfaceEntity(NULL,
+							    kSCDynamicStoreDomainState,
+							    ifName,
+							    kSCEntNetRefreshConfiguration);
+	ok = SCDynamicStoreNotifyValue(store, key);
+	CFRelease(key);
+	CFRelease(store);
+	return ok;
+}
+
+Boolean
+SCNetworkInterfaceForceConfigurationRefresh(SCNetworkInterfaceRef interface)
+{
+	CFStringRef	ifName;
+
+	if (!isA_SCNetworkInterface(interface)) {
+		_SCErrorSet(kSCStatusInvalidArgument);
+		return FALSE;
+	}
+
+	ifName = SCNetworkInterfaceGetBSDName(interface);
+	if (ifName == NULL) {
+		_SCErrorSet(kSCStatusInvalidArgument);
+		return FALSE;
+	}
+
+	/* NextBSD: no SCHelper path; the caller's own access applies. */
+	return _SCNetworkInterfaceForceConfigurationRefresh(ifName);
+}

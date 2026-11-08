@@ -48,22 +48,37 @@ xlog(const char *fmt, ...)
  * (daemon shutdown) or `*stop` (this interface's link went down / it was
  * removed) is asserted. Returns 0 on a full wait, -1 if interrupted.
  *
+ * `renew` (may be NULL) asks for a renewal now. When it is set the flag
+ * is taken back, `*left` gets the seconds not yet slept and the return is
+ * 1. A flag still set at the end of a full wait is dropped: the renewal
+ * that wait leads to answers it. `left` must be valid when `renew` is.
+ *
  * The per-interface `stop` is what lets a link-down unwind a worker that
  * is parked in a T1 sleep — which on a real lease is hours. Before it
  * existed, an interface that lost its link kept its lease, address and
  * default route until the daemon exited (#39).
  */
 static int
-sleep_interruptible(uint32_t seconds, volatile sig_atomic_t *stop)
+sleep_interruptible(uint32_t seconds, volatile sig_atomic_t *stop,
+    volatile sig_atomic_t *renew, uint32_t *left)
 {
 	uint32_t i;
 
 	for (i = 0; i < seconds; i++) {
 		if (got_term || (stop != NULL && *stop))
 			return (-1);
+		if (renew != NULL && *renew) {
+			*renew = 0;
+			*left = seconds - i;
+			return (1);
+		}
 		(void)sleep(1);
 	}
-	return ((got_term || (stop != NULL && *stop)) ? -1 : 0);
+	if (got_term || (stop != NULL && *stop))
+		return (-1);
+	if (renew != NULL)
+		*renew = 0;
+	return (0);
 }
 
 /*
@@ -113,7 +128,7 @@ ipv4_publish_equal(const struct dhcp_lease *a, const struct dhcp_lease *b)
 int
 lease_loop_run(const char *ifname, struct dhcp_lease *lease,
     struct sc_publish *pub, uint32_t lease_cap_secs,
-    volatile sig_atomic_t *stop)
+    volatile sig_atomic_t *renew, volatile sig_atomic_t *stop)
 {
 	uint32_t lease_secs = cap_lease(lease->lease_time, lease_cap_secs);
 	bool renew_marker_fired = false;
@@ -134,8 +149,9 @@ lease_loop_run(const char *ifname, struct dhcp_lease *lease,
 		    (unsigned)lease->lease_time, lease_secs);
 
 	for (;;) {
-		uint32_t t1, t2_after_t1, expiry_after_t2;
+		uint32_t t1, t2_after_t1, expiry_after_t2, left;
 		struct dhcp_lease renewed;
+		int woke;
 
 		/*
 		 * RFC 2131 §4.4.5:
@@ -150,11 +166,17 @@ lease_loop_run(const char *ifname, struct dhcp_lease *lease,
 		xlog("BOUND: lease=%us T1=+%us T2=+%us expiry=+%us",
 		    lease_secs, t1, t1 + t2_after_t1, lease_secs);
 
-		if (sleep_interruptible(t1, stop) < 0)
+		left = t1;
+wait_t1:
+		woke = sleep_interruptible(left, stop, renew, &left);
+		if (woke < 0)
 			return (0);
 
 		/* RENEWING. */
-		xlog("RENEWING: T1 fired, sending DHCPREQUEST");
+		if (woke > 0)
+			xlog("RENEWING: renewal requested, sending DHCPREQUEST");
+		else
+			xlog("RENEWING: T1 fired, sending DHCPREQUEST");
 		if (dhcp_renew(ifname, lease, &renewed) == 0) {
 			*lease = renewed;
 			lease_secs = cap_lease(lease->lease_time,
@@ -188,13 +210,30 @@ lease_loop_run(const char *ifname, struct dhcp_lease *lease,
 			}
 			continue;
 		}
+		if (woke > 0) {
+			/*
+			 * Nothing answered a renewal T1 did not call for. The
+			 * lease is as good as it was, so go back to waiting:
+			 * dropping through to T2 here would give up on it
+			 * early.
+			 */
+			xlog("RENEWING: no ACK to the requested renewal; "
+			    "still waiting for T1");
+			goto wait_t1;
+		}
 		xlog("RENEWING: no ACK; waiting until T2");
 
-		if (sleep_interruptible(t2_after_t1, stop) < 0)
+		left = t2_after_t1;
+wait_t2:
+		woke = sleep_interruptible(left, stop, renew, &left);
+		if (woke < 0)
 			return (0);
 
 		/* REBINDING. */
-		xlog("REBINDING: T2 fired, sending DHCPREQUEST");
+		if (woke > 0)
+			xlog("REBINDING: renewal requested, sending DHCPREQUEST");
+		else
+			xlog("REBINDING: T2 fired, sending DHCPREQUEST");
 		if (dhcp_renew(ifname, lease, &renewed) == 0) {
 			*lease = renewed;
 			lease_secs = cap_lease(lease->lease_time,
@@ -223,9 +262,14 @@ lease_loop_run(const char *ifname, struct dhcp_lease *lease,
 			}
 			continue;
 		}
+		if (woke > 0) {
+			xlog("REBINDING: no ACK to the requested renewal; "
+			    "still waiting for T2");
+			goto wait_t2;
+		}
 		xlog("REBINDING: no ACK; waiting until lease expiry");
 
-		if (sleep_interruptible(expiry_after_t2, stop) < 0)
+		if (sleep_interruptible(expiry_after_t2, stop, NULL, NULL) < 0)
 			return (0);
 
 		xlog("lease expired without renewal — unpublishing");

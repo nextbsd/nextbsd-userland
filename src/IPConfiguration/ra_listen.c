@@ -434,6 +434,26 @@ ra_acquire(const char *ifname, unsigned timeout_ms, struct ra_info *out)
 }
 
 int
+ra_solicit(const char *ifname)
+{
+	uint8_t mac[6];
+	int sock, rc;
+
+	if (get_iface_mac(ifname, mac) != 0) {
+		xlog("get_iface_mac(%s) failed", ifname);
+		return (-1);
+	}
+	sock = open_icmp6(ifname);
+	if (sock < 0)
+		return (-1);
+	rc = send_rs(sock, ifname, mac);
+	(void)close(sock);
+	if (rc == 0)
+		xlog("sent ND_ROUTER_SOLICIT on %s → ff02::2", ifname);
+	return (rc);
+}
+
+int
 ra_open(const char *ifname)
 {
 	return (open_icmp6(ifname));

@@ -61,17 +61,26 @@ typedef void (*sc_addr_conflict_cb)(const char *ifname, int af,
 	    const void *addr, const uint8_t *hw, int hw_len);
 
 /*
+ * Invoked (on a libdispatch worker thread) for a change on the notify-only
+ * State:/Network/Interface/<if>/RefreshConfiguration key, posted by
+ * SCNetworkInterfaceForceConfigurationRefresh (`scutil --renew`). lo0 is
+ * filtered.
+ */
+typedef void (*sc_link_refresh_cb)(const char *ifname);
+
+/*
  * Open a configd session, watch State:/Network/Interface/<if>/Link,
  * and arrange `cb` to run when any interface links up. Also performs an
  * immediate scan of existing keys so a link that was already Active
  * before the watch registered still fires. `conflict_cb` (may be NULL)
  * receives the ARP-collision and duplicated-address notifications on the
- * same session. Returns 0 on success, -1 if the session or watch could
- * not be established (non-fatal to the caller — DHCP simply won't be
+ * same session, and `refresh_cb` (may be NULL) the renew requests.
+ * Returns 0 on success, -1 if the session or watch could not be
+ * established (non-fatal to the caller — DHCP simply won't be
  * link-triggered).
  */
 int sc_link_watch_start(sc_link_watch_cb cb, sc_addr_conflict_cb conflict_cb,
-    uint32_t lease_cap_secs);
+    sc_link_refresh_cb refresh_cb, uint32_t lease_cap_secs);
 
 /*
  * Synchronously read State:/Network/Interface/<if>/Link {Active} from configd.

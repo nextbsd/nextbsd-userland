@@ -36,6 +36,10 @@ struct sc_publish;
  * published lease authoritatively reports the server's value); it only
  * shortens the daemon's renewal-trigger timing.
  *
+ * `renew` asks for a renewal now (`scutil --renew`): the loop breaks the
+ * T1 or T2 wait it is in and sends the DHCPREQUEST at once. An unanswered
+ * request changes nothing and the wait carries on. May be NULL.
+ *
  * `stop` is this interface's cancellation flag, owned by ipconfigd.c's
  * worker table and set when the interface's link goes down or it is
  * removed. Without it a worker parked in a multi-hour T1 sleep could not
@@ -47,6 +51,6 @@ struct sc_publish;
  */
 int	lease_loop_run(const char *ifname, struct dhcp_lease *lease,
 	    struct sc_publish *pub, uint32_t lease_cap_secs,
-	    volatile sig_atomic_t *stop);
+	    volatile sig_atomic_t *renew, volatile sig_atomic_t *stop);
 
 #endif /* _IPCFG_LEASE_LOOP_H_ */
