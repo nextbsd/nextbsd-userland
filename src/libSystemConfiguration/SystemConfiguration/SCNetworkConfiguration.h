@@ -142,6 +142,26 @@ CFStringRef
 SCNetworkInterfaceGetBSDName		(SCNetworkInterfaceRef		interface);
 
 /*!
+	@function SCNetworkInterfaceForceConfigurationRefresh
+	@discussion Asks the configuration agent to renew the interface's
+		configuration now (a DHCP renewal, for example), by posting
+		a notify-only change on
+		State:/Network/Interface/<if>/RefreshConfiguration.
+	@result TRUE if the request was posted; FALSE with SCError() set.
+ */
+Boolean
+SCNetworkInterfaceForceConfigurationRefresh
+					(SCNetworkInterfaceRef		interface);
+
+/*!
+	@function _SCNetworkInterfaceForceConfigurationRefresh
+	@discussion The same request, for a BSD interface name. SPI.
+ */
+Boolean
+_SCNetworkInterfaceForceConfigurationRefresh
+					(CFStringRef			ifName);
+
+/*!
 	@function SCNetworkInterfaceGetInterfaceType
 	@discussion Returns the interface type — one of the
 		kSCNetworkInterfaceType* constants. Owned by the interface.

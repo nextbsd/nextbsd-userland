@@ -76,6 +76,13 @@
  * lets the address be published once it is no longer tentative. These
  * keys never reach evaluate_interface() either.
  *
+ * Renew requests (#572). The notify-only
+ * State:/Network/Interface/<if>/RefreshConfiguration key, as Darwin's
+ * ipconfigd watches it (ipconfigd.c link_refresh), is what
+ * SCNetworkInterfaceForceConfigurationRefresh posts for `scutil --renew`.
+ * Like the conflict keys it has no value, and it goes to its own callback
+ * on the global queue rather than to evaluate_interface().
+ *
  * Single CF translation unit, like sc_publish.c — the rest of the
  * daemon stays plain C.
  */
@@ -106,6 +113,7 @@
 
 static sc_link_watch_cb	g_cb;
 static sc_addr_conflict_cb	g_conflict_cb;
+static sc_link_refresh_cb	g_refresh_cb;
 static uint32_t		g_lease_cap_secs;
 
 /*
@@ -136,6 +144,10 @@ static uint32_t		g_lease_cap_secs;
 /* Interface IPv6 addresses and flags, for the DAD wait (#407). */
 #define IPV6_ENTITY	"/IPv6"
 #define IPV6_PATTERN	"State:/Network/Interface/[^/]+" IPV6_ENTITY
+
+/* Notify-only renew requests (#572). */
+#define REFRESH_ENTITY	"RefreshConfiguration"
+#define REFRESH_PATTERN	"State:/Network/Interface/[^/]+/" REFRESH_ENTITY
 
 /*
  * Bumped and broadcast on every IPv6 change; sc_v6_dad_wait() sleeps on
@@ -238,6 +250,35 @@ schedule_link_event(const char *ifname, int active)
 	ev->lease_cap_secs = g_lease_cap_secs;
 	dispatch_async_f(dispatch_get_global_queue(
 	    DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ev, run_link_trampoline);
+}
+
+/* Trampoline payload for a renew request — freed by the trampoline. */
+struct refresh_event {
+	char		ifname[IFNAMSIZ];
+};
+
+static void
+run_refresh_trampoline(void *arg)
+{
+	struct refresh_event *ev = arg;
+
+	if (g_refresh_cb != NULL)
+		g_refresh_cb(ev->ifname);
+	free(ev);
+}
+
+/* Schedule the caller's renew callback for `ifname` on the global queue. */
+static void
+schedule_refresh(const char *ifname)
+{
+	struct refresh_event *ev;
+
+	ev = calloc(1, sizeof(*ev));
+	if (ev == NULL)
+		return;
+	(void)strlcpy(ev->ifname, ifname, sizeof(ev->ifname));
+	dispatch_async_f(dispatch_get_global_queue(
+	    DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ev, run_refresh_trampoline);
 }
 
 /* Trampoline payload for a conflict notification — freed by the trampoline. */
@@ -554,6 +595,11 @@ handle_iface_key(SCDynamicStoreRef store, CFStringRef key)
 	if (strncmp(ifname, "lo", 2) == 0)	/* loopback never DHCPs */
 		return;
 
+	if (strcmp(slash, "/" REFRESH_ENTITY) == 0) {
+		schedule_refresh(ifname);
+		return;
+	}
+
 	evaluate_interface(store, ifname);
 }
 
@@ -571,17 +617,18 @@ link_changed(SCDynamicStoreRef store, CFArrayRef changedKeys, void *info)
 
 int
 sc_link_watch_start(sc_link_watch_cb cb, sc_addr_conflict_cb conflict_cb,
-    uint32_t lease_cap_secs)
+    sc_link_refresh_cb refresh_cb, uint32_t lease_cap_secs)
 {
 	SCDynamicStoreContext ctx;
 	SCDynamicStoreRef store;
 	dispatch_queue_t queue;
-	CFStringRef name, link_pat, air_pat, arp_pat, dup_pat, v6_pat;
+	CFStringRef name, link_pat, air_pat, arp_pat, dup_pat, v6_pat, ref_pat;
 	CFArrayRef patterns, existing;
-	const void *pvals[5];
+	const void *pvals[6];
 
 	g_cb = cb;
 	g_conflict_cb = conflict_cb;
+	g_refresh_cb = refresh_cb;
 	g_lease_cap_secs = lease_cap_secs;
 
 	(void)memset(&ctx, 0, sizeof(ctx));
@@ -623,15 +670,18 @@ sc_link_watch_start(sc_link_watch_cb cb, sc_addr_conflict_cb conflict_cb,
 	arp_pat = mkstr(ARP_COLLISION_PATTERN);
 	dup_pat = mkstr(DUP_ADDRESS_PATTERN);
 	v6_pat = mkstr(IPV6_PATTERN);
+	ref_pat = mkstr(REFRESH_PATTERN);
 	pvals[0] = link_pat;
 	pvals[1] = air_pat;
 	pvals[2] = arp_pat;
 	pvals[3] = dup_pat;
 	pvals[4] = v6_pat;
-	patterns = CFArrayCreate(NULL, pvals, 5, &kCFTypeArrayCallBacks);
+	pvals[5] = ref_pat;
+	patterns = CFArrayCreate(NULL, pvals, 6, &kCFTypeArrayCallBacks);
 	CFRelease(arp_pat);
 	CFRelease(dup_pat);
 	CFRelease(v6_pat);
+	CFRelease(ref_pat);
 	if (!SCDynamicStoreSetNotificationKeys(store, NULL, patterns)) {
 		xlog("IPCFG-LINK-FAIL: SetNotificationKeys: %s",
 		    SCErrorString(SCError()));
@@ -655,9 +705,9 @@ sc_link_watch_start(sc_link_watch_cb cb, sc_addr_conflict_cb conflict_cb,
 	}
 	xlog("IPCFG-LINK-WATCH-OK: watching %s and %s (DHCP requires "
 	    "Link{Active} AND AirPort{Authenticated}; AirPort absent means "
-	    "ready, so wired NICs are unaffected), plus %s, %s and %s",
+	    "ready, so wired NICs are unaffected), plus %s, %s, %s and %s",
 	    LINK_PATTERN, AIRPORT_PATTERN, ARP_COLLISION_PATTERN,
-	    DUP_ADDRESS_PATTERN, IPV6_PATTERN);
+	    DUP_ADDRESS_PATTERN, IPV6_PATTERN, REFRESH_PATTERN);
 
 	/*
 	 * Initial scan: a link that was already Active before the watch

@@ -50,9 +50,9 @@
  * (scutil.tproj/scutil.c). Carried: the interactive SCDynamicStore
  * session, "-w key [-t timeout]", "--prefs [file]", "--get" / "--set"
  * for ComputerName, HostName and LocalHostName (plus the extended
- * "--get file path key"), and "--error". Dropped until their backing
+ * "--get file path key"), "--renew" and "--error". Dropped until their backing
  * APIs exist in our libSystemConfiguration: "-r" / "-W" reachability,
- * "--dns", "--proxy", "--nwi", "--renew", "--net", "--snapshot",
+ * "--dns", "--proxy", "--nwi", "--net", "--snapshot",
  * "--configuration", "--advisory", "--rank", "--log" and the interface
  * preference switches. "--nc" (VPN) is out of scope: there is no VPN
  * stack.
@@ -98,6 +98,7 @@ static const struct option longopts[] = {
 	{ "error",		required_argument,	NULL,	0	},
 	{ "help",		no_argument,		NULL,	'?'	},
 	{ "prefs",		no_argument,		NULL,	0	},
+	{ "renew",		required_argument,	NULL,	0	},
 	{ "set",		required_argument,	NULL,	0	},
 	{ NULL,			0,			NULL,	0	}
 };
@@ -353,6 +354,7 @@ main(int argc, char * const argv[])
 	int			opt;
 	int			opti;
 	const char		*prog			= argv[0];
+	char			*renew			= NULL;
 	char			*set			= NULL;
 	InputRef		src;
 	int			timeout			= 15;	/* default timeout (in seconds) */
@@ -385,6 +387,9 @@ main(int argc, char * const argv[])
 				xStore++;
 			} else if (strcmp(longopts[opti].name, "prefs") == 0) {
 				doPrefs = TRUE;
+				xStore++;
+			} else if (strcmp(longopts[opti].name, "renew") == 0) {
+				renew = optarg;
 				xStore++;
 			} else if (strcmp(longopts[opti].name, "set") == 0) {
 				set = optarg;
@@ -453,6 +458,12 @@ main(int argc, char * const argv[])
 		}
 		do_setPref(set, argc, argv);
 		exit(0);
+	}
+
+	/* are we trying to renew a DHCP lease */
+	if (renew != NULL) {
+		do_renew(renew);
+		/* NOT REACHED */
 	}
 
 	if (doPrefs) {

@@ -40,7 +40,8 @@
 
 __BEGIN_DECLS
 
-/* NextBSD: only the "-w" key wait is carried; see tests.c. */
+/* NextBSD: only the "-w" key wait and "--renew" are carried; see tests.c. */
+void	do_renew			(char *if_name);
 void	do_wait				(char *waitKey, int timeout);
 
 __END_DECLS

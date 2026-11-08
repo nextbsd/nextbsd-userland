@@ -37,6 +37,14 @@ struct ra_info {
 int ra_acquire(const char *ifname, unsigned timeout_ms, struct ra_info *out);
 
 /*
+ * Send one Router Solicitation on `ifname` and return without waiting
+ * for an answer; whatever is tracking RAs on the interface hears the
+ * reply. For `scutil --renew`, as Darwin's rtadv restarts solicitation
+ * on a renew event. Returns 0 on success, -1 on error.
+ */
+int ra_solicit(const char *ifname);
+
+/*
  * Open the RA receive socket for `ifname` (same filter + hop-limit
  * setup ra_acquire uses; 1s receive timeout). Returns the socket, or
  * -1 on error.

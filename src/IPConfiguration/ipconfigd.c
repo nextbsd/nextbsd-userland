@@ -104,6 +104,13 @@
  * ::/0 and State:/Network/Service/<UUID>/IPv6 wait until configd's
  * State:/Network/Interface/<if>/IPv6 shows DAD has passed, with #342's
  * DAD interval as the bound in case that change never comes.
+ *
+ * renew requests (#572) — `scutil --renew` posts the notify-only
+ * RefreshConfiguration key, as on Darwin, and the link watch hands it to
+ * on_link_refresh(): a bound DHCP service renews now, and a service with
+ * IPv6 sends a Router Solicitation (bootp's link_refresh, dhcp.c
+ * IFEventID_renew_e, rtadv.c IFEventID_renew_e). A Manual service keeps
+ * its IPv4 as it is, since manual.c has no renew case either.
  */
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -178,6 +185,7 @@ struct dhcp_worker {
 	char			ifname[IFNAMSIZ];
 	pthread_t		tid;
 	volatile sig_atomic_t	stop;		/* link went down: unwind */
+	volatile sig_atomic_t	renew;		/* --renew: renew the lease now */
 	uint32_t		lease_cap_secs;
 	bool			ready;		/* bound or given up: startup */
 	struct ipconfig_method_info method;	/* what this worker runs (#58) */
@@ -428,6 +436,23 @@ worker_v4_assigned(const char *ifname)
 	if ((w = worker_find_locked(ifname)) != NULL)
 		w->v4_assigned = monotonic_secs();
 	pthread_mutex_unlock(&g_workers_lock);
+}
+
+/*
+ * `ifname`'s renew-now flag, for the lease loop. The slot outlives the
+ * worker thread calling this, so the pointer stays good for the loop.
+ */
+static volatile sig_atomic_t *
+worker_renew_flag(const char *ifname)
+{
+	struct dhcp_worker *w;
+	volatile sig_atomic_t *flag = NULL;
+
+	pthread_mutex_lock(&g_workers_lock);
+	if ((w = worker_find_locked(ifname)) != NULL)
+		flag = &w->renew;
+	pthread_mutex_unlock(&g_workers_lock);
+	return (flag);
 }
 
 /* Did `ifname`'s service just unwind because its address was in use? */
@@ -741,7 +766,8 @@ service_run_bound(const char *ifname, struct dhcp_lease *lease, bool dhcp,
 	 * changes, or the daemon exits.
 	 */
 	if (dhcp)
-		(void)lease_loop_run(ifname, lease, pub, lease_cap_secs, stop);
+		(void)lease_loop_run(ifname, lease, pub, lease_cap_secs,
+		    worker_renew_flag(ifname), stop);
 	else
 		while (!got_term && !(stop != NULL && *stop))
 			(void)sleep(1);
@@ -923,6 +949,7 @@ dhcp_worker_main(void *arg)
 		if (conflict) {
 			w->conflict = false;
 			w->stop = 0;
+			w->renew = 0;
 		}
 		pthread_mutex_unlock(&g_workers_lock);
 		if (!conflict || got_term)
@@ -1055,6 +1082,7 @@ dhcp_worker_start(const char *ifname, uint32_t lease_cap_secs)
 	}
 	w->active = true;
 	w->stop = 0;
+	w->renew = 0;
 	w->ready = false;
 	w->restart = false;
 	w->conflict = false;
@@ -1473,6 +1501,38 @@ on_link_event(const char *ifname, int active, uint32_t lease_cap_secs)
 	}
 }
 
+/*
+ * Link-watch renew callback (#572), on a dispatch worker: Darwin's
+ * link_refresh(). Only a bound service acts on it, as dhcp.c's renew case
+ * does. The lease loop notices the flag within a second and renews on its
+ * own thread. A Manual service leaves IPv4 alone; every service with IPv6
+ * solicits, since rtadv.c restarts solicitation on a renew whatever the
+ * IPv4 side is doing.
+ */
+static void
+on_link_refresh(const char *ifname)
+{
+	struct dhcp_worker *w;
+	bool have = false, dhcp = false;
+
+	if (!bound_state_is_bound(ifname))
+		return;
+	pthread_mutex_lock(&g_workers_lock);
+	w = worker_find_locked(ifname);
+	if (w != NULL && !w->stop) {
+		have = true;
+		dhcp = w->method.method == ipconfig_method_dhcp_e;
+		if (dhcp)
+			w->renew = 1;
+	}
+	pthread_mutex_unlock(&g_workers_lock);
+	if (!have)
+		return;
+	xlog("%s: configuration refresh requested%s", ifname,
+	    dhcp ? " — renewing the lease" : "");
+	(void)ra_solicit(ifname);
+}
+
 /* Is `hw` the hardware address of one of our own interfaces? */
 static bool
 is_our_hwaddr(const uint8_t *hw, int hw_len)
@@ -1713,7 +1773,7 @@ main(int argc, char **argv)
 	}
 
 	if (sc_link_watch_start(on_link_event, on_addr_conflict,
-	    lease_cap_secs) != 0)
+	    on_link_refresh, lease_cap_secs) != 0)
 		xlog("IPCFG-BOUND-FAIL: link watch unavailable — DHCP will "
 		    "not be triggered");
 
