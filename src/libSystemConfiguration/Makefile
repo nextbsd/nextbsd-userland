@@ -28,6 +28,13 @@ SRCS+=		SCDynamicStoreKeys.c SCDName.c SCPName.c SCDHostName.c
 SRCS+=		SCNetworkReachability.c SCDConsoleUser.c SCProxies.c
 SRCS+=		SCDPrivate.c LinkConfiguration.c
 
+# dns_configuration_copy() and friends: the client half of dnsinfo, from
+# configd-596.15 dnsinfo/ and libSystemConfiguration/. ipconfigd builds the
+# server half from the same directories.
+.PATH:		${.CURDIR}/dnsinfo ${.CURDIR}/libSC_info
+SRCS+=		dnsinfo_copy.c libSystemConfiguration_client.c
+CFLAGS+=	-I${.CURDIR}/dnsinfo -I${.CURDIR}/libSC_info
+
 # configUser.c — MIG-generated config.defs client stubs (same file
 # configd's test clients link). config_wire.c — configd's shared
 # length-prefixed key-list decoder, reused by SCDynamicStoreCopyKeyList
@@ -107,6 +114,8 @@ LIBDIR=		${PREFIX}/lib/system
 # handlers are blocks (-fblocks).
 LDADD+=		-lCoreFoundation -lsystem_dispatch -l:libsystem_blocks.so
 LDADD+=		-lsystem_kernel -llaunch
+# -lxpc: dns_configuration_copy() reaches the dnsinfo service over XPC.
+LDADD+=		-lxpc
 # SCNetworkReachability.c calls into libdns_sd (DNSServiceQueryRecord
 # against mDNSResponder) but libdns_sd builds AFTER libSC in
 # build.sh's Phase K order, so we cannot link -ldns_sd here. Leave

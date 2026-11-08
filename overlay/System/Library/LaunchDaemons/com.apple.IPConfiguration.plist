@@ -37,6 +37,8 @@
     <dict>
         <key>com.apple.IPConfiguration</key>
         <true/>
+        <key>org.nextbsd.SystemConfiguration.DNSConfiguration</key>
+        <true/>
     </dict>
     <key>StandardOutPath</key>
     <string>/var/log/ipconfigd.stderr</string>

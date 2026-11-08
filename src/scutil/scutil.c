@@ -98,6 +98,7 @@ static const struct option longopts[] = {
 	{ "error",		required_argument,	NULL,	0	},
 	{ "help",		no_argument,		NULL,	'?'	},
 	{ "prefs",		no_argument,		NULL,	0	},
+	{ "dns",		no_argument,		NULL,	0	},
 	{ "proxy",		no_argument,		NULL,	0	},
 	{ "renew",		required_argument,	NULL,	0	},
 	{ "set",		required_argument,	NULL,	0	},
@@ -333,6 +334,9 @@ usage(const char *command)
 	SCPrint(TRUE, stderr, CFSTR("   or: %s --error err#\n"), command);
 	SCPrint(TRUE, stderr, CFSTR("\tdisplay a descriptive message for the given error code\n"));
 	SCPrint(TRUE, stderr, CFSTR("\n"));
+	SCPrint(TRUE, stderr, CFSTR("   or: %s --dns\n"), command);
+	SCPrint(TRUE, stderr, CFSTR("\tshow DNS configuration.\n"));
+	SCPrint(TRUE, stderr, CFSTR("\n"));
 	SCPrint(TRUE, stderr, CFSTR("   or: %s --proxy\n"), command);
 	SCPrint(TRUE, stderr, CFSTR("\tshow \"proxy\" configuration.\n"));
 
@@ -360,6 +364,7 @@ main(int argc, char * const argv[])
 	int			opti;
 	const char		*prog			= argv[0];
 	char			*renew			= NULL;
+	Boolean			doDNS			= FALSE;
 	char			*set			= NULL;
 	InputRef		src;
 	int			timeout			= 15;	/* default timeout (in seconds) */
@@ -392,6 +397,9 @@ main(int argc, char * const argv[])
 				xStore++;
 			} else if (strcmp(longopts[opti].name, "prefs") == 0) {
 				doPrefs = TRUE;
+				xStore++;
+			} else if (strcmp(longopts[opti].name, "dns") == 0) {
+				doDNS = TRUE;
 				xStore++;
 			} else if (strcmp(longopts[opti].name, "proxy") == 0) {
 				doProxy = TRUE;
@@ -457,6 +465,16 @@ main(int argc, char * const argv[])
 
 		do_getPref(get, argc, argv);
 		exit(0);
+	}
+
+	/* are we looking up the DNS configuration */
+	if (doDNS) {
+		/* NextBSD: "--dns <hostname>" needs reachability */
+		if (argc != 0) {
+			usage(prog);
+		}
+		do_showDNSConfiguration(argc, (char **)argv);
+		/* NOT REACHED */
 	}
 
 	/* are we looking up the proxy configuration */

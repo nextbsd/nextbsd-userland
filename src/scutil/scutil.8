@@ -3,7 +3,7 @@
 .\"
 .\" Vendored from apple-oss-distributions/configd @ configd-1405.120.5
 .\" (scutil.tproj/scutil.8). NextBSD: trimmed to the options this port
-.\" carries; -r, --dns and --nc are not built.
+.\" carries; -r and --nc are not built.
 .\"
 .Dd January 23, 2008
 .Dt SCUTIL 8
@@ -28,6 +28,9 @@
 .Br
 .Nm
 .Fl -error Ar err#
+.Br
+.Nm
+.Fl -dns
 .Br
 .Nm
 .Fl -proxy
@@ -89,6 +92,23 @@ option reports the descriptive message for a SystemConfiguration
 status code.
 .Pp
 The
+.Fl -dns
+option reports the current DNS configuration.
+The first listed
+.Xr resolver 5
+configuration is considered to be the
+.Qq default
+configuration.
+Additional
+.Qq supplemental
+configurations follow.  Those containing a
+.Qq domain
+name will be used for queries matching the specified domain.
+Those without will be used as a
+.Qq default
+configuration in addition to the first listed.
+.Pp
+The
 .Fl -proxy
 option reports the current system proxy configuration.
 .\".Pp
@@ -145,6 +165,8 @@ option requires super-user access.
 .It Fl -error Ar err#
 Reports the descriptive message for the given SystemConfiguration
 status code.
+.It Fl -dns
+Reports the current DNS configuration.
 .It Fl -proxy
 Reports the current proxy configuration.
 .It Fl -renew Ar interface

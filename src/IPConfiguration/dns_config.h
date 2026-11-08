@@ -37,6 +37,7 @@
 #define	IPCFG_DNS_NAME_LEN	DHCP_LEASE_MAX_DOMAIN
 #define	IPCFG_DNS_SORT_LEN	64
 #define	IPCFG_DNS_OPTIONS_LEN	256
+#define	IPCFG_DNS_MAX_MATCH	16
 
 /*
  * One DNS dictionary in Apple's shape (kSCEntNetDNS). Used for a Setup
@@ -63,12 +64,30 @@ struct ipconfig_dns {
 	int32_t		timeout;
 	bool		has_service_id;
 	int32_t		service_id;
+	/*
+	 * Supplemental resolvers (#429). Only Setup can name them here. A
+	 * match domain may be empty: it then matches every name.
+	 */
+	char		match_domains[IPCFG_DNS_MAX_MATCH][IPCFG_DNS_NAME_LEN];
+	unsigned	match_count;
+	bool		has_match_domains;
+	int32_t		match_orders[IPCFG_DNS_MAX_MATCH];
+	unsigned	match_order_count;
+	bool		has_match_orders;
+	bool		has_no_search;
+	int32_t		no_search;
+	/*
+	 * Merged result only: Apple's DNS_CONFIGURATION_SCOPED_QUERY_KEY.
+	 * The servers came from the network on a service the user configured
+	 * (merge_dns_servers()), so queries are bound to its interface.
+	 */
+	bool		scoped_query;
 };
 
 /*
  * Re-merge `ifname`'s DNS, publish or remove its
- * State:/Network/Service/<UUID>/DNS, then bring State:/Network/Global/DNS
- * and /etc/resolv.conf in line with the primary service. Call once
+ * State:/Network/Service/<UUID>/DNS, then bring State:/Network/Global/DNS,
+ * /etc/resolv.conf and the dnsinfo configuration in line. Call once
  * bound_state reflects the change. Serialised internally; the caller must
  * not hold g_workers_lock.
  */

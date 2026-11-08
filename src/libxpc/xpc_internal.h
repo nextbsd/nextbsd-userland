@@ -144,6 +144,7 @@ typedef union {
 
 #define _XPC_FROM_WIRE 0x1
 #define _XPC_GLOBAL 0x2		/* immutable global object (xpc_globals.c) */
+#define _XPC_DATA_OWNED 0x4	/* XPC_TYPE_DATA whose bytes are ours to free */
 struct xpc_object {
 	uint8_t			xo_xpc_type;
 	uint16_t		xo_flags;
@@ -188,6 +189,8 @@ struct xpc_service {
 #define xo_dict xo_u.dict
 #define xo_connection xo_u.connection
 
+__private_extern__ struct xpc_object *_xpc_data_create_copy(const void *bytes,
+    size_t length);
 __private_extern__ struct xpc_object *_xpc_prim_create(int type, xpc_u value,
     size_t size);
 __private_extern__ struct xpc_object *_xpc_prim_create_flags(int type,

@@ -98,8 +98,14 @@ nv2xpc(const nvlist_t *nv)
 		case NV_TYPE_PTR:
 			break;
 
-		case NV_TYPE_BINARY:
+		case NV_TYPE_BINARY: {
+			const void *bytes;
+			size_t length;
+
+			bytes = nvlist_get_binary(nv, key, &length);
+			xotmp = _xpc_data_create_copy(bytes, length);
 			break;
+		}
 
 		case NV_TYPE_UUID:
 			memcpy(&val.uuid, nvlist_get_uuid(nv, key),
@@ -336,7 +342,8 @@ xpc_dictionary_set_value(xpc_object_t xdict, const char *key, xpc_object_t value
 
 	xo->xo_size++;
 	pair = malloc(sizeof(struct xpc_dict_pair));
-	pair->key = key;
+	/* A copy: a received message's keys go with its nvlist. */
+	pair->key = strdup(key);
 	pair->value = value;
 	TAILQ_INSERT_TAIL(&xo->xo_dict, pair, xo_link);
 	xpc_retain(value);
@@ -377,6 +384,33 @@ xpc_dictionary_set_bool(xpc_object_t xdict, const char *key, bool value)
 	xo = xdict;
 	xotmp = xpc_bool_create(value);
 	xpc_dictionary_set_value(xdict, key, xotmp);
+}
+
+void
+xpc_dictionary_set_data(xpc_object_t xdict, const char *key, const void *bytes,
+    size_t length)
+{
+	struct xpc_object *xotmp;
+
+	xotmp = _xpc_data_create_copy(bytes, length);
+	if (xotmp != NULL)
+		xpc_dictionary_set_value(xdict, key, xotmp);
+}
+
+const void *
+xpc_dictionary_get_data(xpc_object_t xdict, const char *key, size_t *length)
+{
+	xpc_object_t xotmp;
+
+	xotmp = xpc_dictionary_get_value(xdict, key);
+	if (xotmp == NULL || xpc_get_type(xotmp) != XPC_TYPE_DATA) {
+		if (length != NULL)
+			*length = 0;
+		return (NULL);
+	}
+	if (length != NULL)
+		*length = xpc_data_get_length(xotmp);
+	return (xpc_data_get_bytes_ptr(xotmp));
 }
 
 void

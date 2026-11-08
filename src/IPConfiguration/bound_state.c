@@ -178,6 +178,21 @@ bound_state_count(void)
 	return (n);
 }
 
+int
+bound_state_list(char names[][IF_NAMESIZE], int max)
+{
+	int i, n = 0;
+
+	(void)pthread_mutex_lock(&g_bound.lock);
+	for (i = 0; i < BOUND_MAX_IF && n < max; i++) {
+		if (g_bound.e[i].bound)
+			(void)strlcpy(names[n++], g_bound.e[i].ifname,
+			    IF_NAMESIZE);
+	}
+	(void)pthread_mutex_unlock(&g_bound.lock);
+	return (n);
+}
+
 bool
 bound_state_primary(char *name_out, size_t name_out_sz)
 {
