@@ -138,6 +138,7 @@
 #include "arp_probe.h"
 #include "bound_state.h"
 #include "dhcp_discover.h"
+#include "dns_config.h"
 #include "ipconfig_method.h"
 #include "ipconfig_prefs.h"
 #include "ipconfigd.h"
@@ -496,6 +497,7 @@ v6_withdraw(const char *ifname, const struct in6_addr *addr,
 		(void)sc_publish_remove_ipv6(pub, ifname);
 		sc_publish_close(pub);
 	}
+	dns_config_set_v6_active(ifname, false);
 }
 
 /* `ifname` is about to install a SLAAC address: hold duplicates for it. */
@@ -684,13 +686,14 @@ service_run_bound(const char *ifname, struct dhcp_lease *lease, bool dhcp,
 
 	/*
 	 * Re-elect the primary now that this interface is in bound_state
-	 * (#41), then render /etc/resolv.conf from whoever won. Doing DNS
-	 * off the primary rather than off `lease` is what stops a wlan0
-	 * binding from stomping a wired em0's resolvers.
+	 * (#41), then merge this service's DNS and render the global DNS
+	 * from whoever won (#425). Doing DNS off the primary rather than
+	 * off `lease` is what stops a wlan0 binding from stomping a wired
+	 * em0's resolvers.
 	 */
 	if (pub != NULL)
 		(void)sc_publish_update_primary(pub);
-	resolv_conf_sync();
+	dns_config_update(ifname);
 
 	/* IPv4 is configured: this service no longer holds up `waitall`. */
 	startup_mark_ready(ifname);
@@ -742,9 +745,10 @@ service_run_bound(const char *ifname, struct dhcp_lease *lease, bool dhcp,
 			    ra.router_scope_id) != 0)
 				xlog("default ::/0 route install failed "
 				    "(non-fatal)");
-			if (pub != NULL)
-				(void)sc_publish_ipv6(pub, ifname, &v6,
-				    ra.prefix_len, &ra.router_lladdr);
+			/* IPv6 servers now count as reachable (#425). */
+			if (pub != NULL && sc_publish_ipv6(pub, ifname, &v6,
+			    ra.prefix_len, &ra.router_lladdr) == 0)
+				dns_config_set_v6_active(ifname, true);
 			xlog("IPCFG-RA-OK");
 			/*
 			 * Keep hearing RAs so ::/0 follows the router's
@@ -812,7 +816,7 @@ service_run_bound(const char *ifname, struct dhcp_lease *lease, bool dhcp,
 		bound_state_clear(ifname);
 		if (pub != NULL)
 			(void)sc_publish_update_primary(pub);
-		resolv_conf_sync();
+		dns_config_service_down(ifname);
 	}
 
 	if (pub != NULL)
@@ -867,8 +871,9 @@ dhcp_run_on_interface(const char *ifname, uint32_t lease_cap_secs,
 
 /*
  * manual_run_on_interface — the Manual service (#58): install the
- * configured address, mask, router and DNS through the same apply /
- * publish path a DHCP lease takes, then service_run_bound().
+ * configured address, mask and router through the same apply / publish
+ * path a DHCP lease takes, then service_run_bound(). Its DNS comes from
+ * the service's Setup DNS entity through dns_config.c, not the lease (#425).
  *
  * Like Apple's manual service it probes for an address conflict first
  * (RFC 5227); on a conflict it does not configure the address, and the
@@ -880,15 +885,11 @@ manual_run_on_interface(const char *ifname,
 {
 	struct dhcp_lease lease;
 	char a[INET_ADDRSTRLEN];
-	unsigned i;
 
 	(void)memset(&lease, 0, sizeof(lease));
 	lease.addr = info->addr;
 	lease.netmask = info->mask;
 	lease.router = info->router;
-	for (i = 0; i < info->dns_count && i < DHCP_LEASE_MAX_DNS; i++)
-		lease.dns[i] = info->dns[i];
-	lease.dns_count = i;
 
 	(void)inet_ntop(AF_INET, &lease.addr, a, sizeof(a));
 	xlog("selected interface for Manual: %s (%s)", ifname, a);
@@ -1195,6 +1196,18 @@ on_prefs_changed(const char *ifname)
 	service_reconfigure(ifname);
 }
 
+/*
+ * SCPreferences apply changed `ifname`'s DNS entity: re-merge and rewrite
+ * DNS. The worker keeps running, and so does its lease (#425).
+ */
+static void
+on_prefs_dns_changed(const char *ifname)
+{
+	if (strncmp(ifname, "lo", 2) == 0)
+		return;
+	dns_config_update(ifname);
+}
+
 static ipconfig_status_t set_check_ifname(const char *ifname);
 
 /*
@@ -1241,7 +1254,27 @@ ipconfigd_set_method(const char *ifname,
 
 	xlog("set(%s) %s", ifname, ipconfig_method_string(info->method));
 	service_reconfigure(ifname);
+	/* A `set` method hides the service's Setup DNS, restarted or not. */
+	dns_config_update(ifname);
 	return (ipconfig_status_success_e);
+}
+
+bool
+ipconfigd_set_method_active(const char *ifname)
+{
+	bool active = false;
+	int i;
+
+	pthread_mutex_lock(&g_workers_lock);
+	for (i = 0; i < BOUND_MAX_IF; i++) {
+		if (g_set_methods[i].ifname[0] != '\0' &&
+		    strcmp(g_set_methods[i].ifname, ifname) == 0) {
+			active = true;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&g_workers_lock);
+	return (active);
 }
 
 bool
@@ -1308,7 +1341,7 @@ on_link_departed(const char *ifname)
 		(void)sc_publish_update_primary(pub);
 		sc_publish_close(pub);
 	}
-	resolv_conf_sync();
+	dns_config_service_down(ifname);
 }
 
 /* `ipconfig set` (#59): the interface names a set may act on. */
@@ -1396,7 +1429,7 @@ on_link_event(const char *ifname, int active, uint32_t lease_cap_secs)
 				xlog("link-down(%s) — bound but no worker; "
 				    "clearing state directly", ifname);
 				bound_state_clear(ifname);
-				resolv_conf_sync();
+				dns_config_service_down(ifname);
 			}
 			return;
 		}
@@ -1751,7 +1784,7 @@ main(int argc, char **argv)
 	 * interface. No network preferences — the default — leaves the
 	 * table empty and every interface on DHCP.
 	 */
-	(void)ipconfig_prefs_start(on_prefs_changed);
+	(void)ipconfig_prefs_start(on_prefs_changed, on_prefs_dns_changed);
 
 	if (dhcp_pick_interface(ifname, sizeof(ifname)) == 0) {
 		struct ipconfig_method_info method;

@@ -45,10 +45,12 @@
 
 #include <arpa/inet.h>
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <ifaddrs.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -415,10 +417,12 @@ build_dhcp_msg(uint8_t *buf, const uint8_t mac[6], uint32_t xid,
 
 	/* 55 parameter request list — what we want in the OFFER/ACK. */
 	*opt++ = DHCP_OPT_PARAM_REQUEST;
-	*opt++ = 5;
+	*opt++ = 7;
 	*opt++ = DHCP_OPT_SUBNET_MASK;
 	*opt++ = DHCP_OPT_ROUTER;
 	*opt++ = DHCP_OPT_DNS_SERVER;
+	*opt++ = DHCP_OPT_DOMAIN_NAME;
+	*opt++ = DHCP_OPT_DOMAIN_SEARCH;
 	*opt++ = DHCP_OPT_LEASE_TIME;
 	*opt++ = DHCP_OPT_SERVER_ID;
 	*opt++ = DHCP_OPT_END;
@@ -486,6 +490,194 @@ dhcp_option(const uint8_t *opts, size_t opts_len, uint8_t code,
 		i += 2 + l;
 	}
 	return (NULL);
+}
+
+/*
+ * Every occurrence of option `code`, concatenated into `out` (Apple's
+ * dhcpol_option_copy, RFC 3396). Returns the length, or -1 when the
+ * option is absent. Data past `out_max` is cut off, which the name-list
+ * decoder then rejects as truncated.
+ */
+static int
+dhcp_option_copy(const uint8_t *opts, size_t opts_len, uint8_t code,
+    uint8_t *out, size_t out_max)
+{
+	size_t i = 4, used = 0;
+	bool found = false;
+
+	while (i + 1 < opts_len) {
+		uint8_t c = opts[i], l;
+
+		if (c == DHCP_OPT_PAD) {
+			i++;
+			continue;
+		}
+		if (c == DHCP_OPT_END)
+			break;
+		l = opts[i + 1];
+		if (i + 2 + l > opts_len)
+			break;
+		if (c == code) {
+			size_t n = l;
+
+			if (n > out_max - used)
+				n = out_max - used;
+			(void)memcpy(out + used, &opts[i + 2], n);
+			used += n;
+			found = true;
+		}
+		i += 2 + l;
+	}
+	return (found ? (int)used : -1);
+}
+
+/*
+ * A name from the network ends up in /etc/resolv.conf, which is live
+ * here, and in a CFString. Keep only printable ASCII with no white space.
+ */
+static bool
+dns_name_ok(const char *s)
+{
+	if (*s == '\0')
+		return (false);
+	for (; *s != '\0'; s++) {
+		unsigned char c = (unsigned char)*s;
+
+		if (c <= 0x20 || c >= 0x7f)
+			return (false);
+	}
+	return (true);
+}
+
+static void
+lease_add_search(struct dhcp_lease *lease, const char *name)
+{
+	if (lease->search_count < DHCP_LEASE_MAX_SEARCH && dns_name_ok(name))
+		(void)strlcpy(lease->search[lease->search_count++], name,
+		    DHCP_LEASE_MAX_DOMAIN);
+}
+
+/*
+ * Option 119: Apple's DNSNameListCreate (bootplib/DNSNameList.c), the
+ * RFC 1035 compressed name list, into lease->search. The same checks: a
+ * pointer must not be truncated, must point before the last completed
+ * name and at the start of a label; a label must fit and be at most 63
+ * octets. Any error discards the whole list, as Apple's returns NULL.
+ */
+#define	DNS_PTR_BYTE_MASK	0xc0
+#define	DNS_LABEL_MAX		63
+#define	DHCP_SEARCH_BUF_MAX	1500
+
+static void
+parse_search_list(const uint8_t *buf, size_t size, struct dhcp_lease *lease)
+{
+	bool is_label[DHCP_SEARCH_BUF_MAX];
+	char name[DHCP_LEASE_MAX_DOMAIN];
+	size_t last_completed = 0, left = size, name_len = 0;
+	size_t read_head = 0, scan = 0;
+
+	lease->search_count = 0;
+	if (size == 0 || size > sizeof(is_label))
+		return;
+	(void)memset(is_label, 0, sizeof(is_label));
+
+	while (read_head < size) {
+		uint8_t len = buf[read_head];
+
+		if ((len & DNS_PTR_BYTE_MASK) == DNS_PTR_BYTE_MASK) {
+			size_t ptr;
+
+			if (read_head >= scan) {
+				if (left < 2)
+					goto failed;
+				scan += 2;
+				left -= 2;
+			}
+			if (read_head + 1 >= size)
+				goto failed;
+			ptr = (size_t)(((len & ~DNS_PTR_BYTE_MASK) << 8) |
+			    buf[read_head + 1]);
+			if (ptr >= read_head || last_completed == 0 ||
+			    ptr >= last_completed || !is_label[ptr])
+				goto failed;
+			read_head = ptr;
+			continue;
+		}
+		if (read_head >= scan) {
+			if (len > DNS_LABEL_MAX || left < (size_t)len + 1)
+				goto failed;
+			scan += (size_t)len + 1;
+			left -= (size_t)len + 1;
+		}
+		if (len == 0) {
+			name[name_len] = '\0';
+			lease_add_search(lease, name);
+			name_len = 0;
+			last_completed = scan;
+			read_head = scan;
+			continue;
+		}
+		is_label[read_head] = true;
+		/* room for the label, a separating dot and the NUL */
+		if (name_len + (size_t)len + 2 > sizeof(name))
+			goto failed;
+		if (name_len > 0)
+			name[name_len++] = '.';
+		(void)memcpy(name + name_len, buf + read_head + 1, len);
+		name_len += len;
+		read_head += (size_t)len + 1;
+	}
+	return;
+
+failed:
+	lease->search_count = 0;
+}
+
+/*
+ * Option 15: Apple's process_domain_name() (sysconfig.c). With option
+ * 119 present only the first token counts; otherwise one token is the
+ * domain and several are a search list.
+ */
+static void
+parse_domain_name(const uint8_t *v, size_t len, bool search_present,
+    struct dhcp_lease *lease)
+{
+	char tokens[DHCP_LEASE_MAX_SEARCH][DHCP_LEASE_MAX_DOMAIN];
+	unsigned count = 0, i;
+	size_t pos, start = 0;
+	bool in_token = false;
+
+	for (pos = 0; pos <= len; pos++) {
+		uint8_t ch = (pos < len) ? v[pos] : 0;
+
+		if (ch == 0 || isspace(ch)) {
+			if (in_token) {
+				size_t n = pos - start;
+
+				in_token = false;
+				if (count < DHCP_LEASE_MAX_SEARCH &&
+				    n < DHCP_LEASE_MAX_DOMAIN) {
+					(void)memcpy(tokens[count], v + start,
+					    n);
+					tokens[count][n] = '\0';
+					if (dns_name_ok(tokens[count]))
+						count++;
+				}
+				if (search_present || ch == 0)
+					break;
+			}
+		} else if (!in_token) {
+			in_token = true;
+			start = pos;
+		}
+	}
+	if (count == 1) {
+		(void)strlcpy(lease->domain_name, tokens[0],
+		    sizeof(lease->domain_name));
+	} else if (count > 1) {
+		for (i = 0; i < count; i++)
+			lease_add_search(lease, tokens[i]);
+	}
 }
 
 /*
@@ -592,6 +784,23 @@ parse_dhcp_reply(const uint8_t *frame, size_t frame_len,
 		(void)memcpy(lease->host_name, v, n);
 		lease->host_name[n] = '\0';
 		lease->host_name_len = n;
+	}
+
+	/*
+	 * 15 domain name, 119 domain search (#425). 119 may span several
+	 * option instances (RFC 3396); 15 is read knowing whether 119 exists.
+	 */
+	{
+		uint8_t sbuf[DHCP_SEARCH_BUF_MAX];
+		int slen;
+
+		slen = dhcp_option_copy(opts, opts_len, DHCP_OPT_DOMAIN_SEARCH,
+		    sbuf, sizeof(sbuf));
+		v = dhcp_option(opts, opts_len, DHCP_OPT_DOMAIN_NAME, &l);
+		if (v != NULL && l > 0)
+			parse_domain_name(v, l, slen >= 0, lease);
+		if (slen > 0)
+			parse_search_list(sbuf, (size_t)slen, lease);
 	}
 
 	return (1);

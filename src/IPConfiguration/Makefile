@@ -21,6 +21,7 @@ SRCS+=		arp_probe.c
 SRCS+=		ra_listen.c apply_lease_v6.c ra_router.c
 SRCS+=		sc_link_watch.c
 SRCS+=		ipconfig_prefs.c
+SRCS+=		dns_config.c
 
 # ipconfigServer.c — MIG-generated server stub for ipconfig.defs
 # (iter 5a's two read-only routines). build.sh runs mig and passes

@@ -15,6 +15,7 @@
 #include "sc_publish.h"
 #include "bound_state.h"	/* primary election (#41) */
 #include "ipconfig_prefs.h"	/* the primary service's Proxies (#573) */
+#include "dns_config.h"		/* struct ipconfig_dns (#425) */
 
 #include <SystemConfiguration/SCDynamicStore.h>
 #include <SystemConfiguration/SCPrivate.h>	/* _SC_NOTIFY_NETWORK_CHANGE */
@@ -346,51 +347,182 @@ sc_publish_ipv4(struct sc_publish *p, const char *ifname,
 	 * caller runs it after any bind or teardown, once bound_state is
 	 * settled — which is also why it cannot happen inline here: at this
 	 * point the caller may not have recorded the binding yet.
+	 *
+	 * Nor is .../DNS written here: it is the service's merged DNS, which
+	 * also depends on Setup and on IPv6 (#425). See sc_publish_dns().
 	 */
+	return (0);
+}
 
-	/* DNS — optional, only if the lease carried DNS option 6. */
-	if (lease->dns_count > 0) {
-		CFMutableDictionaryRef dns_dict;
-		CFMutableArrayRef dns_arr;
-		CFStringRef k_servers;
-		unsigned i;
+/*
+ * A CFArray of the strings in a fixed-size list. A string that is not
+ * valid UTF-8 is skipped rather than handed to CFArrayAppendValue as NULL.
+ */
+static void
+dict_set_string_list(CFMutableDictionaryRef dict, const char *key,
+    const char *list, size_t stride, unsigned count)
+{
+	CFMutableArrayRef arr;
+	CFStringRef k;
+	unsigned i;
 
-		dns_dict = CFDictionaryCreateMutable(NULL, 0,
-		    &kCFTypeDictionaryKeyCallBacks,
-		    &kCFTypeDictionaryValueCallBacks);
-		dns_arr = CFArrayCreateMutable(NULL, 0,
-		    &kCFTypeArrayCallBacks);
-		if (dns_dict == NULL || dns_arr == NULL) {
-			if (dns_dict != NULL)
-				CFRelease(dns_dict);
-			if (dns_arr != NULL)
-				CFRelease(dns_arr);
-			return (0);	/* IPv4 publish succeeded */
-		}
-		for (i = 0; i < lease->dns_count; i++) {
-			char buf[INET_ADDRSTRLEN];
-			CFStringRef s;
+	if (count == 0)
+		return;
+	arr = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
+	k = mkstr(key);
+	if (arr != NULL && k != NULL) {
+		for (i = 0; i < count; i++) {
+			CFStringRef s = mkstr(list + i * stride);
 
-			if (inet_ntop(AF_INET, &lease->dns[i], buf,
-			    sizeof(buf)) == NULL)
+			if (s == NULL)
 				continue;
-			s = mkstr(buf);
-			CFArrayAppendValue(dns_arr, s);
+			CFArrayAppendValue(arr, s);
 			CFRelease(s);
 		}
-		k_servers = mkstr("ServerAddresses");
-		CFDictionarySetValue(dns_dict, k_servers, dns_arr);
-		CFRelease(k_servers);
-		CFRelease(dns_arr);
-
-		key = make_key(ifname, "DNS");
-		ok = SCDynamicStoreSetValue(p->store, key, dns_dict);
-		CFRelease(key);
-		CFRelease(dns_dict);
-		if (!ok)
-			xlog("SCDynamicStoreSetValue(DNS) failed: %s",
-			    SCErrorString(SCError()));
+		if (CFArrayGetCount(arr) > 0)
+			CFDictionarySetValue(dict, k, arr);
 	}
+	if (k != NULL)
+		CFRelease(k);
+	if (arr != NULL)
+		CFRelease(arr);
+}
+
+static void
+dict_set_string(CFMutableDictionaryRef dict, const char *key, const char *val)
+{
+	CFStringRef k, v;
+
+	if (val[0] == '\0')
+		return;
+	k = mkstr(key);
+	v = mkstr(val);
+	if (k != NULL && v != NULL)
+		CFDictionarySetValue(dict, k, v);
+	if (k != NULL)
+		CFRelease(k);
+	if (v != NULL)
+		CFRelease(v);
+}
+
+static void
+dict_set_int32(CFMutableDictionaryRef dict, const char *key, int32_t val)
+{
+	CFStringRef k = mkstr(key);
+	CFNumberRef n = CFNumberCreate(NULL, kCFNumberSInt32Type, &val);
+
+	if (k != NULL && n != NULL)
+		CFDictionarySetValue(dict, k, n);
+	if (k != NULL)
+		CFRelease(k);
+	if (n != NULL)
+		CFRelease(n);
+}
+
+/* `dns` in Apple's kSCEntNetDNS shape; `ifname` NULL leaves InterfaceName out. */
+static CFMutableDictionaryRef
+dns_dict_create(const struct ipconfig_dns *dns, const char *ifname)
+{
+	CFMutableDictionaryRef dict;
+
+	dict = CFDictionaryCreateMutable(NULL, 0,
+	    &kCFTypeDictionaryKeyCallBacks,
+	    &kCFTypeDictionaryValueCallBacks);
+	if (dict == NULL)
+		return (NULL);
+	dict_set_string_list(dict, "ServerAddresses", dns->servers[0],
+	    IPCFG_DNS_ADDR_LEN, dns->server_count);
+	dict_set_string_list(dict, "SearchDomains", dns->search[0],
+	    IPCFG_DNS_NAME_LEN, dns->search_count);
+	dict_set_string_list(dict, "SortList", dns->sortlist[0],
+	    IPCFG_DNS_SORT_LEN, dns->sort_count);
+	dict_set_string(dict, "DomainName", dns->domain);
+	dict_set_string(dict, "Options", dns->options);
+	if (dns->has_search_order)
+		dict_set_int32(dict, "SearchOrder", dns->search_order);
+	if (dns->has_port)
+		dict_set_int32(dict, "ServerPort", dns->port);
+	if (dns->has_timeout)
+		dict_set_int32(dict, "ServerTimeout", dns->timeout);
+	if (dns->has_service_id)
+		dict_set_int32(dict, "ServiceIdentifier", dns->service_id);
+	if (ifname != NULL)
+		dict_set_string(dict, "InterfaceName", ifname);
+	return (dict);
+}
+
+int
+sc_publish_dns(struct sc_publish *p, const char *ifname,
+    const struct ipconfig_dns *dns)
+{
+	CFMutableDictionaryRef dict;
+	CFStringRef key;
+	Boolean ok;
+
+	if (p == NULL || p->store == NULL)
+		return (-1);
+	dict = dns_dict_create(dns, ifname);
+	if (dict == NULL)
+		return (-1);
+	key = make_key(ifname, "DNS");
+	ok = SCDynamicStoreSetValue(p->store, key, dict);
+	CFRelease(key);
+	CFRelease(dict);
+	if (!ok) {
+		xlog("SCDynamicStoreSetValue(DNS) failed: %s",
+		    SCErrorString(SCError()));
+		return (-1);
+	}
+	return (0);
+}
+
+int
+sc_publish_remove_dns(struct sc_publish *p, const char *ifname)
+{
+	CFStringRef key;
+
+	if (p == NULL || p->store == NULL)
+		return (-1);
+	key = make_key(ifname, "DNS");
+	(void)SCDynamicStoreRemoveValue(p->store, key);
+	CFRelease(key);
+	return (0);
+}
+
+int
+sc_publish_dns_global(struct sc_publish *p, const struct ipconfig_dns *dns)
+{
+	CFMutableDictionaryRef dict;
+	CFStringRef key;
+	Boolean ok;
+
+	if (p == NULL || p->store == NULL)
+		return (-1);
+	dict = dns_dict_create(dns, NULL);
+	if (dict == NULL)
+		return (-1);
+	key = mkstr("State:/Network/Global/DNS");
+	ok = SCDynamicStoreSetValue(p->store, key, dict);
+	CFRelease(key);
+	CFRelease(dict);
+	if (!ok) {
+		xlog("SCDynamicStoreSetValue(Global/DNS) failed: %s",
+		    SCErrorString(SCError()));
+		return (-1);
+	}
+	return (0);
+}
+
+int
+sc_publish_remove_dns_global(struct sc_publish *p)
+{
+	CFStringRef key;
+
+	if (p == NULL || p->store == NULL)
+		return (-1);
+	key = mkstr("State:/Network/Global/DNS");
+	(void)SCDynamicStoreRemoveValue(p->store, key);
+	CFRelease(key);
 	return (0);
 }
 

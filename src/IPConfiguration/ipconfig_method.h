@@ -36,16 +36,18 @@ typedef enum {
 
 /*
  * A parsed IPv4 method. addr/mask/router are used by Manual (and would
- * be by INFORM); dns is the service's DNS entity, which on Darwin sits
- * beside IPv4 rather than inside it. Zero-filled fields are absent.
+ * be by INFORM). Zero-filled fields are absent.
+ *
+ * The service's DNS entity is deliberately not here (#425): on Darwin it
+ * sits beside IPv4, and the method is compared whole to decide whether a
+ * running service must restart. A DNS-only change must not restart DHCP;
+ * see dns_config.h and ipconfig_prefs_lookup_dns().
  */
 struct ipconfig_method_info {
 	ipconfig_method_t	method;
 	struct in_addr		addr;
 	struct in_addr		mask;
 	struct in_addr		router;
-	struct in_addr		dns[DHCP_LEASE_MAX_DNS];
-	unsigned		dns_count;
 };
 
 /* Apple's ConfigMethod spelling for `m` ("DHCP", "Manual", ...). */
@@ -55,17 +57,15 @@ const char	*ipconfig_method_string(ipconfig_method_t m);
 bool		ipconfig_method_is_served(ipconfig_method_t m);
 
 /*
- * Parse an IPv4 entity (and optionally the service's DNS entity) into
- * `out` — Apple's ipconfig_method_info_from_dict(). The arguments are
- * CFDictionaryRefs, spelled as their underlying type so plain-C callers
- * need not pull CoreFoundation. `dns` may be NULL. Returns false when
- * the dictionary is not a valid method (unknown ConfigMethod, Manual
- * with no address).
+ * Parse an IPv4 entity into `out` — Apple's
+ * ipconfig_method_info_from_dict(). The argument is a CFDictionaryRef,
+ * spelled as its underlying type so plain-C callers need not pull
+ * CoreFoundation. Returns false when the dictionary is not a valid method
+ * (unknown ConfigMethod, Manual with no address).
  */
 struct __CFDictionary;
 bool		ipconfig_method_info_from_dict(
 		    const struct __CFDictionary *ipv4,
-		    const struct __CFDictionary *dns,
 		    struct ipconfig_method_info *out);
 
 #endif /* _IPCFG_IPCONFIG_METHOD_H_ */

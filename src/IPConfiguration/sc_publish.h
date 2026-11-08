@@ -7,7 +7,7 @@
  * handoff. A SystemConfiguration client (SCNetworkService observer,
  * ipconfig(8), an NSD plugin) sees the same dictionary shape it
  * expects on macOS: Addresses, SubnetMasks, Router, InterfaceName,
- * ServerIdentifier. DNS goes under .../DNS as ServerAddresses.
+ * ServerIdentifier. The merged DNS goes under .../DNS (#425).
  *
  * The handle is opaque so the CoreFoundation / SCDynamicStore.h pull
  * stays inside sc_publish.c; ipconfigd.c / lease_loop.c only see
@@ -42,9 +42,8 @@ struct sc_publish	*sc_publish_open(const char *session_name);
 void	sc_publish_service_begin(const char *ifname);
 
 /*
- * Publish lease state for `ifname`. Sets two keys:
- *   State:/Network/Service/<UUID>/IPv4
- *   State:/Network/Service/<UUID>/DNS   (only if lease has DNS)
+ * Publish lease state for `ifname` under
+ * State:/Network/Service/<UUID>/IPv4. (.../DNS is sc_publish_dns().)
  * The <UUID> is derived deterministically from the interface MAC so
  * the keys are stable across daemon restarts, and cached per interface
  * (see sc_publish_service_begin()). Returns 0 on success.
@@ -59,6 +58,24 @@ int	sc_publish_ipv4(struct sc_publish *p, const char *ifname,
  * the entity with no election. Safe on any thread.
  */
 void	sc_publish_refresh_proxies(void);
+
+/*
+ * The service's merged DNS (dns_config.h): State:/Network/Service/<UUID>/DNS
+ * in Apple's kSCEntNetDNS shape plus InterfaceName, and its removal.
+ * Returns 0 on success.
+ */
+struct ipconfig_dns;
+int	sc_publish_dns(struct sc_publish *p, const char *ifname,
+	    const struct ipconfig_dns *dns);
+int	sc_publish_remove_dns(struct sc_publish *p, const char *ifname);
+
+/*
+ * State:/Network/Global/DNS from the primary's merged DNS, without
+ * InterfaceName (update_dns() drops it), and its removal.
+ */
+int	sc_publish_dns_global(struct sc_publish *p,
+	    const struct ipconfig_dns *dns);
+int	sc_publish_remove_dns_global(struct sc_publish *p);
 
 /*
  * Publish iter 7a SLAAC state under State:/Network/Service/<UUID>/IPv6.

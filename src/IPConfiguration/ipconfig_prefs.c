@@ -8,6 +8,7 @@
 #include "ipconfig_prefs.h"
 #include "bound_state.h"	/* BOUND_MAX_IF */
 #include "sc_publish.h"		/* sc_publish_refresh_proxies */
+#include "dns_config.h"
 
 #include <SystemConfiguration/SCNetworkConfiguration.h>
 #include <SystemConfiguration/SCPreferences.h>
@@ -20,6 +21,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#include <ctype.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -32,10 +34,20 @@
  */
 #define	kIPCfgPropConfigMethod		CFSTR("ConfigMethod")
 #define	kIPCfgPropDNSServerAddresses	CFSTR("ServerAddresses")
+#define	kIPCfgPropDNSSearchDomains	CFSTR("SearchDomains")
+#define	kIPCfgPropDNSDomainName		CFSTR("DomainName")
+#define	kIPCfgPropDNSSortList		CFSTR("SortList")
+#define	kIPCfgPropDNSOptions		CFSTR("Options")
+#define	kIPCfgPropDNSSearchOrder	CFSTR("SearchOrder")
+#define	kIPCfgPropDNSServerPort		CFSTR("ServerPort")
+#define	kIPCfgPropDNSServerTimeout	CFSTR("ServerTimeout")
+#define	kIPCfgPropDNSServiceIdentifier	CFSTR("ServiceIdentifier")
 
 struct prefs_entry {
 	char				ifname[IFNAMSIZ];
 	struct ipconfig_method_info	info;
+	bool				have_dns;
+	struct ipconfig_dns		dns;	/* zeroed unless have_dns */
 };
 
 struct prefs_table {
@@ -46,6 +58,7 @@ struct prefs_table {
 static pthread_mutex_t		g_prefs_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct prefs_table	g_table;	/* guarded by g_prefs_lock */
 static ipconfig_prefs_cb	g_cb;
+static ipconfig_prefs_cb	g_dns_cb;
 static SCPreferencesRef		g_prefs;
 
 static void
@@ -136,11 +149,10 @@ classful_mask(struct in_addr a)
 
 bool
 ipconfig_method_info_from_dict(const struct __CFDictionary *ipv4,
-    const struct __CFDictionary *dns, struct ipconfig_method_info *out)
+    struct ipconfig_method_info *out)
 {
 	CFDictionaryRef d = (CFDictionaryRef)ipv4;
-	CFTypeRef method, v;
-	CFIndex i, n;
+	CFTypeRef method;
 	size_t k;
 	bool known = false;
 
@@ -185,23 +197,106 @@ ipconfig_method_info_from_dict(const struct __CFDictionary *ipv4,
 		(void)cf_to_in_addr(CFDictionaryGetValue(d,
 		    kSCPropNetIPv4Router), &out->router);
 	}
-
-	if (dns != NULL &&
-	    CFGetTypeID((CFDictionaryRef)dns) == CFDictionaryGetTypeID()) {
-		v = CFDictionaryGetValue((CFDictionaryRef)dns,
-		    kIPCfgPropDNSServerAddresses);
-		if (v != NULL && CFGetTypeID(v) == CFArrayGetTypeID()) {
-			n = CFArrayGetCount(v);
-			for (i = 0; i < n &&
-			    out->dns_count < DHCP_LEASE_MAX_DNS; i++) {
-				/* IPv6 resolvers are skipped, not fatal. */
-				if (cf_to_in_addr(CFArrayGetValueAtIndex(v, i),
-				    &out->dns[out->dns_count]))
-					out->dns_count++;
-			}
-		}
-	}
 	return (true);
+}
+
+/*
+ * A CFString as a trimmed C string; false if it is not one, is too long
+ * or is empty once trimmed (Apple's sanitize_prop).
+ */
+static bool
+cf_to_trimmed(CFTypeRef v, char *out, size_t outsz)
+{
+	size_t len, start = 0;
+
+	if (v == NULL || CFGetTypeID(v) != CFStringGetTypeID() ||
+	    !CFStringGetCString(v, out, (CFIndex)outsz,
+	    kCFStringEncodingUTF8))
+		return (false);
+	len = strlen(out);
+	while (start < len && isspace((unsigned char)out[start]))
+		start++;
+	while (len > start && isspace((unsigned char)out[len - 1]))
+		len--;
+	if (len == start)
+		return (false);
+	(void)memmove(out, out + start, len - start);
+	(void)memset(out + (len - start), 0, outsz - (len - start));
+	return (true);
+}
+
+/* A CFArray of strings into a fixed-size list; returns the number kept. */
+static unsigned
+cf_string_list(CFTypeRef v, char *list, size_t stride, unsigned max)
+{
+	CFIndex i, n;
+	unsigned count = 0;
+
+	n = CFArrayGetCount(v);
+	for (i = 0; i < n && count < max; i++) {
+		if (cf_to_trimmed(CFArrayGetValueAtIndex(v, i),
+		    list + count * stride, stride))
+			count++;
+		else
+			(void)memset(list + count * stride, 0, stride);
+	}
+	return (count);
+}
+
+static bool
+cf_is_array(CFTypeRef v)
+{
+	return (v != NULL && CFGetTypeID(v) == CFArrayGetTypeID());
+}
+
+static bool
+cf_to_int32(CFTypeRef v, int32_t *out)
+{
+	return (v != NULL && CFGetTypeID(v) == CFNumberGetTypeID() &&
+	    CFNumberGetValue(v, kCFNumberSInt32Type, out));
+}
+
+/*
+ * The service's DNS entity (Darwin's Setup:/Network/Service/<id>/DNS).
+ * Addresses are kept as written and validated by the merge, as
+ * accumulate_dns_servers() validates them: IPv4 and IPv6 alike.
+ */
+static void
+dns_from_dict(CFDictionaryRef d, struct ipconfig_dns *out)
+{
+	CFTypeRef v;
+
+	(void)memset(out, 0, sizeof(*out));
+	v = CFDictionaryGetValue(d, kIPCfgPropDNSServerAddresses);
+	if (cf_is_array(v))
+		out->server_count = cf_string_list(v, out->servers[0],
+		    IPCFG_DNS_ADDR_LEN, IPCFG_DNS_MAX_SERVERS);
+	v = CFDictionaryGetValue(d, kIPCfgPropDNSSearchDomains);
+	if (cf_is_array(v)) {
+		out->search_count = cf_string_list(v, out->search[0],
+		    IPCFG_DNS_NAME_LEN, IPCFG_DNS_MAX_SEARCH);
+		out->has_search = true;
+	}
+	v = CFDictionaryGetValue(d, kIPCfgPropDNSSortList);
+	if (cf_is_array(v)) {
+		out->sort_count = cf_string_list(v, out->sortlist[0],
+		    IPCFG_DNS_SORT_LEN, IPCFG_DNS_MAX_SORT);
+		out->has_sortlist = true;
+	}
+	if (!cf_to_trimmed(CFDictionaryGetValue(d, kIPCfgPropDNSDomainName),
+	    out->domain, sizeof(out->domain)))
+		(void)memset(out->domain, 0, sizeof(out->domain));
+	if (!cf_to_trimmed(CFDictionaryGetValue(d, kIPCfgPropDNSOptions),
+	    out->options, sizeof(out->options)))
+		(void)memset(out->options, 0, sizeof(out->options));
+	out->has_search_order = cf_to_int32(CFDictionaryGetValue(d,
+	    kIPCfgPropDNSSearchOrder), &out->search_order);
+	out->has_port = cf_to_int32(CFDictionaryGetValue(d,
+	    kIPCfgPropDNSServerPort), &out->port);
+	out->has_timeout = cf_to_int32(CFDictionaryGetValue(d,
+	    kIPCfgPropDNSServerTimeout), &out->timeout);
+	out->has_service_id = cf_to_int32(CFDictionaryGetValue(d,
+	    kIPCfgPropDNSServiceIdentifier), &out->service_id);
 }
 
 /* An enabled protocol entity of `service`, or NULL. Not retained. */
@@ -287,8 +382,7 @@ prefs_read(SCPreferencesRef prefs, struct prefs_table *t)
 			/* A service with IPv4 off: Apple runs no v4 service. */
 			e.info.method = ipconfig_method_none_e;
 		} else if (!ipconfig_method_info_from_dict(
-		    (const struct __CFDictionary *)ipv4,
-		    (const struct __CFDictionary *)dns, &e.info)) {
+		    (const struct __CFDictionary *)ipv4, &e.info)) {
 			/*
 			 * Unusable ConfigMethod (or Manual with no address).
 			 * Leaving the interface alone is safer than DHCP'ing
@@ -298,6 +392,10 @@ prefs_read(SCPreferencesRef prefs, struct prefs_table *t)
 			    "alone", e.ifname);
 			(void)memset(&e.info, 0, sizeof(e.info));
 			e.info.method = ipconfig_method_none_e;
+		}
+		if (dns != NULL) {
+			dns_from_dict(dns, &e.dns);
+			e.have_dns = true;
 		}
 		if (p4 != NULL)
 			CFRelease(p4);
@@ -326,7 +424,10 @@ table_find(const struct prefs_table *t, const char *ifname)
 	return (NULL);
 }
 
-/* Did `ifname`'s configuration differ between `a` and `b`? */
+/*
+ * Did `ifname`'s configured method differ between `a` and `b`? DNS is not
+ * part of this: see table_dns_changed().
+ */
 static bool
 table_changed(const struct prefs_table *a, const struct prefs_table *b,
     const char *ifname)
@@ -337,6 +438,20 @@ table_changed(const struct prefs_table *a, const struct prefs_table *b,
 	if (x == NULL || y == NULL)
 		return (x != y);
 	return (memcmp(&x->info, &y->info, sizeof(x->info)) != 0);
+}
+
+/* Did `ifname`'s DNS entity differ between `a` and `b`? */
+static bool
+table_dns_changed(const struct prefs_table *a, const struct prefs_table *b,
+    const char *ifname)
+{
+	const struct prefs_entry *x = table_find(a, ifname);
+	const struct prefs_entry *y = table_find(b, ifname);
+	bool hx = x != NULL && x->have_dns, hy = y != NULL && y->have_dns;
+
+	if (!hx || !hy)
+		return (hx != hy);
+	return (memcmp(&x->dns, &y->dns, sizeof(x->dns)) != 0);
 }
 
 static void
@@ -358,13 +473,14 @@ log_table(const struct prefs_table *t)
 /*
  * SCPreferences commit from another process (a network pane, scutil
  * --prefs). Re-read, swap the table, and tell ipconfigd about each
- * interface whose method moved.
+ * interface whose method or DNS moved. The tables are static because they
+ * are large for a queue thread's stack; the queue is serial.
  */
 static void
 prefs_changed(SCPreferencesRef prefs, SCPreferencesNotification type,
     void *info)
 {
-	struct prefs_table next, prev;
+	static struct prefs_table next, prev;
 	int i;
 
 	(void)info;
@@ -382,26 +498,38 @@ prefs_changed(SCPreferencesRef prefs, SCPreferencesNotification type,
 	log_table(&next);
 	/* A commit can change the primary service's Proxies alone (#573). */
 	sc_publish_refresh_proxies();
-	if (g_cb == NULL)
-		return;
-	for (i = 0; i < prev.n; i++) {
-		if (table_changed(&prev, &next, prev.e[i].ifname))
-			g_cb(prev.e[i].ifname);
+	if (g_cb != NULL) {
+		for (i = 0; i < prev.n; i++) {
+			if (table_changed(&prev, &next, prev.e[i].ifname))
+				g_cb(prev.e[i].ifname);
+		}
+		for (i = 0; i < next.n; i++) {
+			if (table_find(&prev, next.e[i].ifname) == NULL)
+				g_cb(next.e[i].ifname);
+		}
 	}
-	for (i = 0; i < next.n; i++) {
-		if (table_find(&prev, next.e[i].ifname) == NULL)
-			g_cb(next.e[i].ifname);
+	if (g_dns_cb != NULL) {
+		for (i = 0; i < prev.n; i++) {
+			if (table_dns_changed(&prev, &next, prev.e[i].ifname))
+				g_dns_cb(prev.e[i].ifname);
+		}
+		for (i = 0; i < next.n; i++) {
+			if (table_find(&prev, next.e[i].ifname) == NULL &&
+			    table_dns_changed(&prev, &next, next.e[i].ifname))
+				g_dns_cb(next.e[i].ifname);
+		}
 	}
 }
 
 int
-ipconfig_prefs_start(ipconfig_prefs_cb cb)
+ipconfig_prefs_start(ipconfig_prefs_cb cb, ipconfig_prefs_cb dns_cb)
 {
 	SCPreferencesContext ctx;
 	dispatch_queue_t q;
-	struct prefs_table t;
+	static struct prefs_table t;
 
 	g_cb = cb;
+	g_dns_cb = dns_cb;
 	g_prefs = SCPreferencesCreate(NULL, CFSTR("com.apple.IPConfiguration"),
 	    CFSTR("preferences.plist"));
 	if (g_prefs == NULL) {
@@ -489,6 +617,22 @@ ipconfig_prefs_lookup(const char *ifname, struct ipconfig_method_info *out)
 	e = table_find(&g_table, ifname);
 	if (e != NULL) {
 		*out = e->info;
+		hit = true;
+	}
+	pthread_mutex_unlock(&g_prefs_lock);
+	return (hit);
+}
+
+bool
+ipconfig_prefs_lookup_dns(const char *ifname, struct ipconfig_dns *out)
+{
+	const struct prefs_entry *e;
+	bool hit = false;
+
+	pthread_mutex_lock(&g_prefs_lock);
+	e = table_find(&g_table, ifname);
+	if (e != NULL && e->have_dns) {
+		*out = e->dns;
 		hit = true;
 	}
 	pthread_mutex_unlock(&g_prefs_lock);

@@ -14,11 +14,10 @@
  * DNS is deliberately NOT handled per-interface. /etc/resolv.conf is
  * global state, so a per-interface writer means last-to-bind wins —
  * wlan0 would clobber the DNS of a wired em0 that outranks it.
- * resolv_conf_sync() instead regenerates the file from whichever
- * interface currently holds primary (bound_state_primary(), #41), and
- * is called after any bind or teardown. It also writes atomically
- * (temp + fsync + rename); the old in-place fopen("w") could be read
- * half-written.
+ * resolv_conf_sync() is handed the primary service's merged DNS by
+ * dns_config.c (#41, #425), which calls it whenever that changes. It
+ * writes atomically (temp + fsync + rename); the old in-place fopen("w")
+ * could be read half-written.
  */
 #ifndef _IPCFG_APPLY_LEASE_H_
 #define _IPCFG_APPLY_LEASE_H_
@@ -29,8 +28,8 @@
  * Apply `lease` to `ifname`: SIOCAIFADDR + default route, plus an
  * RFC 5227 §2.3 gratuitous-ARP announce (best-effort). Returns 0 on
  * full success, non-zero if a sub-step failed (the failing step is
- * logged). Does not touch /etc/resolv.conf — call resolv_conf_sync()
- * once the binding is recorded in bound_state.
+ * logged). Does not touch /etc/resolv.conf — the caller runs
+ * dns_config_update() once the binding is recorded in bound_state.
  */
 int	apply_lease(const char *ifname, const struct dhcp_lease *lease);
 
@@ -45,13 +44,13 @@ int	apply_lease(const char *ifname, const struct dhcp_lease *lease);
 int	deconfigure_lease(const char *ifname, const struct dhcp_lease *lease);
 
 /*
- * Regenerate /etc/resolv.conf from the DNS servers of whichever
- * interface is currently primary (bound_state_primary()). Writes
- * atomically. When nothing is bound the file is left alone rather than
- * emptied: a box with no lease is better off keeping its last known
- * resolvers than having none, and a static resolv.conf shipped in the
- * image is not ours to delete.
+ * Regenerate /etc/resolv.conf from `dns`, the merged DNS of the primary
+ * service on `ifname`, in Apple's set_dns() order: search (or else
+ * domain), then every nameserver, then sortlist. Writes atomically. With
+ * `dns` NULL the primary has no DNS and the file is removed, as
+ * update_dns() removes Darwin's. Either way network_change is posted.
  */
-void	resolv_conf_sync(void);
+struct ipconfig_dns;
+void	resolv_conf_sync(const char *ifname, const struct ipconfig_dns *dns);
 
 #endif /* _IPCFG_APPLY_LEASE_H_ */
