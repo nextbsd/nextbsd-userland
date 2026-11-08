@@ -56,6 +56,7 @@ void	do_prefs_open		(int argc, char * const argv[]);
 void	do_prefs_lock		(int argc, char * const argv[]);
 void	do_prefs_unlock		(int argc, char * const argv[]);
 void	do_prefs_commit		(int argc, char * const argv[]);
+void	do_prefs_apply		(int argc, char * const argv[]);
 void	do_prefs_close		(int argc, char * const argv[]);
 void	do_prefs_synchronize	(int argc, char * const argv[]);
 

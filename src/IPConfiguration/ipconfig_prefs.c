@@ -367,12 +367,8 @@ prefs_changed(SCPreferencesRef prefs, SCPreferencesNotification type,
 	int i;
 
 	(void)info;
-	/*
-	 * Apple's PreferencesMonitor acts on Apply; our SCPreferences only
-	 * delivers Commit, so take either.
-	 */
-	if ((type & (kSCPreferencesNotificationCommit |
-	    kSCPreferencesNotificationApply)) == 0)
+	/* As Apple's PreferencesMonitor: a commit alone changes nothing. */
+	if ((type & kSCPreferencesNotificationApply) == 0)
 		return;
 	SCPreferencesSynchronize(prefs);
 	prefs_read(prefs, &next);

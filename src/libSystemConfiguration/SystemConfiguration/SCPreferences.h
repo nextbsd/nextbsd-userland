@@ -25,8 +25,8 @@
  * iter 1 covers the synchronous read / edit / commit cycle: create a
  * session, get / set / remove values and list keys, then commit the
  * changes back to the file. The preferences lock, change notifications
- * (SCPreferencesSetCallback), SCPreferencesApplyChanges and the path-
- * based accessors are later iterations.
+ * (SCPreferencesSetCallback) and the path-based accessors are later
+ * iterations.
  */
 
 #ifndef _SCPREFERENCES_H
@@ -140,10 +140,21 @@ SCPreferencesCopyKeyList	(SCPreferencesRef		prefs);
 /*!
 	@function SCPreferencesCommitChanges
 	@discussion Writes any in-memory changes back to the preferences
-		file.
+		file. Call SCPreferencesApplyChanges to apply them to the
+		running system.
  */
 Boolean
 SCPreferencesCommitChanges	(SCPreferencesRef		prefs);
+
+/*!
+	@function SCPreferencesApplyChanges
+	@discussion Requests that the currently stored preferences be
+		applied to the active configuration. Watchers are told with
+		kSCPreferencesNotificationApply. The lock is taken
+		implicitly if the caller has not taken it.
+ */
+Boolean
+SCPreferencesApplyChanges	(SCPreferencesRef		prefs);
 
 /*!
 	@function SCPreferencesLock
@@ -239,7 +250,8 @@ SCPreferencesSetCallback	(SCPreferencesRef		prefs,
 	@function SCPreferencesSetDispatchQueue
 	@discussion Schedules change-notification delivery onto a dispatch
 		queue: the SCPreferencesCallBack runs on `queue` when the
-		preferences are committed. Pass NULL to unschedule.
+		preferences are committed or applied. Pass NULL to
+		unschedule.
  */
 Boolean
 SCPreferencesSetDispatchQueue	(SCPreferencesRef		prefs,

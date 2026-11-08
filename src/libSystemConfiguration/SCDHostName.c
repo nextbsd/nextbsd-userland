@@ -40,9 +40,10 @@
  *     our CF does not carry.
  *   - No SC_log notices on a successful set.
  *
- * Callers commit with SCPreferencesCommitChanges; that commit fires the
- * SCPreferences callback hostnamed's prefs_monitor watches, which
- * republishes Setup:/System and Setup:/Network/HostNames.
+ * Callers commit with SCPreferencesCommitChanges and then call
+ * SCPreferencesApplyChanges; the apply fires the SCPreferences callback
+ * hostnamed's prefs_monitor acts on, which republishes Setup:/System and
+ * Setup:/Network/HostNames.
  */
 
 #include "SCInternal.h"
