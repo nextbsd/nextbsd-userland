@@ -1,10 +1,9 @@
 /*
  * dhcp_packet.h — DHCPv4 wire format (RFC 2131 / 2132).
  *
- * Self-contained, sized to what iter 2 needs (DISCOVER/OFFER). The
- * struct layout mirrors Apple's bootp/bootplib/dhcp.h — same field
- * names — so when later iters pull in dhcp_options.c verbatim the
- * struct names line up. Constants are RFC, not Apple-private.
+ * Mirrors Apple's bootp/bootplib/dhcp.h — same field names — so the
+ * vendored dhcp_options.c (vendored/) and the DHCP client here share one
+ * struct dhcp. Constants are RFC, not Apple-private.
  */
 #ifndef _IPCFG_DHCP_PACKET_H_
 #define _IPCFG_DHCP_PACKET_H_
@@ -68,11 +67,61 @@ struct dhcp {
 	uint8_t		dp_chaddr[16];
 	uint8_t		dp_sname[64];
 	uint8_t		dp_file[128];
-	/* 4-byte magic cookie + variable options follow as packed
-	 * bytes; we treat them as an opaque tail. */
+	uint8_t		dp_options[];	/* variable-length options field */
 };
 
 #define DHCP_PACKET_MIN		576	/* RFC 2131 minimum 576 octets */
+
+/* Apple's bootplib/dhcp.h, for the vendored dhcp_options.c. */
+typedef enum {
+	dhcp_msgtype_none_e		= 0,
+	dhcp_msgtype_discover_e		= DHCP_MTYPE_DISCOVER,
+	dhcp_msgtype_offer_e		= DHCP_MTYPE_OFFER,
+	dhcp_msgtype_request_e		= DHCP_MTYPE_REQUEST,
+	dhcp_msgtype_decline_e		= DHCP_MTYPE_DECLINE,
+	dhcp_msgtype_ack_e		= DHCP_MTYPE_ACK,
+	dhcp_msgtype_nak_e		= DHCP_MTYPE_NAK,
+	dhcp_msgtype_release_e		= DHCP_MTYPE_RELEASE,
+	dhcp_msgtype_inform_e		= DHCP_MTYPE_INFORM,
+} dhcp_msgtype_t;
+
+static __inline__ const char *
+dhcp_msgtype_names(dhcp_msgtype_t type)
+{
+	static const char *names[] = {
+		"<none>",
+		"DISCOVER",
+		"OFFER",
+		"REQUEST",
+		"DECLINE",
+		"ACK",
+		"NAK",
+		"RELEASE",
+		"INFORM",
+	};
+
+	if (type >= dhcp_msgtype_none_e && type <= dhcp_msgtype_inform_e)
+		return (names[type]);
+	return ("<unknown>");
+}
+
+/* overloaded option values */
+#define DHCP_OVERLOAD_FILE	1
+#define DHCP_OVERLOAD_SNAME	2
+#define DHCP_OVERLOAD_BOTH	3
+
+typedef uint32_t	dhcptag_t;
+
+/*
+ * The last DHCP packet accepted on a service, whole, as Apple's struct
+ * saved_pkt keeps it (dhcp_thread.h), outside struct dhcp_lease: ipconfig
+ * getoption and getpacket answer from it, so a server's options reach them
+ * without the lease having to carry each one. pkt_size 0: no packet.
+ */
+struct saved_pkt {
+	uint32_t	pkt[1500 / sizeof(uint32_t)];	/* ALIGN: struct dhcp */
+	unsigned	pkt_size;
+};
 
 /*
  * iter-3 lease carrier — the subset of an ACK we care about for

@@ -170,6 +170,7 @@ lease_loop_run(const char *ifname, struct dhcp_lease *lease,
 	for (;;) {
 		uint32_t t1, t2_after_t1, expiry_after_t2, left;
 		struct dhcp_lease renewed;
+		struct saved_pkt saved;
 		int woke;
 
 		/*
@@ -196,8 +197,9 @@ wait_t1:
 			xlog("RENEWING: renewal requested, sending DHCPREQUEST");
 		else
 			xlog("RENEWING: T1 fired, sending DHCPREQUEST");
-		if (dhcp_renew(ifname, lease, &renewed) == 0) {
+		if (dhcp_renew(ifname, lease, &renewed, &saved) == 0) {
 			*lease = renewed;
+			bound_state_set_packet(ifname, &saved);
 			lease_secs = cap_lease(lease->lease_time,
 			    lease_cap_secs);
 			if (pub != NULL) {
@@ -254,8 +256,9 @@ wait_t2:
 			xlog("REBINDING: renewal requested, sending DHCPREQUEST");
 		else
 			xlog("REBINDING: T2 fired, sending DHCPREQUEST");
-		if (dhcp_renew(ifname, lease, &renewed) == 0) {
+		if (dhcp_renew(ifname, lease, &renewed, &saved) == 0) {
 			*lease = renewed;
+			bound_state_set_packet(ifname, &saved);
 			lease_secs = cap_lease(lease->lease_time,
 			    lease_cap_secs);
 			if (pub != NULL) {

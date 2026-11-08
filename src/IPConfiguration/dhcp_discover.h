@@ -34,8 +34,9 @@ extern volatile sig_atomic_t got_term;
 
 /*
  * Run one INIT → BOUND exchange on `ifname`. On success returns 0
- * and fills `*out` with the bound lease. The caller passes the
- * lease to apply_lease() to actually configure the interface.
+ * and fills `*out` with the bound lease and `*saved` with the ACK that
+ * carried it. The caller passes the lease to apply_lease() to actually
+ * configure the interface.
  *
  * Logs IPCFG-BOUND-FAIL on its own line and returns non-zero on
  * any error / timeout.
@@ -47,13 +48,13 @@ extern volatile sig_atomic_t got_term;
  * non-zero without the IPCFG-BOUND-FAIL marker.
  */
 int	dhcp_lease_acquire(const char *ifname, struct dhcp_lease *out,
-	    volatile sig_atomic_t *stop);
+	    struct saved_pkt *saved, volatile sig_atomic_t *stop);
 
 /*
  * Renew a bound lease — send a DHCPREQUEST in BOUND/RENEWING form
  * (ciaddr=current addr, no opt 50/54, broadcast flag set so SLIRP
  * and other simple servers accept it without ARP-resolving the
- * client first), wait for the DHCPACK, fill *new_lease.
+ * client first), wait for the DHCPACK, fill *new_lease and *saved.
  *
  * iter 4 keeps RENEWING and REBINDING on the same broadcast-BPF
  * path; RFC 2131 §4.3.2 says RENEWING SHOULD unicast but servers
@@ -64,7 +65,7 @@ int	dhcp_lease_acquire(const char *ifname, struct dhcp_lease *out,
  */
 int	dhcp_renew(const char *ifname,
 	    const struct dhcp_lease *existing,
-	    struct dhcp_lease *new_lease);
+	    struct dhcp_lease *new_lease, struct saved_pkt *saved);
 
 /*
  * Send one DHCPDECLINE for `lease` (requested IP = lease->addr, server

@@ -12,16 +12,17 @@
  *   ipconfig getsummary <if>		→  ipconfig_get_summary
  *   ipconfig set <if> <method> [args]	→  ipconfig_set
  *
- * Apple's client.c covers ~25 subcommands (getpacket, getv6packet,
- * getra, getdhcpduid, addService, BSDP, NetBoot, CLAT46, …). The rest
- * grow by appending rows to commands[] + turning the matching `skip;`
- * in ipconfig.defs back into a routine.
+ *   ipconfig getpacket <if>		→  ipconfig_get_packet
+ *
+ * Apple's client.c at the 10.9 baseline also has setverbose, the
+ * addService family and the NetBoot commands; those stay out. A later
+ * subcommand grows by appending a row to commands[] + turning the
+ * matching `skip;` in ipconfig.defs back into a routine.
  *
  * `set` builds Apple's method dictionary for every method Apple
  * accepts, so the client is complete; which methods ipconfigd can act
- * on is the daemon's call. Today that is DHCP and NONE — MANUAL,
- * INFORM and BOOTP need the static service type (#58), and the rest
- * answer "operation not supported".
+ * on is the daemon's call. Today that is DHCP, MANUAL and NONE — the
+ * rest answer "operation not supported".
  *
  * Install: /usr/sbin/ipconfig.
  */
@@ -39,6 +40,7 @@
 
 #include "ipconfig_mig_types.h"
 #include "ipconfig.h"		/* MIG: ipconfig_* client stubs */
+#include "dhcp_options.h"	/* vendored: dhcptag_*, dhcp_packet_print */
 
 #include <signal.h>
 #include <stdbool.h>
@@ -245,79 +247,9 @@ S_ifcount(mach_port_t svc, int argc, char **argv)
 }
 
 /*
- * The DHCP option names `getoption` accepts — Apple's dhcptag names for
- * the options a lease commonly carries — and how each prints. Apple's
- * dhcptag_to_str() prints only the first element of a multi-valued
- * option, so router and domain_name_server print one address.
+ * getoption <if|""> <name|code> — Apple's S_get_option(): dhcptag_with_name()
+ * and dhcptag_to_str() from the vendored option table.
  */
-enum opt_type { OPT_IP, OPT_UINT32, OPT_STRING };
-
-static const struct opt_info {
-	int		tag;
-	const char	*name;
-	enum opt_type	type;
-} options[] = {
-	{  1, "subnet_mask",			OPT_IP },
-	{  3, "router",				OPT_IP },
-	{  6, "domain_name_server",		OPT_IP },
-	{ 12, "host_name",			OPT_STRING },
-	{ 15, "domain_name",			OPT_STRING },
-	{ 28, "broadcast_address",		OPT_IP },
-	{ 51, "lease_time",			OPT_UINT32 },
-	{ 54, "server_identifier",		OPT_IP },
-	{ 58, "renewal_t1_time_value",		OPT_UINT32 },
-	{ 59, "rebinding_t2_time_value",	OPT_UINT32 },
-	{  0, NULL,				OPT_IP },
-};
-
-static const struct opt_info *
-option_with_tag(int tag)
-{
-	int i;
-
-	for (i = 0; options[i].name != NULL; i++) {
-		if (options[i].tag == tag)
-			return (&options[i]);
-	}
-	return (NULL);
-}
-
-/*
- * Render option `tag` as Apple's dhcptag_to_str() does. Returns false
- * if the tag is unknown or the data is too short for its type.
- */
-static bool
-option_to_str(char *buf, size_t bufsz, int tag, const uint8_t *opt,
-    mach_msg_type_number_t len)
-{
-	const struct opt_info *info;
-	struct in_addr ip;
-	uint32_t u32;
-
-	info = option_with_tag(tag);
-	if (info == NULL)
-		return (false);
-	switch (info->type) {
-	case OPT_IP:
-		if (len < 4)
-			return (false);
-		(void)memcpy(&ip, opt, 4);
-		(void)snprintf(buf, bufsz, "%s", inet_ntoa(ip));
-		return (true);
-	case OPT_UINT32:
-		if (len < 4)
-			return (false);
-		(void)memcpy(&u32, opt, 4);
-		(void)snprintf(buf, bufsz, "%u", ntohl(u32));
-		return (true);
-	case OPT_STRING:
-		(void)snprintf(buf, bufsz, "%.*s", (int)len,
-		    (const char *)opt);
-		return (true);
-	}
-	return (false);
-}
-
 static int
 S_get_option(mach_port_t svc, int argc, char **argv)
 {
@@ -327,17 +259,14 @@ S_get_option(mach_port_t svc, int argc, char **argv)
 	mach_msg_type_number_t option_cnt = 0;
 	ipconfig_status_t status = ipconfig_status_internal_error_e;
 	kern_return_t kr;
-	bool success;
-	int i, tag = -1;
+	dhcpo_err_str_t err;
+	boolean_t success;
+	int tag;
 
 	(void)argc;
 	InterfaceNameInit(name, argv[0]);
-	for (i = 0; options[i].name != NULL; i++) {
-		if (strcmp(argv[1], options[i].name) == 0) {
-			tag = options[i].tag;
-			break;
-		}
-	}
+	err.str[0] = '\0';
+	tag = dhcptag_with_name(argv[1]);
 	if (tag == -1)
 		tag = atoi(argv[1]);
 
@@ -350,7 +279,8 @@ S_get_option(mach_port_t svc, int argc, char **argv)
 	}
 	if (status != ipconfig_status_success_e)
 		return (1);
-	success = option_to_str(buf, sizeof(buf), tag, option, option_cnt);
+	success = dhcptag_to_str(buf, sizeof(buf), tag, option, (int)option_cnt,
+	    &err);
 	if (option != NULL)
 		(void)vm_deallocate(mach_task_self(), (vm_address_t)option,
 		    option_cnt);
@@ -358,8 +288,40 @@ S_get_option(mach_port_t svc, int argc, char **argv)
 		(void)printf("%s\n", buf);
 		return (0);
 	}
-	(void)fprintf(stderr, "couldn't convert the option, tag %d\n", tag);
+	(void)fprintf(stderr, "couldn't convert the option, %s\n", err.str);
 	return (1);
+}
+
+/*
+ * getpacket <if> — Apple's S_get_packet(): print the DHCP packet the
+ * interface's service accepted. Nothing is printed, and the exit status
+ * is 1, if it has none.
+ */
+static int
+S_get_packet(mach_port_t svc, int argc, char **argv)
+{
+	InterfaceName name;
+	dataOut_t data = NULL;
+	mach_msg_type_number_t data_len = 0;
+	ipconfig_status_t status = ipconfig_status_internal_error_e;
+	kern_return_t kr;
+
+	(void)argc;
+	InterfaceNameInit(name, argv[0]);
+	kr = ipconfig_get_packet(svc, name, &data, &data_len, &status);
+	if (kr != KERN_SUCCESS) {
+		(void)fprintf(stderr, "ipconfig_get_packet failed, 0x%x\n",
+		    (unsigned)kr);
+		return (1);
+	}
+	if (status != ipconfig_status_success_e)
+		return (1);
+	/* ALIGN: out-of-line data is page aligned */
+	dhcp_packet_print((struct dhcp *)(void *)data, (int)data_len);
+	if (data != NULL)
+		(void)vm_deallocate(mach_task_self(), (vm_address_t)data,
+		    data_len);
+	return (0);
 }
 
 /*
@@ -773,6 +735,7 @@ static const struct command_info {
 	{ "ifcount",	S_ifcount,	0, "", 0 },
 	{ "getoption",	S_get_option,	2,
 	  " <interface name | \"\" > <option name> | <option code>", 0 },
+	{ "getpacket",	S_get_packet,	1, " <interface name>", 0 },
 	{ "getsummary",	S_get_summary,	1, " <interface name>", 0 },
 	{ "set",	S_set,		2,
 	  "<interface name> <method> <method args>\n"

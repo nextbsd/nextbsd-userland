@@ -18,12 +18,10 @@
  * (the daemon's global `got_term` flag is checked between every
  * read and on EINTR). Fixes iter 2's 10-second signal deafness.
  *
- * NOT vendored from Apple's IPConfiguration.bproj. The Apple
- * bootp/bootplib/dhcp_options.c source (~1700 LOC, 113 options)
- * is the long-term destination; iter 3 keeps its own small option
- * parser for the half-dozen options BOUND needs. The vendor lift
- * naturally lands when iter 4+ pulls in Apple's lease persistence
- * + the full T1/T2 renewal machinery.
+ * NOT vendored from Apple's IPConfiguration.bproj. The option parser
+ * here is its own small one for the options a lease carries; Apple's
+ * bootplib/dhcp_options.c (vendored/) serves ipconfig getoption and
+ * getpacket from the raw packet saved below (#430).
  */
 #include "dhcp_discover.h"
 #include "arp_probe.h"
@@ -681,15 +679,42 @@ parse_domain_name(const uint8_t *v, size_t len, bool search_present,
 }
 
 /*
+ * Keep the DHCP payload of the reply just accepted, as sent (Apple's
+ * bcopy() into saved.pkt, dhcp.c). The UDP length bounds it, since a short
+ * frame is padded on the wire; a payload longer than the buffer is cut
+ * off, and then the option parser rejects what remains.
+ */
+static void
+save_packet(const uint8_t *frame, size_t frame_len, const struct udphdr *udp,
+    const struct dhcp *dh, struct saved_pkt *saved)
+{
+	size_t off = (size_t)((const uint8_t *)dh - frame);
+	size_t ulen = ntohs(udp->uh_ulen);
+	size_t len;
+
+	saved->pkt_size = 0;
+	if (off >= frame_len)
+		return;
+	len = frame_len - off;
+	if (ulen >= sizeof(*udp) && ulen - sizeof(*udp) < len)
+		len = ulen - sizeof(*udp);
+	if (len > sizeof(saved->pkt))
+		len = sizeof(saved->pkt);
+	(void)memcpy(saved->pkt, dh, len);
+	saved->pkt_size = (unsigned)len;
+}
+
+/*
  * Parse a BPF-delivered frame as a DHCP reply matching want_xid +
  * want_msgtype. On match: fills `lease` with everything we care
- * about (addr / netmask / router / server / lease_time / DNS) and
- * returns 1. Returns 0 on a non-match (skip; caller continues
- * the read loop).
+ * about (addr / netmask / router / server / lease_time / DNS),
+ * `saved` (may be NULL) with the raw packet, and returns 1. Returns 0
+ * on a non-match (skip; caller continues the read loop).
  */
 static int
 parse_dhcp_reply(const uint8_t *frame, size_t frame_len,
-    uint32_t want_xid, uint8_t want_msgtype, struct dhcp_lease *lease)
+    uint32_t want_xid, uint8_t want_msgtype, struct dhcp_lease *lease,
+    struct saved_pkt *saved)
 {
 	const struct ether_header *eh;
 	const struct ip *ip;
@@ -803,6 +828,8 @@ parse_dhcp_reply(const uint8_t *frame, size_t frame_len,
 			parse_search_list(sbuf, (size_t)slen, lease);
 	}
 
+	if (saved != NULL)
+		save_packet(frame, frame_len, udp, dh, saved);
 	return (1);
 }
 
@@ -814,12 +841,12 @@ parse_dhcp_reply(const uint8_t *frame, size_t frame_len,
  *
  * The BPF descriptor has a 1s BIOCSRTIMEOUT so the wait wakes
  * every second to re-check got_term, `*stop` (NULL: none) and the
- * deadline.
+ * deadline. `saved` (may be NULL) gets the matching packet.
  */
 static int
 recv_dhcp_reply(int bpf_fd, uint32_t want_xid, uint8_t want_msgtype,
     struct timespec *deadline, struct dhcp_lease *lease,
-    volatile sig_atomic_t *stop)
+    struct saved_pkt *saved, volatile sig_atomic_t *stop)
 {
 	uint8_t rxbuf[4096];
 
@@ -859,7 +886,7 @@ recv_dhcp_reply(int bpf_fd, uint32_t want_xid, uint8_t want_msgtype,
 			if (pkt + caplen > end)
 				break;
 			if (parse_dhcp_reply(pkt, caplen, want_xid,
-			    want_msgtype, lease))
+			    want_msgtype, lease, saved))
 				return (1);
 			p += BPF_WORDALIGN(bh.bh_hdrlen + caplen);
 		}
@@ -919,7 +946,7 @@ deadline_in(struct timespec *out, int seconds)
 
 int
 dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
-    volatile sig_atomic_t *stop)
+    struct saved_pkt *saved, volatile sig_atomic_t *stop)
 {
 	uint8_t mac[6];
 	uint8_t frame[1024];
@@ -989,7 +1016,7 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
 
 		deadline_in(&deadline, retry_seconds[try]);
 		r = recv_dhcp_reply(bpf_fd, xid, DHCP_MTYPE_OFFER,
-		    &deadline, &offer, stop);
+		    &deadline, &offer, NULL, stop);
 		if (r == 1)
 			break;
 		if (r < 0)
@@ -1065,7 +1092,7 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
 
 		deadline_in(&deadline, retry_seconds[try]);
 		r = recv_dhcp_reply(bpf_fd, xid, DHCP_MTYPE_ACK,
-		    &deadline, lease_out, stop);
+		    &deadline, lease_out, saved, stop);
 		if (r == 1) {
 			(void)close(bpf_fd);
 			return (0);
@@ -1136,7 +1163,7 @@ dhcp_decline(const char *ifname, const struct dhcp_lease *lease)
 
 int
 dhcp_renew(const char *ifname, const struct dhcp_lease *existing,
-    struct dhcp_lease *new_lease)
+    struct dhcp_lease *new_lease, struct saved_pkt *saved)
 {
 	uint8_t mac[6];
 	uint8_t frame[1024];
@@ -1183,7 +1210,7 @@ dhcp_renew(const char *ifname, const struct dhcp_lease *existing,
 
 		deadline_in(&deadline, retry_seconds[try]);
 		r = recv_dhcp_reply(bpf_fd, xid, DHCP_MTYPE_ACK,
-		    &deadline, new_lease, NULL);
+		    &deadline, new_lease, saved, NULL);
 		if (r == 1) {
 			(void)close(bpf_fd);
 			return (0);

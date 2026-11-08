@@ -604,8 +604,9 @@ read_lease_cap_env(void)
  * on `ifname`: record it, publish it, elect the primary, bring up IPv6
  * (RA/SLAAC), park, then tear it all down. Shared by the DHCP and Manual
  * services (#58), which differ only in how they get `lease` and in
- * whether parking means a renewal loop. Runs on the interface's worker
- * thread.
+ * whether parking means a renewal loop. `saved` is the ACK for a DHCP
+ * service and NULL for a Manual one (#430). Runs on the interface's
+ * worker thread.
  *
  * Returns when the lease is lost, the link goes down or the method
  * changes (*stop), or the daemon is shutting down (got_term). Every one
@@ -616,9 +617,11 @@ read_lease_cap_env(void)
  * loop, so the lease silently expired and was never renewed).
  */
 static void
-service_run_bound(const char *ifname, struct dhcp_lease *lease, bool dhcp,
-    uint32_t lease_cap_secs, volatile sig_atomic_t *stop)
+service_run_bound(const char *ifname, struct dhcp_lease *lease,
+    const struct saved_pkt *saved, uint32_t lease_cap_secs,
+    volatile sig_atomic_t *stop)
 {
+	bool dhcp = (saved != NULL);
 	struct sc_publish *pub = NULL;
 	char a[INET_ADDRSTRLEN], m[INET_ADDRSTRLEN];
 	char r[INET_ADDRSTRLEN], s[INET_ADDRSTRLEN];
@@ -643,6 +646,8 @@ service_run_bound(const char *ifname, struct dhcp_lease *lease, bool dhcp,
 	 * IPCFG-BOUND-OK sees the address it expects.
 	 */
 	bound_state_set(ifname, lease);
+	if (saved != NULL)
+		bound_state_set_packet(ifname, saved);
 	worker_v4_assigned(ifname);
 	if (dhcp)
 		xlog("IPCFG-BOUND-OK");
@@ -832,9 +837,10 @@ dhcp_run_on_interface(const char *ifname, uint32_t lease_cap_secs,
     volatile sig_atomic_t *stop)
 {
 	struct dhcp_lease lease;
+	struct saved_pkt saved;
 
 	xlog("selected interface for DHCPv4: %s", ifname);
-	if (dhcp_lease_acquire(ifname, &lease, stop) != 0) {
+	if (dhcp_lease_acquire(ifname, &lease, &saved, stop) != 0) {
 		/*
 		 * dhcp_lease_acquire logged IPCFG-BOUND-FAIL on its own line,
 		 * or gave up early because `stop` was set (#410).
@@ -858,7 +864,7 @@ dhcp_run_on_interface(const char *ifname, uint32_t lease_cap_secs,
 		xlog("IPCFG-BOUND-FAIL");
 		return;
 	}
-	service_run_bound(ifname, &lease, true, lease_cap_secs, stop);
+	service_run_bound(ifname, &lease, &saved, lease_cap_secs, stop);
 
 	/*
 	 * Gave the address up to another host (#349): it is off the interface
@@ -905,7 +911,7 @@ manual_run_on_interface(const char *ifname,
 		xlog("apply_lease(%s) failed for Manual %s", ifname, a);
 		return;
 	}
-	service_run_bound(ifname, &lease, false, 0, stop);
+	service_run_bound(ifname, &lease, NULL, 0, stop);
 }
 
 /*

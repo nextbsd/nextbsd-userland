@@ -98,4 +98,22 @@ bool	bound_state_get_addr(const char *ifname, uint32_t *addr_out);
  */
 bool	bound_state_get_lease(const char *ifname, struct dhcp_lease *out);
 
+/*
+ * `ifname`'s saved DHCP packet (#430). The DHCP service records every ACK
+ * it accepts; bound_state_set() leaves this alone, and a Manual service
+ * has none. No-op if `ifname` is not bound.
+ */
+void	bound_state_set_packet(const char *ifname,
+	    const struct saved_pkt *pkt);
+
+/* Copy out `ifname`'s saved packet. False if it has no packet. */
+bool	bound_state_get_packet(const char *ifname, struct saved_pkt *out);
+
+/*
+ * The names of the bound interfaces, primary first, for a caller that
+ * walks every service (ipconfig getoption ""). Returns how many were
+ * written, at most `max`.
+ */
+int	bound_state_names(char names[][IF_NAMESIZE], int max);
+
 #endif /* _IPCFG_BOUND_STATE_H_ */

@@ -1,0 +1,172 @@
+.\"
+.\"     @(#)ipconfig.8
+.\"
+.Dd November 8, 2026
+.Dt IPCONFIG 8
+.Os NextBSD
+.Sh NAME
+.Nm ipconfig
+.Nd view and control IP configuration state
+.Sh SYNOPSIS
+.Nm
+.Cm waitall
+.Op Ar timeout
+.Nm
+.Cm getifaddr
+.Ar interface-name
+.Nm
+.Cm ifcount
+.Nm
+.Cm getoption
+.Ar interface-name
+.Ar (option-name | option-code )
+.Nm
+.Cm getpacket
+.Ar interface-name
+.Nm
+.Cm getsummary
+.Ar interface-name
+.Nm
+.Cm set
+.Ar interface-name
+.Cm NONE
+.Nm
+.Cm set
+.Ar interface-name
+.Cm DHCP
+.Nm
+.Cm set
+.Ar interface-name
+.Cm MANUAL
+.Ar ip-address
+.Ar subnet-mask
+.Sh DESCRIPTION
+.Nm
+is a utility that communicates with the IPConfiguration agent
+to retrieve and set IP configuration parameters.  It should only be used
+in a test and debug context.  Using it for any other purpose is strongly
+discouraged.
+Public API's in the SystemConfiguration framework are currently
+the only supported way to access and control the state of IPConfiguration.
+.Pp
+The IPConfiguration agent is responsible for configuring and managing the
+IP addresses on direct, connectionless interfaces such as IEEE 802.3 Ethernet.
+The IPConfiguration agent is the ipconfigd daemon.
+.Pp
+The IPConfiguration agent implements the client side of the DHCP
+protocol described in RFC2131 and RFC2132.  It also
+assigns and maintains static IP addresses.
+.Pp
+In all cases, the IPConfiguration agent performs IP address conflict detection
+before assigning an IP address to an interface.
+.Sh "COMMANDS"
+The
+.Nm
+utility provides several commands:
+.Pp
+.Bl -tag -width Ds -compact
+.It Cm waitall Op Ar timeout
+Blocks until all network services have completed configuring, or have timed
+out in
+the process of configuring, or
+.Ar timeout
+seconds have passed.  The default is 90 seconds and the maximum is 120.
+This is only useful for initial system start-up
+time synchronization for legacy network services that are incapable of dealing
+with dynamic network configuration changes.
+.Pp
+.It Cm getifaddr Ar interface-name
+Prints to standard output the IPv4 address configured on the interface.
+No address is printed, and the exit status is non-zero, if no
+service is currently configured or active on the interface.
+.Pp
+.It Cm ifcount
+Prints the number of interfaces that currently have an IPv4 address
+configured by the IPConfiguration agent.
+.Pp
+.It Cm getoption Ar interface-name Ar ( option-name | option-code )
+Prints the DHCP option with the given name or option code integer value,
+from the packet described under
+.Cm getpacket .
+Option names are those shown by
+.Cm getpacket ,
+for example
+.Li domain_name
+or
+.Li router .
+An empty
+.Ar interface-name
+searches all of the interfaces.
+If an option has multiple values e.g. \fBdomain_name_server\fR, only the first
+value is printed.
+.Pp
+.It Cm getpacket Ar interface-name
+Prints to standard output the DHCP packet that the client accepted from
+the DHCP server.  This command is useful to check what the server
+provided, and whether the values are sensible.  This command outputs nothing
+if DHCP is not active on the interface, or the attempt to acquire an
+IP address was unsuccessful.
+.Pp
+.It Cm getsummary Ar interface-name
+Prints to standard output a summary of the current IPConfiguration state
+over the specific interface.
+.Pp
+.It Cm set Ar interface-name Cm NONE
+.It Cm set Ar interface-name Cm DHCP
+.It Cm set Ar interface-name Cm MANUAL Ar ip-address Ar subnet-mask
+Sets the interface to have a new temporary network service of the
+given type.  Any existing service on the interface is first de-configured
+before the new service is instantiated.
+.Pp
+If NONE is specified, the existing service is de-configured.
+.Pp
+DHCP requires no additional arguments. The IP address, subnet mask,
+router, and DNS information are retrieved automatically.
+.Pp
+MANUAL requires the specification of an IP address
+.Ar ip-address
+and a subnet mask
+.Ar subnet-mask .
+.Pp
+The \fBset\fR command requires root privileges.
+.Pp
+\fBNote:\fR The \fBset\fR command is very useful for debugging, but it can't
+be used to configure a persistent service.  The temporary service does not
+change the saved network configuration and is lost when ipconfigd restarts.
+.El
+.Sh "EXAMPLES"
+.nf
+# ipconfig getpacket em0
+op = BOOTREPLY
+htype = 1
+flags = 0
+hlen = 6
+hops = 0
+xid = 1956115059
+secs = 0
+ciaddr = 0.0.0.0
+yiaddr = 192.168.4.10
+siaddr = 192.168.4.1
+giaddr = 0.0.0.0
+chaddr = 0:3:93:7a:d7:5c
+sname = dhcp.mycompany.net
+file =
+options:
+Options count is 8
+dhcp_message_type (uint8): ACK 0x5
+server_identifier (ip): 192.168.4.1
+lease_time (uint32): 0x164a
+subnet_mask (ip): 255.255.255.0
+router (ip_mult): {192.168.4.1}
+domain_name_server (ip_mult): {192.168.4.1}
+domain_name (string): mycompany.net
+end (none):
+.fi
+.Pp
+.nf
+# ipconfig getoption em0 router
+192.168.4.1
+.fi
+.Sh "SEE ALSO"
+.Xr configd 8 ,
+.Xr scutil 8
