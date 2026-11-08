@@ -42,6 +42,7 @@
 #include "cache.h"
 #include "notifications.h"
 #include "prefs.h"
+#include "net.h"
 
 
 __private_extern__
@@ -210,6 +211,92 @@ const cmdInfo commands_prefs[] = {
 };
 __private_extern__
 const int nCommands_prefs = (sizeof(commands_prefs)/sizeof(cmdInfo));
+
+
+/*
+ * NextBSD: from configd-596.15 commands.c; the private "snapshot" command
+ * is not carried.
+ */
+__private_extern__
+const cmdInfo commands_net[] = {
+	/* cmd		minArgs	maxArgs	func			group	ctype			*/
+	/* 	usage										*/
+
+	{ "help",	0,	0,	do_help,		0,	0,
+		" help                          : list available commands"			},
+
+	{ "f.read",	1,	1,	do_readFile,		0,	0,
+		" f.read file                   : process commands from file"			},
+
+	{ "quit",	0,	1,	do_net_quit,		0,	0,
+		" quit [!]                      : quit"						},
+
+	{ "q",		0,	1,	do_net_quit,		0,	-1,
+		NULL										},
+
+	{ "exit",	0,	1,	do_net_quit,		0,	-1,
+		NULL										},
+
+	/* network configuration manipulation commands */
+
+	{ "open",	0,	1,	do_net_open,		2,	1,
+		" open                          : open the network configuration"		},
+
+	{ "commit",	0,	0,	do_net_commit,		2,	0,
+		" commit                        : commit any changes"				},
+
+	{ "apply",	0,	0,	do_net_apply,		2,	0,
+		" apply                         : apply any changes"				},
+
+	{ "close",	0,	1,	do_net_close,		2,	1,
+		" close [!]                     : close the network configuration"		},
+
+	{ "create",	1,	3, 	do_net_create,		3,	0,
+		" create interface <interfaceType> [ <interfaceName> | <interface#> ]\n"
+		" create protocol <protocolType>\n"
+		" create service [ <interfaceName> | <interface#> [ <serviceName> ]]\n"
+		" create set [setName]"								},
+
+	{ "disable",	1,	2,	do_net_disable,		4,	0,
+		" disable protocol [ <protocolType> ]\n"
+		" disable service  [ <serviceName> | <service#> ]"				},
+
+	{ "enable",	1,	2,	do_net_enable,		5,	0,
+		" enable protocol  [ <protocolType> ]\n"
+		" enable service   [ <serviceName> | <service#> ]"				},
+
+	{ "remove",	1,	2,	do_net_remove,		6,	0,
+		" remove protocol  [ <protocolType> ]\n"
+		" remove service   [ <serviceName> | <service#> ]\n"
+		" remove set       [ <setName> | <set#> ]"					},
+
+	{ "select",	2,	3,	do_net_select,		7,	0,
+		" select interface <interfaceName> | <interface#> | $child | $service | $vlan | $bond <memberName> | $bridge <memberName>\n"
+		" select protocol  <protocolType>\n"
+		" select service   <serviceName> | <service#>\n"
+		" select set       <setName> | <set#>"						},
+
+	{ "set",	2,	101,	do_net_set,		8,	0,
+		" set interface context-sensitive-arguments (or ? for help)\n"
+		" set protocol  context-sensitive-arguments (or ? for help)\n"
+		" set service   [ name <serviceName> ] [ order new-order ] [ rank (\"\" | First | Last | Never) [temp] ]\n"
+		" set set       [ name setName ] | [ current ]"					},
+
+	{ "show",	1,	2,	do_net_show,		9,	0,
+		" show interfaces\n"
+		" show interface [ <interfaceName> | <interface#> ]\n"
+		" show protocols\n"
+		" show protocol  [ <protocolType> ]\n"
+		" show services  [ all ]\n"
+		" show service   [ <serviceName> | <service#> ]\n"
+		" show sets\n\n"
+		" show set       [ <setName> | <set#> ]"					},
+
+	{ "update",	0,	1,	do_net_update,		10,	0,
+		" update                        : update the network configuration"		}
+};
+__private_extern__
+const int nCommands_net = (sizeof(commands_net)/sizeof(cmdInfo));
 
 
 __private_extern__ cmdInfo	*commands		= NULL;

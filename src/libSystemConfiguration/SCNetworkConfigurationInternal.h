@@ -58,7 +58,6 @@ _SC_CFEqual(CFTypeRef val1, CFTypeRef val2)
  * Apple-canonical SCDynamicStore schema; the include above pulls them
  * in. Only prefs-plist-specific keys stay below.
  */
-#define kSCResvInactive			CFSTR("__INACTIVE__")
 #define kSCPrefNetworkServices		CFSTR("NetworkServices")
 #define kSCPrefSets			CFSTR("Sets")
 #define kSCPrefCurrentSet		CFSTR("CurrentSet")

@@ -128,6 +128,17 @@ _SCNetworkServiceCopyActive		(SCDynamicStoreRef		store,
 					 CFStringRef			serviceID);
 
 /*!
+	@function _SCNetworkServiceCompare
+	@discussion Orders services by their position in the CFArray of
+		service IDs passed as `context`, then by service ID.
+		Services not in the array sort last.
+ */
+CFComparisonResult
+_SCNetworkServiceCompare		(const void			*val1,
+					 const void			*val2,
+					 void				*context);
+
+/*!
 	@function SCNetworkServiceGetPrimaryRank
 	@discussion Returns the service's rank, or
 		kSCNetworkServicePrimaryRankDefault if it has none.

@@ -140,6 +140,7 @@
 #define kSCPropNetInterfaceType			CFSTR("Type")
 #define kSCPropNetInterfaceHardware		CFSTR("Hardware")
 #define kSCPropUserDefinedName			CFSTR("UserDefinedName")
+#define kSCResvInactive				CFSTR("__INACTIVE__")
 #define kSCPropSystemHostName			CFSTR("HostName")
 #define kSCPropSystemComputerName		CFSTR("ComputerName")
 #define kSCPropSystemComputerNameEncoding	CFSTR("ComputerNameEncoding")
@@ -196,6 +197,7 @@
 #define kSCValNetIPv6ConfigMethodAutomatic	CFSTR("Automatic")
 #define kSCValNetIPv6ConfigMethodManual		CFSTR("Manual")
 #define kSCValNetIPv6ConfigMethodRouterAdvertisement CFSTR("RouterAdvertisement")
+#define kSCValNetIPv6ConfigMethod6to4		CFSTR("6to4")
 
 #define kSCPropNetSMBNetBIOSName		CFSTR("NetBIOSName")
 #define kSCPropNetSMBNetBIOSNodeType		CFSTR("NetBIOSNodeType")

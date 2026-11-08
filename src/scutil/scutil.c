@@ -50,13 +50,15 @@
  * (scutil.tproj/scutil.c). Carried: the interactive SCDynamicStore
  * session, "-w key [-t timeout]", "--prefs [file]", "--get" / "--set"
  * for ComputerName, HostName and LocalHostName (plus the extended
- * "--get file path key"), "--dns", "--nwi", "--proxy", "--renew" and
- * "--error". Dropped
- * until their backing APIs exist in our libSystemConfiguration:
- * "-r" / "-W" reachability, "--net", "--snapshot",
+ * "--get file path key"), "-r" / "-W" reachability, "--dns", "--nwi",
+ * "--proxy", "--renew", "--net" and "--error". Dropped until their
+ * backing APIs exist in our libSystemConfiguration: "--snapshot",
  * "--configuration", "--advisory", "--rank", "--log" and the interface
  * preference switches. "--nc" (VPN) is out of scope: there is no VPN
  * stack.
+ *
+ * "--net" is not behind Apple's ENABLE_EXPERIMENTAL_SCUTIL_COMMANDS
+ * check: here it is the supported way to edit network services.
  */
 
 #include <ctype.h>
@@ -72,6 +74,7 @@
 #include "scutil.h"
 #include "commands.h"
 #include "dictionary.h"
+#include "net.h"
 #include "prefs.h"
 #include "session.h"
 #include "tests.h"
@@ -98,6 +101,7 @@ static const struct option longopts[] = {
 	{ "get",		required_argument,	NULL,	0	},
 	{ "error",		required_argument,	NULL,	0	},
 	{ "help",		no_argument,		NULL,	'?'	},
+	{ "net",		no_argument,		NULL,	0	},
 	{ "prefs",		no_argument,		NULL,	0	},
 	{ "dns",		no_argument,		NULL,	0	},
 	{ "nwi",		no_argument,		NULL,	0	},
@@ -349,6 +353,9 @@ usage(const char *command)
 	SCPrint(TRUE, stderr, CFSTR("\n"));
 	SCPrint(TRUE, stderr, CFSTR("   or: %s --proxy\n"), command);
 	SCPrint(TRUE, stderr, CFSTR("\tshow \"proxy\" configuration.\n"));
+	SCPrint(TRUE, stderr, CFSTR("\n"));
+	SCPrint(TRUE, stderr, CFSTR("   or: %s --net\n"), command);
+	SCPrint(TRUE, stderr, CFSTR("\tmanage network configuration.\n"));
 
 	exit (EX_USAGE);
 }
@@ -365,6 +372,7 @@ prompt(EditLine *el)
 int
 main(int argc, char * const argv[])
 {
+	Boolean			doNet			= FALSE;
 	Boolean			doPrefs			= FALSE;
 	Boolean			doProxy			= FALSE;
 	char			*error			= NULL;
@@ -414,6 +422,9 @@ main(int argc, char * const argv[])
 				xStore++;
 			} else if (strcmp(longopts[opti].name, "get") == 0) {
 				get = optarg;
+				xStore++;
+			} else if (strcmp(longopts[opti].name, "net") == 0) {
+				doNet = TRUE;
 				xStore++;
 			} else if (strcmp(longopts[opti].name, "prefs") == 0) {
 				doPrefs = TRUE;
@@ -535,7 +546,14 @@ main(int argc, char * const argv[])
 		/* NOT REACHED */
 	}
 
-	if (doPrefs) {
+	if (doNet) {
+		/* if we are going to be managing the network configuration */
+		commands  = commands_net;
+		nCommands = nCommands_net;
+
+		do_net_init();				/* initialization */
+		do_net_open(argc, argv);		/* open prefs */
+	} else if (doPrefs) {
 		/* if we are going to be managing the network configuration */
 		commands  = commands_prefs;
 		nCommands = nCommands_prefs;

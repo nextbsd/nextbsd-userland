@@ -616,6 +616,35 @@ SCNetworkServiceRemove(SCNetworkServiceRef service)
 #pragma mark -
 #pragma mark Protocols on a service
 
+/*
+ * The default configuration for a protocol, or an empty dictionary if the
+ * interface type has none. The interface comes from the getter, as a
+ * service read from preferences loads it on first use.
+ */
+static CFDictionaryRef
+_protocolTemplate(SCNetworkServiceRef service, CFStringRef protocolType)
+{
+	SCNetworkInterfaceRef		interface;
+	CFDictionaryRef			template	= NULL;
+
+	interface = SCNetworkServiceGetInterface(service);
+	if (interface != NULL) {
+		template = __copyProtocolTemplate(SCNetworkInterfaceGetInterfaceType(interface),
+						  protocolType);
+	}
+
+	if (template == NULL) {
+		template = CFDictionaryCreate(NULL,
+					      NULL,
+					      NULL,
+					      0,
+					      &kCFTypeDictionaryKeyCallBacks,
+					      &kCFTypeDictionaryValueCallBacks);
+	}
+
+	return template;
+}
+
 SCNetworkProtocolRef
 SCNetworkServiceCopyProtocol(SCNetworkServiceRef service,
 			     CFStringRef protocolType)
@@ -712,6 +741,7 @@ SCNetworkServiceAddProtocolType(SCNetworkServiceRef service,
 	SCNetworkServicePrivateRef	sp	= (SCNetworkServicePrivateRef)service;
 	CFDictionaryRef			entity;
 	CFDictionaryRef			newEntity;
+	SCNetworkProtocolRef		protocol;
 	CFStringRef			path;
 	Boolean				ok;
 
@@ -733,13 +763,25 @@ SCNetworkServiceAddProtocolType(SCNetworkServiceRef service,
 		return FALSE;
 	}
 
-	/* a fresh, empty protocol entity — configure it via the protocol */
 	newEntity = CFDictionaryCreate(NULL, NULL, NULL, 0,
 				       &kCFTypeDictionaryKeyCallBacks,
 				       &kCFTypeDictionaryValueCallBacks);
 	ok = SCPreferencesPathSetValue(sp->prefs, path, newEntity);
 	CFRelease(newEntity);
 	CFRelease(path);
+	if (!ok) {
+		return FALSE;
+	}
+
+	/* seed the protocol with its template, as Darwin does */
+	protocol = SCNetworkServiceCopyProtocol(service, protocolType);
+	if (protocol == NULL) {
+		return FALSE;
+	}
+	newEntity = _protocolTemplate(service, protocolType);
+	ok = SCNetworkProtocolSetConfiguration(protocol, newEntity);
+	CFRelease(newEntity);
+	CFRelease(protocol);
 	return ok;
 }
 
@@ -778,6 +820,37 @@ SCNetworkServiceRemoveProtocolType(SCNetworkServiceRef service,
 
 #pragma mark -
 #pragma mark SCNetworkService SPIs
+
+CFComparisonResult
+_SCNetworkServiceCompare(const void *val1, const void *val2, void *context)
+{
+	CFStringRef		id1;
+	CFStringRef		id2;
+	CFArrayRef		order	= (CFArrayRef)context;
+	SCNetworkServiceRef	s1	= (SCNetworkServiceRef)val1;
+	SCNetworkServiceRef	s2	= (SCNetworkServiceRef)val2;
+
+	id1 = SCNetworkServiceGetServiceID(s1);
+	id2 = SCNetworkServiceGetServiceID(s2);
+
+	if (order != NULL) {
+		CFIndex	o1;
+		CFIndex	o2;
+		CFRange	range;
+
+		range = CFRangeMake(0, CFArrayGetCount(order));
+		o1 = CFArrayGetFirstIndexOfValue(order, range, id1);
+		o2 = CFArrayGetFirstIndexOfValue(order, range, id2);
+
+		if (o1 > o2) {
+			return (o2 != kCFNotFound) ? kCFCompareGreaterThan : kCFCompareLessThan;
+		} else if (o1 < o2) {
+			return (o1 != kCFNotFound) ? kCFCompareLessThan    : kCFCompareGreaterThan;
+		}
+	}
+
+	return CFStringCompare(id1, id2, 0);
+}
 
 Boolean
 __SCNetworkServiceExistsForInterface(CFArrayRef services, SCNetworkInterfaceRef interface)
@@ -849,29 +922,6 @@ __SCNetworkServiceNextName(SCNetworkServiceRef service)
 	CFRelease(newComponents);
 
 	return name;
-}
-
-static CFDictionaryRef
-_protocolTemplate(SCNetworkServiceRef service, CFStringRef protocolType)
-{
-	SCNetworkServicePrivateRef	sp		= (SCNetworkServicePrivateRef)service;
-	CFDictionaryRef			template	= NULL;
-
-	if (sp->interface != NULL) {
-		template = __copyProtocolTemplate(SCNetworkInterfaceGetInterfaceType(sp->interface),
-						  protocolType);
-	}
-
-	if (template == NULL) {
-		template = CFDictionaryCreate(NULL,
-					      NULL,
-					      NULL,
-					      0,
-					      &kCFTypeDictionaryKeyCallBacks,
-					      &kCFTypeDictionaryValueCallBacks);
-	}
-
-	return template;
 }
 
 Boolean
