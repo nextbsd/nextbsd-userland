@@ -289,6 +289,14 @@ CFStringRef
 SCDynamicStoreKeyCreateConsoleUser	(CFAllocatorRef			allocator);
 
 /*!
+	@function SCDynamicStoreKeyCreateProxies
+	@discussion Returns the key for the system's proxy configuration,
+		"State:/Network/Global/Proxies". Caller releases.
+ */
+CFStringRef
+SCDynamicStoreKeyCreateProxies		(CFAllocatorRef			allocator);
+
+/*!
 	@function SCDynamicStoreKeyCreateNetworkGlobalEntity
 	@discussion Returns the SCDynamicStore key for
 		"<domain>/Network/Global/<entity>". e.g. with

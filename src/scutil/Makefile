@@ -4,7 +4,7 @@
 # (scutil.tproj/), trimmed to what our libSystemConfiguration backs:
 # the interactive dynamic-store session, -w, --prefs, --get / --set
 # (ComputerName, HostName, LocalHostName) and --error. Each source file
-# notes what it drops and why; the --net / --dns / --proxy / --nwi /
+# notes what it drops and why; the --net / --dns / --nwi /
 # -r sources (net*.c, nc.c, most of tests.c) are not carried.
 #
 #   scutil.c, commands.c, dictionary.c, session.c,

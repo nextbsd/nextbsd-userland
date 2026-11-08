@@ -14,6 +14,7 @@
  */
 #include "sc_publish.h"
 #include "bound_state.h"	/* primary election (#41) */
+#include "ipconfig_prefs.h"	/* the primary service's Proxies (#573) */
 
 #include <SystemConfiguration/SCDynamicStore.h>
 #include <SystemConfiguration/SCPrivate.h>	/* _SC_NOTIFY_NETWORK_CHANGE */
@@ -558,6 +559,77 @@ sc_publish_ipv6(struct sc_publish *p, const char *ifname,
 }
 
 /*
+ * Bring State:/Network/Global/Proxies in line with the Proxies entity of
+ * the service on `primary` (NULL: no primary), as ip_plugin.c does (#573).
+ * Absent when there is no primary or its service has no Proxies entity,
+ * never a placeholder: SCDynamicStoreCopyProxies answers an empty
+ * dictionary for a missing key. Written only on a change, which is also
+ * what posts network_change.proxy; Apple's IPMonitor does the same.
+ * It also layers on scoped and supplemental proxies, which NextBSD has no
+ * source for yet.
+ */
+static void
+update_proxies(SCDynamicStoreRef store, const char *primary)
+{
+	CFStringRef key;
+	CFDictionaryRef want;
+	CFPropertyListRef have;
+	Boolean changed = FALSE;
+
+	key = mkstr("State:/Network/Global/Proxies");
+	if (key == NULL)
+		return;
+	want = (primary != NULL) ?
+	    (CFDictionaryRef)ipconfig_prefs_copy_proxies(primary) : NULL;
+	have = SCDynamicStoreCopyValue(store, key);
+	if (want != NULL) {
+		if (have == NULL || !CFEqual(have, want)) {
+			if (SCDynamicStoreSetValue(store, key, want)) {
+				xlog("published proxies from %s", primary);
+				changed = TRUE;
+			} else {
+				xlog("SCDynamicStoreSetValue("
+				    "State:/Network/Global/Proxies) failed: %s",
+				    SCErrorString(SCError()));
+			}
+		}
+	} else if (have != NULL) {
+		if (SCDynamicStoreRemoveValue(store, key)) {
+			xlog("cleared State:/Network/Global/Proxies");
+			changed = TRUE;
+		}
+	}
+	if (have != NULL)
+		CFRelease(have);
+	if (want != NULL)
+		CFRelease(want);
+	CFRelease(key);
+	if (changed) {
+		uint32_t status;
+
+		status = notify_post(_SC_NOTIFY_NETWORK_CHANGE_PROXY);
+		if (status != NOTIFY_STATUS_OK)
+			xlog("notify_post(" _SC_NOTIFY_NETWORK_CHANGE_PROXY
+			    ") failed: status=%u", status);
+	}
+}
+
+void
+sc_publish_refresh_proxies(void)
+{
+	SCDynamicStoreRef store;
+	char primary[IF_NAMESIZE];
+
+	store = SCDynamicStoreCreate(NULL, CFSTR("ipconfigd-proxies"), NULL,
+	    NULL);
+	if (store == NULL)
+		return;
+	update_proxies(store, bound_state_primary(primary, sizeof(primary)) ?
+	    primary : NULL);
+	CFRelease(store);
+}
+
+/*
  * Elect the primary service and write State:/Network/Global/IPv4 (#41).
  *
  * The primary is the highest-ranked *currently bound* interface — wired
@@ -596,6 +668,7 @@ sc_publish_update_primary(struct sc_publish *p)
 			    "State:/Network/Global/IPv4");
 		}
 		CFRelease(gkey);
+		update_proxies(p->store, NULL);
 		post_network_change();
 		return (0);
 	}
@@ -628,8 +701,10 @@ sc_publish_update_primary(struct sc_publish *p)
 	if (gk_svc != NULL) CFRelease(gk_svc);
 	if (gdict != NULL) CFRelease(gdict);
 	CFRelease(gkey);
-	if (rc == 0)
+	if (rc == 0) {
+		update_proxies(p->store, primary);
 		post_network_change();
+	}
 	return (rc);
 }
 

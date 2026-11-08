@@ -50,9 +50,9 @@
  * (scutil.tproj/scutil.c). Carried: the interactive SCDynamicStore
  * session, "-w key [-t timeout]", "--prefs [file]", "--get" / "--set"
  * for ComputerName, HostName and LocalHostName (plus the extended
- * "--get file path key"), "--renew" and "--error". Dropped until their backing
- * APIs exist in our libSystemConfiguration: "-r" / "-W" reachability,
- * "--dns", "--proxy", "--nwi", "--net", "--snapshot",
+ * "--get file path key"), "--proxy", "--renew" and "--error". Dropped
+ * until their backing APIs exist in our libSystemConfiguration:
+ * "-r" / "-W" reachability, "--dns", "--nwi", "--net", "--snapshot",
  * "--configuration", "--advisory", "--rank", "--log" and the interface
  * preference switches. "--nc" (VPN) is out of scope: there is no VPN
  * stack.
@@ -98,6 +98,7 @@ static const struct option longopts[] = {
 	{ "error",		required_argument,	NULL,	0	},
 	{ "help",		no_argument,		NULL,	'?'	},
 	{ "prefs",		no_argument,		NULL,	0	},
+	{ "proxy",		no_argument,		NULL,	0	},
 	{ "renew",		required_argument,	NULL,	0	},
 	{ "set",		required_argument,	NULL,	0	},
 	{ NULL,			0,			NULL,	0	}
@@ -331,6 +332,9 @@ usage(const char *command)
 	SCPrint(TRUE, stderr, CFSTR("\n"));
 	SCPrint(TRUE, stderr, CFSTR("   or: %s --error err#\n"), command);
 	SCPrint(TRUE, stderr, CFSTR("\tdisplay a descriptive message for the given error code\n"));
+	SCPrint(TRUE, stderr, CFSTR("\n"));
+	SCPrint(TRUE, stderr, CFSTR("   or: %s --proxy\n"), command);
+	SCPrint(TRUE, stderr, CFSTR("\tshow \"proxy\" configuration.\n"));
 
 	exit (EX_USAGE);
 }
@@ -348,6 +352,7 @@ int
 main(int argc, char * const argv[])
 {
 	Boolean			doPrefs			= FALSE;
+	Boolean			doProxy			= FALSE;
 	char			*error			= NULL;
 	char			*get			= NULL;
 	extern int		optind;
@@ -387,6 +392,9 @@ main(int argc, char * const argv[])
 				xStore++;
 			} else if (strcmp(longopts[opti].name, "prefs") == 0) {
 				doPrefs = TRUE;
+				xStore++;
+			} else if (strcmp(longopts[opti].name, "proxy") == 0) {
+				doProxy = TRUE;
 				xStore++;
 			} else if (strcmp(longopts[opti].name, "renew") == 0) {
 				renew = optarg;
@@ -449,6 +457,12 @@ main(int argc, char * const argv[])
 
 		do_getPref(get, argc, argv);
 		exit(0);
+	}
+
+	/* are we looking up the proxy configuration */
+	if (doProxy) {
+		do_showProxyConfiguration(argc, (char **)argv);
+		/* NOT REACHED */
 	}
 
 	/* are we changing a preference value */

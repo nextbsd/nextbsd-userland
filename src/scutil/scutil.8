@@ -3,7 +3,7 @@
 .\"
 .\" Vendored from apple-oss-distributions/configd @ configd-1405.120.5
 .\" (scutil.tproj/scutil.8). NextBSD: trimmed to the options this port
-.\" carries; -r, --dns, --proxy and --nc are not built.
+.\" carries; -r, --dns and --nc are not built.
 .\"
 .Dd January 23, 2008
 .Dt SCUTIL 8
@@ -28,6 +28,9 @@
 .Br
 .Nm
 .Fl -error Ar err#
+.Br
+.Nm
+.Fl -proxy
 .Br
 .Nm
 .Fl -renew Ar interface
@@ -84,6 +87,10 @@ The
 .Fl -error
 option reports the descriptive message for a SystemConfiguration
 status code.
+.Pp
+The
+.Fl -proxy
+option reports the current system proxy configuration.
 .\".Pp
 .\"Lastly, the
 .\".Fl -net
@@ -138,6 +145,8 @@ option requires super-user access.
 .It Fl -error Ar err#
 Reports the descriptive message for the given SystemConfiguration
 status code.
+.It Fl -proxy
+Reports the current proxy configuration.
 .It Fl -renew Ar interface
 Asks the system to renew the configuration of the named network
 interface now: a DHCP lease is renewed at once, and a Router
