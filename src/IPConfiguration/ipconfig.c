@@ -21,8 +21,9 @@
  *
  * `set` builds Apple's method dictionary for every method Apple
  * accepts, so the client is complete; which methods ipconfigd can act
- * on is the daemon's call. Today that is DHCP, MANUAL and NONE — the
- * rest answer "operation not supported".
+ * on is the daemon's call. Today that is DHCP, MANUAL and NONE, and
+ * AUTOMATIC-V6, MANUAL-V6, NONE-V4 and NONE-V6 (#423); the rest answer
+ * "operation not supported".
  *
  * Install: /usr/sbin/ipconfig.
  */

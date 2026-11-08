@@ -11,6 +11,9 @@
 #ifndef APPLY_LEASE_V6_H
 #define APPLY_LEASE_V6_H
 
+#include <stdbool.h>
+#include <stdint.h>
+
 #include "ra_listen.h"
 
 /*
@@ -20,9 +23,26 @@
  * needs an LL source on the egress interface. FreeBSD's per-image
  * default for `net.inet6.ip6.auto_linklocal` in this build is 0 (the
  * stack leaves IFDISABLED set on attach), so we cannot rely on the
- * kernel to auto-configure the LL. Returns 0 on success.
+ * kernel to auto-configure the LL. `accept_rtadv` sets
+ * ND6_IFF_ACCEPT_RTADV (Automatic) or clears it (every other method,
+ * #423). `ll_out`, if not NULL, gets the link-local address. Returns 0 on
+ * success.
  */
-int bring_v6_up(const char *ifname);
+int bring_v6_up(const char *ifname, bool accept_rtadv, struct in6_addr *ll_out);
+
+/*
+ * Take IPv6 off `ifname` (#423): set ND6_IFF_IFDISABLED, clear
+ * ACCEPT_RTADV and AUTO_LINKLOCAL, and remove every IPv6 address on it.
+ */
+int v6_turn_off(const char *ifname);
+
+/*
+ * Install a Manual IPv6 address (#423): infinite lifetimes and no
+ * IN6_IFF_AUTOCONF, as Apple's manual_v6 does. Tentative until DAD passes,
+ * like a SLAAC address.
+ */
+int install_v6_manual_address(const char *ifname, const struct in6_addr *addr,
+    uint8_t prefix_len);
 
 /*
  * Build the SLAAC unicast address from `info`'s prefix + an EUI-64

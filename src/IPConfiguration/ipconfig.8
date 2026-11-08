@@ -40,6 +40,24 @@
 .Cm MANUAL
 .Ar ip-address
 .Ar subnet-mask
+.Nm
+.Cm set
+.Ar interface-name
+.Cm NONE-V4
+.Nm
+.Cm set
+.Ar interface-name
+.Cm NONE-V6
+.Nm
+.Cm set
+.Ar interface-name
+.Cm AUTOMATIC-V6
+.Nm
+.Cm set
+.Ar interface-name
+.Cm MANUAL-V6
+.Ar ipv6-address
+.Ar prefix-length
 .Sh DESCRIPTION
 .Nm
 is a utility that communicates with the IPConfiguration agent
@@ -114,11 +132,26 @@ over the specific interface.
 .It Cm set Ar interface-name Cm NONE
 .It Cm set Ar interface-name Cm DHCP
 .It Cm set Ar interface-name Cm MANUAL Ar ip-address Ar subnet-mask
+.It Cm set Ar interface-name Cm NONE-V4
+.It Cm set Ar interface-name Cm NONE-V6
+.It Cm set Ar interface-name Cm AUTOMATIC-V6
+.It Cm set Ar interface-name Cm MANUAL-V6 Ar ipv6-address Ar prefix-length
 Sets the interface to have a new temporary network service of the
-given type.  Any existing service on the interface is first de-configured
-before the new service is instantiated.
+given type.  Any existing service of the same address family on the
+interface is first de-configured before the new service is instantiated.
+The other address family is not changed.
 .Pp
-If NONE is specified, the existing service is de-configured.
+If NONE or NONE-V4 is specified, the existing IPv4 service is de-configured.
+If NONE-V6 is specified, the existing IPv6 service is de-configured and
+IPv6 is turned off on the interface.
+.Pp
+AUTOMATIC-V6 configures an IPv6 address from Router Advertisements.
+.Pp
+MANUAL-V6 requires the specification of an IPv6 address
+.Ar ipv6-address
+and a prefix length
+.Ar prefix-length .
+A link-local address is not accepted.
 .Pp
 DHCP requires no additional arguments. The IP address, subnet mask,
 router, and DNS information are retrieved automatically.

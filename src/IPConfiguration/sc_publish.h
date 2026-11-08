@@ -50,6 +50,12 @@ struct sc_publish	*sc_publish_open(const char *session_name);
 void	sc_publish_service_begin(const char *ifname, const char *service_id);
 
 /*
+ * The same for `ifname`'s IPv6 service (#423): State:/.../IPv6 is keyed by
+ * this ID, which an `ipconfig set` IPv6 method has of its own, as on Darwin.
+ */
+void	sc_publish_service_begin_v6(const char *ifname, const char *service_id);
+
+/*
  * Publish lease state for `ifname` under
  * State:/Network/Service/<serviceID>/IPv4. (.../DNS is sc_publish_dns().)
  * The <serviceID> is the one cached per interface (see
@@ -129,16 +135,17 @@ int	sc_publish_dhcp(struct sc_publish *p, const char *ifname,
 int	sc_publish_update_primary(struct sc_publish *p);
 
 /*
- * Remove the previously-published keys for `ifname` (IPv4, DNS, IPv6,
- * DHCP). Called on lease loss or teardown so observers see the service
- * transition to "no v4". Does not re-elect the primary — the caller runs
+ * Remove the previously-published keys for `ifname` (IPv4, DNS, DHCP).
+ * Called on lease loss or teardown so observers see the service
+ * transition to "no v4". The IPv6 key belongs to the IPv6 service and
+ * stays (#423). Does not re-elect the primary — the caller runs
  * sc_publish_update_primary() once bound_state is updated.
  */
 int	sc_publish_remove(struct sc_publish *p, const char *ifname);
 
 /*
- * Remove only State:/Network/Service/<serviceID>/IPv6 for `ifname` — its SLAAC
- * address turned out to be a duplicate (#349) while IPv4 stays bound.
+ * Remove only State:/Network/Service/<serviceID>/IPv6 for `ifname` — the IPv6
+ * service stopped, or its address turned out to be a duplicate (#349).
  * Returns 0 on success.
  */
 int	sc_publish_remove_ipv6(struct sc_publish *p, const char *ifname);
