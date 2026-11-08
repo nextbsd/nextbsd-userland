@@ -7,12 +7,10 @@
  * generated server (wlanServer.{c,h}) and user (wlanUser.c / wlan.h) sides
  * agree. Same arrangement as ipconfig_mig_types.h.
  *
- * Everything here is a FIXED-SIZE array or a scalar, deliberately. MIG
- * out-of-line data is broken in this port's kernel (ipconfig.defs:19-22 says so
- * explicitly, which is why ipconfigd vendors only 2 of Apple's ~21 routines —
- * Apple's ipconfig_set takes an OOL xmlData). So wland cannot hand a scan-result
- * plist back over MIG, and instead uses the flat indexed pattern ipconfigd
- * already established: wlan_scan_count() then wlan_scan_entry(i).
+ * Everything here is a FIXED-SIZE array or a scalar, deliberately. Scan results
+ * use the flat indexed pattern ipconfigd established (wlan_scan_count() then
+ * wlan_scan_entry(i)), and wlan_connect_eap's credentials stay inline rather
+ * than travelling in out-of-line pages. See the note at the top of wlan.defs.
  */
 #ifndef _WLAN_MIG_TYPES_H
 #define _WLAN_MIG_TYPES_H
@@ -41,6 +39,29 @@ typedef char	WLANBSSID[18];
  */
 #define	WLAN_PSK_MAX	64
 typedef char	WLANPassphrase[WLAN_PSK_MAX + 1];
+
+/*
+ * 802.1X credentials for wlan_connect_eap. Names and secrets get 256 bytes, and
+ * certificate and key paths get 1024 (PATH_MAX). All of them together stay well
+ * under WLAN_RPC_BUFSZ.
+ */
+#define	WLAN_EAP_STR_MAX	255
+#define	WLAN_EAP_PATH_MAX	1023
+typedef char	WLANEAPName[WLAN_EAP_STR_MAX + 1];
+typedef char	WLANEAPSecret[WLAN_EAP_STR_MAX + 1];
+typedef char	WLANEAPPath[WLAN_EAP_PATH_MAX + 1];
+
+/* EAP method numbers: Darwin's EAPType (eap8021x EAP.h) and the IANA values. */
+#define	WLAN_EAP_TYPE_TLS	13
+#define	WLAN_EAP_TYPE_TTLS	21
+#define	WLAN_EAP_TYPE_PEAP	25
+
+/* TTLS inner method. Zero is Darwin's default, MSCHAPv2. */
+typedef enum {
+	wlan_ttls_inner_mschapv2_e	= 0,
+	wlan_ttls_inner_pap_e		= 1,
+	wlan_ttls_inner_chap_e		= 2
+} wlan_ttls_inner_t;
 
 /* Association state, mirroring what wpa_supplicant reports. */
 typedef enum {
@@ -80,7 +101,12 @@ typedef enum {
 	wlan_status_not_associated_e		= 4,
 	wlan_status_index_out_of_range_e		= 5,
 	wlan_status_internal_error_e		= 6,
-	wlan_status_operation_not_supported_e	= 7
+	wlan_status_operation_not_supported_e	= 7,
+	wlan_status_enterprise_required_e	= 8,	/* 802.1X needs --eap */
+	wlan_status_no_trust_anchor_e		= 9,	/* no CA and no name */
+	wlan_status_ca_bundle_missing_e		= 10,	/* name given, no bundle */
+	wlan_status_credential_file_e		= 11,	/* unusable cert/key/pin */
+	wlan_status_key_file_insecure_e		= 12	/* key readable by others */
 } wlan_status_t;
 
 #endif /* _WLAN_MIG_TYPES_H */

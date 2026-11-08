@@ -6,14 +6,32 @@
 #include "wpa_ctrl.h"
 
 #include <net/if.h>
+#include <sys/stat.h>
 
+#include <ctype.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <time.h>
 
 #define	SCAN_MAX	64
+
+/*
+ * The trust anchors --server-name is checked against when no --ca-cert is
+ * given: certctl(8)'s bundle, NextBSD's counterpart to Darwin's system roots.
+ */
+#define	SYSTEM_CA_BUNDLE	"/etc/ssl/cert.pem"
+
+/* "hash://server/sha256/" + 64 hex digits, as tls_openssl.c parses it. */
+#define	CA_PIN_PREFIX		"hash://server/sha256/"
+#define	CA_PIN_HEX_LEN		64
+
+/* How long autojoin leaves enterprise networks alone after an EAP failure. */
+#define	EAP_HOLD_MIN_SEC	300
+#define	EAP_HOLD_MAX_SEC	3600
 
 struct supplicant {
 	char			ifname[IF_NAMESIZE];
@@ -28,6 +46,10 @@ struct supplicant {
 
 	bool			autojoin_armed;	/* autojoin awaits a sweep */
 	bool			autojoin_ready;	/* ...and it has finished */
+
+	bool			eap_attempt_failed; /* counted this attempt */
+	unsigned int		eap_failures;	/* in a row */
+	time_t			eap_hold_until;	/* no enterprise autojoin */
 
 	struct assoc_state	state;
 };
@@ -242,6 +264,7 @@ supplicant_refresh_scan(struct supplicant *s)
 		s->scan[n].channel = freq_to_channel(freq);
 		s->scan[n].rssi = (int)strtol(f[2], NULL, 10);
 		s->scan[n].security = flags_to_security(f[3]);
+		s->scan[n].psk_ok = (strstr(f[3], "PSK") != NULL);
 		(void)strlcpy(s->scan[n].ssid, f[4] != NULL ? f[4] : "",
 		    sizeof(s->scan[n].ssid));
 
@@ -300,14 +323,15 @@ supplicant_autojoin_take(struct supplicant *s)
 	return (ready);
 }
 
-int
-supplicant_connect(struct supplicant *s, const char *ssid, const char *psk)
+/*
+ * Replace whatever network block exists with a new, empty one. Returns its id,
+ * or -1.
+ */
+static int
+network_fresh(struct supplicant *s)
 {
-	char cmd[256], reply[64];
+	char reply[64];
 	int id;
-
-	if (s == NULL || ssid == NULL || ssid[0] == '\0')
-		return (-1);
 
 	/* This choice stands: a sweep still in flight must not override it. */
 	s->autojoin_armed = false;
@@ -330,6 +354,21 @@ supplicant_connect(struct supplicant *s, const char *ssid, const char *psk)
 		xlog("%s: ADD_NETWORK returned '%s'", s->ifname, reply);
 		return (-1);
 	}
+	return (id);
+}
+
+int
+supplicant_connect(struct supplicant *s, const char *ssid, const char *psk)
+{
+	char cmd[256];
+	int id;
+
+	if (s == NULL || ssid == NULL || ssid[0] == '\0')
+		return (-1);
+
+	id = network_fresh(s);
+	if (id < 0)
+		return (-1);
 
 	(void)snprintf(cmd, sizeof(cmd), "SET_NETWORK %d ssid \"%s\"", id, ssid);
 	if (!wpa_ctrl_ok(s->cmd, cmd)) {
@@ -369,6 +408,318 @@ supplicant_connect(struct supplicant *s, const char *ssid, const char *psk)
 	xlog("%s: associating with '%s' (%s)", s->ifname, ssid,
 	    (psk != NULL && psk[0] != '\0') ? "PSK" : "open");
 	return (0);
+}
+
+bool
+supplicant_needs_eap(const struct supplicant *s, const char *ssid,
+    bool have_psk)
+{
+	int i;
+
+	if (s == NULL || ssid == NULL)
+		return (false);
+	for (i = 0; i < s->scan_n; i++) {
+		if (s->scan[i].security != wlan_security_enterprise_e ||
+		    strcmp(s->scan[i].ssid, ssid) != 0)
+			continue;
+		if (!have_psk || !s->scan[i].psk_ok)
+			return (true);
+	}
+	return (false);
+}
+
+/* A certificate or key path wland can hand to wpa_supplicant: absolute, a file. */
+static bool
+credential_file_ok(const char *path, struct stat *st)
+{
+	if (path[0] != '/') {
+		errno = EINVAL;
+		return (false);
+	}
+	if (stat(path, st) != 0)
+		return (false);
+	if (!S_ISREG(st->st_mode)) {
+		errno = EFTYPE;
+		return (false);
+	}
+	return (true);
+}
+
+/* Is this a well-formed hash://server/sha256/<hex> server certificate pin? */
+static bool
+ca_is_pin(const char *ca)
+{
+	size_t plen = strlen(CA_PIN_PREFIX);
+	size_t i;
+
+	if (strncmp(ca, CA_PIN_PREFIX, plen) != 0 ||
+	    strlen(ca) != plen + CA_PIN_HEX_LEN)
+		return (false);
+	for (i = plen; ca[i] != '\0'; i++) {
+		if (!isxdigit((unsigned char)ca[i]))
+			return (false);
+	}
+	return (true);
+}
+
+wlan_status_t
+supplicant_eap_check(const struct eap_config *c)
+{
+	struct stat st;
+	bool have_ca, have_name, password_auth;
+
+	if (c->type != WLAN_EAP_TYPE_TLS && c->type != WLAN_EAP_TYPE_TTLS &&
+	    c->type != WLAN_EAP_TYPE_PEAP) {
+		xlog("802.1X: unknown EAP type %d", c->type);
+		return (wlan_status_invalid_parameter_e);
+	}
+	if (c->ttls_inner != wlan_ttls_inner_mschapv2_e &&
+	    c->ttls_inner != wlan_ttls_inner_pap_e &&
+	    c->ttls_inner != wlan_ttls_inner_chap_e) {
+		xlog("802.1X: unknown TTLS inner method %d", (int)c->ttls_inner);
+		return (wlan_status_invalid_parameter_e);
+	}
+
+	password_auth = (c->type != WLAN_EAP_TYPE_TLS);
+	if (c->identity[0] == '\0') {
+		xlog("802.1X: no identity");
+		return (wlan_status_invalid_parameter_e);
+	}
+	if (password_auth && c->password[0] == '\0') {
+		xlog("802.1X: no password");
+		return (wlan_status_invalid_parameter_e);
+	}
+	if (!password_auth && c->private_key[0] == '\0') {
+		xlog("802.1X: EAP-TLS with no private key");
+		return (wlan_status_invalid_parameter_e);
+	}
+
+	/*
+	 * Server trust. Darwin verifies by default and, with no anchors and no
+	 * names configured, asks the user (EAPTLSUtil.c:1263-1280,1665-1676).
+	 * wland has nobody to ask, so that case fails closed; --no-verify-server
+	 * is the explicit way out. TLSVerifyServerCertificate=false overrides
+	 * everything on Darwin; here giving it with an anchor is an error, since
+	 * the combination has no sensible meaning.
+	 */
+	have_ca = (c->ca_cert[0] != '\0');
+	have_name = (c->server_name[0] != '\0');
+	if (c->no_verify_server) {
+		if (have_ca || have_name) {
+			xlog("802.1X: no_verify_server with a CA or name");
+			return (wlan_status_invalid_parameter_e);
+		}
+	} else if (!have_ca && !have_name) {
+		xlog("802.1X: no CA certificate or server name, and "
+		    "verification was not switched off");
+		return (wlan_status_no_trust_anchor_e);
+	}
+
+	if (have_ca && strncmp(c->ca_cert, "hash://", 7) == 0) {
+		if (!ca_is_pin(c->ca_cert)) {
+			xlog("802.1X: malformed hash:// CA pin");
+			return (wlan_status_credential_file_e);
+		}
+	} else if (have_ca && !credential_file_ok(c->ca_cert, &st)) {
+		xlog("802.1X: CA certificate %s: %s", c->ca_cert,
+		    strerror(errno));
+		return (wlan_status_credential_file_e);
+	} else if (!have_ca && have_name &&
+	    !credential_file_ok(SYSTEM_CA_BUNDLE, &st)) {
+		xlog("802.1X: --server-name needs the system CA bundle "
+		    SYSTEM_CA_BUNDLE ": %s", strerror(errno));
+		return (wlan_status_ca_bundle_missing_e);
+	}
+
+	if (c->client_cert[0] != '\0' &&
+	    !credential_file_ok(c->client_cert, &st)) {
+		xlog("802.1X: client certificate %s: %s", c->client_cert,
+		    strerror(errno));
+		return (wlan_status_credential_file_e);
+	}
+	if (c->private_key[0] != '\0') {
+		if (!credential_file_ok(c->private_key, &st)) {
+			xlog("802.1X: private key %s: %s", c->private_key,
+			    strerror(errno));
+			return (wlan_status_credential_file_e);
+		}
+		if ((st.st_mode & (S_IRGRP | S_IROTH)) != 0) {
+			xlog("802.1X: private key %s is group- or "
+			    "world-readable; refusing it", c->private_key);
+			return (wlan_status_key_file_insecure_e);
+		}
+	}
+	return (wlan_status_success_e);
+}
+
+/*
+ * One SET_NETWORK. The buffer is sized to the value because certificate paths
+ * do not fit the 256 bytes supplicant_connect uses, and is wiped because the
+ * value may be a credential. Rejections log the field name, never the value.
+ */
+static int
+network_set(struct supplicant *s, int id, const char *field, const char *value,
+    bool quoted)
+{
+	char *cmd;
+	bool ok;
+	int n;
+
+	if (quoted)
+		n = asprintf(&cmd, "SET_NETWORK %d %s \"%s\"", id, field, value);
+	else
+		n = asprintf(&cmd, "SET_NETWORK %d %s %s", id, field, value);
+	if (n < 0) {
+		xlog("%s: out of memory setting %s", s->ifname, field);
+		return (-1);
+	}
+	ok = wpa_ctrl_ok(s->cmd, cmd);
+	explicit_bzero(cmd, (size_t)n);
+	free(cmd);
+	if (!ok) {
+		xlog("%s: SET_NETWORK %s rejected", s->ifname, field);
+		return (-1);
+	}
+	return (0);
+}
+
+/* Set a quoted string field, unless it is empty. */
+static int
+network_set_opt(struct supplicant *s, int id, const char *field,
+    const char *value)
+{
+	if (value[0] == '\0')
+		return (0);
+	return (network_set(s, id, field, value, true));
+}
+
+static const char *
+eap_method_name(int type)
+{
+	switch (type) {
+	case WLAN_EAP_TYPE_TLS:		return ("TLS");
+	case WLAN_EAP_TYPE_TTLS:	return ("TTLS");
+	default:			return ("PEAP");
+	}
+}
+
+int
+supplicant_connect_eap(struct supplicant *s, const char *ssid,
+    const struct eap_config *c)
+{
+	char cmd[32];
+	const char *phase2 = NULL;
+	const char *ca;
+	int id;
+
+	if (s == NULL || ssid == NULL || ssid[0] == '\0' || c == NULL)
+		return (-1);
+
+	id = network_fresh(s);
+	if (id < 0)
+		return (-1);
+	s->eap_attempt_failed = false;
+
+	/* PEAP is MSCHAPv2 only; TTLS defaults to it, as Darwin does. */
+	if (c->type == WLAN_EAP_TYPE_PEAP) {
+		phase2 = "auth=MSCHAPV2";
+	} else if (c->type == WLAN_EAP_TYPE_TTLS) {
+		switch (c->ttls_inner) {
+		case wlan_ttls_inner_pap_e:	phase2 = "auth=PAP";	break;
+		case wlan_ttls_inner_chap_e:	phase2 = "auth=CHAP";	break;
+		default:			phase2 = "auth=MSCHAPV2"; break;
+		}
+	}
+
+	if (network_set_opt(s, id, "ssid", ssid) != 0 ||
+	    network_set(s, id, "key_mgmt", "WPA-EAP", false) != 0 ||
+	    network_set(s, id, "eap", eap_method_name(c->type), false) != 0 ||
+	    network_set_opt(s, id, "identity", c->identity) != 0 ||
+	    network_set_opt(s, id, "anonymous_identity",
+	    c->anonymous_identity) != 0 ||
+	    network_set_opt(s, id, "client_cert", c->client_cert) != 0 ||
+	    network_set_opt(s, id, "private_key", c->private_key) != 0 ||
+	    network_set_opt(s, id, "private_key_passwd",
+	    c->key_passphrase) != 0)
+		goto fail;
+	if (phase2 != NULL &&
+	    (network_set_opt(s, id, "password", c->password) != 0 ||
+	    network_set_opt(s, id, "phase2", phase2) != 0))
+		goto fail;
+
+	if (!c->no_verify_server) {
+		/*
+		 * A name with no CA is checked against the system's roots.
+		 * domain_suffix_match on its own is not enough: with no
+		 * ca_cert, wpa_supplicant skips chain validation
+		 * (tls_openssl.c, ca_cert_verify) and would match the name
+		 * against any self-signed certificate that claims it. Darwin
+		 * evaluates the chain against the system's anchors here, too.
+		 */
+		ca = (c->ca_cert[0] != '\0') ? c->ca_cert : SYSTEM_CA_BUNDLE;
+		if (network_set_opt(s, id, "ca_cert", ca) != 0 ||
+		    network_set_opt(s, id, "domain_suffix_match",
+		    c->server_name) != 0)
+			goto fail;
+	}
+
+	(void)snprintf(cmd, sizeof(cmd), "SELECT_NETWORK %d", id);
+	if (!wpa_ctrl_ok(s->cmd, cmd)) {
+		xlog("%s: SELECT_NETWORK failed", s->ifname);
+		goto fail;
+	}
+
+	s->net_id = id;
+	xlog("%s: associating with '%s' (802.1X EAP-%s)", s->ifname, ssid,
+	    eap_method_name(c->type));
+	return (0);
+
+fail:
+	/* Do not leave a half-built block holding credentials. */
+	(void)wpa_ctrl_ok(s->cmd, "REMOVE_NETWORK all");
+	return (-1);
+}
+
+bool
+supplicant_eap_autojoin_held(const struct supplicant *s)
+{
+	return (s != NULL && time(NULL) < s->eap_hold_until);
+}
+
+void
+supplicant_eap_autojoin_release(struct supplicant *s)
+{
+	if (s == NULL)
+		return;
+	s->eap_failures = 0;
+	s->eap_hold_until = 0;
+}
+
+/*
+ * Count one failed EAP attempt and hold enterprise autojoin off. Autojoin
+ * replaces the network block every time, which resets wpa_supplicant's own
+ * back-off, so without this a wrong saved password would reach the RADIUS
+ * server every AUTOJOIN_INTERVAL_SEC and lock the account in the directory
+ * behind it. A certificate error and the EAP failure that follows it are one
+ * attempt; CTRL-EVENT-EAP-STARTED begins the next.
+ */
+static void
+note_eap_failure(struct supplicant *s)
+{
+	time_t hold = EAP_HOLD_MIN_SEC;
+	unsigned int i;
+
+	if (s->eap_attempt_failed)
+		return;
+	s->eap_attempt_failed = true;
+	s->eap_failures++;
+	for (i = 1; i < s->eap_failures && hold < EAP_HOLD_MAX_SEC; i++)
+		hold *= 2;
+	if (hold > EAP_HOLD_MAX_SEC)
+		hold = EAP_HOLD_MAX_SEC;
+	s->eap_hold_until = time(NULL) + hold;
+	xlog("%s: autojoin leaves enterprise networks alone for %d seconds",
+	    s->ifname, (int)hold);
 }
 
 int
@@ -479,6 +830,26 @@ supplicant_pump_events(struct supplicant *s)
 			 */
 			xlog("%s: CONNECTED — 4-way handshake complete",
 			    s->ifname);
+			(void)supplicant_refresh_state(s);
+			supplicant_eap_autojoin_release(s);
+			changed = true;
+		} else if (strncmp(ev, "CTRL-EVENT-EAP-STARTED", 22) == 0) {
+			s->eap_attempt_failed = false;
+		} else if (strncmp(ev, "CTRL-EVENT-EAP-TLS-CERT-ERROR", 29)
+		    == 0) {
+			/*
+			 * The server's certificate did not match the CA or name
+			 * this network was configured with. The event line says
+			 * which check failed and carries no credentials.
+			 */
+			xlog("%s: 802.1X server certificate rejected: %s",
+			    s->ifname, ev);
+			note_eap_failure(s);
+		} else if (strncmp(ev, "CTRL-EVENT-EAP-FAILURE", 22) == 0) {
+			xlog("%s: 802.1X authentication failed (wrong username "
+			    "or password, or the server refused them): %s",
+			    s->ifname, ev);
+			note_eap_failure(s);
 			(void)supplicant_refresh_state(s);
 			changed = true;
 		} else if (strncmp(ev, "CTRL-EVENT-DISCONNECTED", 23) == 0) {

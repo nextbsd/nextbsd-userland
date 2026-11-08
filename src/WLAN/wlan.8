@@ -25,6 +25,20 @@
 .Op Ar passphrase
 .Op Ar interface
 .Nm
+.Cm connect Ar ssid
+.Fl -eap Cm peap | ttls | tls
+.Fl -user Ar name
+.Op Fl -password Ar password
+.Op Fl -anonymous-identity Ar name
+.Op Fl -ttls-inner Cm mschapv2 | pap | chap
+.Op Fl -ca-cert Ar path | Li hash://server/sha256/ Ns Ar hex
+.Op Fl -server-name Ar name
+.Op Fl -no-verify-server
+.Op Fl -client-cert Ar path
+.Op Fl -private-key Ar path
+.Op Fl -key-passphrase Ar passphrase
+.Op Ar interface
+.Nm
 .Cm disconnect
 .Op Ar interface
 .Sh DESCRIPTION
@@ -114,9 +128,79 @@ this returns once the association has been
 .Em requested .
 The 4-way handshake takes time; watch it with
 .Cm status .
+.Pp
+.Cm connect
+refuses a network the last scan showed as WPA-Enterprise unless
+.Fl -eap
+is given.
+See
+.Sx WPA-ENTERPRISE .
 .It Cm disconnect Op Ar interface
 Disassociate and stop autojoining, until asked again.
 .El
+.Sh WPA-ENTERPRISE
+.Fl -eap
+joins a WPA-Enterprise (802.1X) network with PEAP/MSCHAPv2, EAP-TTLS or
+EAP-TLS.
+Like any other network, it is remembered and autojoined.
+.Bl -tag -width "--anonymous-identity"
+.It Fl -user Ar name
+The identity to authenticate as.
+Always required; for EAP-TLS, the name the server expects with the certificate.
+.It Fl -password Ar password
+The password for PEAP or EAP-TTLS.
+If it is absent,
+.Nm
+reads it without echo from the terminal, or as one line of standard input when
+that is not a terminal.
+.It Fl -anonymous-identity Ar name
+The outer identity sent before the encrypted tunnel starts.
+Not sent unless given.
+.It Fl -ttls-inner Cm mschapv2 | pap | chap
+The inner method for EAP-TTLS.
+The default is
+.Cm mschapv2 .
+.It Fl -ca-cert Ar path | Li hash://server/sha256/ Ns Ar hex
+The CA certificate the server's certificate must chain to, as a PEM file, or the
+SHA-256 hash of the server's certificate to pin it.
+.It Fl -server-name Ar name
+The server certificate must carry this name or a name ending in
+.Pf . Ar name .
+With no
+.Fl -ca-cert ,
+its chain is checked against the system's roots in
+.Pa /etc/ssl/cert.pem .
+.It Fl -no-verify-server
+Do not verify the server at all.
+Anyone advertising the SSID can then collect your credentials.
+.It Fl -client-cert Ar path
+The client certificate for EAP-TLS, in PEM.
+Not needed when
+.Fl -private-key
+is a PKCS#12 file.
+.It Fl -private-key Ar path
+The private key for EAP-TLS, in PEM or PKCS#12.
+Refused if it is group- or world-readable.
+.It Fl -key-passphrase Ar passphrase
+The private key's passphrase, if it has one.
+.El
+.Pp
+The server is verified by default.
+With none of
+.Fl -ca-cert ,
+.Fl -server-name
+and
+.Fl -no-verify-server ,
+.Cm connect
+fails: there is no one to ask about an unknown server at boot.
+.Pp
+EAP errors are reported in
+.Pa /var/log/wland.stderr .
+After a failure,
+.Xr wland 8
+holds off autojoining enterprise networks; an explicit
+.Cm connect
+ends the hold.
 .Sh THE ASSOCIATED / CONNECTED DISTINCTION
 802.11 has two moments that look alike and are not:
 .Bl -tag -width "connected"
@@ -194,6 +278,14 @@ note: associated but NOT yet keyed \(em DHCP is held until the
 # wlan status
 state:     connected
 .Ed
+.Pp
+Join a WPA-Enterprise network, typing the password at the prompt:
+.Bd -literal -offset indent
+# wlan connect Corp --eap peap --user alice \e
+    --ca-cert /Local/Library/Corp/ca.pem --server-name radius.corp.example
+802.1X password for alice:
+associating with 'Corp' on wlan0 (802.1X)...
+.Ed
 .Sh DIAGNOSTICS
 .Bl -tag -width "wpa_supplicant is not reachable"
 .It Sy cannot reach org.nextbsd.wlan
@@ -226,6 +318,17 @@ No result arrived in time.
 The list printed is whatever
 .Xr wland 8
 had cached.
+.It Sy this is a WPA-Enterprise (802.1X) network
+.Cm connect
+was given no
+.Fl -eap
+for a network that needs it.
+.It Sy server verification needs --ca-cert or --server-name
+Give one of them, or
+.Fl -no-verify-server
+to turn verification off.
+.It Sy the private key file is group- or world-readable
+Make it readable by its owner only.
 .El
 .Sh SEE ALSO
 .Xr ifconfig 8 ,
@@ -237,9 +340,3 @@ had cached.
 .Sh HISTORY
 .Nm
 first appeared in NextBSD in 2026.
-.Sh BUGS
-WPA-Enterprise (802.1X) networks are listed by
-.Cm scan
-but cannot be joined with
-.Cm connect ,
-which only knows PSK and open networks.

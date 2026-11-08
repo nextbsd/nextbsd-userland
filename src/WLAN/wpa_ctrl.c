@@ -152,18 +152,40 @@ wpa_ctrl_fd(const struct wpa_ctrl *c)
 	return (c != NULL ? c->fd : -1);
 }
 
+/*
+ * A command as it may appear in the log. "SET_NETWORK <id> <field> <value>" is
+ * cut after the field name, because the value can be a credential.
+ */
+static const char *
+cmd_for_log(const char *cmd, char *buf, size_t buf_sz)
+{
+	char *p;
+
+	if (strncmp(cmd, "SET_NETWORK ", 12) != 0)
+		return (cmd);
+	(void)strlcpy(buf, cmd, buf_sz);
+	p = strchr(buf + 12, ' ');		/* after the id */
+	if (p != NULL)
+		p = strchr(p + 1, ' ');		/* after the field */
+	if (p != NULL)
+		*p = '\0';
+	return (buf);
+}
+
 int
 wpa_ctrl_request(struct wpa_ctrl *c, const char *cmd, char *reply,
     size_t reply_sz, int timeout_ms)
 {
 	struct pollfd pfd;
+	char logbuf[64];
 	ssize_t n;
 
 	if (c == NULL || cmd == NULL || reply == NULL || reply_sz == 0)
 		return (-1);
 
 	if (send(c->fd, cmd, strlen(cmd), 0) < 0) {
-		xlog("send(%s): %s", cmd, strerror(errno));
+		xlog("send(%s): %s", cmd_for_log(cmd, logbuf, sizeof(logbuf)),
+		    strerror(errno));
 		return (-1);
 	}
 
@@ -177,7 +199,8 @@ wpa_ctrl_request(struct wpa_ctrl *c, const char *cmd, char *reply,
 			return (-1);
 		}
 		if (n == 0) {
-			xlog("timeout waiting for reply to '%s'", cmd);
+			xlog("timeout waiting for reply to '%s'",
+			    cmd_for_log(cmd, logbuf, sizeof(logbuf)));
 			return (-1);
 		}
 

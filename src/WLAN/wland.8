@@ -3,7 +3,7 @@
 .\" NextBSD-original. There is no upstream page to vendor: Apple's counterpart
 .\" (wifid) is closed source and undocumented.
 .\"
-.Dd October 31, 2026
+.Dd November 8, 2026
 .Dt WLAND 8
 .Os NextBSD
 .Sh NAME
@@ -178,6 +178,40 @@ cannot do this: it offers only a
 .Ql priority
 integer, which cannot express
 .Dq prefer whichever of my known networks I can actually hear best right now .
+.Pp
+A WPA-Enterprise network is rebuilt from its known-network entry.
+After an 802.1X failure,
+.Nm
+leaves enterprise networks alone for 5 minutes, doubling with each further
+failure up to an hour, so that a wrong saved password does not lock the account
+at the directory behind the RADIUS server.
+Connecting successfully, or an explicit
+.Xr wlan 8
+.Cm connect ,
+ends the hold.
+.Sh WPA-ENTERPRISE
+.Xr wpa_supplicant 8
+runs the EAP exchange; on Darwin that is
+.Ql eapolclient .
+.Nm
+injects the network over the control socket, as it does every network.
+PEAP with MSCHAPv2, EAP-TTLS and EAP-TLS are supported.
+Darwin's keychain has no counterpart here, so certificates and keys are files
+named by path, and the password goes in the known-network entry.
+.Pp
+The server's certificate is verified unless the network was joined with
+.Fl -no-verify-server .
+A trusted server name given with no CA certificate is checked against
+.Pa /etc/ssl/cert.pem ,
+the system's roots, as Darwin checks names against its own.
+.Pp
+Failures appear in
+.Pa /var/log/wland.stderr :
+.Ql CTRL-EVENT-EAP-FAILURE
+for a refused login and
+.Ql CTRL-EVENT-EAP-TLS-CERT-ERROR
+for a server certificate that does not match.
+Passwords are never logged.
 .Sh KNOWN NETWORKS AND PASSPHRASE STORAGE
 Remembered networks live in a root-owned
 .Pa preferences.plist
@@ -245,8 +279,3 @@ is never loaded,
 does not exist, and
 .Nm
 waits for a radio that does not come.
-.Pp
-WPA-Enterprise (802.1X) is not implemented.
-It would come from
-.Xr wpa_supplicant 8 Ns 's
-own EAP stack, or not at all.

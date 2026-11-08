@@ -37,6 +37,25 @@ struct scan_entry {
 	int			rssi;		/* dBm */
 	int			channel;
 	wlan_security_t		security;
+	bool			psk_ok;		/* also advertises a PSK AKM */
+};
+
+/*
+ * One WPA-Enterprise network's configuration. The strings are empty when unset.
+ * Autojoin rebuilds it from the known-network entry (see airport.h).
+ */
+struct eap_config {
+	int			type;		/* WLAN_EAP_TYPE_*; 0 = not 802.1X */
+	wlan_ttls_inner_t	ttls_inner;
+	bool			no_verify_server;
+	char			identity[WLAN_EAP_STR_MAX + 1];
+	char			anonymous_identity[WLAN_EAP_STR_MAX + 1];
+	char			password[WLAN_EAP_STR_MAX + 1];
+	char			ca_cert[WLAN_EAP_PATH_MAX + 1];
+	char			server_name[WLAN_EAP_STR_MAX + 1];
+	char			client_cert[WLAN_EAP_PATH_MAX + 1];
+	char			private_key[WLAN_EAP_PATH_MAX + 1];
+	char			key_passphrase[WLAN_EAP_STR_MAX + 1];
 };
 
 /* The current association, as wpa_supplicant reports it. */
@@ -71,6 +90,8 @@ int	supplicant_event_fd(const struct supplicant *s);
  *   CTRL-EVENT-SCAN-RESULTS      fresh scan results are available; refresh cache.
  *   CTRL-EVENT-SCAN-FAILED       the sweep failed; the cache is unchanged.
  *   CTRL-EVENT-SSID-TEMP-DISABLED  auth failed (usually a wrong PSK).
+ *   CTRL-EVENT-EAP-FAILURE       802.1X was refused (usually wrong credentials).
+ *   CTRL-EVENT-EAP-TLS-CERT-ERROR  the server's certificate was rejected.
  */
 bool	supplicant_pump_events(struct supplicant *s);
 
@@ -106,6 +127,32 @@ bool	supplicant_autojoin_take(struct supplicant *s);
  */
 int	supplicant_connect(struct supplicant *s, const char *ssid,
 	    const char *psk);
+
+/*
+ * Would joining `ssid` this way be wrong because the scan cache says it is
+ * 802.1X? True with no PSK (the alternative is an open association), and with a
+ * PSK when the network advertises no PSK AKM at all.
+ */
+bool	supplicant_needs_eap(const struct supplicant *s, const char *ssid,
+	    bool have_psk);
+
+/*
+ * Is this configuration usable? Checks the server-trust rules and the files it
+ * names, and logs the reason when it is not. Call before
+ * supplicant_connect_eap().
+ */
+wlan_status_t	supplicant_eap_check(const struct eap_config *c);
+
+/* Associate with an 802.1X network, as supplicant_connect does for PSK. */
+int	supplicant_connect_eap(struct supplicant *s, const char *ssid,
+	    const struct eap_config *c);
+
+/*
+ * After an EAP failure autojoin leaves enterprise networks alone for a while
+ * (see supplicant_pump_events). An explicit connect releases the hold.
+ */
+bool	supplicant_eap_autojoin_held(const struct supplicant *s);
+void	supplicant_eap_autojoin_release(struct supplicant *s);
 
 /* Disassociate and drop the network block. */
 int	supplicant_disconnect(struct supplicant *s);

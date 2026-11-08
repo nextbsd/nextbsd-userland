@@ -5,15 +5,14 @@
  * inside the closed wifid and is reached through the private Apple80211
  * framework; the only piece Apple ever published (eap8021x / eapolclient) does
  * the EAP exchange and nothing else. So this IDL is ours, and it is shaped to
- * the two hard constraints this port's kernel imposes:
+ * two constraints:
  *
- *   1. MIG OUT-OF-LINE DATA IS BROKEN in this kernel. ipconfig.defs:19-22 says
- *      so explicitly, and it is why ipconfigd vendors only 2 of Apple's ~21
- *      routines (Apple's ipconfig_set takes an OOL xmlData). wland therefore
- *      CANNOT return a scan-results plist over MIG. Instead it uses the flat
- *      indexed pattern ipconfigd already established:
+ *   1. EVERY ARGUMENT IS INLINE: a fixed-size array or a scalar. MIG out-of-line
+ *      data was unusable when this interface was written; configd has used it
+ *      since nextbsd#354, but nothing here needs it, and wlan_connect_eap's
+ *      credentials should not travel in OOL pages anyway. So scan results use
+ *      the flat indexed pattern ipconfigd established:
  *          wlan_scan_count()  then  wlan_scan_entry(i)
- *      Every argument below is a fixed-size array or a scalar.
  *
  *   2. Scan results cannot go in the dynamic store either. CONFIG_DATA_MAX
  *      (config_types.h:74) rejects any key OR value over 8192 bytes, and a busy
@@ -45,6 +44,10 @@ type wlan_state		= MACH_MSG_TYPE_INTEGER_32 ctype: wlan_state_t;
 type wlan_security	= MACH_MSG_TYPE_INTEGER_32 ctype: wlan_security_t;
 type wlan_status_code	= MACH_MSG_TYPE_INTEGER_32 ctype: wlan_status_t;
 type wlan_generation	= MACH_MSG_TYPE_INTEGER_32 ctype: uint32_t;
+type wlan_eap_name	= array[256] of char ctype: WLANEAPName;
+type wlan_eap_secret	= array[256] of char ctype: WLANEAPSecret;
+type wlan_eap_path	= array[1024] of char ctype: WLANEAPPath;
+type wlan_ttls_inner	= MACH_MSG_TYPE_INTEGER_32 ctype: wlan_ttls_inner_t;
 
 /*
  * wlan_if_count / wlan_if_name — enumerate the WLAN interfaces wland owns.
@@ -159,4 +162,31 @@ routine wlan_scan_generation(
 	out generation	: wlan_generation;
 	out last_failed	: boolean_t;
 	out status	: wlan_status_code
+);
+
+/*
+ * wlan_connect_eap — join a WPA-Enterprise (802.1X) network. eap_type is 13
+ * (TLS), 21 (TTLS) or 25 (PEAP), as in Darwin's AcceptEAPTypes. Unused strings
+ * are empty. Like wlan_connect, this returns once the association has been
+ * REQUESTED, and the network is remembered for autojoin.
+ *
+ * The server's certificate is verified unless no_verify_server is set; with
+ * neither ca_cert nor server_name, and no opt-out, the call is refused.
+ */
+routine wlan_connect_eap(
+	server			: mach_port_t;
+	name			: wlan_ifname;
+	ssid			: wlan_ssid;
+	eap_type		: int;
+	ttls_inner		: wlan_ttls_inner;
+	identity		: wlan_eap_name;
+	anonymous_identity	: wlan_eap_name;
+	password		: wlan_eap_secret;
+	ca_cert			: wlan_eap_path;
+	server_name		: wlan_eap_name;
+	client_cert		: wlan_eap_path;
+	private_key		: wlan_eap_path;
+	key_passphrase		: wlan_eap_secret;
+	no_verify_server	: boolean_t;
+	out status		: wlan_status_code
 );

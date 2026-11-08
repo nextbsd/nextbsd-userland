@@ -37,6 +37,12 @@
  * SCPreferences gives us atomic commit (temp file + rename) and a lockfile for
  * free.
  *
+ * A WPA-Enterprise network's entry instead carries AuthenticationProperties,
+ * the dictionary Darwin's 802.1X profiles use (EAPOLClientProfile.c), with
+ * Darwin's key names (EAPClientProperties.h) and three org.nextbsd.* paths for
+ * the files Darwin would hold in the keychain. The password (UserPassword) and
+ * private key passphrase sit beside it in the entry, as a PSK does.
+ *
  * The PSK is PLAINTEXT. That is not a decision we get to make: there is no
  * keychain on NextBSD, it is not started, and it is not planned — so WLAN
  * passwords are plaintext-on-disk no matter which path we take. The only real
@@ -79,6 +85,7 @@ struct known_net {
 	char	ssid[33];
 	char	psk[65];
 	bool	autojoin;
+	struct eap_config eap;		/* eap.type is 0 unless 802.1X */
 };
 
 /*
@@ -86,6 +93,10 @@ struct known_net {
  * Commits immediately — a network you joined should survive a power cut.
  */
 int	known_net_save(const char *ssid, const char *psk, bool autojoin);
+
+/* The same for a WPA-Enterprise network. */
+int	known_net_save_eap(const char *ssid, const struct eap_config *eap,
+	    bool autojoin);
 
 /* Look a network up by SSID. Returns false if not remembered. */
 bool	known_net_find(const char *ssid, struct known_net *out);
@@ -102,9 +113,11 @@ int	known_net_forget(const char *ssid);
  * last-used, per-network preference order, and captive-portal history), but it
  * is the behaviour people actually expect, and it is honest about what it does.
  *
+ * With skip_enterprise, WPA-Enterprise networks are passed over.
+ *
  * Returns false when nothing known is in range.
  */
 bool	known_net_pick(const struct scan_entry *scan, int scan_n,
-	    struct known_net *out);
+	    struct known_net *out, bool skip_enterprise);
 
 #endif /* _WLAND_AIRPORT_H_ */
