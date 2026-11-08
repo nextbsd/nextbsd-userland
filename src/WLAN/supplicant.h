@@ -24,6 +24,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "wlan_mig_types.h"
 
@@ -68,6 +69,7 @@ int	supplicant_event_fd(const struct supplicant *s);
  *   CTRL-EVENT-CONNECTED         4-way handshake done. NOW it is safe to DHCP.
  *   CTRL-EVENT-DISCONNECTED      association lost.
  *   CTRL-EVENT-SCAN-RESULTS      fresh scan results are available; refresh cache.
+ *   CTRL-EVENT-SCAN-FAILED       the sweep failed; the cache is unchanged.
  *   CTRL-EVENT-SSID-TEMP-DISABLED  auth failed (usually a wrong PSK).
  */
 bool	supplicant_pump_events(struct supplicant *s);
@@ -81,6 +83,21 @@ int	supplicant_refresh_scan(struct supplicant *s);
 int	supplicant_scan_count(const struct supplicant *s);
 bool	supplicant_scan_get(const struct supplicant *s, int index,
 	    struct scan_entry *out);
+
+/*
+ * How many sweeps have finished, successfully or not, and whether the latest
+ * one failed. This is how a caller tells that a scan it requested is done.
+ */
+void	supplicant_scan_generation(const struct supplicant *s,
+	    uint32_t *generation, bool *last_failed);
+
+/*
+ * Autojoin asks for a scan and then has to wait for it. Arm after requesting
+ * the scan; once the sweep has finished, take returns true, once. A failed
+ * sweep, or an explicit connect or disconnect in the meantime, disarms it.
+ */
+void	supplicant_autojoin_arm(struct supplicant *s);
+bool	supplicant_autojoin_take(struct supplicant *s);
 
 /*
  * Associate with `ssid` using `psk` (NULL/empty => open network). wland removes

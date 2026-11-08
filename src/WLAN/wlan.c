@@ -49,9 +49,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #define	WLAN_SERVICE_NAME	"org.nextbsd.wlan"
+
+/* How often to check whether a sweep has finished, and for how long. */
+#define	SCAN_POLL_USEC		(200 * 1000)
+#define	SCAN_TIMEOUT_SEC	15
 
 static const char *progname = "wlan";
 
@@ -178,11 +183,26 @@ static int
 cmd_scan(mach_port_t svc, const char *ifarg)
 {
 	WLANInterfaceName name;
+	struct timespec start, now;
 	wlan_status_t st;
+	uint32_t baseline, generation;
+	boolean_t failed;
 	int count, i;
 
 	if (pick_interface(svc, ifarg, name) != 0)
 		return (1);
+
+	/* Read this BEFORE asking, so only a sweep that ends later counts. */
+	if (wlan_scan_generation(svc, name, &baseline, &failed, &st)
+	    != KERN_SUCCESS) {
+		(void)fprintf(stderr, "%s: RPC failed\n", progname);
+		return (1);
+	}
+	if (st != wlan_status_success_e) {
+		(void)fprintf(stderr, "%s: scan: %s\n", progname,
+		    status_str(st));
+		return (1);
+	}
 
 	if (wlan_scan(svc, name, &st) != KERN_SUCCESS) {
 		(void)fprintf(stderr, "%s: RPC failed\n", progname);
@@ -197,9 +217,42 @@ cmd_scan(mach_port_t svc, const char *ifarg)
 	/*
 	 * The scan RPC returns as soon as the scan is REQUESTED — a full-band
 	 * sweep takes seconds, and holding a Mach reply port open that long
-	 * would be rude. Give it a moment, then read the cache.
+	 * would be rude. Poll until wland says the sweep has finished. The
+	 * driver has no timeout of its own, so this one is ours: past it, the
+	 * cache is still worth printing.
 	 */
-	(void)sleep(3);
+	(void)clock_gettime(CLOCK_MONOTONIC, &start);
+	for (;;) {
+		if (wlan_scan_generation(svc, name, &generation, &failed, &st)
+		    != KERN_SUCCESS) {
+			(void)fprintf(stderr, "%s: RPC failed\n", progname);
+			return (1);
+		}
+		if (st != wlan_status_success_e) {
+			(void)fprintf(stderr, "%s: scan: %s\n", progname,
+			    status_str(st));
+			return (1);
+		}
+		/* Signed difference: correct across a counter wrap. */
+		if ((int32_t)(generation - baseline) > 0) {
+			if (failed) {
+				(void)fprintf(stderr, "%s: scan failed\n",
+				    progname);
+				return (1);
+			}
+			break;
+		}
+		(void)clock_gettime(CLOCK_MONOTONIC, &now);
+		if ((now.tv_sec - start.tv_sec) * 1000 +
+		    (now.tv_nsec - start.tv_nsec) / 1000000 >=
+		    SCAN_TIMEOUT_SEC * 1000) {
+			(void)fprintf(stderr, "%s: scan did not finish within "
+			    "%d seconds; showing cached results\n", progname,
+			    SCAN_TIMEOUT_SEC);
+			break;
+		}
+		(void)usleep(SCAN_POLL_USEC);
+	}
 
 	if (wlan_scan_count(svc, name, &count, &st) != KERN_SUCCESS ||
 	    st != wlan_status_success_e) {

@@ -5,7 +5,7 @@
 .\" Apple80211 framework (the airport(8) CLI macOS shipped was removed in
 .\" Sonoma). This page is written for this tool.
 .\"
-.Dd July 14, 2026
+.Dd November 8, 2026
 .Dt WLAN 8
 .Os NextBSD
 .Sh NAME
@@ -74,10 +74,13 @@ The scan RPC returns as soon as the scan is
 not when it completes \(em a full-band sweep takes seconds, and holding a Mach
 reply port open that long would be rude.
 .Nm
-therefore waits a moment before reading the cache.
-Running
-.Cm scan
-twice in quick succession gives fresher results.
+therefore waits for the sweep to finish before reading the cache.
+If it has not finished within 15 seconds,
+.Nm
+prints what is cached, writes a notice to standard error and exits 0.
+If the scan fails,
+.Nm
+says so on standard error and exits 1.
 .It Cm status Op Ar interface
 Print the current association: state, SSID, BSSID, signal, channel, security.
 .Pp
@@ -213,6 +216,16 @@ The interface exists but its
 died or never started.
 .Pa /var/log/wland.stderr
 will say why.
+.It Sy scan failed
+.Xr wpa_supplicant 8
+reported that the sweep failed.
+.Pa /var/log/wland.stderr
+has the event.
+.It Sy scan did not finish within 15 seconds
+No result arrived in time.
+The list printed is whatever
+.Xr wland 8
+had cached.
 .El
 .Sh SEE ALSO
 .Xr ifconfig 8 ,
@@ -225,11 +238,6 @@ will say why.
 .Nm
 first appeared in NextBSD in 2026.
 .Sh BUGS
-.Cm scan
-sleeps a fixed interval before reading results rather than waiting for the
-scan-complete event, so a slow radio may return a short list on the first call.
-Run it again.
-.Pp
 WPA-Enterprise (802.1X) networks are listed by
 .Cm scan
 but cannot be joined with

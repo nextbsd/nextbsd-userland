@@ -44,6 +44,7 @@ type wlan_psk		= array[65] of char ctype: WLANPassphrase;
 type wlan_state		= MACH_MSG_TYPE_INTEGER_32 ctype: wlan_state_t;
 type wlan_security	= MACH_MSG_TYPE_INTEGER_32 ctype: wlan_security_t;
 type wlan_status_code	= MACH_MSG_TYPE_INTEGER_32 ctype: wlan_status_t;
+type wlan_generation	= MACH_MSG_TYPE_INTEGER_32 ctype: uint32_t;
 
 /*
  * wlan_if_count / wlan_if_name — enumerate the WLAN interfaces wland owns.
@@ -66,7 +67,7 @@ routine wlan_if_name(
 /*
  * wlan_scan — ask wpa_supplicant to scan on `name`. Returns as soon as the
  * scan is REQUESTED, not when it completes; results land asynchronously and the
- * caller polls wlan_scan_count. A blocking scan RPC would hold a Mach reply
+ * caller polls wlan_scan_generation. A blocking scan RPC would hold a Mach reply
  * port open for the several seconds a full-band sweep takes.
  */
 routine wlan_scan(
@@ -140,5 +141,22 @@ routine wlan_status(
 	out rssi	: int;
 	out channel	: int;
 	out security	: wlan_security;
+	out status	: wlan_status_code
+);
+
+/*
+ * wlan_scan_generation — how many sweeps have finished on `name`, and whether
+ * the latest one failed. wland bumps the counter after it has refreshed its
+ * cache, so a caller that sees it pass the value read before wlan_scan can
+ * read the results straight away. Polling this keeps wlan_scan asynchronous.
+ *
+ * New routines go at the END of this file: a routine's Mach message id is its
+ * position in the subsystem.
+ */
+routine wlan_scan_generation(
+	server		: mach_port_t;
+	name		: wlan_ifname;
+	out generation	: wlan_generation;
+	out last_failed	: boolean_t;
 	out status	: wlan_status_code
 );
