@@ -27,6 +27,11 @@
  *     recompute was dormant; iter 5 / #156 repoints it at the Setup:
  *     key that prefs_monitor actually writes.)
  *
+ *   - key Setup:/System — the ComputerName, which is the default name of
+ *     Bonjour services. A ComputerName change with an explicit
+ *     LocalHostName touches only this key. Darwin watches it too
+ *     (mDNSMacOSX.c NetworkChangedKey_Computername).
+ *
  *   - key State:/Network/Global/IPv4 — fires when ipconfigd selects a
  *     new primary service / interface. mDNSResponder should re-pick
  *     its default-route interface for unicast DNS-SD fallback.
@@ -39,8 +44,8 @@
  *     interface list (#343).
  *
  * iter 1: registered the subscriptions and logged every callback,
- * plus the HostNames -> mDNS_SetFQDN re-announce path (the debounced
- * Recompute below). It proved the Apple-shape wire-up under our
+ * plus the HostNames -> mDNS_SetFQDN re-announce path (Recompute
+ * below). It proved the Apple-shape wire-up under our
  * libSystemConfiguration, on the same dispatch infrastructure
  * mDNSResponder already uses for AF_UNIX client requests, without
  * changing the existing routing-socket fallback path. The CI markers
@@ -85,14 +90,21 @@
  * thread, drains the pipe, and does the refresh there — matching where
  * InterfaceChangeCallback already runs (no mDNS_Lock).
  *
- * The HostNames path keeps its iter-1 shape: the SCDS callback arms a
- * 25ms debounce timer on g_queue whose handler (mDNSConfigStoreRecompute)
- * reads the labels and calls mDNS_SetFQDN. That call is technically
- * cross-thread too (a latent iter-1 race), but rerouting it through the
- * pipe would entangle the proven hostname path with the new interface
- * path for no functional gain here, so iter 4 leaves it as-is and only
- * adds the interface path on the main thread. See the PR for the
- * tradeoff.
+ * The hostname path uses the same pipe (#433). mDNS_SetFQDN and
+ * mDNS_ConfigChanged both change core state, and the latter calls back
+ * into uds_daemon to re-register services, so they run on the main thread
+ * as well. The SCDS callback sets a bit in g_wake_reasons saying what to
+ * do and writes the wake byte. It does no configd IPC of its own, so every
+ * use of g_store now happens on the main thread.
+ *
+ * A live rename (#433). On any watched key the main thread rereads both
+ * names, as Darwin's mDNSMacOSXNetworkChanged does through
+ * UpdateInterfaceList. If either desired name changed it runs mDNS_SetFQDN
+ * (moves <name>.local) and mDNS_ConfigChanged (udsserver_handle_configchange
+ * re-registers services that use the default name). mDNS_SetFQDN sends no
+ * goodbye for the old address records, and neither does Darwin: mDNSCore's
+ * mDNS_Deregister_internal only starts goodbyes for shared records, and
+ * those records are unique. Peers keep the old name until its TTL expires.
  *
  * The notify_register_dispatch("com.apple.system.hostname") hook the
  * plan describes is intentionally deferred until the libnotify
@@ -157,24 +169,20 @@ extern mDNS mDNSStorage;
 static SCDynamicStoreRef	g_store;
 static dispatch_queue_t		g_queue;
 
-/* Debounce timer state. Apple's mDNSMacOSX.c:6534 SetNetworkChanged()
- * coalesces SCDS bursts via a ~25ms timer before re-running the
- * recompute path. We mirror that pattern: any SCDS callback schedules
- * a dispatch_after at +DEBOUNCE_MS; the timer's handler does the
- * actual SCDS read + label compare + mDNS_SetFQDN. Coalescing keeps
- * a flurry of prefs_monitor publishes (one per key written) from
- * triggering N separate re-announces. */
-#define DEBOUNCE_MS	25
-static dispatch_source_t	g_debounce_timer;
-
-/* Self-pipe used to hop interface-refresh requests from the SCDS
- * dispatch queue (g_queue) onto the mDNS-core MAIN thread. The SCDS
- * callback writes one wake byte to g_wake_wr; mDNSConfigStoreWake,
- * registered on the mDNS event loop's read set, runs on the main
- * thread, drains the pipe, and re-walks the interface list there. See
- * the THREADING note at the top of the file. -1 = not yet created. */
+/* Self-pipe used to hop work from the SCDS dispatch queue (g_queue) onto
+ * the mDNS-core MAIN thread. The SCDS callback sets its reasons in
+ * g_wake_reasons and writes one wake byte to g_wake_wr; mDNSConfigStoreWake,
+ * registered on the mDNS event loop's read set, runs on the main thread,
+ * drains the pipe, and does the work there. See the THREADING note at the
+ * top of the file. -1 = not yet created. */
 static int	g_wake_rd = -1;
 static int	g_wake_wr = -1;
+
+/* Why the main thread was woken. Reasons are kept apart from the wake byte
+ * so that a full pipe can never lose one. */
+#define WAKE_INTERFACES		0x1	/* re-walk the interface list */
+#define WAKE_HOSTNAME		0x2	/* reread the names */
+static unsigned int	g_wake_reasons;
 
 /* TENTATIVE-IPv6 deferral state (#343). Darwin's mDNSMacOSXNetworkChanged
  * reschedules itself SetNetworkChanged(mDNSPlatformOneSecond / 2) while
@@ -188,11 +196,11 @@ static int	g_wake_wr = -1;
 static int	g_retry_pending;
 static mDNSs32	g_tentative_since;
 
-/* Cached State:/Network/HostNames key string (UTF-8). Used to tell the
- * hostname-only path (debounce -> Recompute -> mDNS_SetFQDN) from the
- * interface path (pipe wake -> RefreshInterfaceList) when classifying a
- * changed key in the SCDS callback. Empty if it couldn't be cached. */
+/* Cached Setup:/Network/HostNames and Setup:/System key strings (UTF-8).
+ * Used to tell a name change from an interface change when classifying a
+ * changed key in the SCDS callback. Empty if they couldn't be cached. */
 static char	g_hostnames_key[256];
+static char	g_computername_key[256];
 
 /* Conflict-rename write-back state (#156). g_desired_host is the last
  * LocalHostName we adopted from Setup: (the user/prefs "desired" name);
@@ -202,8 +210,16 @@ static char	g_hostnames_key[256];
  * boot hostlabel mDNS_Init adopted via gethostname(3). g_published_host is
  * the last resolved label we wrote to State:/Network/HostNames, making the
  * StatusCallback publisher idempotent (it fires on every successful
- * registration, not just hostname ones). */
+ * registration, not just hostname ones).
+ *
+ * g_desired_nice does for the ComputerName what g_desired_host does for the
+ * LocalHostName, and is Darwin's m->p->usernicelabel. uds_daemon bumps
+ * m->nicelabel to "foo (2)" when a default-named service conflicts, so
+ * comparing against m->nicelabel would undo that on the next recompute and
+ * mDNS_ConfigChanged would re-register into the same conflict (#433). All
+ * three are used on the main thread only. */
 static domainlabel	g_desired_host;
+static domainlabel	g_desired_nice;
 static domainlabel	g_published_host;
 
 static const char *
@@ -315,13 +331,33 @@ fill_domainlabel(domainlabel *label, const char *s)
 	label->c[0] = (mDNSu8)len;
 }
 
-/* Debounce-fire handler. Reads the SCDS labels, compares them to the
- * cached labels on mDNSStorage, and on change calls mDNS_SetFQDN(m).
+/* Remove State:/Network/HostNames. hostname_observer reconciles that key
+ * into ComputerName every time hostnamed starts, so a conflict-resolved name
+ * left over from before a rename would otherwise override the rename. Fails
+ * harmlessly with kSCStatusNoKey in the usual case where there is none. */
+static void
+remove_state_local_hostname(SCDynamicStoreRef store)
+{
+	CFStringRef key;
+
+	if (store == NULL)
+		return;
+	key = SCDynamicStoreKeyCreateNetworkGlobalEntity(NULL,
+	    kSCDynamicStoreDomainState, CFSTR("HostNames"));
+	if (key == NULL)
+		return;
+	(void)SCDynamicStoreRemoveValue(store, key);
+	CFRelease(key);
+}
+
+/* Reread the desired names and apply a change. Runs on the MAIN thread
+ * (mDNSConfigStoreWake), and does nothing unless a desired name changed.
  *
  * The label compare and assignment happen under mDNS_Lock, but
- * mDNS_SetFQDN() is called AFTER mDNS_Unlock(): mDNS_SetFQDN takes the
- * lock itself, so calling it while already holding the lock is a
- * double-lock. The core detects it and logs
+ * mDNS_SetFQDN() and mDNS_ConfigChanged() are called AFTER mDNS_Unlock():
+ * both end up taking the lock (mDNS_ConfigChanged through uds_daemon), so
+ * calling them while already holding it is a double-lock. The core detects
+ * it and logs
  *
  *   Lock failure: Lock, last lock holder still holds the lock -
  *     caller: mDNS_SetFQDN, last successful lock holder:
@@ -331,15 +367,14 @@ fill_domainlabel(domainlabel *label, const char *s)
  * network but stops accepting client connections — every client gets
  * -65563 kDNSServiceErr_ServiceNotRunning until the daemon restarts. */
 static void
-mDNSConfigStoreRecompute(void *info)
+mDNSConfigStoreRecompute(void)
 {
 	mDNS *const m = &mDNSStorage;
 	char host_cstr[MAX_DOMAIN_LABEL + 1] = "";
 	char nice_cstr[MAX_DOMAIN_LABEL + 1] = "";
 	domainlabel new_host, new_nice;
-	Boolean changed = FALSE;
-
-	(void)info;
+	Boolean host_changed = FALSE;
+	Boolean nice_changed = FALSE;
 
 	if (!read_local_hostname(g_store, host_cstr, sizeof(host_cstr)))
 		return;
@@ -362,22 +397,34 @@ mDNSConfigStoreRecompute(void *info)
 	if (!SameDomainLabelCS(g_desired_host.c, new_host.c)) {
 		g_desired_host = new_host;
 		m->hostlabel = new_host;
-		changed = TRUE;
+		host_changed = TRUE;
 	}
-	if (!SameDomainLabelCS(m->nicelabel.c, new_nice.c)) {
+	/* Likewise the desired ComputerName, not m->nicelabel: see
+	 * g_desired_nice. */
+	if (!SameDomainLabelCS(g_desired_nice.c, new_nice.c)) {
+		g_desired_nice = new_nice;
 		m->nicelabel = new_nice;
-		changed = TRUE;
+		nice_changed = TRUE;
 	}
 	mDNS_Unlock(m);
 
-	/* Outside the lock — mDNS_SetFQDN() acquires it itself. */
-	if (changed) {
-		(void)fprintf(stderr, "mDNSResponder mDNSConfigStore: "
-		    "hostname change -> hostlabel='%s' nicelabel='%s' — "
-		    "calling mDNS_SetFQDN\n", host_cstr, nice_cstr);
-		(void)fflush(stderr);
-		mDNS_SetFQDN(m);
+	if (!host_changed && !nice_changed)
+		return;
+
+	/* The conflict-resolved name belongs to the old desired name. */
+	if (host_changed) {
+		g_published_host.c[0] = 0;
+		remove_state_local_hostname(g_store);
 	}
+
+	/* Outside the lock — both end up taking it. */
+	(void)fprintf(stderr, "mDNSResponder mDNSConfigStore: "
+	    "hostname change -> hostlabel='%s' nicelabel='%s' — "
+	    "calling mDNS_SetFQDN + mDNS_ConfigChanged\n",
+	    host_cstr, nice_cstr);
+	(void)fflush(stderr);
+	mDNS_SetFQDN(m);
+	mDNS_ConfigChanged(m);
 }
 
 /* Convert a domainlabel (length-prefixed, label->c[0] = length) to a
@@ -462,41 +509,22 @@ mDNSConfigStorePublishResolvedHostName(void)
 	(void)fflush(stderr);
 }
 
-/* Run the hostname recompute for an SCDS change.
- *
- * This previously armed a 25ms one-shot dispatch timer (g_debounce_timer)
- * whose handler ran mDNSConfigStoreRecompute, to coalesce bursts. But in
- * our libdispatch the one-shot timer did not re-fire when re-armed, so the
- * recompute ran at most once (a boot-time no-op) and m->hostlabel was never
- * updated afterwards — mDNSResponder stayed on "localhost.local" and never
- * re-probed a configured name, so no Bonjour collision ever occurred (#156).
- *
- * Call the recompute directly instead. It is cheap (two SCDS reads + a
- * label compare) and idempotent under the g_desired_host guard, so running
- * it inline on every SCDS callback is fine and removes the timer
- * dependency. We stay on the SCDS dispatch queue (g_queue) — the same
- * context the timer handler used — so this changes nothing about the
- * existing cross-thread mDNS_SetFQDN note above. */
+/* Post work from the SCDS dispatch queue to the mDNS-core main thread: set
+ * the reasons, then write one wake byte to the self-pipe. Runs on g_queue.
+ * Coalescing happens naturally on the read side: the main thread drains
+ * every queued byte and takes every reason at once. EINTR is retried;
+ * EAGAIN (pipe already full of pending wakes) is benign — a wake is already
+ * pending and the reasons are already set, so dropping this byte loses
+ * nothing. */
 static void
-mDNSConfigStoreDebounce(void)
+mDNSConfigStorePostWake(unsigned int reasons)
 {
-	mDNSConfigStoreRecompute(NULL);
-}
-
-/* Post an interface-refresh request from the SCDS dispatch queue to the
- * mDNS-core main thread by writing one wake byte to the self-pipe. Runs
- * on g_queue. Coalescing happens naturally on the read side: the main
- * thread drains every queued byte in one RefreshInterfaceList. EINTR is
- * retried; EAGAIN (pipe already full of pending wakes) is benign — a
- * refresh is already pending, so dropping this byte loses nothing. */
-static void
-mDNSConfigStorePostInterfaceRefresh(void)
-{
-	const char byte = 'i';
+	const char byte = 'w';
 	ssize_t n;
 
 	if (g_wake_wr < 0)
 		return;
+	(void)__atomic_fetch_or(&g_wake_reasons, reasons, __ATOMIC_RELEASE);
 	do {
 		n = write(g_wake_wr, &byte, 1);
 	} while (n < 0 && errno == EINTR);
@@ -513,7 +541,7 @@ mDNSConfigStoreTentativeRetry(void *context)
 {
 	(void)context;
 	__atomic_store_n(&g_retry_pending, 0, __ATOMIC_RELEASE);
-	mDNSConfigStorePostInterfaceRefresh();
+	mDNSConfigStorePostWake(WAKE_INTERFACES);
 }
 
 /* TRUE if any IPv6 address on the system is still IN6_IFF_TENTATIVE —
@@ -557,10 +585,11 @@ mDNSConfigStoreIPv6Tentative(char *ifname, size_t ifnamesz)
 
 /* mDNS event-loop read callback for the self-pipe read end. Runs on the
  * MAIN thread (mDNSPosixRunEventLoopOnce's select loop), so it may
- * mutate mDNS-core state directly. Drains every queued wake byte, then
- * re-walks the interface list once — matching InterfaceChangeCallback
- * in mDNSPosix.c, which also calls RefreshInterfaceList from the event
- * loop without mDNS_Lock (the Posix lock is a no-op).
+ * mutate mDNS-core state directly. Drains every queued wake byte, applies
+ * any name change, then re-walks the interface list once if asked to —
+ * matching InterfaceChangeCallback in mDNSPosix.c, which also calls
+ * RefreshInterfaceList from the event loop without mDNS_Lock (the Posix
+ * lock is a no-op).
  *
  * Before re-walking, Darwin's TENTATIVE guard (#343): while any IPv6
  * address is still in DAD, queue one retry TENTATIVE_RETRY_MS out and
@@ -572,13 +601,23 @@ mDNSConfigStoreWake(int fd, void *context)
 	char ifname[IFNAMSIZ];
 	ssize_t n;
 	mDNSs32 now;
+	unsigned int reasons;
 
 	(void)context;
 
-	/* Drain the pipe — coalesce a burst of wakes into one refresh. */
+	/* Drain the pipe — coalesce a burst of wakes into one refresh. Take
+	 * the reasons after draining: a reason set after this point comes
+	 * with a byte that wakes us again. */
 	do {
 		n = read(fd, drain, sizeof(drain));
 	} while (n > 0 || (n < 0 && errno == EINTR));
+	reasons = __atomic_exchange_n(&g_wake_reasons, 0, __ATOMIC_ACQUIRE);
+
+	/* A rename must not wait for DAD, so it goes before the guard below. */
+	if ((reasons & WAKE_HOSTNAME) != 0)
+		mDNSConfigStoreRecompute();
+	if ((reasons & WAKE_INTERFACES) == 0)
+		return;
 
 	now = mDNSPlatformRawTime();
 	if (now == 0)
@@ -610,21 +649,15 @@ mDNSConfigStoreWake(int fd, void *context)
 	(void)mDNSPlatformPosixRefreshInterfaceList(&mDNSStorage);
 }
 
-/* SCDS callback — every registered key + pattern routes here. We log the
- * change(s), ALWAYS arm the debounced hostname recompute, and wake the main
- * thread to re-walk the interface list when an interface / service address
- * key changed.
+/* SCDS callback — every registered key + pattern routes here. Runs on
+ * g_queue, so it only logs the change(s) and wakes the main thread: always
+ * to reread the names, and also to re-walk the interface list when an
+ * interface / service address key changed.
  *
- * The recompute is armed unconditionally rather than only on the exact
- * HostNames key because in our configd the Setup:/Network/HostNames
- * change-notification is not reliably delivered to this subscriber, while
- * the frequent State:/Network/.../IPv4 churn (DHCP renewals) is. Gating the
- * recompute on the HostNames key therefore left it dormant and
- * mDNSResponder never re-adopted a changed LocalHostName (#156). The
- * recompute is idempotent — the g_desired_host guard makes it a no-op
- * unless the desired name actually changed — so riding the IPv4 churn is
- * cheap and mirrors how the vendored set-hostname.c engine already relies
- * on the same churn to re-read its inputs. */
+ * The names are reread on every key, as on Darwin, where every watched key
+ * goes through SetNetworkChanged to mDNSMacOSXNetworkChanged and
+ * UpdateInterfaceList rereads both labels. The reread is idempotent: the
+ * desired-name guards make it a no-op unless a desired name changed. */
 static void
 mDNSConfigStoreCallback(SCDynamicStoreRef store, CFArrayRef changedKeys,
     void *info)
@@ -644,24 +677,22 @@ mDNSConfigStoreCallback(SCDynamicStoreRef store, CFArrayRef changedKeys,
 		(void)fprintf(stderr, "mDNSResponder mDNSConfigStore: "
 		    "key changed -> %s\n", kk);
 
-		/* Anything that is not the exact HostNames key is an interface /
+		/* Anything that is not one of the name keys is an interface /
 		 * service address change (State:/Network/Global/IPv4, the
 		 * State:/Network/Service/.+/IPv4 pattern, or one of the
 		 * State:/Network/Interface/.+/{IPv4,IPv6,AirPort} patterns) and
-		 * drives the interface re-walk. The hostname recompute is armed
+		 * drives the interface re-walk. The names are reread
 		 * unconditionally below, so no separate hostname flag is kept. */
 		if (!(g_hostnames_key[0] != '\0' &&
-		    strcmp(kk, g_hostnames_key) == 0))
+		    strcmp(kk, g_hostnames_key) == 0) &&
+		    !(g_computername_key[0] != '\0' &&
+		    strcmp(kk, g_computername_key) == 0))
 			interface_changed = TRUE;
 	}
 	(void)fflush(stderr);
 
-	/* Always arm the hostname recompute (see the function comment): the
-	 * Setup: HostNames notify is unreliable here, so we ride the IPv4
-	 * churn; the recompute is idempotent under the g_desired_host guard. */
-	mDNSConfigStoreDebounce();
-	if (interface_changed)
-		mDNSConfigStorePostInterfaceRefresh();
+	mDNSConfigStorePostWake(WAKE_HOSTNAME |
+	    (interface_changed ? WAKE_INTERFACES : 0));
 }
 
 /* Build the watch lists per SCDynamicStoreSetNotificationKeys's
@@ -693,6 +724,15 @@ mDNSConfigStoreSubscribe(SCDynamicStoreRef store)
 	if (key != NULL) {
 		(void)CFStringGetCString(key, g_hostnames_key,
 		    sizeof(g_hostnames_key), kCFStringEncodingUTF8);
+		CFArrayAppendValue(keys, key);
+		CFRelease(key);
+	}
+
+	/* Setup:/System — the ComputerName, read by read_computer_name. */
+	key = SCDynamicStoreKeyCreateComputerName(NULL);
+	if (key != NULL) {
+		(void)CFStringGetCString(key, g_computername_key,
+		    sizeof(g_computername_key), kCFStringEncodingUTF8);
 		CFArrayAppendValue(keys, key);
 		CFRelease(key);
 	}
@@ -813,6 +853,7 @@ mDNSConfigStoreInit(void)
 	 * fires only when a real rename changes the name — never for the
 	 * un-conflicted boot name. */
 	g_desired_host = mDNSStorage.hostlabel;
+	g_desired_nice = mDNSStorage.nicelabel;
 
 	g_queue = dispatch_queue_create("com.apple.mDNSResponder.scds",
 	    NULL);
@@ -822,33 +863,18 @@ mDNSConfigStoreInit(void)
 		return (-1);
 	}
 
-	/* One-shot timer used as the 25ms debounce — Apple's
-	 * SetNetworkChanged pattern (mDNSMacOSX.c:6534). Created here
-	 * and re-armed by every SCDS callback; the handler does the
-	 * SCDS read + label compare + mDNS_SetFQDN. */
-	g_debounce_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,
-	    0, 0, g_queue);
-	if (g_debounce_timer == NULL) {
-		(void)fprintf(stderr, "mDNSResponder mDNSConfigStore: "
-		    "dispatch_source_create(timer) failed\n");
-		return (-1);
-	}
-	dispatch_source_set_event_handler_f(g_debounce_timer,
-	    mDNSConfigStoreRecompute);
-	dispatch_source_set_timer(g_debounce_timer, DISPATCH_TIME_FOREVER,
-	    DISPATCH_TIME_FOREVER, 0);
-	dispatch_activate(g_debounce_timer);
-
-	/* Cross-thread wake pipe for the interface re-walk. Set up BEFORE
+	/* Cross-thread wake pipe for the name and interface work. Set up BEFORE
 	 * the SCDS dispatch queue starts delivering callbacks, so the read
 	 * end is already on the main-thread event loop the first time the
 	 * callback writes to it. Non-fatal on failure: the routing-socket
 	 * watcher in mDNSPosix.c still drives interface changes, and the
-	 * write side guards on g_wake_wr < 0. */
+	 * write side guards on g_wake_wr < 0. A rename then waits for the
+	 * next restart. */
 	if (!mDNSConfigStoreSetupWakePipe())
 		(void)fprintf(stderr, "mDNSResponder mDNSConfigStore: "
 		    "wake pipe unavailable — interface refresh falls back to "
-		    "the routing-socket watcher only\n");
+		    "the routing-socket watcher only, and live renames are "
+		    "not applied\n");
 
 	g_store = SCDynamicStoreCreate(NULL,
 	    CFSTR("com.apple.mDNSResponder.config"),
