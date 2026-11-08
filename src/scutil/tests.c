@@ -37,11 +37,15 @@
  */
 
 /*
- * NextBSD: of Apple's tests.c the "-w" key wait, "--proxy" and
+ * NextBSD: of Apple's tests.c the "-w" key wait, "--dns", "--proxy" and
  * "--renew" are carried. The rest backs options whose APIs our
  * libSystemConfiguration does not have yet -- "-r"
- * (SCNetworkReachabilityCreateWithName/WithAddress), "--dns" (dnsinfo),
- * "--nwi" (network_information), "--snapshot", "--advisory" and "--rank".
+ * (SCNetworkReachabilityCreateWithName/WithAddress), "--nwi"
+ * (network_information), "--snapshot", "--advisory" and "--rank".
+ *
+ * "--dns" is configd-596.15's, not this file's later tag: its printer
+ * (dnsinfo_internal.h) is the 10.9.5 one, matching the dnsinfo the server
+ * stores. "--dns <hostname>" needs reachability and is not carried yet.
  */
 
 #include <signal.h>
@@ -54,6 +58,30 @@
 #include "scutil.h"
 #include "prefs.h"
 #include "tests.h"
+
+/* NextBSD: "-d" is not carried, and dnsinfo_internal.h prints under it. */
+#define	_sc_debug	FALSE
+#include <dnsinfo.h>
+#include "dnsinfo_internal.h"
+
+__private_extern__
+void
+do_showDNSConfiguration(int argc __unused, char **argv __unused)
+{
+	dns_config_t	*dns_config;
+
+	dns_config = dns_configuration_copy();
+
+	if (dns_config == NULL) {
+		SCPrint(TRUE, stdout, CFSTR("No DNS configuration available\n"));
+		exit(1);
+	}
+
+	_dns_configuration_print(dns_config);
+
+	dns_configuration_free(dns_config);
+	exit(0);
+}
 
 
 static void

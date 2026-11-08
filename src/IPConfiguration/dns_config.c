@@ -12,11 +12,14 @@
 #include "dns_config.h"
 #include "apply_lease.h"
 #include "bound_state.h"
+#include "dns_configuration.h"
 #include "ipconfig_prefs.h"
 #include "ipconfigd.h"
 #include "sc_publish.h"
 
 #include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <sys/socket.h>
 
 #include <pthread.h>
 #include <stdarg.h>
@@ -189,20 +192,31 @@ accumulate_servers(const struct ipconfig_dns *in, bool v4_active,
  * get_dns_changes(), with S_append_state's default of FALSE: Setup
  * replaces State when it has a usable server list, SearchDomains and
  * SortList replace, and the single-valued properties pick Setup first.
+ * `have_setup` is merge_dns_servers()'s: the service has a Setup IP entity.
  */
 static void
 merge_dns(const struct ipconfig_dns *state, const struct ipconfig_dns *setup,
-    bool v4_active, bool v6_active, const char *ifname,
+    bool v4_active, bool v6_active, bool have_setup, const char *ifname,
     struct ipconfig_dns *out)
 {
 	const struct ipconfig_dns *src;
+	bool have_dns_setup = false;
 
 	(void)memset(out, 0, sizeof(*out));
 
-	if (setup != NULL)
+	if (setup != NULL) {
 		accumulate_servers(setup, v4_active, v6_active, ifname, out);
+		have_dns_setup = out->server_count > 0;
+	}
 	if (out->server_count == 0 && state != NULL)
 		accumulate_servers(state, v4_active, v6_active, NULL, out);
+	/*
+	 * Bind queries to the interface when the network supplied the
+	 * servers, but not when the user chose them: they may only be
+	 * reachable another way.
+	 */
+	out->scoped_query = out->server_count != 0 && have_setup &&
+	    !have_dns_setup;
 
 	src = (setup != NULL && setup->has_search) ? setup : state;
 	if (src != NULL && src->search_count > 0) {
@@ -245,6 +259,24 @@ merge_dns(const struct ipconfig_dns *state, const struct ipconfig_dns *setup,
 		out->has_service_id = true;
 		out->service_id = src->service_id;
 	}
+
+	/* merge_array_prop() and pick_prop(); only Setup can name these. */
+	if (setup != NULL && setup->has_match_domains) {
+		(void)memcpy(out->match_domains, setup->match_domains,
+		    sizeof(out->match_domains));
+		out->match_count = setup->match_count;
+		out->has_match_domains = true;
+	}
+	if (setup != NULL && setup->has_match_orders) {
+		(void)memcpy(out->match_orders, setup->match_orders,
+		    sizeof(out->match_orders));
+		out->match_order_count = setup->match_order_count;
+		out->has_match_orders = true;
+	}
+	if (setup != NULL && setup->has_no_search) {
+		out->has_no_search = true;
+		out->no_search = setup->no_search;
+	}
 }
 
 static bool
@@ -253,7 +285,8 @@ dns_is_empty(const struct ipconfig_dns *d)
 	return (d->server_count == 0 && d->search_count == 0 &&
 	    d->sort_count == 0 && d->domain[0] == '\0' &&
 	    d->options[0] == '\0' && !d->has_search_order && !d->has_port &&
-	    !d->has_timeout && !d->has_service_id);
+	    !d->has_timeout && !d->has_service_id && !d->has_match_domains &&
+	    !d->has_match_orders && !d->has_no_search);
 }
 
 /*
@@ -267,7 +300,9 @@ service_merged_locked(const char *ifname, struct ipconfig_dns *out)
 	static struct ipconfig_dns setup, state;
 	struct dhcp_lease lease;
 	const struct dns_service *s = service_find_locked(ifname, false);
+	struct ipconfig_method_info method;
 	bool v4_active, v6_active, have_state = false, have_setup = false;
+	bool have_setup_ip = false;
 
 	v4_active = bound_state_get_lease(ifname, &lease);
 	v6_active = s != NULL && s->v6_active;
@@ -281,13 +316,17 @@ service_merged_locked(const char *ifname, struct ipconfig_dns *out)
 		state_merge_v6(&state, &s->v6);
 		have_state = true;
 	}
-	if (!ipconfigd_set_method_active(ifname))
+	if (!ipconfigd_set_method_active(ifname)) {
 		have_setup = ipconfig_prefs_lookup_dns(ifname, &setup);
+		have_setup_ip = v4_active &&
+		    ipconfig_prefs_lookup(ifname, &method) &&
+		    method.method != ipconfig_method_none_e;
+	}
 	if (!have_state && !have_setup)
 		return (false);
 
 	merge_dns(have_state ? &state : NULL, have_setup ? &setup : NULL,
-	    v4_active, v6_active, ifname, out);
+	    v4_active, v6_active, have_setup_ip, ifname, out);
 	return (!dns_is_empty(out));
 }
 
@@ -324,6 +363,93 @@ update_primary_locked(struct sc_publish *pub)
 	g_applied.dns = dns;
 }
 
+/* The first global IPv6 address on `ifname`; false when it has none. */
+static bool
+global_v6_addr(const char *ifname, char *out, size_t outsz)
+{
+	struct ifaddrs *ifa, *p;
+	bool found = false;
+
+	if (getifaddrs(&ifa) != 0)
+		return (false);
+	for (p = ifa; p != NULL && !found; p = p->ifa_next) {
+		const struct sockaddr_in6 *sin6;
+
+		if (p->ifa_addr == NULL || p->ifa_addr->sa_family != AF_INET6 ||
+		    strcmp(p->ifa_name, ifname) != 0)
+			continue;
+		sin6 = (const struct sockaddr_in6 *)(const void *)p->ifa_addr;
+		if (IN6_IS_ADDR_LINKLOCAL(&sin6->sin6_addr) ||
+		    IN6_IS_ADDR_MC_LINKLOCAL(&sin6->sin6_addr))
+			continue;
+		found = inet_ntop(AF_INET6, &sin6->sin6_addr, out,
+		    (socklen_t)outsz) != NULL;
+	}
+	freeifaddrs(ifa);
+	return (found);
+}
+
+/*
+ * dns_configuration_set()'s input. Every service, not only the primary:
+ * each gets a scoped resolver, so a secondary's change matters too.
+ * Interfaces go in election order, standing in for Apple's service order.
+ */
+static void
+dnsinfo_update_locked(void)
+{
+	static struct ipconfig_dns merged[DNSINFO_MAX_SERVICES];
+	static struct dnsinfo_service svcs[DNSINFO_MAX_SERVICES];
+	static char names[DNSINFO_MAX_SERVICES][IF_NAMESIZE];
+	char primary[IF_NAMESIZE] = "";
+	int count, i, j, n = 0, primary_idx = -1;
+
+	count = bound_state_list(names, BOUND_MAX_IF);
+	for (i = 0; i < BOUND_MAX_IF; i++) {
+		if (g_services[i].ifname[0] == '\0')
+			continue;
+		for (j = 0; j < count; j++) {
+			if (strcmp(names[j], g_services[i].ifname) == 0)
+				break;
+		}
+		if (j == count)
+			(void)strlcpy(names[count++], g_services[i].ifname,
+			    IF_NAMESIZE);
+	}
+	/* Insertion sort, so equal ranks keep table order as the election does. */
+	for (i = 1; i < count; i++) {
+		char tmp[IF_NAMESIZE];
+
+		(void)strlcpy(tmp, names[i], sizeof(tmp));
+		for (j = i; j > 0 && iface_rank(tmp) > iface_rank(names[j - 1]);
+		    j--)
+			(void)strlcpy(names[j], names[j - 1], IF_NAMESIZE);
+		(void)strlcpy(names[j], tmp, IF_NAMESIZE);
+	}
+
+	(void)bound_state_primary(primary, sizeof(primary));
+	for (i = 0; i < count; i++) {
+		const struct dns_service *s;
+		uint32_t addr;
+
+		if (!service_merged_locked(names[i], &merged[n]))
+			continue;
+		(void)memset(&svcs[n], 0, sizeof(svcs[n]));
+		(void)strlcpy(svcs[n].ifname, names[i], sizeof(svcs[n].ifname));
+		svcs[n].dns = &merged[n];
+		if (bound_state_get_addr(names[i], &addr))
+			(void)inet_ntop(AF_INET, &addr, svcs[n].v4_addr,
+			    sizeof(svcs[n].v4_addr));
+		s = service_find_locked(names[i], false);
+		if (s != NULL && s->v6_active)
+			(void)global_v6_addr(names[i], svcs[n].v6_addr,
+			    sizeof(svcs[n].v6_addr));
+		if (strcmp(names[i], primary) == 0)
+			primary_idx = n;
+		n++;
+	}
+	dns_configuration_update(svcs, (unsigned)n, primary_idx);
+}
+
 void
 dns_config_update(const char *ifname)
 {
@@ -339,6 +465,7 @@ dns_config_update(const char *ifname)
 			(void)sc_publish_remove_dns(pub, ifname);
 	}
 	update_primary_locked(pub);
+	dnsinfo_update_locked();
 	sc_publish_close(pub);
 	(void)pthread_mutex_unlock(&g_dns_lock);
 }

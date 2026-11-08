@@ -21,7 +21,17 @@ SRCS+=		arp_probe.c
 SRCS+=		ra_listen.c apply_lease_v6.c ra_router.c
 SRCS+=		sc_link_watch.c
 SRCS+=		ipconfig_prefs.c
-SRCS+=		dns_config.c
+SRCS+=		dns_config.c dns_configuration.c
+
+# The dnsinfo server: configd-596.15 dnsinfo/ and libSystemConfiguration/.
+# Apple builds these into configd's IPMonitor plugin; here ipconfigd owns the
+# election. The client half (dnsinfo_copy.c) is in libSystemConfiguration.
+.PATH:		${.CURDIR}/../libSystemConfiguration/dnsinfo
+.PATH:		${.CURDIR}/../libSystemConfiguration/libSC_info
+SRCS+=		dnsinfo_create.c dnsinfo_server.c
+SRCS+=		libSystemConfiguration_server.c
+CFLAGS+=	-I${.CURDIR}/../libSystemConfiguration/dnsinfo
+CFLAGS+=	-I${.CURDIR}/../libSystemConfiguration/libSC_info
 
 # Apple's DHCP option list and tag table, bootp-268.1 bootplib, trimmed
 # (vendored/): answers ipconfig getoption from the saved packet. The
@@ -91,9 +101,12 @@ LDADD+=		-lsystem_dispatch -l:libsystem_blocks.so
 # -lnotify: notify_post(com.apple.system.config.network_change) after a
 # primary election and a resolv.conf rewrite, as Darwin's IPMonitor does.
 LDADD+=		-lnotify
+# -lxpc: the dnsinfo XPC service (org.nextbsd.SystemConfiguration.DNSConfiguration).
+LDADD+=		-lxpc
 
 BINDIR=		/usr/sbin
 
 # FreeBSD base libs: releng/15.1 src.libnames.mk requires LIBADD, not LDADD+=-lfoo.
-LIBADD+=	pthread
+# md: SHA-1 for the dnsinfo signature (CommonCrypto shim).
+LIBADD+=	pthread md
 .include <bsd.prog.mk>

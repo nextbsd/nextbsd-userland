@@ -77,6 +77,9 @@ bool	bound_state_is_bound(const char *ifname);
 /* Number of currently-bound interfaces. */
 int	bound_state_count(void);
 
+/* Copy out the bound interface names, at most `max`; returns how many. */
+int	bound_state_list(char names[][IF_NAMESIZE], int max);
+
 /*
  * The primary service: the highest-ranked bound interface (#41).
  * Returns false when nothing is bound. Ties (two wired NICs) are broken

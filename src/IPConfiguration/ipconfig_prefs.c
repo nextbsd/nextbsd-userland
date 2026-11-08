@@ -42,6 +42,9 @@
 #define	kIPCfgPropDNSServerPort		CFSTR("ServerPort")
 #define	kIPCfgPropDNSServerTimeout	CFSTR("ServerTimeout")
 #define	kIPCfgPropDNSServiceIdentifier	CFSTR("ServiceIdentifier")
+#define	kIPCfgPropDNSMatchDomains	CFSTR("SupplementalMatchDomains")
+#define	kIPCfgPropDNSMatchOrders	CFSTR("SupplementalMatchOrders")
+#define	kIPCfgPropDNSMatchNoSearch	CFSTR("SupplementalMatchDomainsNoSearch")
 
 struct prefs_entry {
 	char				ifname[IFNAMSIZ];
@@ -244,6 +247,29 @@ cf_string_list(CFTypeRef v, char *list, size_t stride, unsigned max)
 	return (count);
 }
 
+/*
+ * SupplementalMatchDomains: as cf_string_list(), but an empty string is a
+ * real entry (merge_array_prop()'s ALLOW_EMPTY_STRING): it matches all names.
+ */
+static unsigned
+cf_match_list(CFTypeRef v, char *list, size_t stride, unsigned max)
+{
+	CFIndex i, n;
+	unsigned count = 0;
+
+	n = CFArrayGetCount(v);
+	for (i = 0; i < n && count < max; i++) {
+		CFTypeRef e = CFArrayGetValueAtIndex(v, i);
+
+		if (e == NULL || CFGetTypeID(e) != CFStringGetTypeID())
+			continue;
+		if (!cf_to_trimmed(e, list + count * stride, stride))
+			(void)memset(list + count * stride, 0, stride);
+		count++;
+	}
+	return (count);
+}
+
 static bool
 cf_is_array(CFTypeRef v)
 {
@@ -298,6 +324,26 @@ dns_from_dict(CFDictionaryRef d, struct ipconfig_dns *out)
 	    kIPCfgPropDNSServerTimeout), &out->timeout);
 	out->has_service_id = cf_to_int32(CFDictionaryGetValue(d,
 	    kIPCfgPropDNSServiceIdentifier), &out->service_id);
+	v = CFDictionaryGetValue(d, kIPCfgPropDNSMatchDomains);
+	if (cf_is_array(v)) {
+		out->match_count = cf_match_list(v, out->match_domains[0],
+		    IPCFG_DNS_NAME_LEN, IPCFG_DNS_MAX_MATCH);
+		out->has_match_domains = true;
+	}
+	v = CFDictionaryGetValue(d, kIPCfgPropDNSMatchOrders);
+	if (cf_is_array(v)) {
+		CFIndex i, n = CFArrayGetCount(v);
+
+		for (i = 0; i < n &&
+		    out->match_order_count < IPCFG_DNS_MAX_MATCH; i++) {
+			if (cf_to_int32(CFArrayGetValueAtIndex(v, i),
+			    &out->match_orders[out->match_order_count]))
+				out->match_order_count++;
+		}
+		out->has_match_orders = true;
+	}
+	out->has_no_search = cf_to_int32(CFDictionaryGetValue(d,
+	    kIPCfgPropDNSMatchNoSearch), &out->no_search);
 }
 
 /* An enabled protocol entity of `service`, or NULL. Not retained. */
