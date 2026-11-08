@@ -319,7 +319,7 @@ service_merged_locked(const char *ifname, struct ipconfig_dns *out)
 	if (!ipconfigd_set_method_active(ifname)) {
 		have_setup = ipconfig_prefs_lookup_dns(ifname, &setup);
 		have_setup_ip = v4_active &&
-		    ipconfig_prefs_lookup(ifname, &method) &&
+		    ipconfig_prefs_lookup(ifname, &method, NULL, 0) &&
 		    method.method != ipconfig_method_none_e;
 	}
 	if (!have_state && !have_setup)
