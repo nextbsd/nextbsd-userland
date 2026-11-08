@@ -3,11 +3,11 @@
  *
  * SCPrivate.h SPI subset that Apple's set-hostname.c calls. Apple's
  * real header lives in SystemConfiguration.framework's private
- * include tree; we ship the small surface set-hostname.c uses
- * (_SC_string_to_sockaddr, _SC_cfstring_to_cstring,
- * _SC_CFStringIsValidDNSName). The notify(3) names
- * (_SC_NOTIFY_NETWORK_CHANGE) come from libSystemConfiguration's
- * installed <SystemConfiguration/SCPrivate.h>, which the
+ * include tree; we ship what set-hostname.c uses that the library does
+ * not export (_SC_CFStringIsValidDNSName). The notify(3) names
+ * (_SC_NOTIFY_NETWORK_CHANGE), _SC_string_to_sockaddr and
+ * _SC_cfstring_to_cstring come from libSystemConfiguration's installed
+ * <SystemConfiguration/SCPrivate.h>, which the
  * SystemConfiguration/SCPrivate.h indirect pulls in alongside this.
  */
 
@@ -15,27 +15,6 @@
 #define _FREEBSD_LAUNCHD_MACH_SC_PRIVATE_H_
 
 #include <CoreFoundation/CoreFoundation.h>
-#include <sys/socket.h>
-
-/*
- * _SC_string_to_sockaddr — parse a numeric address string (IPv4 or
- * IPv6 per `family`; AF_UNSPEC tries both) into a struct sockaddr.
- * Returns the struct's sa_family on success (caller passes a buffer
- * sized for sockaddr_in / sockaddr_in6); returns NULL on parse error.
- * The Apple SPI returns a pointer-cast of the supplied buffer; our
- * shim follows the same convention.
- */
-void *	_SC_string_to_sockaddr(const char *str, sa_family_t family,
-	    void *buf, size_t bufsize);
-
-/*
- * _SC_cfstring_to_cstring — copy a CFStringRef into a C buffer using
- * the requested encoding. Returns `buf` on success, NULL on encoding
- * failure or undersized buffer. If `buf` is NULL, allocates a
- * malloc()'d buffer sized to the encoded length plus terminator.
- */
-char *	_SC_cfstring_to_cstring(CFStringRef cfstr, char *buf, CFIndex bufsize,
-	    CFStringEncoding encoding);
 
 /*
  * _SC_CFStringIsValidDNSName — TRUE iff the CFString is a syntactically

@@ -147,6 +147,66 @@
 #define kSCPropNetLocalHostName			CFSTR("LocalHostName")
 
 /*
+ * The rest of the network schema that the SCNetworkConfiguration
+ * sources and scutil's network commands use. kSCEntNetService,
+ * the capability names and the PrimaryRank values are private schema
+ * in Apple's tree (SCSchemaDefinitionsPrivate.h).
+ */
+#define kSCEntNetAirPort			CFSTR("AirPort")
+#define kSCEntNetEthernet			CFSTR("Ethernet")
+#define kSCEntNetFireWire			CFSTR("FireWire")
+#define kSCEntNetSMB				CFSTR("SMB")
+#define kSCEntNetService			CFSTR("__SERVICE__")
+#define kSCValNetInterfaceTypeLoopback		CFSTR("Loopback")
+
+#define kSCPropNetServicePrimaryRank		CFSTR("PrimaryRank")
+#define kSCValNetServicePrimaryRankFirst	CFSTR("First")
+#define kSCValNetServicePrimaryRankLast		CFSTR("Last")
+#define kSCValNetServicePrimaryRankNever	CFSTR("Never")
+
+#define kSCPropNetDNSDomainName			CFSTR("DomainName")
+#define kSCPropNetDNSSearchDomains		CFSTR("SearchDomains")
+#define kSCPropNetDNSServerAddresses		CFSTR("ServerAddresses")
+#define kSCPropNetDNSSupplementalMatchDomains	CFSTR("SupplementalMatchDomains")
+
+#define kSCPropNetEthernetMediaSubType		CFSTR("MediaSubType")
+#define kSCPropNetEthernetMediaOptions		CFSTR("MediaOptions")
+#define kSCPropNetEthernetMTU			CFSTR("MTU")
+#define kSCPropNetEthernetCapabilityAV		CFSTR("AV")
+#define kSCPropNetEthernetCapabilityJUMBO_MTU	CFSTR("JUMBO_MTU")
+#define kSCPropNetEthernetCapabilityLRO		CFSTR("LRO")
+#define kSCPropNetEthernetCapabilityRXCSUM	CFSTR("RXCSUM")
+#define kSCPropNetEthernetCapabilityTSO		CFSTR("TSO")
+#define kSCPropNetEthernetCapabilityTSO4	CFSTR("TSO4")
+#define kSCPropNetEthernetCapabilityTSO6	CFSTR("TSO6")
+#define kSCPropNetEthernetCapabilityTXCSUM	CFSTR("TXCSUM")
+#define kSCPropNetEthernetCapabilityVLAN_HWTAGGING CFSTR("VLAN_HWTAGGING")
+#define kSCPropNetEthernetCapabilityVLAN_MTU	CFSTR("VLAN_MTU")
+
+#define kSCPropNetIPv4ConfigMethod		CFSTR("ConfigMethod")
+#define kSCPropNetIPv4DHCPClientID		CFSTR("DHCPClientID")
+#define kSCValNetIPv4ConfigMethodBOOTP		CFSTR("BOOTP")
+#define kSCValNetIPv4ConfigMethodDHCP		CFSTR("DHCP")
+#define kSCValNetIPv4ConfigMethodINFORM		CFSTR("INFORM")
+#define kSCValNetIPv4ConfigMethodLinkLocal	CFSTR("LinkLocal")
+#define kSCValNetIPv4ConfigMethodManual		CFSTR("Manual")
+
+#define kSCPropNetIPv6ConfigMethod		CFSTR("ConfigMethod")
+#define kSCPropNetIPv6Router			CFSTR("Router")
+#define kSCValNetIPv6ConfigMethodAutomatic	CFSTR("Automatic")
+#define kSCValNetIPv6ConfigMethodManual		CFSTR("Manual")
+#define kSCValNetIPv6ConfigMethodRouterAdvertisement CFSTR("RouterAdvertisement")
+
+#define kSCPropNetSMBNetBIOSName		CFSTR("NetBIOSName")
+#define kSCPropNetSMBNetBIOSNodeType		CFSTR("NetBIOSNodeType")
+#define kSCPropNetSMBWINSAddresses		CFSTR("WINSAddresses")
+#define kSCPropNetSMBWorkgroup			CFSTR("Workgroup")
+#define kSCValNetSMBNetBIOSNodeTypeBroadcast	CFSTR("Broadcast")
+#define kSCValNetSMBNetBIOSNodeTypeHybrid	CFSTR("Hybrid")
+#define kSCValNetSMBNetBIOSNodeTypeMixed	CFSTR("Mixed")
+#define kSCValNetSMBNetBIOSNodeTypePeer		CFSTR("Peer")
+
+/*
  * State:/Network/Global/IPv4 properties. PrimaryService is the
  * service UUID of the primary network service; PrimaryInterface is
  * its BSD interface name. ipconfigd publishes these on BOUND;
