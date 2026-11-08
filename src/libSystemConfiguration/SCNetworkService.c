@@ -354,6 +354,158 @@ SCNetworkServiceGetInterface(SCNetworkServiceRef service)
 	return sp->interface;
 }
 
+#pragma mark -
+#pragma mark Enabled state
+
+/*
+ * A service is disabled by an "__INACTIVE__" key in its dictionary, as a
+ * protocol is in SCNetworkProtocol.c (Darwin's __getPrefsEnabled and
+ * __setPrefsEnabled, SCNetworkConfigurationInternal.c).
+ */
+static Boolean
+__getPrefsEnabled(SCPreferencesRef prefs, CFStringRef path)
+{
+	CFDictionaryRef	config;
+
+	config = SCPreferencesPathGetValue(prefs, path);
+	if ((config != NULL) &&
+	    (CFGetTypeID(config) == CFDictionaryGetTypeID()) &&
+	    CFDictionaryContainsKey(config, kSCResvInactive)) {
+		return FALSE;
+	}
+	return TRUE;
+}
+
+static Boolean
+__setPrefsEnabled(SCPreferencesRef prefs, CFStringRef path, Boolean enabled)
+{
+	CFDictionaryRef		curConfig;
+	CFMutableDictionaryRef	newConfig	= NULL;
+	Boolean			ok;
+
+	/* preserve the current configuration */
+	curConfig = SCPreferencesPathGetValue(prefs, path);
+	if (curConfig != NULL) {
+		if (CFGetTypeID(curConfig) != CFDictionaryGetTypeID()) {
+			_SCErrorSet(kSCStatusFailed);
+			return FALSE;
+		}
+		newConfig = CFDictionaryCreateMutableCopy(NULL, 0, curConfig);
+		if (enabled) {
+			CFDictionaryRemoveValue(newConfig, kSCResvInactive);
+		} else {
+			CFDictionarySetValue(newConfig, kSCResvInactive,
+					     kCFBooleanTrue);
+		}
+	} else if (!enabled) {
+		newConfig = CFDictionaryCreateMutable(NULL, 0,
+					&kCFTypeDictionaryKeyCallBacks,
+					&kCFTypeDictionaryValueCallBacks);
+		CFDictionarySetValue(newConfig, kSCResvInactive,
+				     kCFBooleanTrue);
+	}
+
+	if ((curConfig == newConfig) ||
+	    ((curConfig != NULL) && (newConfig != NULL) &&
+	     CFEqual(curConfig, newConfig))) {
+		/* no change */
+		if (newConfig != NULL) {
+			CFRelease(newConfig);
+		}
+		ok = TRUE;
+	} else if (newConfig != NULL) {
+		ok = SCPreferencesPathSetValue(prefs, path, newConfig);
+		CFRelease(newConfig);
+	} else {
+		ok = SCPreferencesPathRemoveValue(prefs, path);
+		if (!ok && (SCError() == kSCStatusNoKey)) {
+			ok = TRUE;
+		}
+	}
+	return ok;
+}
+
+/*
+ * Is `interface`, or an interface it is layered on, a member of a Bond or
+ * Bridge in `prefs`? (Darwin's __SCNetworkInterfaceIsMember.)
+ */
+static Boolean
+__SCNetworkInterfaceIsMember(SCPreferencesRef prefs,
+			     SCNetworkInterfaceRef interface)
+{
+	CFArrayRef	interfaces;
+	Boolean		match	= FALSE;
+	CFMutableSetRef	members;
+
+	members = CFSetCreateMutable(NULL, 0, &kCFTypeSetCallBacks);
+
+	interfaces = SCBondInterfaceCopyAll(prefs);
+	if (interfaces != NULL) {
+		__SCBondInterfaceListCollectMembers(interfaces, members);
+		CFRelease(interfaces);
+	}
+	interfaces = SCBridgeInterfaceCopyAll(prefs);
+	if (interfaces != NULL) {
+		__SCBridgeInterfaceListCollectMembers(interfaces, members);
+		CFRelease(interfaces);
+	}
+
+	while ((interface != NULL) && !match) {
+		match = CFSetContainsValue(members, interface);
+		interface = SCNetworkInterfaceGetInterface(interface);
+	}
+
+	CFRelease(members);
+	return match;
+}
+
+Boolean
+SCNetworkServiceGetEnabled(SCNetworkServiceRef service)
+{
+	SCNetworkServicePrivateRef	sp	= (SCNetworkServicePrivateRef)service;
+	CFStringRef			path;
+	Boolean				enabled;
+
+	if (!isA_SCNetworkService(service) || (sp->prefs == NULL)) {
+		_SCErrorSet(kSCStatusInvalidArgument);
+		return FALSE;
+	}
+	path    = __SCNetworkServiceEntityPath(sp->serviceID, NULL);
+	enabled = __getPrefsEnabled(sp->prefs, path);
+	CFRelease(path);
+	return enabled;
+}
+
+Boolean
+SCNetworkServiceSetEnabled(SCNetworkServiceRef service, Boolean enabled)
+{
+	SCNetworkServicePrivateRef	sp	= (SCNetworkServicePrivateRef)service;
+	CFStringRef			path;
+	Boolean				ok;
+
+	if (!isA_SCNetworkService(service) || (sp->prefs == NULL)) {
+		_SCErrorSet(kSCStatusInvalidArgument);
+		return FALSE;
+	}
+
+	/* a service on a Bond or Bridge member must stay disabled */
+	if (enabled) {
+		SCNetworkInterfaceRef	interface;
+
+		interface = SCNetworkServiceGetInterface(service);
+		if ((interface != NULL) &&
+		    __SCNetworkInterfaceIsMember(sp->prefs, interface)) {
+			_SCErrorSet(kSCStatusKeyExists);
+			return FALSE;
+		}
+	}
+
+	path = __SCNetworkServiceEntityPath(sp->serviceID, NULL);
+	ok   = __setPrefsEnabled(sp->prefs, path, enabled);
+	CFRelease(path);
+	return ok;
+}
+
 CFStringRef
 SCNetworkServiceGetName(SCNetworkServiceRef service)
 {

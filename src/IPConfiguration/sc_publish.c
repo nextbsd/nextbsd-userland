@@ -1,13 +1,15 @@
 /*
  * sc_publish.c — SCDynamicStore publish glue for ipconfigd.
  *
- * Builds Apple's State:/Network/Service/<UUID>/IPv4 (+ optional /DNS)
+ * Builds Apple's State:/Network/Service/<serviceID>/IPv4 (+ optional /DNS)
  * CFDictionary and pushes it into configd via libSystemConfiguration.
- * The <UUID> is a deterministic 8-4-4-4-12-hex string derived from
- * the interface MAC — stable across daemon restarts even without
- * SCPreferences persistence, so a watcher's regex match stays put.
- * It is computed once per service and cached (#409), so the keys can
- * still be removed after the interface — and its MAC — is gone.
+ * The <serviceID> is the network service's ID in SCPreferences (#568), so
+ * a service's Setup: and State: keys line up, or `ipconfig set`'s
+ * <Method>-<if>. An interface no service names gets a deterministic
+ * 8-4-4-4-12-hex string derived from its MAC, stable across daemon
+ * restarts, so a watcher's regex match stays put. Either way the ID is
+ * fixed once per service and cached (#409), so the keys can still be
+ * removed after the interface — and its MAC — is gone.
  *
  * Single CF translation unit on purpose: everything else in the
  * daemon stays plain-C / plain-Apple-headers.
@@ -109,11 +111,11 @@ get_mac(const char *ifname, uint8_t mac[6])
 #define	SVC_UUID_LEN	37	/* 8-4-4-4-12 + NUL */
 
 /*
- * Format an Apple-shaped UUID string from the interface MAC. Apple's
- * IPConfiguration draws UUIDs from SCPreferences (a user-configured
- * SCNetworkService maps to a UUID); we have no prefs persistence yet,
- * so synthesize one. Format is real 8-4-4-4-12 lowercase hex so
- * downstream observers that regex-match on UUID keys work unchanged.
+ * Format an Apple-shaped UUID string from the interface MAC, for an
+ * interface no SCNetworkService names (#568); Darwin has no such case,
+ * since every configured interface has a service there. Format is real
+ * 8-4-4-4-12 lowercase hex so downstream observers that regex-match on
+ * UUID keys work unchanged.
  *
  *   00000000-0000-0000-AABB-AABBCCDDEEFF
  *                      ^^^^ ^^^^^^^^^^^^
@@ -136,93 +138,96 @@ format_service_uuid(const char *ifname, char buf[SVC_UUID_LEN])
 }
 
 /*
- * Per-interface service UUID cache (#409). Apple's IPConfiguration keys a
+ * Per-interface service ID cache (#409). Apple's IPConfiguration keys a
  * service by its SCPreferences service ID, held for the life of the
- * service; re-deriving ours from the live MAC broke removal once the
- * interface departed — get_mac() failed and every key name came out as
+ * service; re-deriving a MAC-based ID from the live MAC broke removal once
+ * the interface departed — get_mac() failed and every key name came out as
  * 00000000-...-000000000000, so the real keys stayed in configd. Shared
  * by every sc_publish session (workers, ra_router, on_link_departed).
  */
-#define	SVC_UUID_MAX	(2 * BOUND_MAX_IF)
+#define	SVC_ID_MAX	(2 * BOUND_MAX_IF)
 
 static struct {
 	char	ifname[IF_NAMESIZE];
-	char	uuid[SVC_UUID_LEN];
-} g_svc_uuid[SVC_UUID_MAX];
-static pthread_mutex_t	g_svc_uuid_lock = PTHREAD_MUTEX_INITIALIZER;
+	char	id[SC_PUBLISH_SERVICE_ID_LEN];
+} g_svc_id[SVC_ID_MAX];
+static pthread_mutex_t	g_svc_id_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* Store `uuid` for `ifname`; called with g_svc_uuid_lock held. */
+/* Store `id` for `ifname`; called with g_svc_id_lock held. */
 static void
-svc_uuid_store_locked(const char *ifname, const char *uuid)
+svc_id_store_locked(const char *ifname, const char *id)
 {
 	int i, free_slot = -1;
 
-	for (i = 0; i < SVC_UUID_MAX; i++) {
-		if (g_svc_uuid[i].ifname[0] == '\0') {
+	for (i = 0; i < SVC_ID_MAX; i++) {
+		if (g_svc_id[i].ifname[0] == '\0') {
 			if (free_slot < 0)
 				free_slot = i;
 			continue;
 		}
-		if (strcmp(g_svc_uuid[i].ifname, ifname) == 0)
+		if (strcmp(g_svc_id[i].ifname, ifname) == 0)
 			break;
 	}
-	if (i == SVC_UUID_MAX) {
+	if (i == SVC_ID_MAX) {
 		if (free_slot < 0)
 			return;		/* full: callers fall back to the MAC */
 		i = free_slot;
-		(void)strlcpy(g_svc_uuid[i].ifname, ifname,
-		    sizeof(g_svc_uuid[i].ifname));
+		(void)strlcpy(g_svc_id[i].ifname, ifname,
+		    sizeof(g_svc_id[i].ifname));
 	}
-	(void)strlcpy(g_svc_uuid[i].uuid, uuid, sizeof(g_svc_uuid[i].uuid));
+	(void)strlcpy(g_svc_id[i].id, id, sizeof(g_svc_id[i].id));
 }
 
 void
-sc_publish_service_begin(const char *ifname)
+sc_publish_service_begin(const char *ifname, const char *service_id)
 {
 	char buf[SVC_UUID_LEN];
 
-	/* No MAC: keep whatever an earlier service cached. */
-	if (format_service_uuid(ifname, buf) != 0)
-		return;
-	(void)pthread_mutex_lock(&g_svc_uuid_lock);
-	svc_uuid_store_locked(ifname, buf);
-	(void)pthread_mutex_unlock(&g_svc_uuid_lock);
+	if (service_id == NULL || service_id[0] == '\0') {
+		/* No MAC: keep whatever an earlier service cached. */
+		if (format_service_uuid(ifname, buf) != 0)
+			return;
+		service_id = buf;
+	}
+	(void)pthread_mutex_lock(&g_svc_id_lock);
+	svc_id_store_locked(ifname, service_id);
+	(void)pthread_mutex_unlock(&g_svc_id_lock);
 }
 
 /*
- * The service UUID for `ifname`: the cached one, else derived from the MAC
- * now (and cached, if the MAC was readable). Real 8-4-4-4-12 lowercase hex
- * either way. Result is heap-allocated; caller releases with CFRelease.
+ * The service ID for `ifname`: the cached one, else derived from the MAC
+ * now (and cached, if the MAC was readable). Result is heap-allocated;
+ * caller releases with CFRelease.
  */
 static CFStringRef
-make_service_uuid(const char *ifname)
+make_service_id(const char *ifname)
 {
-	char buf[SVC_UUID_LEN];
+	char buf[SC_PUBLISH_SERVICE_ID_LEN];
 	int i;
 
-	(void)pthread_mutex_lock(&g_svc_uuid_lock);
-	for (i = 0; i < SVC_UUID_MAX; i++) {
-		if (g_svc_uuid[i].ifname[0] != '\0' &&
-		    strcmp(g_svc_uuid[i].ifname, ifname) == 0) {
-			(void)strlcpy(buf, g_svc_uuid[i].uuid, sizeof(buf));
+	(void)pthread_mutex_lock(&g_svc_id_lock);
+	for (i = 0; i < SVC_ID_MAX; i++) {
+		if (g_svc_id[i].ifname[0] != '\0' &&
+		    strcmp(g_svc_id[i].ifname, ifname) == 0) {
+			(void)strlcpy(buf, g_svc_id[i].id, sizeof(buf));
 			break;
 		}
 	}
-	if (i == SVC_UUID_MAX && format_service_uuid(ifname, buf) == 0)
-		svc_uuid_store_locked(ifname, buf);
-	(void)pthread_mutex_unlock(&g_svc_uuid_lock);
+	if (i == SVC_ID_MAX && format_service_uuid(ifname, buf) == 0)
+		svc_id_store_locked(ifname, buf);
+	(void)pthread_mutex_unlock(&g_svc_id_lock);
 	return (mkstr(buf));
 }
 
 static CFStringRef
 make_key(const char *ifname, const char *suffix)
 {
-	CFStringRef uuid = make_service_uuid(ifname);
+	CFStringRef id = make_service_id(ifname);
 	CFStringRef key;
 
 	key = CFStringCreateWithFormat(NULL, NULL,
-	    CFSTR("State:/Network/Service/%@/%s"), uuid, suffix);
-	CFRelease(uuid);
+	    CFSTR("State:/Network/Service/%@/%s"), id, suffix);
+	CFRelease(id);
 	return (key);
 }
 
@@ -779,7 +784,7 @@ int
 sc_publish_update_primary(struct sc_publish *p)
 {
 	CFMutableDictionaryRef gdict;
-	CFStringRef gkey, gk_svc, gk_iface, svc_uuid, iface_str;
+	CFStringRef gkey, gk_svc, gk_iface, svc_id, iface_str;
 	char primary[IF_NAMESIZE];
 	int rc = -1;
 
@@ -809,12 +814,12 @@ sc_publish_update_primary(struct sc_publish *p)
 	    &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 	gk_svc = mkstr("PrimaryService");
 	gk_iface = mkstr("PrimaryInterface");
-	svc_uuid = make_service_uuid(primary);
+	svc_id = make_service_id(primary);
 	iface_str = mkstr(primary);
 
 	if (gdict != NULL && gk_svc != NULL && gk_iface != NULL &&
-	    svc_uuid != NULL && iface_str != NULL) {
-		CFDictionarySetValue(gdict, gk_svc, svc_uuid);
+	    svc_id != NULL && iface_str != NULL) {
+		CFDictionarySetValue(gdict, gk_svc, svc_id);
 		CFDictionarySetValue(gdict, gk_iface, iface_str);
 		if (SCDynamicStoreSetValue(p->store, gkey, gdict)) {
 			xlog("primary interface: %s (rank %d, %d bound)",
@@ -828,7 +833,7 @@ sc_publish_update_primary(struct sc_publish *p)
 	}
 
 	if (iface_str != NULL) CFRelease(iface_str);
-	if (svc_uuid != NULL) CFRelease(svc_uuid);
+	if (svc_id != NULL) CFRelease(svc_id);
 	if (gk_iface != NULL) CFRelease(gk_iface);
 	if (gk_svc != NULL) CFRelease(gk_svc);
 	if (gdict != NULL) CFRelease(gdict);

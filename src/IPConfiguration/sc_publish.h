@@ -2,7 +2,7 @@
  * sc_publish.h — SCDynamicStore publish glue for ipconfigd.
  *
  * Wraps an SCDynamicStoreRef so the DHCPv4 state machine can publish
- * a bound lease under State:/Network/Service/<UUID>/IPv4 — Apple's
+ * a bound lease under State:/Network/Service/<serviceID>/IPv4 — Apple's
  * canonical key for the IPConfiguration -> SystemConfiguration
  * handoff. A SystemConfiguration client (SCNetworkService observer,
  * ipconfig(8), an NSD plugin) sees the same dictionary shape it
@@ -24,6 +24,13 @@
 struct sc_publish;
 
 /*
+ * Longest service ID kept, NUL included. A preferences service ID is a
+ * UUID on Darwin, `ipconfig set`'s is <Method>-<if>, and the MAC-derived
+ * one is 36 characters; this leaves room for a hand-written one.
+ */
+#define	SC_PUBLISH_SERVICE_ID_LEN	128
+
+/*
  * Open a session with configd. session_name is the human-readable
  * label configd uses to identify this publisher (shows up in its
  * session table). Returns NULL on failure — the daemon should keep
@@ -33,20 +40,20 @@ struct sc_publish;
 struct sc_publish	*sc_publish_open(const char *session_name);
 
 /*
- * A service is starting on `ifname`: derive its <UUID> from the MAC now
- * and keep it for every later publish and remove (#409), so the keys can
- * still be removed once the interface has departed and its MAC is gone.
- * A no-op when the MAC can't be read; the UUID is then cached on the
- * first publish that can read it.
+ * A service is starting on `ifname`: fix the <serviceID> every later
+ * publish and remove uses (#409), so the keys can still be removed once
+ * the interface has departed. `service_id` is the service's own ID (#568);
+ * NULL or empty means an interface no service names, whose ID is derived
+ * from its MAC now. With no service ID and no readable MAC this is a
+ * no-op, and the ID is cached on the first publish that can read the MAC.
  */
-void	sc_publish_service_begin(const char *ifname);
+void	sc_publish_service_begin(const char *ifname, const char *service_id);
 
 /*
  * Publish lease state for `ifname` under
- * State:/Network/Service/<UUID>/IPv4. (.../DNS is sc_publish_dns().)
- * The <UUID> is derived deterministically from the interface MAC so
- * the keys are stable across daemon restarts, and cached per interface
- * (see sc_publish_service_begin()). Returns 0 on success.
+ * State:/Network/Service/<serviceID>/IPv4. (.../DNS is sc_publish_dns().)
+ * The <serviceID> is the one cached per interface (see
+ * sc_publish_service_begin()). Returns 0 on success.
  */
 int	sc_publish_ipv4(struct sc_publish *p, const char *ifname,
 	    const struct dhcp_lease *lease);
@@ -60,8 +67,8 @@ int	sc_publish_ipv4(struct sc_publish *p, const char *ifname,
 void	sc_publish_refresh_proxies(void);
 
 /*
- * The service's merged DNS (dns_config.h): State:/Network/Service/<UUID>/DNS
- * in Apple's kSCEntNetDNS shape plus InterfaceName, and its removal.
+ * The service's merged DNS (dns_config.h):
+ * State:/Network/Service/<serviceID>/DNS in Apple's kSCEntNetDNS shape plus InterfaceName, and its removal.
  * Returns 0 on success.
  */
 struct ipconfig_dns;
@@ -78,7 +85,7 @@ int	sc_publish_dns_global(struct sc_publish *p,
 int	sc_publish_remove_dns_global(struct sc_publish *p);
 
 /*
- * Publish iter 7a SLAAC state under State:/Network/Service/<UUID>/IPv6.
+ * Publish iter 7a SLAAC state under State:/Network/Service/<serviceID>/IPv6.
  * Mirrors Apple's IPv6 dict shape: Addresses (array of strings),
  * PrefixLength (array of numbers), Router (link-local address with
  * %ifname zone), InterfaceName, Flags=0 (SLAAC). Returns 0 on success.
@@ -92,7 +99,7 @@ int	sc_publish_ipv6(struct sc_publish *p, const char *ifname,
 	    const struct in6_addr *router_lladdr);
 
 /*
- * Publish DHCP state under State:/Network/Service/<UUID>/DHCP. Mirrors
+ * Publish DHCP state under State:/Network/Service/<serviceID>/DHCP. Mirrors
  * Apple's IPMonitor DHCP-options dict shape: per-option entries keyed
  * "Option_<N>" (CFData on Apple; CFString for printable options like
  * 12 here so consumers — hostnamed iter 3, mDNSResponder — can read
@@ -130,7 +137,7 @@ int	sc_publish_update_primary(struct sc_publish *p);
 int	sc_publish_remove(struct sc_publish *p, const char *ifname);
 
 /*
- * Remove only State:/Network/Service/<UUID>/IPv6 for `ifname` — its SLAAC
+ * Remove only State:/Network/Service/<serviceID>/IPv6 for `ifname` — its SLAAC
  * address turned out to be a duplicate (#349) while IPv4 stays bound.
  * Returns 0 on success.
  */
