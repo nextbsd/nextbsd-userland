@@ -18,6 +18,7 @@ struct bound_entry {
 	bool			bound;
 	char			ifname[IF_NAMESIZE];
 	struct dhcp_lease	lease;
+	struct saved_pkt	packet;		/* pkt_size 0: none */
 };
 
 /*
@@ -78,6 +79,7 @@ bound_state_init(void)
 		g_bound.e[i].ifname[0] = '\0';
 		(void)memset(&g_bound.e[i].lease, 0,
 		    sizeof(g_bound.e[i].lease));
+		g_bound.e[i].packet.pkt_size = 0;
 	}
 	(void)pthread_mutex_unlock(&g_bound.lock);
 }
@@ -144,6 +146,7 @@ bound_state_clear(const char *ifname)
 		e->bound = false;
 		e->ifname[0] = '\0';
 		(void)memset(&e->lease, 0, sizeof(e->lease));
+		e->packet.pkt_size = 0;
 	}
 	(void)pthread_mutex_unlock(&g_bound.lock);
 }
@@ -224,4 +227,55 @@ bound_state_get_lease(const char *ifname, struct dhcp_lease *out)
 	}
 	(void)pthread_mutex_unlock(&g_bound.lock);
 	return (hit);
+}
+
+void
+bound_state_set_packet(const char *ifname, const struct saved_pkt *pkt)
+{
+	struct bound_entry *e;
+
+	if (ifname == NULL || pkt == NULL)
+		return;
+	(void)pthread_mutex_lock(&g_bound.lock);
+	e = find_locked(ifname);
+	if (e != NULL)
+		e->packet = *pkt;
+	(void)pthread_mutex_unlock(&g_bound.lock);
+}
+
+bool
+bound_state_get_packet(const char *ifname, struct saved_pkt *out)
+{
+	struct bound_entry *e;
+	bool hit = false;
+
+	if (ifname == NULL || out == NULL)
+		return (false);
+	(void)pthread_mutex_lock(&g_bound.lock);
+	e = find_locked(ifname);
+	if (e != NULL && e->packet.pkt_size != 0) {
+		*out = e->packet;
+		hit = true;
+	}
+	(void)pthread_mutex_unlock(&g_bound.lock);
+	return (hit);
+}
+
+int
+bound_state_names(char names[][IF_NAMESIZE], int max)
+{
+	struct bound_entry *primary;
+	int i, n = 0;
+
+	(void)pthread_mutex_lock(&g_bound.lock);
+	primary = primary_locked();
+	if (primary != NULL && n < max)
+		(void)strlcpy(names[n++], primary->ifname, IF_NAMESIZE);
+	for (i = 0; i < BOUND_MAX_IF && n < max; i++) {
+		if (!g_bound.e[i].bound || &g_bound.e[i] == primary)
+			continue;
+		(void)strlcpy(names[n++], g_bound.e[i].ifname, IF_NAMESIZE);
+	}
+	(void)pthread_mutex_unlock(&g_bound.lock);
+	return (n);
 }

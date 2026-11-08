@@ -15,6 +15,7 @@
 #include "ipconfig_mig_types.h"
 #include "ipconfigd.h"
 #include "sc_link_watch.h"		/* link_active_in_store() */
+#include "dhcp_options.h"		/* vendored: dhcpol_* */
 
 #include <mach/mach.h>
 #include "ipconfigServer.h"		/* MIG-emitted prototypes */
@@ -117,56 +118,48 @@ _ipconfig_if_addr(mach_port_t server, InterfaceName name,
 }
 
 /*
- * Re-encode option `code` from `lease` in DHCP wire form (RFC 2132):
- * what Apple's service_get_option() copies out of the saved ACK. We keep
- * the parsed lease rather than the packet, so only the options
- * struct dhcp_lease carries can be answered. Returns the byte count, or
- * 0 if the lease has no such option.
+ * What an interface that has no service to answer for reports: whether
+ * ipconfigd knows it at all, as Apple's IFState lookup separates the two.
  */
-static mach_msg_type_number_t
-lease_option(const struct dhcp_lease *lease, int code, uint8_t *out,
-    size_t outsz)
+static ipconfig_status_t
+no_packet_status(const char *ifname)
 {
-	uint32_t be;
-	unsigned i;
-
-	switch (code) {
-	case DHCP_OPT_SUBNET_MASK:
-		(void)memcpy(out, &lease->netmask, 4);
-		return (4);
-	case DHCP_OPT_ROUTER:
-		if (lease->router.s_addr == INADDR_ANY)
-			return (0);
-		(void)memcpy(out, &lease->router, 4);
-		return (4);
-	case DHCP_OPT_DNS_SERVER:
-		for (i = 0; i < lease->dns_count && (i + 1) * 4 <= outsz; i++)
-			(void)memcpy(out + i * 4, &lease->dns[i], 4);
-		return (i * 4);
-	case DHCP_OPT_HOST_NAME:
-		if (lease->host_name_len == 0 || lease->host_name_len > outsz)
-			return (0);
-		(void)memcpy(out, lease->host_name, lease->host_name_len);
-		return (lease->host_name_len);
-	case DHCP_OPT_LEASE_TIME:
-		be = htonl(lease->lease_time);
-		(void)memcpy(out, &be, 4);
-		return (4);
-	case DHCP_OPT_SERVER_ID:
-		if (lease->server.s_addr == INADDR_ANY)
-			return (0);
-		(void)memcpy(out, &lease->server, 4);
-		return (4);
-	default:
-		return (0);
-	}
+	if (if_nametoindex(ifname) == 0 || iface_rank(ifname) == IFRANK_NEVER)
+		return (ipconfig_status_interface_does_not_exist_e);
+	return (ipconfig_status_not_found_e);
 }
 
 /*
- * One option from one interface's lease (Apple's get_if_option()). An
- * empty name means "whichever service is in charge": Apple walks every
- * interface; we answer from the primary, the only one whose options
- * (router, DNS) are actually in effect.
+ * Option `code` from `saved`, in wire form (RFC 2132; Apple's
+ * service_get_option()): dhcpol_parse_packet() takes the overloaded file
+ * and sname areas in as well, and the first instance of a repeated option
+ * is what's returned. Copies it into `out` and returns its length, or -1
+ * if the packet has no such option.
+ */
+static int
+packet_option(struct saved_pkt *saved, int code, uint8_t *out, size_t outsz)
+{
+	dhcpol_t options;
+	void *data;
+	int len = 0;
+
+	if (!dhcpol_parse_packet(&options, (struct dhcp *)saved->pkt,
+	    (int)saved->pkt_size, NULL))
+		return (-1);
+	data = dhcpol_find(&options, code, &len, NULL);
+	if (data == NULL || (size_t)len > outsz)
+		len = -1;
+	else
+		(void)memcpy(out, data, (size_t)len);
+	dhcpol_free(&options);
+	return (len);
+}
+
+/*
+ * One option from the packet an interface's service accepted (Apple's
+ * get_if_option()). Only a service that accepted a packet answers, so a
+ * Manual service reports not found, as Apple's does. An empty name tries
+ * every bound interface, as Apple's does, the primary first.
  */
 kern_return_t
 _ipconfig_get_option(mach_port_t server, InterfaceName name, int option_code,
@@ -174,9 +167,10 @@ _ipconfig_get_option(mach_port_t server, InterfaceName name, int option_code,
     ipconfig_status_t *status)
 {
 	char ifname[IF_NAMESIZE];
-	struct dhcp_lease lease;
-	uint8_t buf[DHCP_LEASE_MAX_HOSTNAME];
-	mach_msg_type_number_t n;
+	char names[BOUND_MAX_IF][IF_NAMESIZE];
+	struct saved_pkt saved;
+	uint8_t buf[DHCP_OPTION_SIZE_MAX];
+	int i, len = -1, n;
 
 	(void)server;
 	*option_data = NULL;
@@ -184,26 +178,57 @@ _ipconfig_get_option(mach_port_t server, InterfaceName name, int option_code,
 	ifname_from_mig(ifname, name);
 
 	if (ifname[0] != '\0') {
-		if (!bound_state_get_lease(ifname, &lease)) {
-			*status = ipconfig_status_interface_does_not_exist_e;
+		if (bound_state_get_packet(ifname, &saved))
+			len = packet_option(&saved, option_code, buf,
+			    sizeof(buf));
+		if (len < 0) {
+			*status = no_packet_status(ifname);
 			return (KERN_SUCCESS);
 		}
-		n = lease_option(&lease, option_code, buf,
-		    sizeof(buf));
 	} else {
-		n = 0;
-		if (bound_state_primary(ifname, sizeof(ifname)) &&
-		    bound_state_get_lease(ifname, &lease))
-			n = lease_option(&lease, option_code, buf,
-			    sizeof(buf));
-		if (n == 0 && bound_state_count() == 0) {
-			*status = ipconfig_status_interface_does_not_exist_e;
+		n = bound_state_names(names, BOUND_MAX_IF);
+		for (i = 0; i < n && len < 0; i++) {
+			if (bound_state_get_packet(names[i], &saved))
+				len = packet_option(&saved, option_code, buf,
+				    sizeof(buf));
+		}
+		if (len < 0) {
+			*status = (n == 0)
+			    ? ipconfig_status_interface_does_not_exist_e
+			    : ipconfig_status_not_found_e;
 			return (KERN_SUCCESS);
 		}
 	}
-	if (n == 0)
-		*status = ipconfig_status_not_found_e;
-	else if (!ool_reply(buf, n, option_data, option_dataCnt))
+	if (!ool_reply(buf, (size_t)len, option_data, option_dataCnt))
+		*status = ipconfig_status_allocation_failed_e;
+	else
+		*status = ipconfig_status_success_e;
+	return (KERN_SUCCESS);
+}
+
+/*
+ * `ipconfig getpacket <if>`: the packet the interface's service accepted
+ * (Apple's get_if_packet()). A service with no packet, Manual included,
+ * reports not found.
+ */
+kern_return_t
+_ipconfig_get_packet(mach_port_t server, InterfaceName name,
+    dataOut_t *packet, mach_msg_type_number_t *packetCnt,
+    ipconfig_status_t *status)
+{
+	char ifname[IF_NAMESIZE];
+	struct saved_pkt saved;
+
+	(void)server;
+	*packet = NULL;
+	*packetCnt = 0;
+	ifname_from_mig(ifname, name);
+
+	if (!bound_state_get_packet(ifname, &saved)) {
+		*status = no_packet_status(ifname);
+		return (KERN_SUCCESS);
+	}
+	if (!ool_reply(saved.pkt, saved.pkt_size, packet, packetCnt))
 		*status = ipconfig_status_allocation_failed_e;
 	else
 		*status = ipconfig_status_success_e;

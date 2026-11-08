@@ -256,6 +256,7 @@ above; `/System/Library` and `~/Library` paths are kept as-is.
 | launchd | `man launchctl` (1) | launchd control utility |
 | launchd | `man launchd.plist` (5) | job / agent / daemon plist format |
 | configd | `man configd` (8) | System Configuration daemon |
+| IPConfiguration | `man ipconfig` (8) | IP configuration tool |
 | DiskArbitration | `man diskarbitrationd` (8) | disk arbitration daemon |
 | libIOKit | `man ioreg` (8) | I/O Kit registry viewer |
 | kext_tools | `man kextd` (8) | kext-loading daemon |
@@ -283,8 +284,8 @@ above; `/System/Library` and `~/Library` paths are kept as-is.
 | libxslt | `man libxslt` (3), `man libexslt` (3) | XSLT / EXSLT library overviews |
 
 **Shipped binaries with no man page** (deliberately none — not fabricated):
-`ipconfigd` (upstream ships only `ipconfig.8` for the client CLI, which NextBSD
-does not build — there is no daemon page), and `hostnamed` / `kextdeps`
+`ipconfigd` (upstream ships only `ipconfig.8` for the client CLI, installed as
+`man ipconfig` — there is no daemon page), and `hostnamed` / `kextdeps`
 (NextBSD-original, no upstream page). `wland` / `wlan` are also
 NextBSD-originals with no upstream page — but unlike those, they ship
 *original* pages written for them, because `wlan` is a CLI users actually type

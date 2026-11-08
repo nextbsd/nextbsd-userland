@@ -887,14 +887,19 @@ comp "ipconfig(8) CLI"
 # --allow-shlib-undefined) under the cross clang.  TODO verify under cross.
 # CF + SC (+ dispatch/blocks, which the SC header pulls) for `set` /
 # `getsummary` (property lists) and `waitall` (SCDynamicStore) — the
-# same libraries ipconfigd links.
+# same libraries ipconfigd links. vendored/ is Apple's DHCP option table and
+# packet printer for `getoption` / `getpacket`.
 $CROSS_CC --sysroot="$SYSROOT" -fblocks \
-    -I"$IPCFG_MIG" -I"$SRC/IPConfiguration" \
+    -I"$IPCFG_MIG" -I"$SRC/IPConfiguration" -I"$SRC/IPConfiguration/vendored" \
     -I"$SRC/launchd/liblaunch" -I"$SRC/launchd/freebsd-shims" \
     -I"$SYSROOT/usr/include" -L"$SYSROOT/usr/lib/system" \
     -Wno-macro-redefined -Wl,-rpath,/usr/lib/system -Wl,--allow-shlib-undefined \
     -o "$DESTDIR/usr/sbin/ipconfig" \
     "$SRC/IPConfiguration/ipconfig.c" "$IPCFG_MIG/ipconfigUser.c" \
+    "$SRC/IPConfiguration/vendored/dhcp_options.c" \
+    "$SRC/IPConfiguration/vendored/dhcplib.c" \
+    "$SRC/IPConfiguration/vendored/ptrlist.c" \
+    "$SRC/IPConfiguration/vendored/DNSNameList.c" \
     -llaunch -lsystem_kernel \
     -lSystemConfiguration -lCoreFoundation -lsystem_dispatch -l:libsystem_blocks.so
 test -x "$DESTDIR/usr/sbin/ipconfig" || { echo "FAIL: /usr/sbin/ipconfig not built"; exit 1; }

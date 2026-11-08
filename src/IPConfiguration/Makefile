@@ -10,10 +10,10 @@
 # Install: make DESTDIR=/path/to/rootfs install
 
 PROG=		ipconfigd
-# MAN= (empty) suppresses bsd.prog.mk's default ipconfigd.1 build —
-# NO_MAN=yes alone is insufficient, the make rule still references it.
-# Same suppression hwregd / configd use.
-MAN=
+# Man page for the ipconfig CLI, vendored from apple-oss-distributions/bootp
+# @ bootp-268.1 (ipconfig.tproj/ipconfig.8) and trimmed to the commands that
+# exist. bsd.prog.mk gzips + installs into MANDIR.
+MAN=		ipconfig.8
 SRCS=		ipconfigd.c dhcp_discover.c apply_lease.c
 SRCS+=		sc_publish.c lease_loop.c
 SRCS+=		bound_state.c mach_service.c ipconfigd_mig.c
@@ -22,6 +22,13 @@ SRCS+=		ra_listen.c apply_lease_v6.c ra_router.c
 SRCS+=		sc_link_watch.c
 SRCS+=		ipconfig_prefs.c
 SRCS+=		dns_config.c
+
+# Apple's DHCP option list and tag table, bootp-268.1 bootplib, trimmed
+# (vendored/): answers ipconfig getoption from the saved packet. The
+# ipconfig CLI links these too; see build-userland.sh.
+.PATH:		${.CURDIR}/vendored
+SRCS+=		dhcp_options.c ptrlist.c DNSNameList.c
+CFLAGS+=	-I${.CURDIR}/vendored
 
 # ipconfigServer.c — MIG-generated server stub for ipconfig.defs
 # (iter 5a's two read-only routines). build.sh runs mig and passes
@@ -48,7 +55,6 @@ CFLAGS+=			-Wno-macro-redefined
 # warnings inside the vendored CF headers into hard errors. Same
 # carry libSystemConfiguration / libxpc / libCoreFoundation use.
 WARNS=		0
-NO_MAN=		yes
 
 CFLAGS+=	-O2 -pipe -fblocks
 CFLAGS+=	-Wall -Wextra -Wshadow -Wstrict-prototypes

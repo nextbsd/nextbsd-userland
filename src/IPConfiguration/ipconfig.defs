@@ -11,6 +11,7 @@
  *   20000  ipconfig_if_count		ipconfig ifcount
  *   20001  ipconfig_get_option		ipconfig getoption (#59)
  *   20002  ipconfig_if_addr		ipconfig getifaddr
+ *   20003  ipconfig_get_packet	ipconfig getpacket
  *   20004  ipconfig_set		ipconfig set (#59)
  *   20017  ipconfig_get_summary	ipconfig getsummary (#59)
  *
@@ -67,9 +68,10 @@ routine ipconfig_if_count(
 
 /*
  * ipconfig_get_option — the raw bytes of DHCP option `option_code`
- * from `name`'s lease. An empty `name` searches every bound interface,
- * as Apple's does. status = not_found_e if the lease did not carry the
- * option, interface_does_not_exist_e if nothing is bound on `name`.
+ * from the packet `name`'s service accepted. An empty `name` searches
+ * every bound interface, as Apple's does. status = not_found_e if no
+ * packet carried the option, interface_does_not_exist_e if `name` is
+ * not a known interface.
  */
 routine ipconfig_get_option(
 	server		: mach_port_t;
@@ -91,7 +93,16 @@ routine ipconfig_if_addr(
 	out status	: ipconfig_status
 );
 
-	skip;	/* 20003 ipconfig_get_packet */
+/*
+ * ipconfig_get_packet — the DHCP packet `name`'s service accepted, whole.
+ * status = not_found_e if the interface has none, as for a Manual service.
+ */
+routine ipconfig_get_packet(
+	server		: mach_port_t;
+	name		: if_name;
+	out packet	: dataOut, dealloc;
+	out status	: ipconfig_status
+);
 
 /*
  * ipconfig_set — set `name`'s configuration method. `method_data` is
