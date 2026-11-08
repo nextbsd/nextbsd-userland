@@ -4,7 +4,7 @@
  * Real-macOS analog: PreferencesMonitor is the configd plugin that
  * watches the system network-preferences file
  * (/Local/Library/Preferences/SystemConfiguration/preferences.plist) and,
- * on every committed change, republishes the relevant subset into
+ * on every applied change, republishes the relevant subset into
  * SCDynamicStore — including Setup:/System/ComputerName and
  * Setup:/Network/HostNames. Apple's set-hostname.c (vendored under
  * src/hostnamed/vendored/) then reads those SCDS keys via
@@ -15,7 +15,7 @@
  * SCPrefs → SCDS bridge inside hostnamed itself: ~100 LOC. On
  * startup we publish initial values (synthesized fallback when the
  * prefs file is absent / has no ComputerName); on every
- * SCPreferencesCommitChanges from another process (scutil --set, or
+ * SCPreferencesApplyChanges from another process (scutil --set, or
  * the hostnameprefset CI fixture) the SCPrefs callback re-reads the
  * prefs and re-publishes.
  *
@@ -281,7 +281,7 @@ log_publish(const char *when, const struct prefs_names *names)
 	    "'%s' (Setup:/Network/HostNames)", when, buf, lbuf);
 }
 
-/* SCPrefs commit callback: re-read SCPrefs (which may have just been
+/* SCPrefs apply callback: re-read SCPrefs (which may have just been
  * mutated by scutil --set or hostnameprefset), re-publish to SCDS.
  * set-hostname.c's SCDS callback then fires for the Setup:/System
  * change and re-runs the decision engine. */
@@ -292,7 +292,9 @@ prefs_cb(SCPreferencesRef prefs, SCPreferencesNotification type,
 	struct prefs_names names;
 	struct prefs_monitor_state *st = info;
 
-	(void)type;
+	/* As Apple's PreferencesMonitor: a commit alone changes nothing. */
+	if ((type & kSCPreferencesNotificationApply) == 0)
+		return;
 	if (st == NULL || st->store == NULL)
 		return;
 	/* Drop the cached in-memory plist so the next PathGetValue picks

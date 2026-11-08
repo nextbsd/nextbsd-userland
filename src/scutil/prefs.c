@@ -42,13 +42,12 @@
 /*
  * NextBSD: Apple's prefs.c also manages the --net helper session
  * (ni_prefs), opens non-root sessions through an Authorization helper
- * or SCPreferencesCreateWithOptions, applies after every commit, and
- * carries the --log / --disable-* / --allow-new-interfaces / ...
- * switches. None of that is backed by our libSystemConfiguration
- * (no Authorization, SCPreferencesCreateWithOptions,
- * SCPreferencesApplyChanges or InterfaceNamer prefs), so this file keeps
- * --get / --set and the --prefs session. Writes need root, the same as
- * the preferences file's permissions.
+ * or SCPreferencesCreateWithOptions, and carries the --log /
+ * --disable-* / --allow-new-interfaces / ... switches. None of that is
+ * backed by our libSystemConfiguration (no Authorization,
+ * SCPreferencesCreateWithOptions or InterfaceNamer prefs), so this file
+ * keeps --get / --set and the --prefs session. Writes need root, the
+ * same as the preferences file's permissions.
  */
 
 
@@ -102,13 +101,15 @@ _prefs_save(void)
 		exit (1);
 	}
 
-	/*
-	 * NextBSD: no SCPreferencesApplyChanges. The commit above already
-	 * fires the SCPreferences callback, which is where hostnamed's
-	 * prefs_monitor picks up a new name.
-	 */
-
 	_prefs_changed = FALSE;
+
+	if (!SCPreferencesApplyChanges(prefs)) {
+		SCPrint(TRUE,
+			stdout,
+			CFSTR("SCPreferencesApplyChanges() failed: %s\n"),
+			SCErrorString(SCError()));
+		exit (1);
+	}
 
 	return;
 }
@@ -593,6 +594,20 @@ do_prefs_commit(int argc, char * const argv[])
 	}
 
 	_prefs_changed = FALSE;
+	return;
+}
+
+
+__private_extern__
+void
+do_prefs_apply(int argc, char * const argv[])
+{
+#pragma unused(argc)
+#pragma unused(argv)
+	if (!SCPreferencesApplyChanges(prefs)) {
+		SCPrint(TRUE, stdout, CFSTR("%s\n"), SCErrorString(SCError()));
+	}
+
 	return;
 }
 

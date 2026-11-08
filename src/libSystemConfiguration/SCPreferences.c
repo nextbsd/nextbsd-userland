@@ -14,8 +14,8 @@
  * routes privileged writes through SCHelper and guards the file with
  * SCPreferencesLock; this repo has no helper and runs its daemons as
  * root, so iter 1 reads and writes the file directly. The preferences
- * lock, change notifications, SCPreferencesApplyChanges and the path-
- * based accessors are later iterations.
+ * lock, change notifications and the path-based accessors are later
+ * iterations.
  */
 
 #include "SCInternal.h"
@@ -63,8 +63,8 @@ typedef struct __SCPreferences {
 	SCDynamicStoreRef	notifyStore;	/* internal store, or NULL */
 } SCPreferencesPrivate, *SCPreferencesPrivateRef;
 
-/* SCPreferencesCommitChanges posts a change here once the file is written */
-static void	__SCPreferencesPostCommit(SCPreferencesRef prefs);
+/* Post a change on the session's "commit" or "apply" notification key */
+static Boolean	__SCPreferencesPost(SCPreferencesRef prefs, const char *kind);
 
 
 #pragma mark -
@@ -669,13 +669,50 @@ SCPreferencesCommitChanges(SCPreferencesRef prefs)
 
 	if (ok) {
 		/* post a change notification — best effort */
-		__SCPreferencesPostCommit(prefs);
+		(void) __SCPreferencesPost(prefs, "commit");
 	}
 
 	if (!wasLocked) {
 		(void) SCPreferencesUnlock(prefs);
 	}
 	_SCErrorSet(status);		/* restore the write's status */
+	return ok;
+}
+
+/*
+ * Ask whoever is watching these preferences to apply what is stored to
+ * the running system. Unlike a commit, this writes nothing: its whole
+ * job is the notification, so a failed post is an error. With no store
+ * session there is nobody to tell, and that is not one (as on Darwin).
+ */
+Boolean
+SCPreferencesApplyChanges(SCPreferencesRef prefs)
+{
+	SCPreferencesPrivateRef	prefsPrivate	= (SCPreferencesPrivateRef)prefs;
+	Boolean			wasLocked;
+	Boolean			ok;
+	int			status;
+
+	if (!isA_SCPreferences(prefs)) {
+		_SCErrorSet(kSCStatusNoPrefsSession);
+		return FALSE;
+	}
+
+	/* hold the preferences lock across the post */
+	wasLocked = prefsPrivate->locked;
+	if (!wasLocked) {
+		if (!SCPreferencesLock(prefs, TRUE)) {
+			return FALSE;	/* SCError() set by SCPreferencesLock */
+		}
+	}
+
+	ok = __SCPreferencesPost(prefs, "apply");
+	status = ok ? kSCStatusOK : kSCStatusFailed;
+
+	if (!wasLocked) {
+		(void) SCPreferencesUnlock(prefs);
+	}
+	_SCErrorSet(status);
 	return ok;
 }
 
@@ -1185,24 +1222,27 @@ SCPreferencesPathCreateUniqueChild(SCPreferencesRef prefs, CFStringRef prefix)
 #pragma mark Change notifications
 
 /*
- * The SCDynamicStore key a commit posts on / a watcher watches. It is
- * derived from the preferences file path so every session for the same
- * file agrees on it.
+ * The SCDynamicStore key a commit or an apply posts on and a watcher
+ * watches; `kind` is "commit" or "apply". It is derived from the
+ * preferences file path so every session for the same file agrees on
+ * it.
  */
 static CFStringRef
-__SCPreferencesCommitKey(SCPreferencesRef prefs)
+__SCPreferencesNotificationKey(SCPreferencesRef prefs, const char *kind)
 {
 	SCPreferencesPrivateRef	prefsPrivate	= (SCPreferencesPrivateRef)prefs;
 	char			buf[PATH_MAX + 32];
 
-	(void) snprintf(buf, sizeof(buf), "SCPreferences:commit:%s",
+	(void) snprintf(buf, sizeof(buf), "SCPreferences:%s:%s", kind,
 			prefsPrivate->path);
 	return CFStringCreateWithCString(NULL, buf, kCFStringEncodingUTF8);
 }
 
 /*
  * Internal SCDynamicStore callback — a change on the commit key means
- * the preferences were committed. Runs on the caller's dispatch queue.
+ * the preferences were saved, a change on the apply key that they should
+ * be applied to the current configuration. Runs on the caller's dispatch
+ * queue.
  */
 static void
 prefsNotify(SCDynamicStoreRef store, CFArrayRef changedKeys, void *info)
@@ -1211,15 +1251,41 @@ prefsNotify(SCDynamicStoreRef store, CFArrayRef changedKeys, void *info)
 	SCPreferencesPrivateRef	prefsPrivate	= (SCPreferencesPrivateRef)prefs;
 	SCPreferencesCallBack	callout;
 	void			*context_info;
+	SCPreferencesNotification notify	= 0;
+	CFStringRef		commitKey;
+	CFStringRef		applyKey;
+	CFIndex			i;
+	CFIndex			n;
 
 	(void)store;
-	(void)changedKeys;	/* the only watched key is our commit key */
+
+	commitKey = __SCPreferencesNotificationKey(prefs, "commit");
+	applyKey  = __SCPreferencesNotificationKey(prefs, "apply");
+	n = (changedKeys != NULL) ? CFArrayGetCount(changedKeys) : 0;
+	for (i = 0; i < n; i++) {
+		CFStringRef	key = CFArrayGetValueAtIndex(changedKeys, i);
+
+		if ((commitKey != NULL) && CFEqual(key, commitKey)) {
+			notify |= kSCPreferencesNotificationCommit;
+		}
+		if ((applyKey != NULL) && CFEqual(key, applyKey)) {
+			notify |= kSCPreferencesNotificationApply;
+		}
+	}
+	if (commitKey != NULL) {
+		CFRelease(commitKey);
+	}
+	if (applyKey != NULL) {
+		CFRelease(applyKey);
+	}
+	if (notify == 0) {
+		return;
+	}
 
 	callout      = prefsPrivate->rlsFunction;
 	context_info = prefsPrivate->rlsContext.info;
 	if (callout != NULL) {
-		(*callout)(prefs, kSCPreferencesNotificationCommit,
-			   context_info);
+		(*callout)(prefs, notify, context_info);
 	}
 }
 
@@ -1260,7 +1326,7 @@ SCPreferencesSetDispatchQueue(SCPreferencesRef prefs, dispatch_queue_t queue)
 	SCDynamicStoreContext	storeContext;
 	SCDynamicStoreRef	store;
 	CFStringRef		storeName;
-	CFStringRef		commitKey;
+	CFStringRef		keys[2];
 	CFArrayRef		watchKeys;
 	Boolean			ok;
 
@@ -1289,10 +1355,10 @@ SCPreferencesSetDispatchQueue(SCPreferencesRef prefs, dispatch_queue_t queue)
 	}
 
 	/*
-	 * Watch our commit key on an internal SCDynamicStore session. The
-	 * context does not retain `prefs`: the SCPreferences object owns
-	 * the store and tears it down in its finalizer (after which the
-	 * store delivers no further callouts).
+	 * Watch our commit and apply keys on an internal SCDynamicStore
+	 * session. The context does not retain `prefs`: the SCPreferences
+	 * object owns the store and tears it down in its finalizer (after
+	 * which the store delivers no further callouts).
 	 */
 	memset(&storeContext, 0, sizeof(storeContext));
 	storeContext.info = (void *)prefs;
@@ -1309,20 +1375,28 @@ SCPreferencesSetDispatchQueue(SCPreferencesRef prefs, dispatch_queue_t queue)
 		return FALSE;
 	}
 
-	commitKey = __SCPreferencesCommitKey(prefs);
-	if (commitKey == NULL) {
+	keys[0] = __SCPreferencesNotificationKey(prefs, "commit");
+	keys[1] = __SCPreferencesNotificationKey(prefs, "apply");
+	if ((keys[0] == NULL) || (keys[1] == NULL)) {
+		if (keys[0] != NULL) {
+			CFRelease(keys[0]);
+		}
+		if (keys[1] != NULL) {
+			CFRelease(keys[1]);
+		}
 		CFRelease(store);
 		_SCErrorSet(kSCStatusFailed);
 		return FALSE;
 	}
-	watchKeys = CFArrayCreate(NULL, (const void **)&commitKey, 1,
+	watchKeys = CFArrayCreate(NULL, (const void **)keys, 2,
 				  &kCFTypeArrayCallBacks);
 	ok = (watchKeys != NULL) &&
 	     SCDynamicStoreSetNotificationKeys(store, watchKeys, NULL);
 	if (watchKeys != NULL) {
 		CFRelease(watchKeys);
 	}
-	CFRelease(commitKey);
+	CFRelease(keys[0]);
+	CFRelease(keys[1]);
 	if (!ok) {
 		CFRelease(store);
 		_SCErrorSet(kSCStatusFailed);
@@ -1340,15 +1414,17 @@ SCPreferencesSetDispatchQueue(SCPreferencesRef prefs, dispatch_queue_t queue)
 }
 
 /*
- * Post a change on the commit key so watching sessions are notified.
- * Best effort: if configd is unreachable the commit still succeeded.
+ * Post a change on the "commit" or "apply" key so watching sessions are
+ * notified. FALSE only if a reachable configd did not take the post: with
+ * no store session (configd not running) there is nobody to notify.
  */
-static void
-__SCPreferencesPostCommit(SCPreferencesRef prefs)
+static Boolean
+__SCPreferencesPost(SCPreferencesRef prefs, const char *kind)
 {
 	SCDynamicStoreRef	store;
 	CFStringRef		storeName;
-	CFStringRef		commitKey;
+	CFStringRef		key;
+	Boolean			ok	= FALSE;
 
 	storeName = CFStringCreateWithCString(NULL, "SCPreferences",
 					      kCFStringEncodingUTF8);
@@ -1357,13 +1433,14 @@ __SCPreferencesPostCommit(SCPreferencesRef prefs)
 		CFRelease(storeName);
 	}
 	if (store == NULL) {
-		return;
+		return TRUE;
 	}
 
-	commitKey = __SCPreferencesCommitKey(prefs);
-	if (commitKey != NULL) {
-		(void) SCDynamicStoreNotifyValue(store, commitKey);
-		CFRelease(commitKey);
+	key = __SCPreferencesNotificationKey(prefs, kind);
+	if (key != NULL) {
+		ok = SCDynamicStoreNotifyValue(store, key);
+		CFRelease(key);
 	}
 	CFRelease(store);
+	return ok;
 }

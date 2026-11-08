@@ -180,13 +180,11 @@ const cmdInfo commands_prefs[] = {
 	{ "lock",	0,	1,	do_prefs_lock,		3,	1,
 		" lock [wait]                   : locks write access to preferences"		},
 
-	/*
-	 * NextBSD: no "apply" -- SCPreferencesApplyChanges is not in our
-	 * libSystemConfiguration. "commit" alone notifies the watchers
-	 * (hostnamed's prefs_monitor applies on commit).
-	 */
 	{ "commit",	0,	0,	do_prefs_commit,	2,	0,
 		" commit                        : commit any changes"				},
+
+	{ "apply",	0,	0,	do_prefs_apply,		2,	0,
+		" apply                         : apply any changes"				},
 
 	{ "unlock",	0,	0,	do_prefs_unlock,	3,	1,
 		" unlock                        : unlocks write access to preferences"		},

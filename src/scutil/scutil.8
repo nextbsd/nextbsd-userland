@@ -55,6 +55,15 @@ standard input.
 A list of the available commands is availble by entering the
 .Ar help
 directive.
+The
+.Ar commit
+command writes changes to the preference file, and the
+.Ar apply
+command asks the running system to act on what the file holds.
+A
+.Ar commit
+alone changes nothing until the next
+.Ar apply .
 .Pp
 The
 .Fl w

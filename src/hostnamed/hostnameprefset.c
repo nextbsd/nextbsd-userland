@@ -6,14 +6,14 @@
  *
  * Writes ComputerName=<computer-name> into the default SCPreferences
  * file (/Local/Library/Preferences/SystemConfiguration/preferences.plist)
- * at path /System/System, commits, and exits. The next hostnamed
+ * at path /System/System, commits, applies, and exits. The next hostnamed
  * refresh reads that value via SCPrefs and adopts it — proving the
  * SCPrefs tier fires.
  *
- * With --clear: removes /System/System from the prefs file and
- * commits. iter 3c rounds use this to reset between tiers so the
+ * With --clear: removes /System/System from the prefs file, commits
+ * and applies. iter 3c rounds use this to reset between tiers so the
  * SCPrefs tier doesn't short-circuit DHCP / mDNS rounds. The clear
- * still flows through SCPreferencesCommitChanges, so the persistent
+ * still flows through SCPreferencesApplyChanges, so the persistent
  * daemon's SCPrefs callback fires (a filesystem rm of preferences.
  * plist would NOT trigger the callback).
  *
@@ -73,11 +73,17 @@ main(int argc, char **argv)
 
 	if (clear_mode) {
 		/* Idempotent — succeeds even if /System/System is absent;
-		 * commit still fires the callback. */
+		 * apply still fires the callback. */
 		(void)SCPreferencesPathRemoveValue(prefs, path);
 		if (!SCPreferencesCommitChanges(prefs)) {
 			(void)fprintf(stderr,
 			    "SCPreferencesCommitChanges(--clear) failed: %s\n",
+			    SCErrorString(SCError()));
+			goto out;
+		}
+		if (!SCPreferencesApplyChanges(prefs)) {
+			(void)fprintf(stderr,
+			    "SCPreferencesApplyChanges(--clear) failed: %s\n",
 			    SCErrorString(SCError()));
 			goto out;
 		}
@@ -105,6 +111,12 @@ main(int argc, char **argv)
 	if (!SCPreferencesCommitChanges(prefs)) {
 		(void)fprintf(stderr,
 		    "SCPreferencesCommitChanges failed: %s\n",
+		    SCErrorString(SCError()));
+		goto out;
+	}
+	if (!SCPreferencesApplyChanges(prefs)) {
+		(void)fprintf(stderr,
+		    "SCPreferencesApplyChanges failed: %s\n",
 		    SCErrorString(SCError()));
 		goto out;
 	}

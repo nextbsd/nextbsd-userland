@@ -18,13 +18,13 @@
  * surface — see src/mDNSResponder/mDNSPosix/mDNSConfigStore.c
  * mDNSConfigStorePublishResolvedHostName). This observer subscribes to that
  * State: key and, on a resolved-name change, persists it into SCPreferences
- * /System/System ComputerName + commits — the same write the hostnameprefset
- * CI fixture performs. prefs_monitor's SCPrefs callback then republishes
+ * /System/System ComputerName, commits and applies — the same write the
+ * hostnameprefset CI fixture performs. prefs_monitor's SCPrefs callback then republishes
  * Setup:/System + Setup:/Network/HostNames, and the vendored set-hostname.c
  * decision engine sets the kernel hostname. Convergence:
  *
  *   mDNS conflict -> State:/Network/HostNames = "foo-2"
- *     -> [this observer] SCPrefs ComputerName = "foo-2" + commit
+ *     -> [this observer] SCPrefs ComputerName = "foo-2" + commit + apply
  *     -> prefs_monitor republishes Setup:/{System,Network/HostNames} = "foo-2"
  *     -> mDNSConfigStore re-adopts desired "foo-2", re-probes foo-2.local
  *        (now unique) -> no further rename -> no further State: write.
@@ -127,8 +127,8 @@ read_prefs_computer_name(void)
 	return (name);
 }
 
-/* Persist `name` into SCPreferences /System/System ComputerName + commit.
- * Mirrors hostnameprefset.c. Returns 0 on success. The commit fires
+/* Persist `name` into SCPreferences /System/System ComputerName, commit
+ * and apply. Mirrors hostnameprefset.c. Returns 0 on success. The apply fires
  * prefs_monitor's SCPrefs callback, which republishes the Setup: keys the
  * set-hostname.c engine reads. */
 static int
@@ -159,6 +159,9 @@ persist_computer_name(CFStringRef name)
 			    SCErrorString(SCError()));
 		else if (!SCPreferencesCommitChanges(prefs))
 			xlog("hostname_observer: CommitChanges failed: %s",
+			    SCErrorString(SCError()));
+		else if (!SCPreferencesApplyChanges(prefs))
+			xlog("hostname_observer: ApplyChanges failed: %s",
 			    SCErrorString(SCError()));
 		else
 			rc = 0;

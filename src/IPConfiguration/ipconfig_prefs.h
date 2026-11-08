@@ -9,7 +9,7 @@
  * plugin host, so — as hostnamed's prefs_monitor.c does for the host
  * names — ipconfigd reads the same entities from SCPreferences itself,
  * through the SCNetworkSet / SCNetworkService API a network pane writes
- * them with, and watches for commits.
+ * them with, and watches for applies.
  *
  * The current set's services are what count. For each one with an
  * Interface DeviceName:
@@ -27,13 +27,13 @@
 
 /*
  * Invoked on a libdispatch queue, once per interface whose configured
- * method changed in a commit (including an interface that gained or
+ * method changed in an apply (including an interface that gained or
  * lost its service).
  */
 typedef void (*ipconfig_prefs_cb)(const char *ifname);
 
 /*
- * Load the preferences synchronously, then watch them for commits.
+ * Load the preferences synchronously, then watch them for applies.
  * Returns 0 on success; on failure the table stays empty, so every
  * interface is DHCP'd as before.
  */
