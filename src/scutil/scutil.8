@@ -33,6 +33,9 @@
 .Fl -dns
 .Br
 .Nm
+.Fl -nwi Op Ar interface
+.Br
+.Nm
 .Fl -proxy
 .Br
 .Nm
@@ -167,6 +170,17 @@ Reports the descriptive message for the given SystemConfiguration
 status code.
 .It Fl -dns
 Reports the current DNS configuration.
+.It Fl -nwi Op Ar interface
+Reports the network information: the interfaces with connectivity, for
+IPv4 and for IPv6, best first, with their flags and reachability.
+The first listed in each family is the primary.
+With
+.Ar interface ,
+reports that interface only.
+When no interface is configured,
+prints
+.Qq No network information
+and exits with status 1.
 .It Fl -proxy
 Reports the current proxy configuration.
 .It Fl -renew Ar interface

@@ -148,6 +148,7 @@
 #include "dhcp_discover.h"
 #include "dns_config.h"
 #include "dns_configuration.h"
+#include "nwi_configuration.h"
 #include "ipconfig_method.h"
 #include "ipconfig_prefs.h"
 #include "ipconfigd.h"
@@ -1840,6 +1841,7 @@ main(int argc, char **argv)
 	bound_state_init();
 	/* Before any election can update it (#429). */
 	dns_configuration_init();
+	nwi_configuration_init();
 	if (mach_service_start() != 0)
 		xlog("mach_service_start failed; RPC off");
 

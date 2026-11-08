@@ -37,15 +37,18 @@
  */
 
 /*
- * NextBSD: of Apple's tests.c the "-w" key wait, "--dns", "--proxy" and
- * "--renew" are carried. The rest backs options whose APIs our
+ * NextBSD: of Apple's tests.c the "-w" key wait, "--dns", "--nwi",
+ * "--proxy" and "--renew" are carried. The rest backs options whose APIs our
  * libSystemConfiguration does not have yet -- "-r"
- * (SCNetworkReachabilityCreateWithName/WithAddress), "--nwi"
- * (network_information), "--snapshot", "--advisory" and "--rank".
+ * (SCNetworkReachabilityCreateWithName/WithAddress), "--snapshot",
+ * "--advisory" and "--rank".
  *
  * "--dns" is configd-596.15's, not this file's later tag: its printer
  * (dnsinfo_internal.h) is the 10.9.5 one, matching the dnsinfo the server
  * stores. "--dns <hostname>" needs reachability and is not carried yet.
+ * "--nwi" is configd-596.15's too, for the same reason. Its "%p" arguments
+ * are cast to pointer width: reach_flags is 32 bits and SCPrint reads a
+ * pointer for that format.
  */
 
 #include <signal.h>
@@ -63,6 +66,142 @@
 #define	_sc_debug	FALSE
 #include <dnsinfo.h>
 #include "dnsinfo_internal.h"
+#include <network_information.h>
+#include "SCNetworkReachabilityInternal.h"
+#include <CommonCrypto/CommonDigest.h>
+
+static void
+_printNWIFlags(nwi_ifstate_flags flags)
+{
+	if (flags == 0) {
+		return;
+	}
+
+	SCPrint(TRUE, stdout, CFSTR(" ("));
+	if (flags & NWI_IFSTATE_FLAGS_HAS_IPV4) {
+		SCPrint(TRUE, stdout, CFSTR("IPv4"));
+		flags &= ~NWI_IFSTATE_FLAGS_HAS_IPV4;
+		SCPrint(flags != 0, stdout, CFSTR(","));
+	}
+	if (flags & NWI_IFSTATE_FLAGS_HAS_IPV6) {
+		SCPrint(TRUE, stdout, CFSTR("IPv6"));
+		flags &= ~NWI_IFSTATE_FLAGS_HAS_IPV6;
+		SCPrint(flags != 0, stdout, CFSTR(","));
+	}
+	if (flags & NWI_IFSTATE_FLAGS_HAS_DNS) {
+		SCPrint(TRUE, stdout, CFSTR("DNS"));
+		flags &= ~NWI_IFSTATE_FLAGS_HAS_DNS;
+		SCPrint(flags != 0, stdout, CFSTR(","));
+	}
+	if (flags != 0) {
+		SCPrint(TRUE, stdout, CFSTR("0x%08x"), flags);
+	}
+	SCPrint(TRUE, stdout, CFSTR(")"));
+
+	return;
+}
+
+
+static void
+_printNWIInfo(nwi_ifstate_t ifstate)
+{
+	nwi_ifstate_flags		ifstate_flags = nwi_ifstate_get_flags(ifstate);
+	SCNetworkReachabilityFlags	reach_flags = nwi_ifstate_get_reachability_flags(ifstate);
+	const uint8_t			*signature;
+	int				signature_length;
+	const struct sockaddr		*vpn_addr = nwi_ifstate_get_vpn_server(ifstate);
+
+	SCPrint(TRUE, stdout,
+		CFSTR(" %7s : flags %p"),
+		nwi_ifstate_get_ifname(ifstate),
+		(void *)(uintptr_t)ifstate_flags);
+	_printNWIFlags(ifstate_flags);
+
+	SCPrint(TRUE, stdout, CFSTR("\n           reach %p ("), (void *)(uintptr_t)reach_flags);
+	__SCNetworkReachabilityPrintFlags(reach_flags);
+	SCPrint(TRUE, stdout, CFSTR(")"));
+
+	if (vpn_addr != NULL) {
+		char vpn_ntopbuf[INET6_ADDRSTRLEN];
+
+		_SC_sockaddr_to_string(vpn_addr, vpn_ntopbuf, sizeof(vpn_ntopbuf));
+		SCPrint(TRUE, stdout, CFSTR("\n           VPN server: %s"), vpn_ntopbuf);
+	}
+
+	signature = nwi_ifstate_get_signature(ifstate, AF_UNSPEC, &signature_length);
+	if (signature != NULL) {
+		CFDataRef	digest	= NULL;
+
+		digest = CFDataCreate(NULL, signature, CC_SHA1_DIGEST_LENGTH);
+		SCPrint(TRUE, stdout, CFSTR("\n           Signature Hash: %@"), digest);
+		CFRelease(digest);
+	} else {
+		SCPrint(TRUE, stdout, CFSTR("\n           Signature Hash: <empty>"));
+	}
+
+	SCPrint(TRUE, stdout, CFSTR("\n           generation %llu\n"),
+		nwi_ifstate_get_generation(ifstate));
+
+	return;
+}
+
+
+__private_extern__
+void
+do_nwi(int argc, char **argv)
+{
+	nwi_ifstate_t	ifstate;
+	nwi_state_t	state	= nwi_state_copy();
+
+	if (state == NULL) {
+		SCPrint(TRUE, stdout, CFSTR("No network information\n"));
+		exit(1);
+	}
+
+	if (argc > 0) {
+		ifstate = nwi_state_get_ifstate(state, argv[0]);
+		if (ifstate != NULL) {
+			_printNWIInfo(ifstate);
+		} else {
+			SCPrint(TRUE, stdout, CFSTR("No network information (for %s)\n"), argv[0]);
+		}
+
+		goto done;
+	}
+
+	SCPrint(TRUE, stdout, CFSTR("Network information (generation %llu)"),
+		nwi_state_get_generation(state));
+
+	SCPrint(TRUE, stdout, CFSTR("\nIPv4 network interface information\n"));
+	ifstate = nwi_state_get_first_ifstate(state, AF_INET);
+
+	if (ifstate == NULL) {
+		SCPrint(TRUE, stdout, CFSTR(" No IPv4 states found\n"));
+	}
+
+	while (ifstate != NULL) {
+		_printNWIInfo(ifstate);
+		ifstate = nwi_ifstate_get_next(ifstate, AF_INET);
+	}
+
+	SCPrint(TRUE, stdout, CFSTR("\nIPv6 network interface information\n"));
+	ifstate = nwi_state_get_first_ifstate(state, AF_INET6);
+
+	if (ifstate == NULL) {
+		SCPrint(TRUE, stdout, CFSTR(" No IPv6 states found\n"));
+	}
+
+	while (ifstate != NULL) {
+		_printNWIInfo(ifstate);
+		ifstate = nwi_ifstate_get_next(ifstate, AF_INET6);
+	}
+
+    done :
+
+	nwi_state_release(state);
+	exit(0);
+}
+
 
 __private_extern__
 void

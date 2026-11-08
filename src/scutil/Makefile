@@ -4,10 +4,10 @@
 # (scutil.tproj/), trimmed to what our libSystemConfiguration backs:
 # the interactive dynamic-store session, -w, --prefs, --get / --set
 # (ComputerName, HostName, LocalHostName) and --error. Each source file
-# notes what it drops and why; the --net / --nwi /
-# -r sources (net*.c, nc.c, most of tests.c) are not carried. --dns is
-# from configd-596.15, the 10.9.5 baseline, whose output differs from
-# this tag's: see tests.c.
+# notes what it drops and why; the --net /
+# -r sources (net*.c, nc.c, most of tests.c) are not carried. --dns and
+# --nwi are from configd-596.15, the 10.9.5 baseline, whose output
+# differs from this tag's: see tests.c.
 #
 #   scutil.c, commands.c, dictionary.c, session.c,
 #   cache.c, notifications.c, prefs.c, tests.c	— Apple, trimmed
@@ -50,6 +50,8 @@ CFLAGS+=	-I${.CURDIR}/../launchd/liblaunch
 CFLAGS+=	-I${.CURDIR}/../launchd/freebsd-shims
 # dnsinfo.h and dnsinfo_internal.h for --dns.
 CFLAGS+=	-I${.CURDIR}/../libSystemConfiguration/dnsinfo
+# network_information.h for --nwi.
+CFLAGS+=	-I${.CURDIR}/../libSystemConfiguration/nwi
 
 # -lSystemConfiguration: SCDynamicStore* / SCPreferences* and the
 # SCPreferencesSet* name setters (SCDHostName.c).
