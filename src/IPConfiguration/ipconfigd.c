@@ -111,6 +111,14 @@
  * IPv6 sends a Router Solicitation (bootp's link_refresh, dhcp.c
  * IFEventID_renew_e, rtadv.c IFEventID_renew_e). A Manual service keeps
  * its IPv4 as it is, since manual.c has no renew case either.
+ *
+ * service IDs (#568) — a service publishes under its SCPreferences service
+ * ID, as Darwin's does, so its Setup: and State: keys line up. `ipconfig
+ * set` services are <Method>-<if>, as bootp's IFState_service_add() names
+ * one with no service ID. An interface nothing configures keeps the
+ * MAC-derived ID until #480. Worker slots stay keyed by interface, so a
+ * service whose ID changes unwinds and starts again, and a disabled
+ * service's interface is left alone.
  */
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -190,6 +198,8 @@ struct dhcp_worker {
 	uint32_t		lease_cap_secs;
 	bool			ready;		/* bound or given up: startup */
 	struct ipconfig_method_info method;	/* what this worker runs (#58) */
+	char			service_id[SC_PUBLISH_SERVICE_ID_LEN];
+						/* empty: no service (#568) */
 	bool			restart;	/* method changed: rerun on exit */
 
 	/*
@@ -917,6 +927,35 @@ manual_run_on_interface(const char *ifname,
  */
 static void	service_start(const char *ifname);
 
+/*
+ * A service moved here from another interface (#568): Darwin's
+ * S_set_service stops it there first. The old worker is already unwinding,
+ * and its teardown removes State:/Network/Service/<id>, so wait for it
+ * before publishing under the same ID.
+ */
+static void
+service_id_wait_free(const struct dhcp_worker *self)
+{
+	if (self->service_id[0] == '\0')
+		return;
+	while (!got_term && !self->stop) {
+		bool busy = false;
+		int i;
+
+		pthread_mutex_lock(&g_workers_lock);
+		for (i = 0; i < BOUND_MAX_IF; i++) {
+			if (&g_workers[i] != self && g_workers[i].active &&
+			    strcmp(g_workers[i].service_id,
+			    self->service_id) == 0)
+				busy = true;
+		}
+		pthread_mutex_unlock(&g_workers_lock);
+		if (!busy)
+			return;
+		(void)sleep(1);
+	}
+}
+
 static void *
 dhcp_worker_main(void *arg)
 {
@@ -927,8 +966,9 @@ dhcp_worker_main(void *arg)
 
 	(void)strlcpy(ifname, w->ifname, sizeof(ifname));
 	method = w->method;
-	/* Fix the service UUID while the MAC is still readable (#409). */
-	sc_publish_service_begin(ifname);
+	service_id_wait_free(w);
+	/* Fix the service ID while the MAC is still readable (#409). */
+	sc_publish_service_begin(ifname, w->service_id);
 	for (;;) {
 		bool conflict;
 		unsigned wait, i;
@@ -1015,14 +1055,31 @@ dhcp_worker_stop(const char *ifname)
 	return (found);
 }
 
+/* Darwin's ipconfig_method_string() spelling, for an `ipconfig set` service ID. */
+static const char *
+set_service_method_string(ipconfig_method_t m)
+{
+	switch (m) {
+	case ipconfig_method_manual_e:
+		return ("MANUAL");
+	case ipconfig_method_dhcp_e:
+		return ("DHCP");
+	default:
+		return ("NONE");
+	}
+}
+
 /*
  * The IPv4 method `ifname` should run (#58): an `ipconfig set` method
  * first, then its network service in SCPreferences, and DHCP when
  * nothing configures it — which is what keeps an unconfigured machine
- * exactly as it was.
+ * exactly as it was. `service_id`, if not NULL, gets the ID that service
+ * publishes under (SC_PUBLISH_SERVICE_ID_LEN bytes, #568): `ipconfig set`'s
+ * <Method>-<if>, the preferences service's ID, or empty for no service.
  */
 static void
-method_lookup(const char *ifname, struct ipconfig_method_info *out)
+service_lookup(const char *ifname, struct ipconfig_method_info *out,
+    char *service_id)
 {
 	int i;
 
@@ -1031,16 +1088,30 @@ method_lookup(const char *ifname, struct ipconfig_method_info *out)
 		if (g_set_methods[i].ifname[0] != '\0' &&
 		    strcmp(g_set_methods[i].ifname, ifname) == 0) {
 			*out = g_set_methods[i].info;
+			if (service_id != NULL)
+				(void)snprintf(service_id,
+				    SC_PUBLISH_SERVICE_ID_LEN, "%s-%s",
+				    set_service_method_string(out->method),
+				    ifname);
 			pthread_mutex_unlock(&g_workers_lock);
 			return;
 		}
 	}
 	pthread_mutex_unlock(&g_workers_lock);
 
-	if (ipconfig_prefs_lookup(ifname, out))
+	if (service_id != NULL)
+		service_id[0] = '\0';
+	if (ipconfig_prefs_lookup(ifname, out, service_id,
+	    SC_PUBLISH_SERVICE_ID_LEN))
 		return;
 	(void)memset(out, 0, sizeof(*out));
 	out->method = ipconfig_method_dhcp_e;
+}
+
+static void
+method_lookup(const char *ifname, struct ipconfig_method_info *out)
+{
+	service_lookup(ifname, out, NULL);
 }
 
 /*
@@ -1054,10 +1125,11 @@ dhcp_worker_start(const char *ifname, uint32_t lease_cap_secs)
 {
 	struct dhcp_worker *w = NULL;
 	struct ipconfig_method_info method;
+	char service_id[SC_PUBLISH_SERVICE_ID_LEN];
 	pthread_attr_t attr;
 	int i, rc;
 
-	method_lookup(ifname, &method);
+	service_lookup(ifname, &method, service_id);
 	if (!ipconfig_method_is_served(method.method))
 		return (false);
 
@@ -1094,6 +1166,7 @@ dhcp_worker_start(const char *ifname, uint32_t lease_cap_secs)
 	w->v6_dup = false;
 	w->v6_rtr = NULL;
 	w->method = method;
+	(void)strlcpy(w->service_id, service_id, sizeof(w->service_id));
 	w->lease_cap_secs = lease_cap_secs;
 	(void)strlcpy(w->ifname, ifname, sizeof(w->ifname));
 	pthread_mutex_unlock(&g_workers_lock);
@@ -1156,10 +1229,11 @@ static void
 service_reconfigure(const char *ifname)
 {
 	struct ipconfig_method_info method;
+	char service_id[SC_PUBLISH_SERVICE_ID_LEN];
 	bool unwinding = false;
 	int i;
 
-	method_lookup(ifname, &method);
+	service_lookup(ifname, &method, service_id);
 	pthread_mutex_lock(&g_workers_lock);
 	for (i = 0; i < BOUND_MAX_IF; i++) {
 		struct dhcp_worker *w = &g_workers[i];
@@ -1167,7 +1241,8 @@ service_reconfigure(const char *ifname)
 		if (!w->active || strcmp(w->ifname, ifname) != 0)
 			continue;
 		if (!w->stop && memcmp(&w->method, &method,
-		    sizeof(method)) == 0) {
+		    sizeof(method)) == 0 &&
+		    strcmp(w->service_id, service_id) == 0) {
 			pthread_mutex_unlock(&g_workers_lock);
 			return;		/* already running this */
 		}

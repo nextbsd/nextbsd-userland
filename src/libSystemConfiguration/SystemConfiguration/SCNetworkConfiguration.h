@@ -402,6 +402,23 @@ SCNetworkInterfaceRef
 SCNetworkServiceGetInterface		(SCNetworkServiceRef		service);
 
 /*!
+	@function SCNetworkServiceGetEnabled
+	@discussion Returns whether the service is enabled.  A service is
+		disabled by an "__INACTIVE__" key in its dictionary.
+ */
+Boolean
+SCNetworkServiceGetEnabled		(SCNetworkServiceRef		service);
+
+/*!
+	@function SCNetworkServiceSetEnabled
+	@discussion Enables or disables the service.  A service on a Bond
+		or Bridge member interface can't be enabled.
+ */
+Boolean
+SCNetworkServiceSetEnabled		(SCNetworkServiceRef		service,
+					 Boolean			enabled);
+
+/*!
 	@function SCNetworkServiceRemove
 	@discussion Removes the service from the preferences.
  */

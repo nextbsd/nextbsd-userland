@@ -7,7 +7,7 @@
  */
 #include "ipconfig_prefs.h"
 #include "bound_state.h"	/* BOUND_MAX_IF */
-#include "sc_publish.h"		/* sc_publish_refresh_proxies */
+#include "sc_publish.h"		/* SC_PUBLISH_SERVICE_ID_LEN, proxies */
 #include "dns_config.h"
 
 #include <SystemConfiguration/SCNetworkConfiguration.h>
@@ -45,6 +45,7 @@
 
 struct prefs_entry {
 	char				ifname[IFNAMSIZ];
+	char				service_id[SC_PUBLISH_SERVICE_ID_LEN];
 	struct ipconfig_method_info	info;
 	bool				have_dns;
 	struct ipconfig_dns		dns;	/* zeroed unless have_dns */
@@ -324,6 +325,22 @@ service_entity(SCNetworkServiceRef service, CFStringRef type,
 	return (config);
 }
 
+/* `service`'s BSD interface name, into `ifname` (IFNAMSIZ bytes). */
+static bool
+service_ifname(SCNetworkServiceRef service, char *ifname)
+{
+	SCNetworkInterfaceRef iface;
+	CFStringRef bsd;
+
+	iface = SCNetworkServiceGetInterface(service);
+	bsd = (iface != NULL) ? SCNetworkInterfaceGetBSDName(iface) : NULL;
+	return (bsd != NULL && CFStringGetCString(bsd, ifname, IFNAMSIZ,
+	    kCFStringEncodingASCII));
+}
+
+static const struct prefs_entry *table_find(const struct prefs_table *t,
+    const char *ifname);
+
 /* Rebuild `t` from the current set in `prefs`. */
 static void
 prefs_read(SCPreferencesRef prefs, struct prefs_table *t)
@@ -345,20 +362,18 @@ prefs_read(SCPreferencesRef prefs, struct prefs_table *t)
 	n = CFArrayGetCount(services);
 	for (i = 0; i < n; i++) {
 		SCNetworkServiceRef service;
-		SCNetworkInterfaceRef iface;
 		SCNetworkProtocolRef p4, pdns;
 		CFDictionaryRef ipv4, dns;
-		CFStringRef bsd;
+		CFStringRef sid;
 		struct prefs_entry e;
 		bool dup = false;
 
 		service = CFArrayGetValueAtIndex(services, i);
-		iface = SCNetworkServiceGetInterface(service);
-		bsd = (iface != NULL) ? SCNetworkInterfaceGetBSDName(iface)
-		    : NULL;
+		/* Handled below, once the enabled services have their say. */
+		if (!SCNetworkServiceGetEnabled(service))
+			continue;
 		(void)memset(&e, 0, sizeof(e));
-		if (bsd == NULL || !CFStringGetCString(bsd, e.ifname,
-		    sizeof(e.ifname), kCFStringEncodingASCII))
+		if (!service_ifname(service, e.ifname))
 			continue;
 
 		for (j = 0; j < t->n; j++) {
@@ -374,6 +389,14 @@ prefs_read(SCPreferencesRef prefs, struct prefs_table *t)
 			xlog("%s: too many configured services; ignoring",
 			    e.ifname);
 			continue;
+		}
+
+		sid = SCNetworkServiceGetServiceID(service);
+		if (sid == NULL || !CFStringGetCString(sid, e.service_id,
+		    sizeof(e.service_id), kCFStringEncodingUTF8)) {
+			xlog("%s: service ID is too long; publishing under "
+			    "the interface's own ID", e.ifname);
+			e.service_id[0] = '\0';
 		}
 
 		ipv4 = service_entity(service, kSCEntNetIPv4, &p4);
@@ -409,6 +432,30 @@ prefs_read(SCPreferencesRef prefs, struct prefs_table *t)
 			    ipconfig_method_string(e.info.method));
 		t->e[t->n++] = e;
 	}
+
+	/*
+	 * A disabled service's interface is left alone (#568). Darwin's
+	 * PreferencesMonitor drops the service (prefsmon.c), and with no
+	 * service IPConfiguration does nothing; here an interface with no
+	 * table entry would fall back to DHCP, so it gets a NONE entry.
+	 * Second, because an enabled service on the interface wins whatever
+	 * the order.
+	 */
+	for (i = 0; i < n; i++) {
+		SCNetworkServiceRef service;
+		struct prefs_entry e;
+
+		service = CFArrayGetValueAtIndex(services, i);
+		if (SCNetworkServiceGetEnabled(service))
+			continue;
+		(void)memset(&e, 0, sizeof(e));
+		if (!service_ifname(service, e.ifname) ||
+		    table_find(t, e.ifname) != NULL || t->n == BOUND_MAX_IF)
+			continue;
+		e.info.method = ipconfig_method_none_e;
+		xlog("%s: its service is disabled; leaving it alone", e.ifname);
+		t->e[t->n++] = e;
+	}
 	CFRelease(services);
 }
 
@@ -437,7 +484,8 @@ table_changed(const struct prefs_table *a, const struct prefs_table *b,
 
 	if (x == NULL || y == NULL)
 		return (x != y);
-	return (memcmp(&x->info, &y->info, sizeof(x->info)) != 0);
+	return (memcmp(&x->info, &y->info, sizeof(x->info)) != 0 ||
+	    strcmp(x->service_id, y->service_id) != 0);
 }
 
 /* Did `ifname`'s DNS entity differ between `a` and `b`? */
@@ -587,12 +635,14 @@ ipconfig_prefs_copy_proxies(const char *ifname)
 		CFStringRef bsd;
 
 		service = CFArrayGetValueAtIndex(services, i);
+		if (!SCNetworkServiceGetEnabled(service))
+			continue;
 		iface = SCNetworkServiceGetInterface(service);
 		bsd = (iface != NULL) ? SCNetworkInterfaceGetBSDName(iface)
 		    : NULL;
 		if (bsd == NULL || !CFEqual(bsd, name))
 			continue;
-		/* The first service naming it, as prefs_read() takes. */
+		/* The first enabled service naming it, as prefs_read() takes. */
 		config = service_entity(service, kSCEntNetProxies, &proto);
 		if (config != NULL) {
 			copy = CFDictionaryCreateCopy(NULL, config);
@@ -608,7 +658,8 @@ ipconfig_prefs_copy_proxies(const char *ifname)
 }
 
 bool
-ipconfig_prefs_lookup(const char *ifname, struct ipconfig_method_info *out)
+ipconfig_prefs_lookup(const char *ifname, struct ipconfig_method_info *out,
+    char *service_id, size_t len)
 {
 	const struct prefs_entry *e;
 	bool hit = false;
@@ -617,6 +668,8 @@ ipconfig_prefs_lookup(const char *ifname, struct ipconfig_method_info *out)
 	e = table_find(&g_table, ifname);
 	if (e != NULL) {
 		*out = e->info;
+		if (service_id != NULL)
+			(void)strlcpy(service_id, e->service_id, len);
 		hit = true;
 	}
 	pthread_mutex_unlock(&g_prefs_lock);

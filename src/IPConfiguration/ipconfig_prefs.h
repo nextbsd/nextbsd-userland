@@ -15,13 +15,19 @@
  * Interface DeviceName:
  *   - an enabled IPv4 entity      -> its ConfigMethod
  *   - no IPv4, or IPv4 disabled   -> NONE (leave the interface alone)
- * An interface no service names is not in the table; the caller treats
- * that as DHCP.
+ *   - the service disabled (#568) -> NONE, unless an enabled service names
+ *     the interface too: PreferencesMonitor drops a disabled service, so
+ *     it never counts against an enabled one
+ * Each entry keeps the service's ID (#568), which ipconfigd publishes its
+ * state under. An interface no service names is not in the table; the
+ * caller treats that as DHCP.
  */
 #ifndef _IPCFG_IPCONFIG_PREFS_H_
 #define _IPCFG_IPCONFIG_PREFS_H_
 
 #include <stdbool.h>
+
+#include <stddef.h>
 
 #include "ipconfig_method.h"
 
@@ -43,11 +49,13 @@ typedef void (*ipconfig_prefs_cb)(const char *ifname);
 int	ipconfig_prefs_start(ipconfig_prefs_cb cb, ipconfig_prefs_cb dns_cb);
 
 /*
- * `ifname`'s configured method. Returns false when no service in the
- * current set names the interface.
+ * `ifname`'s configured method, and in `service_id` (`len` bytes, may be
+ * NULL) the ID of the service that configures it. Returns false when no
+ * service in the current set names the interface. The service ID is empty
+ * if it is too long to keep, and for a disabled service.
  */
 bool	ipconfig_prefs_lookup(const char *ifname,
-	    struct ipconfig_method_info *out);
+	    struct ipconfig_method_info *out, char *service_id, size_t len);
 
 /*
  * A copy of the enabled Proxies entity of the service that names `ifname`
