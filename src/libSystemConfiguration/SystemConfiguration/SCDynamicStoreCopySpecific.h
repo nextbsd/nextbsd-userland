@@ -48,6 +48,17 @@ SCDynamicStoreCopyConsoleUser	(SCDynamicStoreRef		store,
 				 uid_t				*uid,
 				 gid_t				*gid);
 
+/*!
+	@function SCDynamicStoreCopyProxies
+	@discussion Gets the system's proxy configuration
+		(State:/Network/Global/Proxies), normalized.
+	@param store An SCDynamicStoreRef, or NULL for a temporary session.
+	@result A dictionary (caller releases). It is empty when no proxy
+		configuration is published.
+ */
+CFDictionaryRef
+SCDynamicStoreCopyProxies	(SCDynamicStoreRef		store);
+
 __END_DECLS
 
 #endif	/* _SCDYNAMICSTORECOPYSPECIFIC_H */

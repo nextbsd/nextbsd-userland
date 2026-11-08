@@ -46,4 +46,14 @@ int	ipconfig_prefs_start(ipconfig_prefs_cb cb);
 bool	ipconfig_prefs_lookup(const char *ifname,
 	    struct ipconfig_method_info *out);
 
+/*
+ * A copy of the enabled Proxies entity of the service that names `ifname`
+ * in the current set, or NULL when there is none. Read from a fresh
+ * SCPreferences session, so it is safe on any thread. The result is a
+ * CFDictionaryRef the caller releases, spelled as its underlying type so
+ * plain-C callers need not pull CoreFoundation.
+ */
+struct __CFDictionary;
+const struct __CFDictionary *ipconfig_prefs_copy_proxies(const char *ifname);
+
 #endif /* _IPCFG_IPCONFIG_PREFS_H_ */

@@ -22,6 +22,10 @@
  * dictionary keys keep Apple's values (CoreGraphics' kCGSSession* names),
  * so a publisher written for macOS fills the same dictionary. Implemented
  * in SCDConsoleUser.c.
+ *
+ * Also the proxy SPI, which Apple declares in SCPrivate.h; ours stays free
+ * of CoreFoundation for the plain-C users of its notify names. Implemented
+ * in SCProxies.c.
  */
 
 #ifndef _SCDYNAMICSTORECOPYSPECIFICPRIVATE_H
@@ -54,6 +58,33 @@ __BEGIN_DECLS
  */
 CFArrayRef
 SCDynamicStoreCopyConsoleInformation	(SCDynamicStoreRef	store);
+
+/*!
+	@function SCNetworkProxiesCopyMatching
+	@discussion Returns the proxy configurations that apply to a
+		server and/or interface, from the dictionary
+		SCDynamicStoreCopyProxies returned.
+	@param globalConfiguration The system's proxy configuration.
+	@param server The host name to match, or NULL.
+	@param interface The interface to match, or NULL.
+	@result A CFArray of proxy dictionaries (caller releases), or NULL
+		with SCError() set; kSCStatusOK means no match.
+ */
+CFArrayRef
+SCNetworkProxiesCopyMatching		(CFDictionaryRef	globalConfiguration,
+					 CFStringRef		server,
+					 CFStringRef		interface);
+
+extern const CFStringRef	kSCProxiesNoGlobal;
+
+/*!
+	@function SCDynamicStoreCopyProxiesWithOptions
+	@discussion SCDynamicStoreCopyProxies with options.
+		kSCProxiesNoGlobal (CFBoolean) is accepted and has no effect.
+ */
+CFDictionaryRef
+SCDynamicStoreCopyProxiesWithOptions	(SCDynamicStoreRef	store,
+					 CFDictionaryRef	options);
 
 __END_DECLS
 

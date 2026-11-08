@@ -7,6 +7,7 @@
  */
 #include "ipconfig_prefs.h"
 #include "bound_state.h"	/* BOUND_MAX_IF */
+#include "sc_publish.h"		/* sc_publish_refresh_proxies */
 
 #include <SystemConfiguration/SCNetworkConfiguration.h>
 #include <SystemConfiguration/SCPreferences.h>
@@ -383,6 +384,8 @@ prefs_changed(SCPreferencesRef prefs, SCPreferencesNotification type,
 	pthread_mutex_unlock(&g_prefs_lock);
 
 	log_table(&next);
+	/* A commit can change the primary service's Proxies alone (#573). */
+	sc_publish_refresh_proxies();
 	if (g_cb == NULL)
 		return;
 	for (i = 0; i < prev.n; i++) {
@@ -425,6 +428,59 @@ ipconfig_prefs_start(ipconfig_prefs_cb cb)
 		return (-1);
 	}
 	return (0);
+}
+
+const struct __CFDictionary *
+ipconfig_prefs_copy_proxies(const char *ifname)
+{
+	SCPreferencesRef prefs;
+	SCNetworkSetRef set;
+	CFArrayRef services;
+	CFStringRef name;
+	CFDictionaryRef copy = NULL;
+	CFIndex i, n;
+
+	name = CFStringCreateWithCString(NULL, ifname, kCFStringEncodingASCII);
+	if (name == NULL)
+		return (NULL);
+	prefs = SCPreferencesCreate(NULL, CFSTR("ipconfigd-proxies"),
+	    CFSTR("preferences.plist"));
+	if (prefs == NULL) {
+		CFRelease(name);
+		return (NULL);
+	}
+	set = SCNetworkSetCopyCurrent(prefs);
+	services = (set != NULL) ? SCNetworkSetCopyServices(set) : NULL;
+	if (set != NULL)
+		CFRelease(set);
+
+	n = (services != NULL) ? CFArrayGetCount(services) : 0;
+	for (i = 0; i < n; i++) {
+		SCNetworkServiceRef service;
+		SCNetworkInterfaceRef iface;
+		SCNetworkProtocolRef proto;
+		CFDictionaryRef config;
+		CFStringRef bsd;
+
+		service = CFArrayGetValueAtIndex(services, i);
+		iface = SCNetworkServiceGetInterface(service);
+		bsd = (iface != NULL) ? SCNetworkInterfaceGetBSDName(iface)
+		    : NULL;
+		if (bsd == NULL || !CFEqual(bsd, name))
+			continue;
+		/* The first service naming it, as prefs_read() takes. */
+		config = service_entity(service, kSCEntNetProxies, &proto);
+		if (config != NULL) {
+			copy = CFDictionaryCreateCopy(NULL, config);
+			CFRelease(proto);
+		}
+		break;
+	}
+	if (services != NULL)
+		CFRelease(services);
+	CFRelease(prefs);
+	CFRelease(name);
+	return ((const struct __CFDictionary *)copy);
 }
 
 bool

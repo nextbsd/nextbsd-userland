@@ -37,19 +37,149 @@
  */
 
 /*
- * NextBSD: of Apple's tests.c the "-w" key wait and "--renew" are
- * carried. The rest backs options whose APIs our libSystemConfiguration
- * does not have yet -- "-r" (SCNetworkReachabilityCreateWithName/WithAddress),
- * "--dns" (dnsinfo), "--proxy" (SCDynamicStoreCopyProxies), "--nwi"
- * (network_information), "--snapshot", "--advisory" and "--rank".
+ * NextBSD: of Apple's tests.c the "-w" key wait, "--proxy" and
+ * "--renew" are carried. The rest backs options whose APIs our
+ * libSystemConfiguration does not have yet -- "-r"
+ * (SCNetworkReachabilityCreateWithName/WithAddress), "--dns" (dnsinfo),
+ * "--nwi" (network_information), "--snapshot", "--advisory" and "--rank".
  */
 
 #include <signal.h>
 #include <sys/time.h>
+#include <sys/socket.h>
+#include <net/if.h>
+
+#include <SystemConfiguration/SCDynamicStoreCopySpecificPrivate.h>
 
 #include "scutil.h"
 #include "prefs.h"
 #include "tests.h"
+
+
+static void
+showProxy(CFDictionaryRef proxy)
+{
+	CFMutableDictionaryRef	cleaned;
+
+	/*
+	 * NextBSD: Apple shows these internal keys under "-d", which this
+	 * port does not carry, so they are always removed.
+	 */
+	cleaned = CFDictionaryCreateMutableCopy(NULL, 0, proxy);
+	CFDictionaryRemoveValue(cleaned, kSCPropNetProxiesScoped);
+	CFDictionaryRemoveValue(cleaned, kSCPropNetProxiesServices);
+	CFDictionaryRemoveValue(cleaned, kSCPropNetProxiesSupplemental);
+
+	SCPrint(TRUE, stdout, CFSTR("%@\n"), cleaned);
+	CFRelease(cleaned);
+	return;
+}
+
+
+__private_extern__
+void
+do_showProxyConfiguration(int argc, char **argv)
+{
+	CFMutableDictionaryRef	options = NULL;
+	CFDictionaryRef		proxies;
+
+	if (getenv("BYPASS_GLOBAL_PROXY") != NULL) {
+		options = CFDictionaryCreateMutable(NULL, 0,
+						    &kCFTypeDictionaryKeyCallBacks,
+						    &kCFTypeDictionaryValueCallBacks);
+		CFDictionaryAddValue(options, kSCProxiesNoGlobal, kCFBooleanTrue);
+	}
+
+	proxies = SCDynamicStoreCopyProxiesWithOptions(NULL, options);
+
+	if (options != NULL) {
+		CFRelease(options);
+	}
+
+	if (proxies != NULL) {
+		CFStringRef	interface	= NULL;
+		CFStringRef	server		= NULL;
+
+		while (argc > 0) {
+			if (strcasecmp(argv[0], "interface") == 0) {
+				argv++;
+				argc--;
+
+				if (argc < 1) {
+					SCPrint(TRUE, stderr, CFSTR("No interface\n"));
+					exit(1);
+				}
+
+				if (if_nametoindex(argv[0]) == 0) {
+					SCPrint(TRUE, stderr, CFSTR("No interface: %s\n"), argv[0]);
+					exit(1);
+				}
+
+				interface = CFStringCreateWithCString(NULL, argv[0], kCFStringEncodingUTF8);
+				argv++;
+				argc--;
+			} else {
+				if (server != NULL) {
+					CFRelease(server);
+				}
+
+				server = CFStringCreateWithCString(NULL, argv[0], kCFStringEncodingUTF8);
+				argv++;
+				argc--;
+			}
+		}
+
+		if ((server != NULL) || (interface != NULL)) {
+			CFArrayRef	matching;
+
+			matching = SCNetworkProxiesCopyMatching(proxies, server, interface);
+			if (matching != NULL) {
+				CFIndex	i;
+				CFIndex	n;
+
+				if (server != NULL) {
+					if (interface != NULL) {
+						SCPrint(TRUE, stdout,
+							CFSTR("server = %@, interface = %@\n"),
+							server,
+							interface);
+					} else {
+						SCPrint(TRUE, stdout,
+							CFSTR("server = %@\n"),
+							server);
+					}
+				} else {
+					SCPrint(TRUE, stdout,
+						CFSTR("interface = %@\n"),
+						interface);
+				}
+
+				n = CFArrayGetCount(matching);
+				for (i = 0; i < n; i++) {
+					CFDictionaryRef	proxy;
+
+					proxy = CFArrayGetValueAtIndex(matching, i);
+					SCPrint(TRUE, stdout, CFSTR("\nproxy #%d\n"), (int)(i + 1));
+					showProxy(proxy);
+				}
+
+				CFRelease(matching);
+			} else {
+				SCPrint(TRUE, stdout, CFSTR("No matching proxy configurations\n"));
+			}
+		} else {
+			showProxy(proxies);
+		}
+
+		if (interface != NULL) CFRelease(interface);
+		if (server != NULL) CFRelease(server);
+		CFRelease(proxies);
+	} else {
+		SCPrint(TRUE, stdout, CFSTR("No proxy configuration available\n"));
+	}
+
+	exit(0);
+}
 
 
 __private_extern__

@@ -53,6 +53,14 @@ int	sc_publish_ipv4(struct sc_publish *p, const char *ifname,
 	    const struct dhcp_lease *lease);
 
 /*
+ * Bring State:/Network/Global/Proxies in line with the primary service's
+ * Proxies entity (#573): sc_publish_update_primary() already does this
+ * after every election, and this covers a preferences commit that changes
+ * the entity with no election. Safe on any thread.
+ */
+void	sc_publish_refresh_proxies(void);
+
+/*
  * Publish iter 7a SLAAC state under State:/Network/Service/<UUID>/IPv6.
  * Mirrors Apple's IPv6 dict shape: Addresses (array of strings),
  * PrefixLength (array of numbers), Router (link-local address with
