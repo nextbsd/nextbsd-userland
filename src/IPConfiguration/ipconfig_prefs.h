@@ -20,7 +20,12 @@
  *     it never counts against an enabled one
  * Each entry keeps the service's ID (#568), which ipconfigd publishes its
  * state under. An interface no service names is not in the table; the
- * caller treats that as DHCP.
+ * caller treats that as DHCP, and as Automatic for IPv6.
+ *
+ * IPv6 (#423), from the same service:
+ *   - an enabled IPv6 entity        -> its ConfigMethod
+ *   - no IPv6, or IPv6 disabled     -> off, as on Darwin
+ *   - the service disabled          -> left alone
  */
 #ifndef _IPCFG_IPCONFIG_PREFS_H_
 #define _IPCFG_IPCONFIG_PREFS_H_
@@ -56,6 +61,14 @@ int	ipconfig_prefs_start(ipconfig_prefs_cb cb, ipconfig_prefs_cb dns_cb);
  */
 bool	ipconfig_prefs_lookup(const char *ifname,
 	    struct ipconfig_method_info *out, char *service_id, size_t len);
+
+/*
+ * `ifname`'s configured IPv6 method (#423), and its service's ID as above.
+ * Returns false when no service in the current set names the interface;
+ * the caller treats that as Automatic.
+ */
+bool	ipconfig_prefs_lookup_v6(const char *ifname,
+	    struct ipconfig_v6_method_info *out, char *service_id, size_t len);
 
 /*
  * A copy of the enabled Proxies entity of the service that names `ifname`

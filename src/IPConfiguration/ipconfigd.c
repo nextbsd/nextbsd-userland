@@ -119,6 +119,13 @@
  * MAC-derived ID until #480. Worker slots stay keyed by interface, so a
  * service whose ID changes unwinds and starts again, and a disabled
  * service's interface is left alone.
+ *
+ * IPv6 methods (#423) — IPv4 and IPv6 are now two services on an interface,
+ * as on Darwin. The workers here run IPv4 only. v6_service.c runs IPv6 under
+ * the service's IPv6 ConfigMethod: Automatic, Manual, LinkLocal or off.
+ * `ipconfig set` changes one family at a time. An IPv6 service starts after
+ * the interface's first IPv4 result and stops with the link, but otherwise
+ * does not care what IPv4 is doing.
  */
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -153,10 +160,9 @@
 #include "ipconfigd.h"
 #include "lease_loop.h"
 #include "mach_service.h"
-#include "ra_listen.h"
-#include "ra_router.h"
 #include "sc_link_watch.h"
 #include "sc_publish.h"
+#include "v6_service.h"
 
 /*
  * Global (non-static): dhcp_discover.c's recv loop polls this
@@ -214,26 +220,7 @@ struct dhcp_worker {
 	time_t			v4_assigned;	/* monotonic secs at bind */
 	time_t			conflict_time;
 	int			conflict_count;
-
-	/*
-	 * The SLAAC address, so a duplicated-address notification can find
-	 * it. PENDING from just before it is installed until it is published
-	 * and tracked — a duplicate reported in that window is only recorded
-	 * (v6_dup), and v6_commit() acts on it — then ACTIVE, when the
-	 * notification withdraws it directly.
-	 */
-	int			v6_state;
-	bool			v6_dup;
-	struct in6_addr		v6_dup_addr;
-	struct in6_addr		v6_addr;
-	struct in6_addr		v6_router;
-	unsigned		v6_ifindex;
-	struct ra_router	*v6_rtr;
 };
-
-#define	V6_NONE		0
-#define	V6_PENDING	1
-#define	V6_ACTIVE	2
 
 /*
  * Darwin's defaults (bootp ipconfigd.c): defend an address at most
@@ -255,12 +242,16 @@ static struct dhcp_worker g_workers[BOUND_MAX_IF];
  * `ipconfig set` methods (#58/#59), which win over SCPreferences until
  * the next `set` or an ipconfigd restart — in memory only, like Apple's.
  * A NONE here is what holds an interface the administrator switched
- * off, so a link flap does not quietly re-DHCP it. Guarded by
- * g_workers_lock.
+ * off, so a link flap does not quietly re-DHCP it. Per family (#423): a
+ * `set` of one family leaves the other family's method where it was.
+ * Guarded by g_workers_lock.
  */
 static struct {
 	char				ifname[IFNAMSIZ];
+	bool				have_v4;
 	struct ipconfig_method_info	info;
+	bool				have_v6;
+	struct ipconfig_v6_method_info	v6;
 } g_set_methods[BOUND_MAX_IF];
 
 /* main()'s IPCONFIGD_FAST_LEASE cap, for workers not started by a link event. */
@@ -482,108 +473,6 @@ worker_conflicted(const char *ifname)
 }
 
 /*
- * Take a duplicated SLAAC address back: stop the router tracker with its
- * ::/0 (or, without one, the ::/0 apply_ra_lease installed), remove the
- * address and withdraw State:/Network/Service/<UUID>/IPv6 — what #342 did
- * when its DAD poll saw IN6_IFF_DUPLICATED, and what rtadv.c amounts to by
- * never publishing a duplicated address. IPv4 is untouched.
- */
-static void
-v6_withdraw(const char *ifname, const struct in6_addr *addr,
-    const struct in6_addr *router, unsigned ifindex, struct ra_router *rtr)
-{
-	struct sc_publish *pub;
-	char a[INET6_ADDRSTRLEN];
-
-	(void)inet_ntop(AF_INET6, addr, a, sizeof(a));
-	xlog("%s: DAD failed: %s is a duplicate — removing it, its ::/0 and "
-	    "the IPv6 publish", ifname, a);
-	if (rtr != NULL)
-		ra_router_stop(rtr, 1);
-	else
-		(void)remove_v6_default_route(router, ifindex);
-	(void)remove_v6_address(ifname, addr);
-	pub = sc_publish_open("ipconfigd");
-	if (pub != NULL) {
-		(void)sc_publish_remove_ipv6(pub, ifname);
-		sc_publish_close(pub);
-	}
-	dns_config_set_v6_active(ifname, false);
-}
-
-/* `ifname` is about to install a SLAAC address: hold duplicates for it. */
-static void
-v6_pending(const char *ifname)
-{
-	struct dhcp_worker *w;
-
-	pthread_mutex_lock(&g_workers_lock);
-	if ((w = worker_find_locked(ifname)) != NULL) {
-		w->v6_state = V6_PENDING;
-		w->v6_dup = false;
-	}
-	pthread_mutex_unlock(&g_workers_lock);
-}
-
-/*
- * The SLAAC address `v6` (NULL: none was installed) is published and its
- * router tracker `rtr` running. Hand both to the worker table so a later
- * duplicated-address notification can withdraw them — or, if DAD already
- * reported `v6` duplicated while it was pending, withdraw them now.
- */
-static void
-v6_commit(const char *ifname, const struct in6_addr *v6,
-    const struct ra_info *ra, struct ra_router *rtr)
-{
-	struct dhcp_worker *w;
-	bool dup = false;
-
-	pthread_mutex_lock(&g_workers_lock);
-	if ((w = worker_find_locked(ifname)) != NULL) {
-		if (v6 == NULL) {
-			w->v6_state = V6_NONE;
-		} else if (w->v6_dup &&
-		    IN6_ARE_ADDR_EQUAL(&w->v6_dup_addr, v6)) {
-			w->v6_state = V6_NONE;
-			dup = true;
-		} else {
-			w->v6_state = V6_ACTIVE;
-			w->v6_addr = *v6;
-			w->v6_router = ra->router_lladdr;
-			w->v6_ifindex = ra->router_scope_id;
-			w->v6_rtr = rtr;
-		}
-		w->v6_dup = false;
-	}
-	pthread_mutex_unlock(&g_workers_lock);
-	if (dup)
-		v6_withdraw(ifname, v6, &ra->router_lladdr,
-		    ra->router_scope_id, rtr);
-}
-
-/*
- * The service is unwinding: take back its router tracker for teardown.
- * NULL when there is none, or a duplicated-address notification already
- * withdrew it.
- */
-static struct ra_router *
-v6_end(const char *ifname)
-{
-	struct dhcp_worker *w;
-	struct ra_router *rtr = NULL;
-
-	pthread_mutex_lock(&g_workers_lock);
-	if ((w = worker_find_locked(ifname)) != NULL) {
-		if (w->v6_state == V6_ACTIVE)
-			rtr = w->v6_rtr;
-		w->v6_rtr = NULL;
-		w->v6_state = V6_NONE;
-	}
-	pthread_mutex_unlock(&g_workers_lock);
-	return (rtr);
-}
-
-/*
  * Read IPCONFIGD_FAST_LEASE from the environment. The env var caps
  * the effective lease time used for T1 / T2 timer math (the value
  * published to configd is unaffected). Accepts integers in [4, 86400]
@@ -612,8 +501,8 @@ read_lease_cap_env(void)
 
 /*
  * service_run_bound — everything after an IPv4 configuration is installed
- * on `ifname`: record it, publish it, elect the primary, bring up IPv6
- * (RA/SLAAC), park, then tear it all down. Shared by the DHCP and Manual
+ * on `ifname`: record it, publish it, elect the primary, open the door for
+ * the IPv6 service, park, then tear it all down. Shared by the DHCP and Manual
  * services (#58), which differ only in how they get `lease` and in
  * whether parking means a renewal loop. `saved` is the ACK for a DHCP
  * service and NULL for a Manual one (#430). Runs on the interface's
@@ -636,9 +525,6 @@ service_run_bound(const char *ifname, struct dhcp_lease *lease,
 	struct sc_publish *pub = NULL;
 	char a[INET_ADDRSTRLEN], m[INET_ADDRSTRLEN];
 	char r[INET_ADDRSTRLEN], s[INET_ADDRSTRLEN];
-	struct ra_info ra;
-	struct ra_router *rtr = NULL;
-	int rar;
 
 	(void)inet_ntop(AF_INET, &lease->addr, a, sizeof(a));
 	(void)inet_ntop(AF_INET, &lease->netmask, m, sizeof(m));
@@ -715,70 +601,19 @@ service_run_bound(const char *ifname, struct dhcp_lease *lease,
 	startup_mark_ready(ifname);
 
 	/*
-	 * iter 7a: solicit + listen for one RA, derive a SLAAC address,
-	 * install it + the v6 default route, and publish
-	 * State:/.../IPv6. 15s budget — QEMU SLIRP answers within ms,
-	 * so a miss means RA isn't configured; we log IPCFG-RA-MISS and
-	 * continue with IPv4 only.
+	 * The first IPv4 result on this interface: its IPv6 service may start
+	 * (#423). It starts here and not before because CI reads IPCFG-RA
+	 * after IPCFG-BOUND.
 	 *
-	 * Round-1 CI showed em0 has ND6_IFF_IFDISABLED set (this image's
-	 * net.inet6.ip6.auto_linklocal is 0, so the kernel never
-	 * auto-added a link-local). bring_v6_up clears IFDISABLED and
-	 * installs fe80::EUI-64 so the kernel can source-select the
-	 * link-local-scoped RS.
+	 * The boot test also reads IPCFG-RA before IPCFG-RENEW, in log order.
+	 * IPv4 and IPv6 used to share a thread, so a lease loop only started
+	 * once IPv6 had answered; hold it for that first answer here. This is
+	 * only the renewal clock, once per bind and bounded: the address and
+	 * readiness above have already happened, and IPv6 has no other say.
 	 */
-	(void)bring_v6_up(ifname);
-	rar = ra_acquire(ifname, 15000, &ra);
-	if (rar == 0) {
-		struct in6_addr v6;
-		char a6[INET6_ADDRSTRLEN];
-
-		/*
-		 * DAD runs in the kernel after the install. Hold ::/0 and the
-		 * publish until it has passed (#407), as rtadv.c does; a
-		 * duplicate also comes back as the IPv6DuplicatedAddress
-		 * notification (#349), which v6_commit() honours if it beat
-		 * us here — after a timed-out wait, say.
-		 */
-		v6_pending(ifname);
-		if (apply_ra_lease(ifname, &ra, &v6) != 0) {
-			v6_commit(ifname, NULL, NULL, NULL);
-			xlog("IPCFG-RA-MISS: apply_ra_lease failed");
-		} else if (sc_v6_dad_wait(ifname, &v6,
-		    v6_dad_budget_ms(ifname)) == SC_V6_DAD_DUPLICATED) {
-			v6_commit(ifname, NULL, NULL, NULL);
-			(void)inet_ntop(AF_INET6, &v6, a6, sizeof(a6));
-			xlog("%s: DAD failed: %s is a duplicate — removing it",
-			    ifname, a6);
-			(void)remove_v6_address(ifname, &v6);
-			xlog("IPCFG-RA-MISS: SLAAC address is a duplicate");
-		} else {
-			/*
-			 * Route install is best-effort. If it fails we still
-			 * publish — the address is up and reachable on-link.
-			 */
-			if (install_v6_default_route(&ra.router_lladdr,
-			    ra.router_scope_id) != 0)
-				xlog("default ::/0 route install failed "
-				    "(non-fatal)");
-			/* IPv6 servers now count as reachable (#425). */
-			if (pub != NULL && sc_publish_ipv6(pub, ifname, &v6,
-			    ra.prefix_len, &ra.router_lladdr) == 0)
-				dns_config_set_v6_active(ifname, true);
-			xlog("IPCFG-RA-OK");
-			/*
-			 * Keep hearing RAs so ::/0 follows the router's
-			 * lifetime instead of outliving it (#350).
-			 */
-			rtr = ra_router_start(ifname, &ra, &v6);
-			v6_commit(ifname, &v6, &ra, rtr);
-		}
-	} else if (rar == 1) {
-		xlog("IPCFG-RA-MISS: no RA in 15s "
-		    "(SLIRP may not advertise IPv6)");
-	} else {
-		xlog("IPCFG-RA-MISS: ra_acquire fatal");
-	}
+	v6_service_v4_result(ifname);
+	if (dhcp)
+		v6_service_wait_first_result(ifname, stop);
 
 	/*
 	 * Parks here for the life of the lease. A Manual configuration has
@@ -791,16 +626,6 @@ service_run_bound(const char *ifname, struct dhcp_lease *lease,
 	else
 		while (!got_term && !(stop != NULL && *stop))
 			(void)sleep(1);
-
-	/*
-	 * Stop the router tracker before anything below removes the IPv6
-	 * key, so it cannot republish behind the teardown. Same SIGTERM
-	 * rule as the IPv4 lease: keep ::/0 across a restart, otherwise
-	 * take it back. The worker table owns the tracker once committed
-	 * (a duplicated address may already have stopped it).
-	 */
-	rtr = v6_end(ifname);
-	ra_router_stop(rtr, !got_term);
 
 	/*
 	 * Teardown (#37, #39).
@@ -832,7 +657,8 @@ service_run_bound(const char *ifname, struct dhcp_lease *lease,
 		bound_state_clear(ifname);
 		if (pub != NULL)
 			(void)sc_publish_update_primary(pub);
-		dns_config_service_down(ifname);
+		/* IPv4 only: IPv6 has its own service (#423). */
+		dns_config_update(ifname);
 	}
 
 	if (pub != NULL)
@@ -969,7 +795,7 @@ dhcp_worker_main(void *arg)
 	struct dhcp_worker *w = arg;
 	char ifname[IFNAMSIZ];
 	struct ipconfig_method_info method;
-	bool restart;
+	bool restart, stopped;
 
 	(void)strlcpy(ifname, w->ifname, sizeof(ifname));
 	method = w->method;
@@ -1015,6 +841,7 @@ dhcp_worker_main(void *arg)
 
 	pthread_mutex_lock(&g_workers_lock);
 	restart = w->restart;
+	stopped = w->stop != 0;
 	w->active = false;
 	w->stop = 0;
 	w->restart = false;
@@ -1025,6 +852,12 @@ dhcp_worker_main(void *arg)
 	    ipconfig_method_string(method.method));
 	/* A worker that gave up without binding is "ready" too (Apple). */
 	startup_check();
+	/*
+	 * That is an IPv4 result too (#423), unless the worker was stopped:
+	 * then the link is down, or a new method is about to produce one.
+	 */
+	if (!stopped && !got_term)
+		v6_service_v4_result(ifname);
 	/*
 	 * Unwound because the interface's method changed (#58): the old
 	 * configuration is gone, so start whatever replaced it.
@@ -1092,7 +925,7 @@ service_lookup(const char *ifname, struct ipconfig_method_info *out,
 
 	pthread_mutex_lock(&g_workers_lock);
 	for (i = 0; i < BOUND_MAX_IF; i++) {
-		if (g_set_methods[i].ifname[0] != '\0' &&
+		if (g_set_methods[i].have_v4 &&
 		    strcmp(g_set_methods[i].ifname, ifname) == 0) {
 			*out = g_set_methods[i].info;
 			if (service_id != NULL)
@@ -1119,6 +952,40 @@ static void
 method_lookup(const char *ifname, struct ipconfig_method_info *out)
 {
 	service_lookup(ifname, out, NULL);
+}
+
+/*
+ * The IPv6 method `ifname` should run (#423), and the ID its service publishes
+ * under: an `ipconfig set` method first (Darwin names such a service
+ * <Method>-<if>), then the service in SCPreferences, and Automatic when
+ * nothing configures it (#480 drops that fallback).
+ */
+void
+ipconfigd_v6_lookup(const char *ifname, struct ipconfig_v6_method_info *out,
+    char *service_id)
+{
+	int i;
+
+	pthread_mutex_lock(&g_workers_lock);
+	for (i = 0; i < BOUND_MAX_IF; i++) {
+		if (g_set_methods[i].have_v6 &&
+		    strcmp(g_set_methods[i].ifname, ifname) == 0) {
+			*out = g_set_methods[i].v6;
+			(void)snprintf(service_id, SC_PUBLISH_SERVICE_ID_LEN,
+			    "%s-%s", ipconfig_v6_method_string(out->method),
+			    ifname);
+			pthread_mutex_unlock(&g_workers_lock);
+			return;
+		}
+	}
+	pthread_mutex_unlock(&g_workers_lock);
+
+	service_id[0] = '\0';
+	if (ipconfig_prefs_lookup_v6(ifname, out, service_id,
+	    SC_PUBLISH_SERVICE_ID_LEN))
+		return;
+	(void)memset(out, 0, sizeof(*out));
+	out->method = ipconfig_method_automatic_v6_e;
 }
 
 /*
@@ -1169,9 +1036,6 @@ dhcp_worker_start(const char *ifname, uint32_t lease_cap_secs)
 	w->v4_assigned = 0;
 	w->conflict_time = 0;
 	w->conflict_count = 0;
-	w->v6_state = V6_NONE;
-	w->v6_dup = false;
-	w->v6_rtr = NULL;
 	w->method = method;
 	(void)strlcpy(w->service_id, service_id, sizeof(w->service_id));
 	w->lease_cap_secs = lease_cap_secs;
@@ -1208,9 +1072,12 @@ static void
 service_start(const char *ifname)
 {
 	struct ipconfig_method_info method;
+	bool served;
 
 	method_lookup(ifname, &method);
-	if (!ipconfig_method_is_served(method.method)) {
+	served = ipconfig_method_is_served(method.method);
+	/* The link still matters to an IPv6 service with no IPv4 one (#423). */
+	if (!served && !v6_service_wants_link(ifname)) {
 		xlog("%s: ConfigMethod %s — leaving it alone", ifname,
 		    ipconfig_method_string(method.method));
 		return;
@@ -1219,8 +1086,11 @@ service_start(const char *ifname)
 		xlog("%s: could not bring up: %s", ifname, strerror(errno));
 		return;
 	}
-	if (link_active_in_store(ifname) &&
-	    dhcp_worker_start(ifname, g_lease_cap_secs))
+	if (!link_active_in_store(ifname))
+		return;
+	if (!served)
+		v6_service_v4_result(ifname);	/* IPv4 NONE is a result */
+	else if (dhcp_worker_start(ifname, g_lease_cap_secs))
 		xlog("%s: started %s worker", ifname,
 		    ipconfig_method_string(method.method));
 }
@@ -1239,6 +1109,9 @@ service_reconfigure(const char *ifname)
 	char service_id[SC_PUBLISH_SERVICE_ID_LEN];
 	bool unwinding = false;
 	int i;
+
+	/* IPv6's own method changing is none of IPv4's business (#423). */
+	v6_service_reconfigure(ifname);
 
 	service_lookup(ifname, &method, service_id);
 	pthread_mutex_lock(&g_workers_lock);
@@ -1328,6 +1201,7 @@ ipconfigd_set_method(const char *ifname,
 	if (slot >= 0) {
 		(void)strlcpy(g_set_methods[slot].ifname, ifname,
 		    sizeof(g_set_methods[slot].ifname));
+		g_set_methods[slot].have_v4 = true;
 		g_set_methods[slot].info = *info;
 	}
 	pthread_mutex_unlock(&g_workers_lock);
@@ -1341,6 +1215,48 @@ ipconfigd_set_method(const char *ifname,
 	return (ipconfig_status_success_e);
 }
 
+/*
+ * `ipconfig set <if> {AUTOMATIC-V6,MANUAL-V6,NONE-V6}` (#423), set_if()'s
+ * IPv6 half: only IPv6 changes. Serviced like ipconfigd_set_method().
+ */
+ipconfig_status_t
+ipconfigd_set_v6_method(const char *ifname,
+    const struct ipconfig_v6_method_info *info)
+{
+	ipconfig_status_t status;
+	int i, slot = -1;
+
+	status = set_check_ifname(ifname);
+	if (status != ipconfig_status_success_e)
+		return (status);
+	if (info->method == ipconfig_method_stf_e)
+		return (ipconfig_status_operation_not_supported_e);
+
+	pthread_mutex_lock(&g_workers_lock);
+	for (i = 0; i < BOUND_MAX_IF; i++) {
+		if (g_set_methods[i].ifname[0] == '\0') {
+			if (slot < 0)
+				slot = i;
+		} else if (strcmp(g_set_methods[i].ifname, ifname) == 0) {
+			slot = i;
+			break;
+		}
+	}
+	if (slot >= 0) {
+		(void)strlcpy(g_set_methods[slot].ifname, ifname,
+		    sizeof(g_set_methods[slot].ifname));
+		g_set_methods[slot].have_v6 = true;
+		g_set_methods[slot].v6 = *info;
+	}
+	pthread_mutex_unlock(&g_workers_lock);
+	if (slot < 0)
+		return (ipconfig_status_resource_unavailable_e);
+
+	xlog("set(%s) %s", ifname, ipconfig_v6_method_string(info->method));
+	v6_service_reconfigure(ifname);
+	return (ipconfig_status_success_e);
+}
+
 bool
 ipconfigd_set_method_active(const char *ifname)
 {
@@ -1349,7 +1265,7 @@ ipconfigd_set_method_active(const char *ifname)
 
 	pthread_mutex_lock(&g_workers_lock);
 	for (i = 0; i < BOUND_MAX_IF; i++) {
-		if (g_set_methods[i].ifname[0] != '\0' &&
+		if (g_set_methods[i].have_v4 &&
 		    strcmp(g_set_methods[i].ifname, ifname) == 0) {
 			active = true;
 			break;
@@ -1401,6 +1317,7 @@ on_link_departed(const char *ifname)
 	struct sc_publish *pub;
 	bool had_worker, was_bound;
 
+	v6_service_link_down(ifname);
 	had_worker = dhcp_worker_stop(ifname);
 	was_bound = bound_state_is_bound(ifname);
 	/*
@@ -1423,7 +1340,7 @@ on_link_departed(const char *ifname)
 		(void)sc_publish_update_primary(pub);
 		sc_publish_close(pub);
 	}
-	dns_config_service_down(ifname);
+	dns_config_update(ifname);
 }
 
 /* `ipconfig set` (#59): the interface names a set may act on. */
@@ -1494,6 +1411,14 @@ on_link_event(const char *ifname, int active, uint32_t lease_cap_secs)
 
 	if (!active) {
 		/*
+		 * The IPv6 service stops with the link (#423), even when there
+		 * is no IPv4 worker to unwind. Not on a stale Active:0 (#250):
+		 * the store is authoritative.
+		 */
+		if (!link_active_in_store(ifname))
+			v6_service_link_down(ifname);
+
+		/*
 		 * Lost the link on an interface we hold a lease over — tear it
 		 * down (#39). The worker does the actual work on its own
 		 * thread; we only set its stop flag.
@@ -1511,7 +1436,7 @@ on_link_event(const char *ifname, int active, uint32_t lease_cap_secs)
 				xlog("link-down(%s) — bound but no worker; "
 				    "clearing state directly", ifname);
 				bound_state_clear(ifname);
-				dns_config_service_down(ifname);
+				dns_config_update(ifname);
 			}
 			return;
 		}
@@ -1560,7 +1485,8 @@ on_link_event(const char *ifname, int active, uint32_t lease_cap_secs)
 
 		/* Configured to be left alone (#58): not even admin-up. */
 		method_lookup(ifname, &method);
-		if (!ipconfig_method_is_served(method.method))
+		if (!ipconfig_method_is_served(method.method) &&
+		    !v6_service_wants_link(ifname))
 			return;
 
 		/* Present but link down — admin-up so the link can negotiate
@@ -1613,39 +1539,46 @@ on_link_event(const char *ifname, int active, uint32_t lease_cap_secs)
 		method_lookup(ifname, &method);
 		xlog("link-active(%s) — started %s worker", ifname,
 		    ipconfig_method_string(method.method));
+		return;
 	}
+
+	/*
+	 * No worker to wait for: an IPv4 method of NONE or one ipconfigd does
+	 * not serve is a result already, so IPv6 needn't wait (#423). A worker
+	 * already running reports its own result.
+	 */
+	method_lookup(ifname, &method);
+	if (!ipconfig_method_is_served(method.method))
+		v6_service_v4_result(ifname);
 }
 
 /*
  * Link-watch renew callback (#572), on a dispatch worker: Darwin's
  * link_refresh(). Only a bound service acts on it, as dhcp.c's renew case
  * does. The lease loop notices the flag within a second and renews on its
- * own thread. A Manual service leaves IPv4 alone; every service with IPv6
- * solicits, since rtadv.c restarts solicitation on a renew whatever the
- * IPv4 side is doing.
+ * own thread. A Manual service leaves IPv4 alone. An Automatic IPv6 service
+ * solicits whatever the IPv4 side is doing, as rtadv.c restarts solicitation
+ * on a renew (#423).
  */
 static void
 on_link_refresh(const char *ifname)
 {
 	struct dhcp_worker *w;
-	bool have = false, dhcp = false;
+	bool dhcp = false;
 
-	if (!bound_state_is_bound(ifname))
-		return;
-	pthread_mutex_lock(&g_workers_lock);
-	w = worker_find_locked(ifname);
-	if (w != NULL && !w->stop) {
-		have = true;
-		dhcp = w->method.method == ipconfig_method_dhcp_e;
-		if (dhcp)
-			w->renew = 1;
+	if (bound_state_is_bound(ifname)) {
+		pthread_mutex_lock(&g_workers_lock);
+		w = worker_find_locked(ifname);
+		if (w != NULL && !w->stop) {
+			dhcp = w->method.method == ipconfig_method_dhcp_e;
+			if (dhcp)
+				w->renew = 1;
+		}
+		pthread_mutex_unlock(&g_workers_lock);
 	}
-	pthread_mutex_unlock(&g_workers_lock);
-	if (!have)
-		return;
 	xlog("%s: configuration refresh requested%s", ifname,
 	    dhcp ? " — renewing the lease" : "");
-	(void)ra_solicit(ifname);
+	v6_service_solicit(ifname);
 }
 
 /* Is `hw` the hardware address of one of our own interfaces? */
@@ -1668,44 +1601,6 @@ is_our_hwaddr(const uint8_t *hw, int hw_len)
 	}
 	freeifaddrs(ifa);
 	return (ours);
-}
-
-/* IPv6DuplicatedAddress for `addr` on `ifname` (#349). */
-static void
-on_v6_duplicated(const char *ifname, const struct in6_addr *addr)
-{
-	struct dhcp_worker *w;
-	struct ra_router *rtr;
-	struct in6_addr router;
-	unsigned ifindex;
-	char a[INET6_ADDRSTRLEN];
-
-	(void)inet_ntop(AF_INET6, addr, a, sizeof(a));
-	pthread_mutex_lock(&g_workers_lock);
-	w = worker_find_locked(ifname);
-	if (w != NULL && w->v6_state == V6_PENDING) {
-		/* Not published yet: v6_commit() checks this. */
-		w->v6_dup = true;
-		w->v6_dup_addr = *addr;
-		pthread_mutex_unlock(&g_workers_lock);
-		xlog("%s: %s reported duplicated while being installed", ifname,
-		    a);
-		return;
-	}
-	if (w == NULL || w->v6_state != V6_ACTIVE ||
-	    !IN6_ARE_ADDR_EQUAL(&w->v6_addr, addr)) {
-		pthread_mutex_unlock(&g_workers_lock);
-		xlog("%s: %s reported duplicated — not an address we "
-		    "configured; ignoring", ifname, a);
-		return;
-	}
-	rtr = w->v6_rtr;
-	router = w->v6_router;
-	ifindex = w->v6_ifindex;
-	w->v6_rtr = NULL;
-	w->v6_state = V6_NONE;
-	pthread_mutex_unlock(&g_workers_lock);
-	v6_withdraw(ifname, addr, &router, ifindex, rtr);
 }
 
 /*
@@ -1789,7 +1684,8 @@ on_addr_conflict(const char *ifname, int af, const void *addr,
 		on_arp_collision(ifname, *(const struct in_addr *)addr, hw,
 		    hw_len);
 	else if (af == AF_INET6)
-		on_v6_duplicated(ifname, (const struct in6_addr *)addr);
+		v6_service_on_duplicated(ifname,
+		    (const struct in6_addr *)addr);
 }
 
 int
@@ -1874,7 +1770,8 @@ main(int argc, char **argv)
 		struct ipconfig_method_info method;
 
 		method_lookup(ifname, &method);
-		if (!ipconfig_method_is_served(method.method))
+		if (!ipconfig_method_is_served(method.method) &&
+		    !v6_service_wants_link(ifname))
 			xlog("%s is configured %s; leaving it alone", ifname,
 			    ipconfig_method_string(method.method));
 		else if (iface_bring_up(ifname) == 0)

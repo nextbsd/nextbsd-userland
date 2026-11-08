@@ -27,7 +27,8 @@
  * new one started once that is done — at once if nothing was running and
  * the link is up; a link that is down is brought administratively up and
  * the service starts on link-active, as for any interface. NONE unwinds
- * and then leaves the interface alone, so link events no longer touch it.
+ * IPv4 and then leaves it alone, so link events no longer touch it; IPv6 is
+ * unaffected (as Darwin's set_if(), #423).
  *
  * Returns interface_does_not_exist, invalid_operation (lo*),
  * invalid_parameter (Manual with no address), operation_not_supported (a
@@ -36,6 +37,25 @@
  */
 ipconfig_status_t	ipconfigd_set_method(const char *ifname,
 			    const struct ipconfig_method_info *info);
+
+/*
+ * `ipconfig set <if> {AUTOMATIC-V6,MANUAL-V6,NONE-V6}` (#423): make `info`
+ * the interface's IPv6 method, as ipconfigd_set_method() does for IPv4 and
+ * leaving IPv4 untouched. Returns interface_does_not_exist,
+ * invalid_operation (lo*), operation_not_supported (6TO4),
+ * resource_unavailable, or success.
+ */
+struct ipconfig_v6_method_info;
+ipconfig_status_t	ipconfigd_set_v6_method(const char *ifname,
+			    const struct ipconfig_v6_method_info *info);
+
+/*
+ * The IPv6 method `ifname` should run and the service ID it publishes under
+ * (SC_PUBLISH_SERVICE_ID_LEN bytes; empty for an interface no service names).
+ */
+void			ipconfigd_v6_lookup(const char *ifname,
+			    struct ipconfig_v6_method_info *out,
+			    char *service_id);
 
 /*
  * The method of the service currently running on `ifname` — acquiring or

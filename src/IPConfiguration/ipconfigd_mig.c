@@ -237,9 +237,10 @@ _ipconfig_get_packet(mach_port_t server, InterfaceName name,
 
 /*
  * `ipconfig set <if> <method>`. Root only, as on Apple. The method
- * dictionary is Apple's: DHCP, MANUAL and NONE are served (#58);
- * INFORM, BOOTP, LinkLocal, Failover and the IPv6 methods have no
- * service behind them yet, so they answer operation_not_supported.
+ * dictionary is Apple's: DHCP, MANUAL, NONE and, each changing only its own
+ * family (#423), MANUAL-V6, AUTOMATIC-V6, NONE-V6 and NONE-V4 are served;
+ * INFORM, BOOTP, LinkLocal, Failover and 6TO4 have no service behind them
+ * yet, so they answer operation_not_supported.
  */
 kern_return_t
 _ipconfig_set(mach_port_t server, InterfaceName name, xmlData_t method_data,
@@ -292,14 +293,37 @@ _ipconfig_set(mach_port_t server, InterfaceName name, xmlData_t method_data,
 	dict = plist;
 	v4 = CFDictionaryGetValue(dict, kIPCfgEntIPv4);
 	v6 = CFDictionaryGetValue(dict, kIPCfgEntIPv6);
-	if (v4 != NULL || v6 != NULL) {
-		/*
-		 * NONE-V4, NONE-V6 and the IPv6 methods. One worker runs
-		 * DHCPv4 and SLAAC together here, so neither family can be
-		 * switched on its own yet.
-		 */
-		*status = ipconfig_status_operation_not_supported_e;
+	if (v4 == NULL && v6 != NULL) {
+		struct ipconfig_v6_method_info v6info;
+
+		if (CFGetTypeID(v6) != CFDictionaryGetTypeID()) {
+			*status = ipconfig_status_invalid_parameter_e;
+		} else if (CFDictionaryGetCount(v6) == 0) {
+			/* NONE-V6: only IPv6 stops, as Darwin's set_if(). */
+			(void)memset(&v6info, 0, sizeof(v6info));
+			v6info.method = ipconfig_method_none_v6_e;
+			*status = ipconfigd_set_v6_method(ifname, &v6info);
+		} else if (!ipconfig_v6_method_info_from_dict(
+		    (const struct __CFDictionary *)v6, &v6info)) {
+			*status = ipconfig_status_invalid_parameter_e;
+		} else {
+			*status = ipconfigd_set_v6_method(ifname, &v6info);
+		}
 		goto done;
+	}
+	if (v4 != NULL) {
+		if (CFGetTypeID(v4) != CFDictionaryGetTypeID()) {
+			*status = ipconfig_status_invalid_parameter_e;
+			goto done;
+		}
+		dict = v4;
+		if (CFDictionaryGetCount(dict) == 0) {
+			/* NONE-V4 stops IPv4 only: NONE. */
+			(void)memset(&info, 0, sizeof(info));
+			info.method = ipconfig_method_none_e;
+			*status = ipconfigd_set_method(ifname, &info);
+			goto done;
+		}
 	}
 	/*
 	 * Apple's ipconfig_method_info_from_dict(), then set_if() (#58).

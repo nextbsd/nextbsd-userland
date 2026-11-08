@@ -41,6 +41,7 @@
 #include <errno.h>
 #include <ifaddrs.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -136,7 +137,7 @@ mac_to_eui64(const uint8_t mac[6], uint8_t iid[8])
 }
 
 int
-bring_v6_up(const char *ifname)
+bring_v6_up(const char *ifname, bool accept_rtadv, struct in6_addr *ll_out)
 {
 	struct in6_ndireq ndi;
 	struct in6_aliasreq req;
@@ -157,8 +158,9 @@ bring_v6_up(const char *ifname)
 	/*
 	 * Read current nd6 flags. ND6_IFF_IFDISABLED is the bit FreeBSD
 	 * sets when net.inet6.ip6.auto_linklocal is 0 at attach. Clear
-	 * it (also enable ACCEPT_RTADV so kernel-side ND processing
-	 * isn't surprised when our RA arrives) and write back.
+	 * it and write back. ACCEPT_RTADV goes on for an Automatic service
+	 * (so kernel-side ND processing isn't surprised when our RA arrives)
+	 * and off for every other method (#423).
 	 */
 	(void)memset(&ndi, 0, sizeof(ndi));
 	(void)strlcpy(ndi.ifname, ifname, sizeof(ndi.ifname));
@@ -166,7 +168,10 @@ bring_v6_up(const char *ifname)
 	if (ioctl(sock, SIOCGIFINFO_IN6, &ndi) == 0) {
 		had_disabled = (ndi.ndi.flags & ND6_IFF_IFDISABLED) != 0;
 		ndi.ndi.flags &= ~ND6_IFF_IFDISABLED;
-		ndi.ndi.flags |= ND6_IFF_ACCEPT_RTADV;
+		if (accept_rtadv)
+			ndi.ndi.flags |= ND6_IFF_ACCEPT_RTADV;
+		else
+			ndi.ndi.flags &= ~ND6_IFF_ACCEPT_RTADV;
 		if (ioctl(sock, SIOCSIFINFO_IN6, &ndi) != 0)
 			xlog("SIOCSIFINFO_IN6(%s) failed: %s (continuing)",
 			    ifname, strerror(errno));
@@ -216,12 +221,66 @@ bring_v6_up(const char *ifname)
 		xlog("link-local %s installed on %s%s", buf, ifname,
 		    rc != 0 ? " (already present)" : "");
 	}
+	if (ll_out != NULL)
+		*ll_out = req.ifra_addr.sin6_addr;
+	return (0);
+}
+
+/*
+ * Take IPv6 off `ifname` (#423), which is what Darwin's inet6_detach_interface
+ * amounts to: ND6_IFF_IFDISABLED on, ACCEPT_RTADV and AUTO_LINKLOCAL off, and
+ * every address removed, link-local included.
+ */
+int
+v6_turn_off(const char *ifname)
+{
+	struct in6_ndireq ndi;
+	struct ifaddrs *ifa, *p;
+	int sock, n = 0;
+
+	sock = socket(AF_INET6, SOCK_DGRAM, 0);
+	if (sock < 0) {
+		xlog("socket(AF_INET6) failed: %s", strerror(errno));
+		return (-1);
+	}
+	(void)memset(&ndi, 0, sizeof(ndi));
+	(void)strlcpy(ndi.ifname, ifname, sizeof(ndi.ifname));
+	if (ioctl(sock, SIOCGIFINFO_IN6, &ndi) == 0) {
+		ndi.ndi.flags |= ND6_IFF_IFDISABLED;
+		ndi.ndi.flags &= ~(ND6_IFF_ACCEPT_RTADV | ND6_IFF_AUTO_LINKLOCAL);
+		if (ioctl(sock, SIOCSIFINFO_IN6, &ndi) != 0)
+			xlog("SIOCSIFINFO_IN6(%s) failed: %s", ifname,
+			    strerror(errno));
+	} else if (errno != ENXIO) {
+		xlog("SIOCGIFINFO_IN6(%s) failed: %s", ifname, strerror(errno));
+	}
+	(void)close(sock);
+
+	if (getifaddrs(&ifa) != 0)
+		return (-1);
+	for (p = ifa; p != NULL; p = p->ifa_next) {
+		struct in6_addr a;
+
+		if (p->ifa_addr == NULL || p->ifa_addr->sa_family != AF_INET6 ||
+		    strcmp(p->ifa_name, ifname) != 0)
+			continue;
+		a = ((const struct sockaddr_in6 *)(const void *)p->ifa_addr)
+		    ->sin6_addr;
+		/* The kernel scopes a link-local itself on the way back in. */
+		if (IN6_IS_ADDR_LINKLOCAL(&a))
+			a.s6_addr[2] = a.s6_addr[3] = 0;
+		if (remove_v6_address(ifname, &a) == 0)
+			n++;
+	}
+	freeifaddrs(ifa);
+	if (n > 0)
+		xlog("%s: IPv6 off; removed %d address(es)", ifname, n);
 	return (0);
 }
 
 static int
 install_v6_address(const char *ifname, const struct in6_addr *addr,
-    uint8_t prefix_len, uint32_t valid_lt, uint32_t preferred_lt)
+    uint8_t prefix_len, uint32_t valid_lt, uint32_t preferred_lt, int flags)
 {
 	struct in6_aliasreq req;
 	int sock, rc;
@@ -244,8 +303,10 @@ install_v6_address(const char *ifname, const struct in6_addr *addr,
 	 * lifetime semantics (auto-remove on valid expiry) if we ever
 	 * wire that. For iter 7a the daemon doesn't track expiry, but
 	 * setting the flag still matches the address's actual provenance.
+	 * A Manual address (#423) has no such flag, as on Apple: the caller
+	 * passes 0.
 	 */
-	req.ifra_flags = IN6_IFF_AUTOCONF;
+	req.ifra_flags = flags;
 
 	req.ifra_lifetime.ia6t_vltime = valid_lt;
 	req.ifra_lifetime.ia6t_pltime = preferred_lt;
@@ -260,6 +321,14 @@ install_v6_address(const char *ifname, const struct in6_addr *addr,
 		xlog("SIOCAIFADDR_IN6(%s) failed: %s", ifname, strerror(errno));
 	(void)close(sock);
 	return (rc);
+}
+
+int
+install_v6_manual_address(const char *ifname, const struct in6_addr *addr,
+    uint8_t prefix_len)
+{
+	return (install_v6_address(ifname, addr, prefix_len,
+	    ND6_INFINITE_LIFETIME, ND6_INFINITE_LIFETIME, 0));
 }
 
 int
@@ -415,7 +484,8 @@ apply_ra_lease(const char *ifname, const struct ra_info *info,
 	    abuf, (unsigned)info->prefix_len, ifname);
 
 	if (install_v6_address(ifname, &slaac, info->prefix_len,
-	    info->valid_lifetime, info->preferred_lifetime) != 0)
+	    info->valid_lifetime, info->preferred_lifetime,
+	    IN6_IFF_AUTOCONF) != 0)
 		return (-1);
 
 	/*

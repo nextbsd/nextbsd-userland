@@ -1,5 +1,6 @@
 /*
- * ipconfig_prefs.c — per-interface IPv4 methods from SCPreferences (#58).
+ * ipconfig_prefs.c — per-interface IPv4 and IPv6 methods from SCPreferences
+ * (#58, #423).
  *
  * See ipconfig_prefs.h for the model. This is the only CF translation
  * unit on the configuration side: ipconfigd.c sees plain-C
@@ -50,6 +51,7 @@ struct prefs_entry {
 	char				ifname[IFNAMSIZ];
 	char				service_id[SC_PUBLISH_SERVICE_ID_LEN];
 	struct ipconfig_method_info	info;
+	struct ipconfig_v6_method_info	v6;
 	bool				have_dns;
 	struct ipconfig_dns		dns;	/* zeroed unless have_dns */
 };
@@ -107,6 +109,41 @@ bool
 ipconfig_method_is_served(ipconfig_method_t m)
 {
 	return (m == ipconfig_method_dhcp_e || m == ipconfig_method_manual_e);
+}
+
+/* The IPv6 ConfigMethod names (ipconfig_method_from_cfstring_ipv6). */
+static const struct {
+	const char		*name;
+	ipconfig_method_t	method;
+} g_v6_methods[] = {
+	{ "Manual",		ipconfig_method_manual_v6_e },
+	{ "Automatic",		ipconfig_method_automatic_v6_e },
+	{ "RouterAdvertisement", ipconfig_method_rtadv_e },
+	{ "6to4",		ipconfig_method_stf_e },
+	{ "LinkLocal",		ipconfig_method_linklocal_v6_e },
+};
+
+const char *
+ipconfig_v6_method_string(ipconfig_method_t m)
+{
+	switch (m) {
+	case ipconfig_method_none_v6_e:
+		return ("NONE-V6");
+	case ipconfig_method_manual_v6_e:
+		return ("MANUAL-V6");
+	case ipconfig_method_automatic_v6_e:
+		return ("AUTOMATIC-V6");
+	case ipconfig_method_rtadv_e:
+		return ("RTADV");
+	case ipconfig_method_stf_e:
+		return ("6TO4");
+	case ipconfig_method_linklocal_v6_e:
+		return ("LINKLOCAL-V6");
+	case ipconfig_method_unmanaged_v6_e:
+		return ("UNMANAGED-V6");
+	default:
+		return ("?");
+	}
 }
 
 /* A CFString holding a dotted-quad IPv4 address. */
@@ -201,6 +238,85 @@ ipconfig_method_info_from_dict(const struct __CFDictionary *ipv4,
 		(void)cf_to_in_addr(CFDictionaryGetValue(d,
 		    kSCPropNetIPv4Router), &out->router);
 	}
+	return (true);
+}
+
+static bool	cf_is_array(CFTypeRef v);
+static bool	cf_to_int32(CFTypeRef v, int32_t *out);
+
+/* A CFString holding an IPv6 address (my_CFStringToIPv6Address). */
+static bool
+cf_to_in6_addr(CFTypeRef v, struct in6_addr *out)
+{
+	char buf[64];
+
+	if (v == NULL || CFGetTypeID(v) != CFStringGetTypeID())
+		return (false);
+	if (!CFStringGetCString(v, buf, sizeof(buf), kCFStringEncodingASCII))
+		return (false);
+	return (inet_pton(AF_INET6, buf, out) == 1);
+}
+
+bool
+ipconfig_v6_method_info_from_dict(const struct __CFDictionary *ipv6,
+    struct ipconfig_v6_method_info *out)
+{
+	CFDictionaryRef d = (CFDictionaryRef)ipv6;
+	CFTypeRef method, addresses, prefixes;
+	size_t k;
+	bool known = false;
+
+	(void)memset(out, 0, sizeof(*out));
+	if (d == NULL || CFGetTypeID(d) != CFDictionaryGetTypeID())
+		return (false);
+
+	method = CFDictionaryGetValue(d, kIPCfgPropConfigMethod);
+	if (method == NULL || CFGetTypeID(method) != CFStringGetTypeID())
+		return (false);
+	for (k = 0; k < sizeof(g_v6_methods) / sizeof(g_v6_methods[0]); k++) {
+		CFStringRef s;
+
+		s = CFStringCreateWithCString(NULL, g_v6_methods[k].name,
+		    kCFStringEncodingASCII);
+		if (s == NULL)
+			continue;
+		if (CFEqual(method, s)) {
+			out->method = g_v6_methods[k].method;
+			known = true;
+		}
+		CFRelease(s);
+		if (known)
+			break;
+	}
+	if (!known)
+		return (false);
+	if (out->method != ipconfig_method_manual_v6_e)
+		return (true);
+
+	/* method_info_from_ipv6_dict(): the first address is the one used. */
+	addresses = CFDictionaryGetValue(d, kSCPropNetIPv6Addresses);
+	prefixes = CFDictionaryGetValue(d, kSCPropNetIPv6PrefixLength);
+	if (!cf_is_array(addresses) || CFArrayGetCount(addresses) == 0 ||
+	    !cf_to_in6_addr(CFArrayGetValueAtIndex(addresses, 0), &out->addr))
+		return (false);
+	if (IN6_IS_ADDR_LINKLOCAL(&out->addr))
+		return (false);
+	if (prefixes != NULL) {
+		int32_t prefix;
+
+		if (!cf_is_array(prefixes) ||
+		    CFArrayGetCount(prefixes) != CFArrayGetCount(addresses) ||
+		    !cf_to_int32(CFArrayGetValueAtIndex(prefixes, 0), &prefix) ||
+		    prefix < 0 || prefix > 128)
+			return (false);
+		out->prefix_len = (uint8_t)prefix;
+	}
+	/*
+	 * Darwin leaves a missing PrefixLength as 0, which would install
+	 * the address with no usable on-link prefix; /64 is the usual case.
+	 */
+	if (out->prefix_len == 0)
+		out->prefix_len = 64;
 	return (true);
 }
 
@@ -408,8 +524,8 @@ prefs_read(SCPreferencesRef prefs, struct prefs_table *t)
 	n = CFArrayGetCount(services);
 	for (i = 0; i < n; i++) {
 		SCNetworkServiceRef service;
-		SCNetworkProtocolRef p4, pdns;
-		CFDictionaryRef ipv4, dns;
+		SCNetworkProtocolRef p4, p6, pdns;
+		CFDictionaryRef ipv4, ipv6, dns;
 		CFStringRef sid;
 		struct prefs_entry e;
 		bool dup = false;
@@ -446,6 +562,7 @@ prefs_read(SCPreferencesRef prefs, struct prefs_table *t)
 		}
 
 		ipv4 = service_entity(service, kSCEntNetIPv4, &p4);
+		ipv6 = service_entity(service, kSCEntNetIPv6, &p6);
 		dns = service_entity(service, kSCEntNetDNS, &pdns);
 		if (ipv4 == NULL) {
 			/* A service with IPv4 off: Apple runs no v4 service. */
@@ -462,10 +579,32 @@ prefs_read(SCPreferencesRef prefs, struct prefs_table *t)
 			(void)memset(&e.info, 0, sizeof(e.info));
 			e.info.method = ipconfig_method_none_e;
 		}
+		/*
+		 * IPv6 (#423). No entity, or a disabled or invalid one, means
+		 * no IPv6 service and IPv6 off, as on Darwin. 6to4 parses but
+		 * has no service behind it, so that interface's IPv6 is left
+		 * alone, like an unserved IPv4 method.
+		 */
+		e.v6.method = ipconfig_method_none_v6_e;
+		if (ipv6 != NULL && !ipconfig_v6_method_info_from_dict(
+		    (const struct __CFDictionary *)ipv6, &e.v6)) {
+			xlog("%s: invalid IPv6 configuration; IPv6 off",
+			    e.ifname);
+			(void)memset(&e.v6, 0, sizeof(e.v6));
+			e.v6.method = ipconfig_method_none_v6_e;
+		}
+		if (e.v6.method == ipconfig_method_stf_e) {
+			xlog("%s: IPv6 ConfigMethod 6to4 is not supported; "
+			    "leaving IPv6 alone", e.ifname);
+			(void)memset(&e.v6, 0, sizeof(e.v6));
+			e.v6.method = ipconfig_method_unmanaged_v6_e;
+		}
 		if (dns != NULL) {
 			dns_from_dict(dns, &e.dns);
 			e.have_dns = true;
 		}
+		if (p6 != NULL)
+			CFRelease(p6);
 		if (p4 != NULL)
 			CFRelease(p4);
 		if (pdns != NULL)
@@ -499,6 +638,7 @@ prefs_read(SCPreferencesRef prefs, struct prefs_table *t)
 		    table_find(t, e.ifname) != NULL || t->n == BOUND_MAX_IF)
 			continue;
 		e.info.method = ipconfig_method_none_e;
+		e.v6.method = ipconfig_method_unmanaged_v6_e;
 		xlog("%s: its service is disabled; leaving it alone", e.ifname);
 		t->e[t->n++] = e;
 	}
@@ -531,6 +671,7 @@ table_changed(const struct prefs_table *a, const struct prefs_table *b,
 	if (x == NULL || y == NULL)
 		return (x != y);
 	return (memcmp(&x->info, &y->info, sizeof(x->info)) != 0 ||
+	    memcmp(&x->v6, &y->v6, sizeof(x->v6)) != 0 ||
 	    strcmp(x->service_id, y->service_id) != 0);
 }
 
@@ -561,6 +702,8 @@ log_table(const struct prefs_table *t)
 		    t->e[i].info.method == ipconfig_method_manual_e
 		        ? " " : "",
 		    t->e[i].info.method == ipconfig_method_manual_e ? a : "");
+		xlog("%s: IPv6 ConfigMethod %s", t->e[i].ifname,
+		    ipconfig_v6_method_string(t->e[i].v6.method));
 	}
 }
 
@@ -714,6 +857,25 @@ ipconfig_prefs_lookup(const char *ifname, struct ipconfig_method_info *out,
 	e = table_find(&g_table, ifname);
 	if (e != NULL) {
 		*out = e->info;
+		if (service_id != NULL)
+			(void)strlcpy(service_id, e->service_id, len);
+		hit = true;
+	}
+	pthread_mutex_unlock(&g_prefs_lock);
+	return (hit);
+}
+
+bool
+ipconfig_prefs_lookup_v6(const char *ifname,
+    struct ipconfig_v6_method_info *out, char *service_id, size_t len)
+{
+	const struct prefs_entry *e;
+	bool hit = false;
+
+	pthread_mutex_lock(&g_prefs_lock);
+	e = table_find(&g_table, ifname);
+	if (e != NULL) {
+		*out = e->v6;
 		if (service_id != NULL)
 			(void)strlcpy(service_id, e->service_id, len);
 		hit = true;

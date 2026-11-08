@@ -147,39 +147,43 @@ format_service_uuid(const char *ifname, char buf[SVC_UUID_LEN])
  */
 #define	SVC_ID_MAX	(2 * BOUND_MAX_IF)
 
-static struct {
+struct svc_id_entry {
 	char	ifname[IF_NAMESIZE];
 	char	id[SC_PUBLISH_SERVICE_ID_LEN];
-} g_svc_id[SVC_ID_MAX];
+};
+
+static struct svc_id_entry	g_svc_id[SVC_ID_MAX];
+static struct svc_id_entry	g_svc_id_v6[SVC_ID_MAX];	/* #423 */
 static pthread_mutex_t	g_svc_id_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* Store `id` for `ifname`; called with g_svc_id_lock held. */
+/* Store `id` for `ifname` in `table`; called with g_svc_id_lock held. */
 static void
-svc_id_store_locked(const char *ifname, const char *id)
+svc_id_store_locked(struct svc_id_entry *table, const char *ifname,
+    const char *id)
 {
 	int i, free_slot = -1;
 
 	for (i = 0; i < SVC_ID_MAX; i++) {
-		if (g_svc_id[i].ifname[0] == '\0') {
+		if (table[i].ifname[0] == '\0') {
 			if (free_slot < 0)
 				free_slot = i;
 			continue;
 		}
-		if (strcmp(g_svc_id[i].ifname, ifname) == 0)
+		if (strcmp(table[i].ifname, ifname) == 0)
 			break;
 	}
 	if (i == SVC_ID_MAX) {
 		if (free_slot < 0)
 			return;		/* full: callers fall back to the MAC */
 		i = free_slot;
-		(void)strlcpy(g_svc_id[i].ifname, ifname,
-		    sizeof(g_svc_id[i].ifname));
+		(void)strlcpy(table[i].ifname, ifname, sizeof(table[i].ifname));
 	}
-	(void)strlcpy(g_svc_id[i].id, id, sizeof(g_svc_id[i].id));
+	(void)strlcpy(table[i].id, id, sizeof(table[i].id));
 }
 
-void
-sc_publish_service_begin(const char *ifname, const char *service_id)
+static void
+service_begin(struct svc_id_entry *table, const char *ifname,
+    const char *service_id)
 {
 	char buf[SVC_UUID_LEN];
 
@@ -190,8 +194,20 @@ sc_publish_service_begin(const char *ifname, const char *service_id)
 		service_id = buf;
 	}
 	(void)pthread_mutex_lock(&g_svc_id_lock);
-	svc_id_store_locked(ifname, service_id);
+	svc_id_store_locked(table, ifname, service_id);
 	(void)pthread_mutex_unlock(&g_svc_id_lock);
+}
+
+void
+sc_publish_service_begin(const char *ifname, const char *service_id)
+{
+	service_begin(g_svc_id, ifname, service_id);
+}
+
+void
+sc_publish_service_begin_v6(const char *ifname, const char *service_id)
+{
+	service_begin(g_svc_id_v6, ifname, service_id);
 }
 
 /*
@@ -214,7 +230,7 @@ make_service_id(const char *ifname)
 		}
 	}
 	if (i == SVC_ID_MAX && format_service_uuid(ifname, buf) == 0)
-		svc_id_store_locked(ifname, buf);
+		svc_id_store_locked(g_svc_id, ifname, buf);
 	(void)pthread_mutex_unlock(&g_svc_id_lock);
 	return (mkstr(buf));
 }
@@ -227,6 +243,34 @@ make_key(const char *ifname, const char *suffix)
 
 	key = CFStringCreateWithFormat(NULL, NULL,
 	    CFSTR("State:/Network/Service/%@/%s"), id, suffix);
+	CFRelease(id);
+	return (key);
+}
+
+/*
+ * State:/Network/Service/<id>/IPv6 under the IPv6 service's own ID (#423);
+ * an `ipconfig set` IPv6 method has one of its own, as on Darwin. Falls
+ * back to the interface's IPv4 service ID if the IPv6 one is not cached.
+ */
+static CFStringRef
+make_v6_key(const char *ifname)
+{
+	char buf[SC_PUBLISH_SERVICE_ID_LEN] = "";
+	CFStringRef id, key;
+	int i;
+
+	(void)pthread_mutex_lock(&g_svc_id_lock);
+	for (i = 0; i < SVC_ID_MAX; i++) {
+		if (g_svc_id_v6[i].ifname[0] != '\0' &&
+		    strcmp(g_svc_id_v6[i].ifname, ifname) == 0) {
+			(void)strlcpy(buf, g_svc_id_v6[i].id, sizeof(buf));
+			break;
+		}
+	}
+	(void)pthread_mutex_unlock(&g_svc_id_lock);
+	id = (buf[0] != '\0') ? mkstr(buf) : make_service_id(ifname);
+	key = CFStringCreateWithFormat(NULL, NULL,
+	    CFSTR("State:/Network/Service/%@/IPv6"), id);
 	CFRelease(id);
 	return (key);
 }
@@ -682,7 +726,7 @@ sc_publish_ipv6(struct sc_publish *p, const char *ifname,
 	CFRelease(k_iface);
 	CFRelease(k_flags);
 
-	key = make_key(ifname, "IPv6");
+	key = make_v6_key(ifname);
 	ok = SCDynamicStoreSetValue(p->store, key, dict);
 	CFRelease(key);
 	CFRelease(dict);
@@ -863,10 +907,6 @@ sc_publish_remove(struct sc_publish *p, const char *ifname)
 	(void)SCDynamicStoreRemoveValue(p->store, key);
 	CFRelease(key);
 
-	key = make_key(ifname, "IPv6");
-	(void)SCDynamicStoreRemoveValue(p->store, key);
-	CFRelease(key);
-
 	key = make_key(ifname, "DHCP");
 	(void)SCDynamicStoreRemoveValue(p->store, key);
 	CFRelease(key);
@@ -882,7 +922,7 @@ sc_publish_remove_ipv6(struct sc_publish *p, const char *ifname)
 
 	if (p == NULL || p->store == NULL)
 		return (-1);
-	key = make_key(ifname, "IPv6");
+	key = make_v6_key(ifname);
 	ok = SCDynamicStoreRemoveValue(p->store, key);
 	CFRelease(key);
 	return (ok ? 0 : -1);
