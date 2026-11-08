@@ -107,6 +107,33 @@ _wlan_scan_count(mach_port_t server, WLANInterfaceName name, int *count,
 	return (KERN_SUCCESS);
 }
 
+kern_return_t
+_wlan_scan_generation(mach_port_t server, WLANInterfaceName name,
+    uint32_t *generation, boolean_t *last_failed, wlan_status_t *status)
+{
+	char ifname[IF_NAMESIZE];
+	struct wlan_if *w;
+	bool failed = false;
+
+	(void)server;
+	name_in(ifname, sizeof(ifname), name);
+	*generation = 0;
+
+	wland_lock();
+	w = wland_if_by_name_locked(ifname);
+	if (w == NULL) {
+		*status = wlan_status_interface_does_not_exist_e;
+	} else if (w->supp == NULL) {
+		*status = wlan_status_no_supplicant_e;
+	} else {
+		supplicant_scan_generation(w->supp, generation, &failed);
+		*status = wlan_status_success_e;
+	}
+	wland_unlock();
+	*last_failed = failed ? TRUE : FALSE;
+	return (KERN_SUCCESS);
+}
+
 /*
  * One scan result, by index.
  *

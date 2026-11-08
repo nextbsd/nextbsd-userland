@@ -402,26 +402,45 @@ publish_state(struct wlan_if *w)
 	(void)airport_publish(g_air, w->vap, &st);
 }
 
+/* Is this interface up, or on its way up? Then autojoin leaves it alone. */
+static bool
+autojoin_busy(struct wlan_if *w)
+{
+	struct assoc_state st;
+
+	supplicant_get_state(w->supp, &st);
+	return (st.state == wlan_state_connected_e ||
+	    st.state == wlan_state_4way_e ||
+	    st.state == wlan_state_associating_e);
+}
+
 /*
- * Autojoin: if this interface is not connected, scan and associate with the
- * strongest remembered network in range.
+ * Autojoin, first half: if this interface is not connected, ask for a scan.
+ * The sweep takes seconds; autojoin_pick() runs when it has finished.
  */
 static void
 try_autojoin(struct wlan_if *w)
 {
-	struct assoc_state st;
+	if (autojoin_busy(w))
+		return;
+	if (supplicant_scan(w->supp) == 0)
+		supplicant_autojoin_arm(w->supp);
+}
+
+/*
+ * Autojoin, second half: the sweep try_autojoin() asked for has finished, so
+ * the cache is current. Associate with the strongest remembered network in
+ * range.
+ */
+static void
+autojoin_pick(struct wlan_if *w)
+{
 	struct known_net kn;
 	struct scan_entry scan[64];
 	int n, i;
 
-	supplicant_get_state(w->supp, &st);
-	if (st.state == wlan_state_connected_e ||
-	    st.state == wlan_state_4way_e ||
-	    st.state == wlan_state_associating_e)
-		return;				/* busy or already up */
-
-	(void)supplicant_scan(w->supp);
-	(void)supplicant_refresh_scan(w->supp);
+	if (autojoin_busy(w))
+		return;				/* came up during the sweep */
 
 	n = supplicant_scan_count(w->supp);
 	if (n <= 0)
@@ -700,6 +719,8 @@ main(int argc, char **argv)
 					continue;
 				if (supplicant_pump_events(w[i]->supp))
 					publish_state(w[i]);
+				if (supplicant_autojoin_take(w[i]->supp))
+					autojoin_pick(w[i]);
 			}
 			wland_unlock();
 			if (npfd > nfd && (pfd[nfd].revents & POLLIN) != 0)

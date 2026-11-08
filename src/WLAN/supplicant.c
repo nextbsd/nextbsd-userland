@@ -23,6 +23,11 @@ struct supplicant {
 
 	struct scan_entry	scan[SCAN_MAX];
 	int			scan_n;
+	uint32_t		scan_generation; /* sweeps finished */
+	bool			scan_last_failed; /* latest sweep failed */
+
+	bool			autojoin_armed;	/* autojoin awaits a sweep */
+	bool			autojoin_ready;	/* ...and it has finished */
 
 	struct assoc_state	state;
 };
@@ -268,6 +273,33 @@ supplicant_scan_get(const struct supplicant *s, int index,
 	return (true);
 }
 
+void
+supplicant_scan_generation(const struct supplicant *s, uint32_t *generation,
+    bool *last_failed)
+{
+	*generation = (s != NULL) ? s->scan_generation : 0;
+	*last_failed = (s != NULL) ? s->scan_last_failed : false;
+}
+
+void
+supplicant_autojoin_arm(struct supplicant *s)
+{
+	if (s != NULL)
+		s->autojoin_armed = true;
+}
+
+bool
+supplicant_autojoin_take(struct supplicant *s)
+{
+	bool ready;
+
+	if (s == NULL)
+		return (false);
+	ready = s->autojoin_ready;
+	s->autojoin_ready = false;
+	return (ready);
+}
+
 int
 supplicant_connect(struct supplicant *s, const char *ssid, const char *psk)
 {
@@ -276,6 +308,9 @@ supplicant_connect(struct supplicant *s, const char *ssid, const char *psk)
 
 	if (s == NULL || ssid == NULL || ssid[0] == '\0')
 		return (-1);
+
+	/* This choice stands: a sweep still in flight must not override it. */
+	s->autojoin_armed = false;
 
 	/*
 	 * One network block, ever. Removing the old one before adding the new
@@ -341,6 +376,7 @@ supplicant_disconnect(struct supplicant *s)
 {
 	if (s == NULL)
 		return (-1);
+	s->autojoin_armed = false;
 	(void)wpa_ctrl_ok(s->cmd, "DISCONNECT");
 	(void)wpa_ctrl_ok(s->cmd, "REMOVE_NETWORK all");
 	s->net_id = -1;
@@ -451,7 +487,22 @@ supplicant_pump_events(struct supplicant *s)
 			changed = true;
 		} else if (strncmp(ev, "CTRL-EVENT-SCAN-RESULTS", 23) == 0) {
 			(void)supplicant_refresh_scan(s);
+			/*
+			 * After the refresh, so a client that sees the new
+			 * generation also sees the new results.
+			 */
+			s->scan_generation++;
+			s->scan_last_failed = false;
+			if (s->autojoin_armed) {
+				s->autojoin_armed = false;
+				s->autojoin_ready = true;
+			}
 			/* Not an association change — no republish needed. */
+		} else if (strncmp(ev, "CTRL-EVENT-SCAN-FAILED", 22) == 0) {
+			xlog("%s: scan failed: %s", s->ifname, ev);
+			s->scan_generation++;
+			s->scan_last_failed = true;
+			s->autojoin_armed = false;
 		} else if (strncmp(ev, "CTRL-EVENT-SSID-TEMP-DISABLED", 29)
 		    == 0) {
 			/*
