@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 
 /*
@@ -29,6 +30,24 @@
  */
 #define	WLAND_PREFS_APP		"org.nextbsd.wland"
 #define	KNOWN_NETWORKS_KEY	"KnownNetworks"
+
+/* A known-network entry's 802.1X keys. Darwin's: EAPOLClientProfile.c:55. */
+#define	kKnownAuthProperties	CFSTR("AuthenticationProperties")
+
+/* Darwin's EAPClientProperties.h names. */
+#define	kEAPAcceptEAPTypes	CFSTR("AcceptEAPTypes")
+#define	kEAPUserName		CFSTR("UserName")
+#define	kEAPUserPassword	CFSTR("UserPassword")
+#define	kEAPOuterIdentity	CFSTR("OuterIdentity")
+#define	kEAPTTLSInner		CFSTR("TTLSInnerAuthentication")
+#define	kEAPTrustedServerNames	CFSTR("TLSTrustedServerNames")
+#define	kEAPVerifyServerCert	CFSTR("TLSVerifyServerCertificate")
+
+/* Ours: Darwin holds these in the keychain, NextBSD takes files by path. */
+#define	kEAPCACertificatePath	CFSTR("org.nextbsd.TLSCACertificatePath")
+#define	kEAPClientCertPath	CFSTR("org.nextbsd.TLSClientCertificatePath")
+#define	kEAPPrivateKeyPath	CFSTR("org.nextbsd.TLSPrivateKeyPath")
+#define	kEAPKeyPassphrase	CFSTR("org.nextbsd.TLSPrivateKeyPassphrase")
 
 struct airport {
 	SCDynamicStoreRef	store;
@@ -292,8 +311,175 @@ known_commit(SCPreferencesRef prefs, CFMutableDictionaryRef nets)
 	return (rc);
 }
 
-int
-known_net_save(const char *ssid, const char *psk, bool autojoin)
+/* Set a string value in a dictionary, unless it is empty. */
+static void
+dict_set_cstr(CFMutableDictionaryRef d, CFStringRef key, const char *value)
+{
+	CFStringRef s;
+
+	if (value[0] == '\0')
+		return;
+	s = mkstr(value);
+	if (s != NULL) {
+		CFDictionarySetValue(d, key, s);
+		CFRelease(s);
+	}
+}
+
+/* A string value from a dictionary; `out` is left empty if there is none. */
+static void
+dict_get_cstr(CFDictionaryRef d, CFStringRef key, char *out, size_t out_sz)
+{
+	CFStringRef s;
+
+	out[0] = '\0';
+	s = CFDictionaryGetValue(d, key);
+	if (s != NULL && CFGetTypeID(s) == CFStringGetTypeID())
+		(void)CFStringGetCString(s, out, (CFIndex)out_sz,
+		    kCFStringEncodingUTF8);
+}
+
+/* One-element array, the shape of AcceptEAPTypes and TLSTrustedServerNames. */
+static CFArrayRef
+array_of_one(CFTypeRef value)
+{
+	return (CFArrayCreate(NULL, (const void **)&value, 1,
+	    &kCFTypeArrayCallBacks));
+}
+
+/* Build AuthenticationProperties. The secrets do not go in it. */
+static CFDictionaryRef
+auth_props_create(const struct eap_config *c)
+{
+	CFMutableDictionaryRef d;
+	CFArrayRef array;
+	CFNumberRef n;
+	CFStringRef s;
+
+	d = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks,
+	    &kCFTypeDictionaryValueCallBacks);
+	if (d == NULL)
+		return (NULL);
+
+	n = mknum(c->type);
+	if (n != NULL) {
+		array = array_of_one(n);
+		if (array != NULL) {
+			CFDictionarySetValue(d, kEAPAcceptEAPTypes, array);
+			CFRelease(array);
+		}
+		CFRelease(n);
+	}
+	dict_set_cstr(d, kEAPUserName, c->identity);
+	dict_set_cstr(d, kEAPOuterIdentity, c->anonymous_identity);
+	if (c->type == WLAN_EAP_TYPE_TTLS) {
+		dict_set_cstr(d, kEAPTTLSInner,
+		    c->ttls_inner == wlan_ttls_inner_pap_e ? "PAP" :
+		    c->ttls_inner == wlan_ttls_inner_chap_e ? "CHAP" :
+		    "MSCHAPv2");
+	}
+	if (c->server_name[0] != '\0') {
+		s = mkstr(c->server_name);
+		if (s != NULL) {
+			array = array_of_one(s);
+			if (array != NULL) {
+				CFDictionarySetValue(d, kEAPTrustedServerNames,
+				    array);
+				CFRelease(array);
+			}
+			CFRelease(s);
+		}
+	}
+	/* Darwin's default is true, so only the opt-out is written. */
+	if (c->no_verify_server)
+		CFDictionarySetValue(d, kEAPVerifyServerCert, kCFBooleanFalse);
+	dict_set_cstr(d, kEAPCACertificatePath, c->ca_cert);
+	dict_set_cstr(d, kEAPClientCertPath, c->client_cert);
+	dict_set_cstr(d, kEAPPrivateKeyPath, c->private_key);
+	return (d);
+}
+
+/*
+ * Fill `c` from an entry's AuthenticationProperties. Returns false, leaving
+ * c->type 0, if the dictionary names no EAP method.
+ */
+static bool
+auth_props_load(CFDictionaryRef props, CFDictionaryRef entry,
+    struct eap_config *c)
+{
+	CFArrayRef types, names;
+	CFNumberRef type;
+	CFBooleanRef verify;
+	CFStringRef s;
+	char inner[16];
+
+	types = CFDictionaryGetValue(props, kEAPAcceptEAPTypes);
+	if (types == NULL || CFGetTypeID(types) != CFArrayGetTypeID() ||
+	    CFArrayGetCount(types) < 1)
+		return (false);
+	type = CFArrayGetValueAtIndex(types, 0);
+	if (CFGetTypeID(type) != CFNumberGetTypeID() ||
+	    !CFNumberGetValue(type, kCFNumberIntType, &c->type))
+		return (false);
+
+	dict_get_cstr(props, kEAPUserName, c->identity, sizeof(c->identity));
+	dict_get_cstr(props, kEAPOuterIdentity, c->anonymous_identity,
+	    sizeof(c->anonymous_identity));
+	dict_get_cstr(props, kEAPTTLSInner, inner, sizeof(inner));
+	if (strcmp(inner, "PAP") == 0)
+		c->ttls_inner = wlan_ttls_inner_pap_e;
+	else if (strcmp(inner, "CHAP") == 0)
+		c->ttls_inner = wlan_ttls_inner_chap_e;
+	else
+		c->ttls_inner = wlan_ttls_inner_mschapv2_e;
+
+	names = CFDictionaryGetValue(props, kEAPTrustedServerNames);
+	if (names != NULL && CFGetTypeID(names) == CFArrayGetTypeID() &&
+	    CFArrayGetCount(names) >= 1) {
+		s = CFArrayGetValueAtIndex(names, 0);
+		if (CFGetTypeID(s) == CFStringGetTypeID())
+			(void)CFStringGetCString(s, c->server_name,
+			    sizeof(c->server_name), kCFStringEncodingUTF8);
+	}
+
+	/* Missing means true, as on Darwin (EAPTLSUtil.c:1630-1632). */
+	verify = CFDictionaryGetValue(props, kEAPVerifyServerCert);
+	c->no_verify_server = (verify != NULL &&
+	    CFGetTypeID(verify) == CFBooleanGetTypeID() &&
+	    !CFBooleanGetValue(verify));
+
+	dict_get_cstr(props, kEAPCACertificatePath, c->ca_cert,
+	    sizeof(c->ca_cert));
+	dict_get_cstr(props, kEAPClientCertPath, c->client_cert,
+	    sizeof(c->client_cert));
+	dict_get_cstr(props, kEAPPrivateKeyPath, c->private_key,
+	    sizeof(c->private_key));
+
+	dict_get_cstr(entry, kEAPUserPassword, c->password,
+	    sizeof(c->password));
+	dict_get_cstr(entry, kEAPKeyPassphrase, c->key_passphrase,
+	    sizeof(c->key_passphrase));
+	return (true);
+}
+
+/* Add an enterprise network's configuration and secrets to its entry. */
+static void
+entry_add_eap(CFMutableDictionaryRef entry, const struct eap_config *c)
+{
+	CFDictionaryRef props;
+
+	props = auth_props_create(c);
+	if (props != NULL) {
+		CFDictionarySetValue(entry, kKnownAuthProperties, props);
+		CFRelease(props);
+	}
+	dict_set_cstr(entry, kEAPUserPassword, c->password);
+	dict_set_cstr(entry, kEAPKeyPassphrase, c->key_passphrase);
+}
+
+static int
+known_save(const char *ssid, const char *psk, const struct eap_config *eap,
+    bool autojoin)
 {
 	SCPreferencesRef prefs;
 	CFMutableDictionaryRef nets, entry;
@@ -329,6 +515,8 @@ known_net_save(const char *ssid, const char *psk, bool autojoin)
 			CFRelease(s);
 		}
 	}
+	if (eap != NULL)
+		entry_add_eap(entry, eap);
 	CFDictionarySetValue(entry, CFSTR("AutoJoin"),
 	    autojoin ? kCFBooleanTrue : kCFBooleanFalse);
 
@@ -356,12 +544,25 @@ known_net_save(const char *ssid, const char *psk, bool autojoin)
 	return (rc);
 }
 
+int
+known_net_save(const char *ssid, const char *psk, bool autojoin)
+{
+	return (known_save(ssid, psk, NULL, autojoin));
+}
+
+int
+known_net_save_eap(const char *ssid, const struct eap_config *eap,
+    bool autojoin)
+{
+	return (known_save(ssid, NULL, eap, autojoin));
+}
+
 bool
 known_net_find(const char *ssid, struct known_net *out)
 {
 	SCPreferencesRef prefs;
 	CFMutableDictionaryRef nets;
-	CFDictionaryRef entry;
+	CFDictionaryRef entry, props;
 	CFStringRef cf_ssid, psk;
 	CFBooleanRef aj;
 	bool found = false;
@@ -386,6 +587,13 @@ known_net_find(const char *ssid, struct known_net *out)
 			    CFGetTypeID(psk) == CFStringGetTypeID())
 				(void)CFStringGetCString(psk, out->psk,
 				    sizeof(out->psk), kCFStringEncodingUTF8);
+
+			props = CFDictionaryGetValue(entry,
+			    kKnownAuthProperties);
+			if (props != NULL &&
+			    CFGetTypeID(props) == CFDictionaryGetTypeID())
+				if (!auth_props_load(props, entry, &out->eap))
+					out->eap.type = -1;
 
 			aj = CFDictionaryGetValue(entry, CFSTR("AutoJoin"));
 			out->autojoin = (aj == NULL ||
@@ -430,8 +638,10 @@ known_net_forget(const char *ssid)
 }
 
 bool
-known_net_pick(const struct scan_entry *scan, int scan_n, struct known_net *out)
+known_net_pick(const struct scan_entry *scan, int scan_n, struct known_net *out,
+    bool skip_enterprise)
 {
+	struct known_net kn;
 	int i, best = -1, best_rssi = -1000;
 
 	if (scan == NULL || out == NULL || scan_n <= 0)
@@ -447,19 +657,20 @@ known_net_pick(const struct scan_entry *scan, int scan_n, struct known_net *out)
 	 * here (welded to nl80211, and LGPL). So this lives in wland.
 	 */
 	for (i = 0; i < scan_n; i++) {
-		struct known_net kn;
-
 		if (scan[i].ssid[0] == '\0')
 			continue;
 		if (!known_net_find(scan[i].ssid, &kn))
 			continue;
 		if (!kn.autojoin)
 			continue;
+		if (skip_enterprise && kn.eap.type != 0)
+			continue;
 		if (scan[i].rssi > best_rssi) {
 			best_rssi = scan[i].rssi;
 			best = i;
 		}
 	}
+	explicit_bzero(&kn, sizeof(kn));
 	if (best < 0)
 		return (false);
 

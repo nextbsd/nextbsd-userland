@@ -5,6 +5,7 @@
  *   wlan scan [<if>]                scan and print networks
  *   wlan status [<if>]              current association
  *   wlan connect <ssid> [pass]      associate (and remember the network)
+ *   wlan connect <ssid> --eap ...   join a WPA-Enterprise (802.1X) network
  *   wlan disconnect [<if>]          disassociate
  *
  * A pure-C MIG client for org.nextbsd.wlan, modelled directly on
@@ -46,9 +47,15 @@
 
 #include "wlan.h"			/* MIG user stubs */
 
+#include <errno.h>
+#include <getopt.h>
+#include <limits.h>
+#include <readpassphrase.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -107,6 +114,22 @@ status_str(wlan_status_t s)
 		return ("index out of range");
 	case wlan_status_operation_not_supported_e:
 		return ("operation not supported");
+	case wlan_status_enterprise_required_e:
+		return ("this is a WPA-Enterprise (802.1X) network; "
+		    "connect with --eap peap|ttls|tls");
+	case wlan_status_no_trust_anchor_e:
+		return ("server verification needs --ca-cert or --server-name "
+		    "(--no-verify-server turns it off)");
+	case wlan_status_ca_bundle_missing_e:
+		return ("--server-name needs the system CA bundle "
+		    "/etc/ssl/cert.pem, which is missing; give --ca-cert");
+	case wlan_status_credential_file_e:
+		return ("a certificate or key file is missing or unreadable, "
+		    "or --ca-cert is not a valid hash://server/sha256/ pin; "
+		    "see /var/log/wland.stderr");
+	case wlan_status_key_file_insecure_e:
+		return ("the private key file is group- or world-readable; "
+		    "chmod 600 it");
 	default:
 		return ("internal error");
 	}
@@ -363,6 +386,289 @@ cmd_connect(mach_port_t svc, const char *ifarg, const char *ssid,
 	return (0);
 }
 
+/* Everything that goes in wlan_connect_eap's fixed-size arguments. */
+struct eap_args {
+	WLANEAPName	identity;
+	WLANEAPName	anonymous_identity;
+	WLANEAPSecret	password;
+	WLANEAPPath	ca_cert;
+	WLANEAPName	server_name;
+	WLANEAPPath	client_cert;
+	WLANEAPPath	private_key;
+	WLANEAPSecret	key_passphrase;
+};
+
+/* Copy an option into an RPC field, refusing to cut it short. */
+static int
+field_set(char *dst, size_t dst_sz, const char *src, const char *what)
+{
+	if (strlcpy(dst, src, dst_sz) >= dst_sz) {
+		(void)fprintf(stderr, "%s: %s is too long\n", progname, what);
+		return (-1);
+	}
+	return (0);
+}
+
+/*
+ * Copy a file path into an RPC field. wland checks the file and wpa_supplicant
+ * opens it, neither from this directory, so a relative path is resolved here.
+ * An absolute one is passed as given: wland can read files this process can't.
+ */
+static int
+path_set(char *dst, size_t dst_sz, const char *path, const char *what)
+{
+	char resolved[PATH_MAX];
+
+	if (path[0] == '/')
+		return (field_set(dst, dst_sz, path, what));
+	if (realpath(path, resolved) == NULL) {
+		(void)fprintf(stderr, "%s: %s: %s: %s\n", progname, what, path,
+		    strerror(errno));
+		return (-1);
+	}
+	return (field_set(dst, dst_sz, resolved, what));
+}
+
+/* Read the password: no echo from a terminal, otherwise one line of stdin. */
+static int
+password_read(char *buf, size_t buf_sz, const char *user)
+{
+	char prompt[WLAN_EAP_STR_MAX + 32];
+	size_t len;
+
+	if (isatty(STDIN_FILENO)) {
+		(void)snprintf(prompt, sizeof(prompt), "802.1X password for %s: ",
+		    user);
+		if (readpassphrase(prompt, buf, buf_sz, RPP_REQUIRE_TTY) == NULL) {
+			(void)fprintf(stderr, "%s: could not read the password: "
+			    "%s\n", progname, strerror(errno));
+			return (-1);
+		}
+	} else if (fgets(buf, (int)buf_sz, stdin) == NULL) {
+		(void)fprintf(stderr, "%s: no password on standard input\n",
+		    progname);
+		return (-1);
+	}
+	len = strcspn(buf, "\r\n");
+	if (buf[len] == '\0' && len == buf_sz - 1) {
+		(void)fprintf(stderr, "%s: password is too long\n", progname);
+		return (-1);
+	}
+	buf[len] = '\0';
+	if (len == 0) {
+		(void)fprintf(stderr, "%s: empty password\n", progname);
+		return (-1);
+	}
+	return (0);
+}
+
+/* A PKCS#12 file holds the client certificate as well as the key. */
+static bool
+key_is_pkcs12(const char *path)
+{
+	const char *dot = strrchr(path, '.');
+
+	return (dot != NULL &&
+	    (strcasecmp(dot, ".p12") == 0 || strcasecmp(dot, ".pfx") == 0));
+}
+
+enum {
+	OPT_EAP = 256,
+	OPT_USER,
+	OPT_PASSWORD,
+	OPT_ANON,
+	OPT_TTLS_INNER,
+	OPT_CA_CERT,
+	OPT_SERVER_NAME,
+	OPT_NO_VERIFY,
+	OPT_CLIENT_CERT,
+	OPT_PRIVATE_KEY,
+	OPT_KEY_PASSPHRASE
+};
+
+static const struct option eap_longopts[] = {
+	{ "eap",		required_argument,	NULL, OPT_EAP },
+	{ "user",		required_argument,	NULL, OPT_USER },
+	{ "password",		required_argument,	NULL, OPT_PASSWORD },
+	{ "anonymous-identity",	required_argument,	NULL, OPT_ANON },
+	{ "ttls-inner",		required_argument,	NULL, OPT_TTLS_INNER },
+	{ "ca-cert",		required_argument,	NULL, OPT_CA_CERT },
+	{ "server-name",	required_argument,	NULL, OPT_SERVER_NAME },
+	{ "no-verify-server",	no_argument,		NULL, OPT_NO_VERIFY },
+	{ "client-cert",	required_argument,	NULL, OPT_CLIENT_CERT },
+	{ "private-key",	required_argument,	NULL, OPT_PRIVATE_KEY },
+	{ "key-passphrase",	required_argument,	NULL, OPT_KEY_PASSPHRASE },
+	{ NULL,			0,			NULL, 0 }
+};
+
+/*
+ * wlan connect <ssid> --eap peap|ttls|tls [options] [<interface>]
+ *
+ * argv[0] is the SSID and argv[1..] the rest: getopt_long treats argv[0] as the
+ * program name, so an SSID beginning with '-' is not taken for an option.
+ */
+static int
+cmd_connect_eap(mach_port_t svc, int argc, char **argv)
+{
+	struct eap_args a;
+	WLANInterfaceName name;
+	WLANSSID cf_ssid;
+	wlan_status_t st;
+	wlan_ttls_inner_t inner = wlan_ttls_inner_mschapv2_e;
+	const char *ssid = argv[0], *ifarg;
+	const char *user = NULL, *password = NULL, *anon = NULL;
+	const char *ca = NULL, *server = NULL, *client = NULL, *key = NULL;
+	const char *keypass = NULL, *inner_arg = NULL;
+	bool no_verify = false;
+	int eap_type = 0, ch, rc = 1;
+	kern_return_t kr;
+
+	(void)memset(&a, 0, sizeof(a));
+
+	optind = 1;
+	optreset = 1;
+	while ((ch = getopt_long(argc, argv, "", eap_longopts, NULL)) != -1) {
+		switch (ch) {
+		case OPT_EAP:
+			if (strcmp(optarg, "peap") == 0)
+				eap_type = WLAN_EAP_TYPE_PEAP;
+			else if (strcmp(optarg, "ttls") == 0)
+				eap_type = WLAN_EAP_TYPE_TTLS;
+			else if (strcmp(optarg, "tls") == 0)
+				eap_type = WLAN_EAP_TYPE_TLS;
+			else {
+				(void)fprintf(stderr, "%s: --eap takes peap, "
+				    "ttls or tls\n", progname);
+				return (1);
+			}
+			break;
+		case OPT_USER:		user = optarg;		break;
+		case OPT_PASSWORD:	password = optarg;	break;
+		case OPT_ANON:		anon = optarg;		break;
+		case OPT_TTLS_INNER:	inner_arg = optarg;	break;
+		case OPT_CA_CERT:	ca = optarg;		break;
+		case OPT_SERVER_NAME:	server = optarg;	break;
+		case OPT_NO_VERIFY:	no_verify = true;	break;
+		case OPT_CLIENT_CERT:	client = optarg;	break;
+		case OPT_PRIVATE_KEY:	key = optarg;		break;
+		case OPT_KEY_PASSPHRASE: keypass = optarg;	break;
+		default:
+			return (1);	/* getopt_long said why */
+		}
+	}
+	if (argc - optind > 1) {
+		(void)fprintf(stderr, "%s: too many arguments\n", progname);
+		return (1);
+	}
+	ifarg = (optind < argc) ? argv[optind] : NULL;
+
+	if (user == NULL) {
+		(void)fprintf(stderr, "%s: --user is required\n", progname);
+		return (1);
+	}
+	if (inner_arg != NULL) {
+		if (eap_type != WLAN_EAP_TYPE_TTLS) {
+			(void)fprintf(stderr, "%s: --ttls-inner is only for "
+			    "--eap ttls\n", progname);
+			return (1);
+		}
+		if (strcmp(inner_arg, "mschapv2") == 0)
+			inner = wlan_ttls_inner_mschapv2_e;
+		else if (strcmp(inner_arg, "pap") == 0)
+			inner = wlan_ttls_inner_pap_e;
+		else if (strcmp(inner_arg, "chap") == 0)
+			inner = wlan_ttls_inner_chap_e;
+		else {
+			(void)fprintf(stderr, "%s: --ttls-inner takes mschapv2, "
+			    "pap or chap\n", progname);
+			return (1);
+		}
+	}
+	/* Before prompting, so a doomed attempt asks for nothing. */
+	if (no_verify && (ca != NULL || server != NULL)) {
+		(void)fprintf(stderr, "%s: --no-verify-server cannot be "
+		    "combined with --ca-cert or --server-name\n", progname);
+		return (1);
+	}
+	if (!no_verify && ca == NULL && server == NULL) {
+		(void)fprintf(stderr, "%s: %s\n", progname,
+		    status_str(wlan_status_no_trust_anchor_e));
+		return (1);
+	}
+	if (eap_type == WLAN_EAP_TYPE_TLS) {
+		if (key == NULL) {
+			(void)fprintf(stderr, "%s: --eap tls needs "
+			    "--private-key\n", progname);
+			return (1);
+		}
+		if (client == NULL && !key_is_pkcs12(key)) {
+			(void)fprintf(stderr, "%s: --eap tls needs --client-cert "
+			    "(unless the key is a .p12 or .pfx file)\n",
+			    progname);
+			return (1);
+		}
+	}
+
+	(void)memset(cf_ssid, 0, sizeof(cf_ssid));
+	if (field_set(cf_ssid, sizeof(cf_ssid), ssid, "the SSID") != 0 ||
+	    field_set(a.identity, sizeof(a.identity), user, "--user") != 0 ||
+	    (anon != NULL && field_set(a.anonymous_identity,
+	    sizeof(a.anonymous_identity), anon, "--anonymous-identity") != 0) ||
+	    (server != NULL && field_set(a.server_name, sizeof(a.server_name),
+	    server, "--server-name") != 0) ||
+	    (client != NULL && path_set(a.client_cert, sizeof(a.client_cert),
+	    client, "--client-cert") != 0) ||
+	    (key != NULL && path_set(a.private_key, sizeof(a.private_key), key,
+	    "--private-key") != 0) ||
+	    (keypass != NULL && field_set(a.key_passphrase,
+	    sizeof(a.key_passphrase), keypass, "--key-passphrase") != 0))
+		goto out;
+	if (ca != NULL) {
+		if (strncmp(ca, "hash://", 7) == 0) {
+			if (field_set(a.ca_cert, sizeof(a.ca_cert), ca,
+			    "--ca-cert") != 0)
+				goto out;
+		} else if (path_set(a.ca_cert, sizeof(a.ca_cert), ca,
+		    "--ca-cert") != 0)
+			goto out;
+	}
+
+	if (eap_type != WLAN_EAP_TYPE_TLS) {
+		if (password != NULL) {
+			if (field_set(a.password, sizeof(a.password), password,
+			    "--password") != 0)
+				goto out;
+		} else if (password_read(a.password, sizeof(a.password),
+		    user) != 0) {
+			goto out;
+		}
+	}
+
+	if (pick_interface(svc, ifarg, name) != 0)
+		goto out;
+
+	kr = wlan_connect_eap(svc, name, cf_ssid, eap_type, inner, a.identity,
+	    a.anonymous_identity, a.password, a.ca_cert, a.server_name,
+	    a.client_cert, a.private_key, a.key_passphrase,
+	    no_verify ? TRUE : FALSE, &st);
+	if (kr != KERN_SUCCESS) {
+		(void)fprintf(stderr, "%s: RPC failed\n", progname);
+		goto out;
+	}
+	if (st != wlan_status_success_e) {
+		(void)fprintf(stderr, "%s: connect: %s\n", progname,
+		    status_str(st));
+		goto out;
+	}
+	(void)printf("associating with '%s' on %s (802.1X)...\n", ssid, name);
+	(void)printf("(run `%s status` to watch; authentication errors are in "
+	    "/var/log/wland.stderr)\n", progname);
+	rc = 0;
+out:
+	explicit_bzero(&a, sizeof(a));
+	return (rc);
+}
+
 static int
 cmd_disconnect(mach_port_t svc, const char *ifarg)
 {
@@ -389,8 +695,15 @@ usage(void)
 	    "       %s scan [<interface>]\n"
 	    "       %s status [<interface>]\n"
 	    "       %s connect <ssid> [passphrase] [<interface>]\n"
+	    "       %s connect <ssid> --eap peap|ttls|tls --user <name>\n"
+	    "            [--password <password>] [--anonymous-identity <name>]\n"
+	    "            [--ttls-inner mschapv2|pap|chap]\n"
+	    "            [--ca-cert <path>|hash://server/sha256/<hex>]\n"
+	    "            [--server-name <name>] [--no-verify-server]\n"
+	    "            [--client-cert <path>] [--private-key <path>]\n"
+	    "            [--key-passphrase <passphrase>] [<interface>]\n"
 	    "       %s disconnect [<interface>]\n",
-	    progname, progname, progname, progname, progname);
+	    progname, progname, progname, progname, progname, progname);
 	exit(1);
 }
 
@@ -427,8 +740,18 @@ main(int argc, char **argv)
 	if (strcmp(cmd, "disconnect") == 0)
 		return (cmd_disconnect(svc, argc > 2 ? argv[2] : NULL));
 	if (strcmp(cmd, "connect") == 0) {
+		int i;
+
 		if (argc < 3)
 			usage();
+		/*
+		 * Only --eap selects the 802.1X form. Anything else keeps its
+		 * old meaning, so a passphrase may begin with "--".
+		 */
+		for (i = 3; i < argc; i++) {
+			if (strcmp(argv[i], "--eap") == 0)
+				return (cmd_connect_eap(svc, argc - 2, argv + 2));
+		}
 		return (cmd_connect(svc, argc > 4 ? argv[4] : NULL, argv[2],
 		    argc > 3 ? argv[3] : NULL));
 	}

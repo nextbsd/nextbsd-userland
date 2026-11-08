@@ -75,6 +75,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -402,7 +403,11 @@ publish_state(struct wlan_if *w)
 	(void)airport_publish(g_air, w->vap, &st);
 }
 
-/* Is this interface up, or on its way up? Then autojoin leaves it alone. */
+/*
+ * Is this interface up, or on its way up? Then autojoin leaves it alone.
+ * "Associated" counts because a whole 802.1X exchange, seconds long, happens in
+ * that state: replacing the network block then would abort the join.
+ */
 static bool
 autojoin_busy(struct wlan_if *w)
 {
@@ -411,6 +416,7 @@ autojoin_busy(struct wlan_if *w)
 	supplicant_get_state(w->supp, &st);
 	return (st.state == wlan_state_connected_e ||
 	    st.state == wlan_state_4way_e ||
+	    st.state == wlan_state_associated_e ||
 	    st.state == wlan_state_associating_e);
 }
 
@@ -450,10 +456,16 @@ autojoin_pick(struct wlan_if *w)
 	for (i = 0; i < n; i++)
 		(void)supplicant_scan_get(w->supp, i, &scan[i]);
 
-	if (!known_net_pick(scan, n, &kn))
+	if (!known_net_pick(scan, n, &kn,
+	    supplicant_eap_autojoin_held(w->supp)))
 		return;				/* nothing known in range */
 
-	(void)supplicant_connect(w->supp, kn.ssid, kn.psk);
+	/* An enterprise network is rebuilt from its AuthenticationProperties. */
+	if (kn.eap.type == 0)
+		(void)supplicant_connect(w->supp, kn.ssid, kn.psk);
+	else if (supplicant_eap_check(&kn.eap) == wlan_status_success_e)
+		(void)supplicant_connect_eap(w->supp, kn.ssid, &kn.eap);
+	explicit_bzero(&kn, sizeof(kn));
 }
 
 /*

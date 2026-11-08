@@ -18,6 +18,7 @@
 #include "wlanServer.h"			/* MIG-emitted prototypes */
 
 #include <string.h>
+#include <strings.h>
 
 /* Copy a MIG fixed-size name into a guaranteed-NUL-terminated buffer. */
 static void
@@ -207,6 +208,9 @@ _wlan_connect(mach_port_t server, WLANInterfaceName name, WLANSSID ssid,
 		*status = wlan_status_interface_does_not_exist_e;
 	} else if (w->supp == NULL) {
 		*status = wlan_status_no_supplicant_e;
+	} else if (supplicant_needs_eap(w->supp, c_ssid, c_psk[0] != '\0')) {
+		/* Without this, no passphrase means an open association. */
+		*status = wlan_status_enterprise_required_e;
 	} else if (supplicant_connect(w->supp, c_ssid, c_psk) != 0) {
 		*status = wlan_status_internal_error_e;
 	} else {
@@ -220,6 +224,65 @@ _wlan_connect(mach_port_t server, WLANInterfaceName name, WLANSSID ssid,
 		*status = wlan_status_success_e;
 	}
 	wland_unlock();
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_wlan_connect_eap(mach_port_t server, WLANInterfaceName name, WLANSSID ssid,
+    int eap_type, wlan_ttls_inner_t ttls_inner, WLANEAPName identity,
+    WLANEAPName anonymous_identity, WLANEAPSecret password, WLANEAPPath ca_cert,
+    WLANEAPName server_name, WLANEAPPath client_cert, WLANEAPPath private_key,
+    WLANEAPSecret key_passphrase, boolean_t no_verify_server,
+    wlan_status_t *status)
+{
+	char ifname[IF_NAMESIZE];
+	char c_ssid[WLAN_SSID_MAX + 1];
+	struct eap_config cfg;
+	struct wlan_if *w;
+
+	(void)server;
+	name_in(ifname, sizeof(ifname), name);
+	name_in(c_ssid, sizeof(c_ssid), ssid);
+
+	(void)memset(&cfg, 0, sizeof(cfg));
+	cfg.type = eap_type;
+	cfg.ttls_inner = ttls_inner;
+	cfg.no_verify_server = (no_verify_server != FALSE);
+	name_in(cfg.identity, sizeof(cfg.identity), identity);
+	name_in(cfg.anonymous_identity, sizeof(cfg.anonymous_identity),
+	    anonymous_identity);
+	name_in(cfg.password, sizeof(cfg.password), password);
+	name_in(cfg.ca_cert, sizeof(cfg.ca_cert), ca_cert);
+	name_in(cfg.server_name, sizeof(cfg.server_name), server_name);
+	name_in(cfg.client_cert, sizeof(cfg.client_cert), client_cert);
+	name_in(cfg.private_key, sizeof(cfg.private_key), private_key);
+	name_in(cfg.key_passphrase, sizeof(cfg.key_passphrase), key_passphrase);
+
+	if (c_ssid[0] == '\0') {
+		*status = wlan_status_invalid_parameter_e;
+		explicit_bzero(&cfg, sizeof(cfg));
+		return (KERN_SUCCESS);
+	}
+
+	wland_lock();
+	w = wland_if_by_name_locked(ifname);
+	if (w == NULL) {
+		*status = wlan_status_interface_does_not_exist_e;
+	} else if (w->supp == NULL) {
+		*status = wlan_status_no_supplicant_e;
+	} else if ((*status = supplicant_eap_check(&cfg)) !=
+	    wlan_status_success_e) {
+		/* *status says why; supplicant_eap_check logged it. */
+	} else if (supplicant_connect_eap(w->supp, c_ssid, &cfg) != 0) {
+		*status = wlan_status_internal_error_e;
+	} else {
+		/* Asked for by name: forget any hold from earlier failures. */
+		supplicant_eap_autojoin_release(w->supp);
+		(void)known_net_save_eap(c_ssid, &cfg, true);
+		*status = wlan_status_success_e;
+	}
+	wland_unlock();
+	explicit_bzero(&cfg, sizeof(cfg));
 	return (KERN_SUCCESS);
 }
 
