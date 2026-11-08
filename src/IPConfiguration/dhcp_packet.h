@@ -37,12 +37,14 @@
 #define DHCP_OPT_ROUTER		  3
 #define DHCP_OPT_DNS_SERVER	  6
 #define DHCP_OPT_HOST_NAME	 12
+#define DHCP_OPT_DOMAIN_NAME	 15
 #define DHCP_OPT_REQUESTED_IP	 50
 #define DHCP_OPT_LEASE_TIME	 51
 #define DHCP_OPT_MESSAGE_TYPE	 53
 #define DHCP_OPT_SERVER_ID	 54
 #define DHCP_OPT_PARAM_REQUEST	 55
 #define DHCP_OPT_CLIENT_ID	 61
+#define DHCP_OPT_DOMAIN_SEARCH	119
 #define DHCP_OPT_END		255
 
 #define DHCP_FLAG_BROADCAST	0x8000
@@ -77,7 +79,11 @@ struct dhcp {
  * apply_lease. Extra options (broadcast addr, NTP, etc.) can grow
  * this struct in later iters without changing existing callers.
  */
-#define DHCP_LEASE_MAX_DNS	4
+#define DHCP_LEASE_MAX_DNS	16
+
+/* Options 15 and 119 (#425). A DNS name is at most 255 octets. */
+#define DHCP_LEASE_MAX_DOMAIN	256
+#define DHCP_LEASE_MAX_SEARCH	16
 
 /* DHCP option 12 max length per RFC 2132 §3.14. +1 for terminating NUL
  * so the buffer is always safe to pass to printf / strncpy. */
@@ -97,6 +103,12 @@ struct dhcp_lease {
 	 * the option was absent from the lease. */
 	char		host_name[DHCP_LEASE_MAX_HOSTNAME];
 	unsigned	host_name_len;
+	/* Option 15 (and 119, when present) as Apple's sysconfig.c reads
+	 * them: domain_name is empty when absent, search_count is 0 when
+	 * there is no search list. */
+	char		domain_name[DHCP_LEASE_MAX_DOMAIN];
+	char		search[DHCP_LEASE_MAX_SEARCH][DHCP_LEASE_MAX_DOMAIN];
+	unsigned	search_count;
 };
 
 #endif /* _IPCFG_DHCP_PACKET_H_ */

@@ -17,7 +17,9 @@
  * RENEWING/REBINDING ACK so the gate fires deterministically.
  */
 #include "lease_loop.h"
+#include "bound_state.h"
 #include "dhcp_discover.h"
+#include "dns_config.h"
 #include "sc_publish.h"
 
 #include <errno.h>
@@ -97,7 +99,7 @@ cap_lease(uint32_t in, uint32_t cap)
 /*
  * Compare the fields sc_publish_ipv4() actually writes into the
  * SCDynamicStore: address, netmask, router, server identifier and the
- * DNS server list. lease_time is deliberately excluded — it advances on
+ * DNS server, domain and search lists. lease_time is deliberately excluded — it advances on
  * every renewal by design and is carried by the /DHCP key, not the IPv4
  * key.
  *
@@ -116,13 +118,30 @@ ipv4_publish_equal(const struct dhcp_lease *a, const struct dhcp_lease *b)
 	    a->netmask.s_addr != b->netmask.s_addr ||
 	    a->router.s_addr != b->router.s_addr ||
 	    a->server.s_addr != b->server.s_addr ||
-	    a->dns_count != b->dns_count)
+	    a->dns_count != b->dns_count ||
+	    a->search_count != b->search_count ||
+	    strcmp(a->domain_name, b->domain_name) != 0)
 		return (false);
 	for (i = 0; i < a->dns_count; i++) {
 		if (a->dns[i].s_addr != b->dns[i].s_addr)
 			return (false);
 	}
+	for (i = 0; i < a->search_count; i++) {
+		if (strcmp(a->search[i], b->search[i]) != 0)
+			return (false);
+	}
 	return (true);
+}
+
+/*
+ * A renewal changed what the lease publishes: record it and re-merge the
+ * service's DNS, since a renewed lease can change the DNS the system uses.
+ */
+static void
+lease_changed(const char *ifname, const struct dhcp_lease *lease)
+{
+	bound_state_set(ifname, lease);
+	dns_config_update(ifname);
 }
 
 int
@@ -188,6 +207,7 @@ wait_t1:
 						xlog("RENEWING: re-publish failed (continuing)");
 					else
 						published = *lease;
+					lease_changed(ifname, lease);
 				} else if (!unchanged_logged) {
 					xlog("RENEWING: IPv4 config unchanged — "
 					    "skipping re-publish");
@@ -245,6 +265,7 @@ wait_t2:
 						xlog("REBINDING: re-publish failed (continuing)");
 					else
 						published = *lease;
+					lease_changed(ifname, lease);
 				} else if (!unchanged_logged) {
 					xlog("REBINDING: IPv4 config unchanged — "
 					    "skipping re-publish");

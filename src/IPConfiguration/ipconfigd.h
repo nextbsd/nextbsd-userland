@@ -44,4 +44,7 @@ ipconfig_status_t	ipconfigd_set_method(const char *ifname,
 bool			ipconfigd_get_method(const char *ifname,
 			    struct ipconfig_method_info *out);
 
+/* Is an `ipconfig set` method in force on `ifname`? (It hides Setup DNS.) */
+bool			ipconfigd_set_method_active(const char *ifname);
+
 #endif /* _IPCFG_IPCONFIGD_H_ */

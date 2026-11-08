@@ -284,7 +284,7 @@ _ipconfig_set(mach_port_t server, InterfaceName name, xmlData_t method_data,
 	 * answers operation_not_supported for those.
 	 */
 	if (!ipconfig_method_info_from_dict(
-	    (const struct __CFDictionary *)dict, NULL, &info))
+	    (const struct __CFDictionary *)dict, &info))
 		*status = ipconfig_status_invalid_parameter_e;
 	else
 		*status = ipconfigd_set_method(ifname, &info);

@@ -34,10 +34,13 @@ typedef void (*ipconfig_prefs_cb)(const char *ifname);
 
 /*
  * Load the preferences synchronously, then watch them for applies.
- * Returns 0 on success; on failure the table stays empty, so every
- * interface is DHCP'd as before.
+ * `dns_cb` runs, on the same queue, for each interface whose DNS entity
+ * changed in an apply; it is kept apart from `cb` so a DNS-only change
+ * re-merges DNS without restarting the service (#425). Returns 0 on
+ * success; on failure the table stays empty, so every interface is
+ * DHCP'd as before.
  */
-int	ipconfig_prefs_start(ipconfig_prefs_cb cb);
+int	ipconfig_prefs_start(ipconfig_prefs_cb cb, ipconfig_prefs_cb dns_cb);
 
 /*
  * `ifname`'s configured method. Returns false when no service in the
@@ -55,5 +58,13 @@ bool	ipconfig_prefs_lookup(const char *ifname,
  */
 struct __CFDictionary;
 const struct __CFDictionary *ipconfig_prefs_copy_proxies(const char *ifname);
+
+/*
+ * `ifname`'s service's enabled DNS entity (Darwin's Setup:/.../DNS).
+ * Returns false when it has none.
+ */
+struct ipconfig_dns;
+bool	ipconfig_prefs_lookup_dns(const char *ifname,
+	    struct ipconfig_dns *out);
 
 #endif /* _IPCFG_IPCONFIG_PREFS_H_ */
