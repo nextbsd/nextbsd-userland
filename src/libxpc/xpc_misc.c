@@ -113,6 +113,7 @@ xpc_dictionary_destroy(struct xpc_object *dict)
 	TAILQ_FOREACH_SAFE(p, head, xo_link, ptmp) {
 		TAILQ_REMOVE(head, p, xo_link);
 		xpc_object_destroy(p->value);
+		free((void *)(uintptr_t)p->key);
 		free(p);
 	}
 }
@@ -177,6 +178,10 @@ xpc_object_destroy(struct xpc_object *xo)
 
 	if (xo->xo_xpc_type == _XPC_TYPE_CONNECTION)
 		xpc_connection_destroy(xo);
+
+	if (xo->xo_xpc_type == _XPC_TYPE_DATA &&
+	    (xo->xo_flags & _XPC_DATA_OWNED))
+		free((void *)xo->xo_ptr);
 
 	free(xo);
 }

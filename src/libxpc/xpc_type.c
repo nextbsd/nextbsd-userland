@@ -275,6 +275,30 @@ xpc_data_create(const void *bytes, size_t length)
 	return _xpc_prim_create(_XPC_TYPE_DATA, val, length);
 }
 
+/*
+ * A data object holding its own copy of `bytes`. xpc_data_create() above
+ * keeps the caller's pointer, which cannot outlive a send queued for later
+ * or the nvlist a received message is decoded from.
+ */
+__private_extern__ struct xpc_object *
+_xpc_data_create_copy(const void *bytes, size_t length)
+{
+	struct xpc_object *xo;
+	xpc_u val;
+	void *copy;
+
+	if ((copy = malloc(length != 0 ? length : 1)) == NULL)
+		return (NULL);
+	if (length != 0)
+		memcpy(copy, bytes, length);
+	val.ptr = (uintptr_t)copy;
+	xo = _xpc_prim_create_flags(_XPC_TYPE_DATA, val, length,
+	    _XPC_DATA_OWNED);
+	if (xo == NULL)
+		free(copy);
+	return (xo);
+}
+
 xpc_object_t
 xpc_data_create_with_dispatch_data(dispatch_data_t ddata)
 {
