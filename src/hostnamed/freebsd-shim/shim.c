@@ -7,8 +7,7 @@
  *   1. ip_plugin.h surface — copy_dhcp_hostname (SCDS reader),
  *      check_if_service_expensive (always FALSE),
  *      hostnamed_xlog_cf (the my_log macro target).
- *   2. SCPrivate.h SPI subset — _SC_string_to_sockaddr,
- *      _SC_cfstring_to_cstring, _SC_CFStringIsValidDNSName.
+ *   2. SCPrivate.h SPI subset — _SC_CFStringIsValidDNSName.
  *   3. freebsd_synthesize_hostname — SMBIOS hostname synthesis
  *      (e.g. "ThinkPad-T460s", "VirtualBox-68f9a871") for the
  *      "localhost" fallback substitution and prefs_monitor's boot-time
@@ -39,9 +38,6 @@
 #include <net/if.h>
 #include <net/if_dl.h>
 #include <net/if_types.h>
-
-#include <netinet/in.h>
-#include <arpa/inet.h>
 
 #include <ctype.h>
 #include <ifaddrs.h>
@@ -144,64 +140,6 @@ check_if_service_expensive(CFStringRef serviceID)
 
 #pragma mark -
 #pragma mark SCPrivate SPI subset
-
-void *
-_SC_string_to_sockaddr(const char *str, sa_family_t family, void *buf,
-    size_t bufsize)
-{
-	struct sockaddr_in *sin = (struct sockaddr_in *)buf;
-	struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)buf;
-
-	if (str == NULL || buf == NULL)
-		return (NULL);
-
-	if (family == AF_INET || family == AF_UNSPEC) {
-		if (bufsize < sizeof(*sin))
-			return (NULL);
-		memset(buf, 0, sizeof(*sin));
-		sin->sin_family = AF_INET;
-		sin->sin_len = sizeof(*sin);
-		if (inet_pton(AF_INET, str, &sin->sin_addr) == 1)
-			return (buf);
-		if (family == AF_INET)
-			return (NULL);
-	}
-	if (family == AF_INET6 || family == AF_UNSPEC) {
-		if (bufsize < sizeof(*sin6))
-			return (NULL);
-		memset(buf, 0, sizeof(*sin6));
-		sin6->sin6_family = AF_INET6;
-		sin6->sin6_len = sizeof(*sin6);
-		if (inet_pton(AF_INET6, str, &sin6->sin6_addr) == 1)
-			return (buf);
-	}
-	return (NULL);
-}
-
-char *
-_SC_cfstring_to_cstring(CFStringRef cfstr, char *buf, CFIndex bufsize,
-    CFStringEncoding encoding)
-{
-	CFIndex maxsize;
-
-	if (cfstr == NULL)
-		return (NULL);
-	if (buf != NULL) {
-		if (CFStringGetCString(cfstr, buf, bufsize, encoding))
-			return (buf);
-		return (NULL);
-	}
-	/* allocated form */
-	maxsize = CFStringGetMaximumSizeForEncoding(
-	    CFStringGetLength(cfstr), encoding) + 1;
-	buf = (char *)malloc((size_t)maxsize);
-	if (buf == NULL)
-		return (NULL);
-	if (CFStringGetCString(cfstr, buf, maxsize, encoding))
-		return (buf);
-	free(buf);
-	return (NULL);
-}
 
 Boolean
 _SC_CFStringIsValidDNSName(CFStringRef cfstr)

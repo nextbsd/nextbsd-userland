@@ -102,6 +102,12 @@ extern const CFStringRef kSCNetworkInterfaceTypeWWAN;
 extern const CFStringRef kSCNetworkInterfaceTypeIPv4;
 
 /*
+ * Pseudo interfaces. Valid once any SCNetworkInterface call has run.
+ */
+extern const SCNetworkInterfaceRef kSCNetworkInterfaceIPv4;
+extern const SCNetworkInterfaceRef kSCNetworkInterfaceLoopback;
+
+/*
  * Network protocol types — the protocols that can be layered on a
  * service. Also the preferences-plist entity names.
  */
@@ -212,6 +218,67 @@ SCNetworkInterfaceGetSupportedInterfaceTypes
 CFArrayRef
 SCNetworkInterfaceGetSupportedProtocolTypes
 					(SCNetworkInterfaceRef		interface);
+
+/*!
+	@function SCNetworkInterfaceGetConfiguration
+	@discussion Returns the configuration stored for an interface that
+		belongs to a service, or NULL. Owned by the preferences.
+ */
+CFDictionaryRef
+SCNetworkInterfaceGetConfiguration	(SCNetworkInterfaceRef		interface);
+
+/*!
+	@function SCNetworkInterfaceSetConfiguration
+	@discussion Stores the configuration of an interface that belongs
+		to a service; NULL removes it.
+ */
+Boolean
+SCNetworkInterfaceSetConfiguration	(SCNetworkInterfaceRef		interface,
+					 CFDictionaryRef		config);
+
+/*!
+	@function SCNetworkInterfaceCopyMediaOptions
+	@discussion Reads the live media settings of the interface. Each of
+		`current`, `active` and `available` may be NULL; the rest
+		are returned retained. `filter` drops "none" and loopback
+		media from `available`.
+ */
+Boolean
+SCNetworkInterfaceCopyMediaOptions	(SCNetworkInterfaceRef		interface,
+					 CFDictionaryRef		*current,
+					 CFDictionaryRef		*active,
+					 CFArrayRef			*available,
+					 Boolean			filter);
+
+/*!
+	@function SCNetworkInterfaceCopyMediaSubTypes
+	@discussion Returns the distinct media subtypes in `available`, as
+		returned by SCNetworkInterfaceCopyMediaOptions, or NULL.
+ */
+CFArrayRef
+SCNetworkInterfaceCopyMediaSubTypes	(CFArrayRef			available);
+
+/*!
+	@function SCNetworkInterfaceCopyMediaSubTypeOptions
+	@discussion Returns the option combinations `available` offers for
+		`subType`, or NULL.
+ */
+CFArrayRef
+SCNetworkInterfaceCopyMediaSubTypeOptions
+					(CFArrayRef			available,
+					 CFStringRef			subType);
+
+/*!
+	@function SCNetworkInterfaceCopyMTU
+	@discussion Reads the live MTU of the interface. Each pointer may
+		be NULL. The device's range is not known, so the minimum
+		and maximum are the current MTU.
+ */
+Boolean
+SCNetworkInterfaceCopyMTU		(SCNetworkInterfaceRef		interface,
+					 int				*mtu_cur,
+					 int				*mtu_min,
+					 int				*mtu_max);
 
 /* --------------------------------------------------------------------
  * SCNetworkProtocol
@@ -375,6 +442,15 @@ SCNetworkServiceAddProtocolType		(SCNetworkServiceRef		service,
 Boolean
 SCNetworkServiceRemoveProtocolType	(SCNetworkServiceRef		service,
 					 CFStringRef			protocolType);
+
+/*!
+	@function SCNetworkServiceEstablishDefaultConfiguration
+	@discussion Adds every protocol the service's interface supports,
+		each with its default configuration.
+ */
+Boolean
+SCNetworkServiceEstablishDefaultConfiguration
+					(SCNetworkServiceRef		service);
 
 /* --------------------------------------------------------------------
  * SCNetworkSet

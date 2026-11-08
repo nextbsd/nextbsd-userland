@@ -9,12 +9,40 @@
 #ifndef _SCNETWORKCONFIGURATIONINTERNAL_H
 #define _SCNETWORKCONFIGURATIONINTERNAL_H
 
+/* first: "config.h" must be seen before <SCDynamicStore.h>, see SCInternal.h */
+#include "SCInternal.h"
+
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreFoundation/CFRuntime.h>
 
 #include <SystemConfiguration/SCNetworkConfiguration.h>
+#include <SystemConfiguration/SCNetworkConfigurationPrivate.h>
 #include <SystemConfiguration/SCPreferences.h>
 #include <SystemConfiguration/SCSchemaDefinitions.h>
+
+/* Apple's SCValidation.h checks: the argument if of that type, else NULL */
+static inline CFTypeRef
+__isA_CFType(CFTypeRef obj, CFTypeID type)
+{
+	return ((obj != NULL) && (CFGetTypeID(obj) == type)) ? obj : NULL;
+}
+#define isA_CFArray(obj)	((CFArrayRef)__isA_CFType((obj), CFArrayGetTypeID()))
+#define isA_CFDictionary(obj)	((CFDictionaryRef)__isA_CFType((obj), CFDictionaryGetTypeID()))
+#define isA_CFNumber(obj)	((CFNumberRef)__isA_CFType((obj), CFNumberGetTypeID()))
+#define isA_CFString(obj)	((CFStringRef)__isA_CFType((obj), CFStringGetTypeID()))
+
+/* NULL-safe CFEqual: both NULL is equal, one NULL is not */
+static inline Boolean
+_SC_CFEqual(CFTypeRef val1, CFTypeRef val2)
+{
+	if (val1 == val2) {
+		return TRUE;
+	}
+	if ((val1 == NULL) || (val2 == NULL)) {
+		return FALSE;
+	}
+	return CFEqual(val1, val2);
+}
 
 /*
  * Reserved preferences-plist keys. The network configuration lives in
@@ -73,6 +101,7 @@ typedef struct __SCNetworkInterface {
 	SCNetworkInterfaceRef	interface;		/* layered-on, or NULL */
 
 	SCPreferencesRef	prefs;			/* bound prefs, or NULL */
+	SCDynamicStoreRef	store;			/* active handle's session, or NULL */
 	CFStringRef		serviceID;		/* bound service, or NULL */
 	CFStringRef		entity_type;		/* prefs entity "Type" */
 	CFStringRef		entity_subtype;		/* prefs entity "SubType" */
@@ -103,6 +132,7 @@ typedef struct __SCNetworkService {
 	CFStringRef		serviceID;
 	SCNetworkInterfaceRef	interface;	/* lazily reconstructed */
 	SCPreferencesRef	prefs;
+	SCDynamicStoreRef	store;		/* active handle's session, or NULL */
 	CFStringRef		name;		/* cached UserDefinedName */
 } SCNetworkServicePrivate, *SCNetworkServicePrivateRef;
 
@@ -138,6 +168,7 @@ typedef struct __SCNetworkSet {
 	CFStringRef		setID;
 	SCPreferencesRef	prefs;
 	CFStringRef		name;		/* cached UserDefinedName */
+	Boolean			established;	/* TRUE unless newly created */
 } SCNetworkSetPrivate, *SCNetworkSetPrivateRef;
 
 
@@ -242,5 +273,69 @@ __SCNetworkProtocolIsValidType		(CFStringRef		protocolType);
 CFStringRef
 __SCNetworkServiceEntityPath		(CFStringRef		serviceID,
 					 CFStringRef		entity);
+
+/*
+ * SCNetworkConfigurationInternal.c — read a configuration entity, with
+ * an empty one reported as NULL, and write one (NULL removes it).
+ */
+CFDictionaryRef
+__getPrefsConfiguration			(SCPreferencesRef	prefs,
+					 CFStringRef		path);
+
+Boolean
+__setPrefsConfiguration			(SCPreferencesRef	prefs,
+					 CFStringRef		path,
+					 CFDictionaryRef	config,
+					 Boolean		keepInactive);
+
+/*
+ * SCNetworkConfigurationInternal.c — the default configuration of a
+ * protocol on an interface type (Apple's NetworkConfiguration.plist),
+ * or NULL. Caller releases.
+ */
+CFDictionaryRef
+__copyProtocolTemplate			(CFStringRef		interfaceType,
+					 CFStringRef		protocolType);
+
+/* SCNetworkConfigurationInternal.c — PrimaryRank <-> its stored string. */
+Boolean
+__rank_to_str				(SCNetworkServicePrimaryRank	rank,
+					 CFStringRef			*rankStr);
+
+Boolean
+__str_to_rank				(CFStringRef			rankStr,
+					 SCNetworkServicePrimaryRank	*rank);
+
+/*
+ * SCNetworkInterface.c — a copy of `interface` bound to the service
+ * `serviceID` in `prefs`, so its configuration can be read and written.
+ */
+SCNetworkInterfaceRef
+__SCNetworkInterfaceCreateCopy		(CFAllocatorRef		allocator,
+					 SCNetworkInterfaceRef	interface,
+					 SCPreferencesRef	prefs,
+					 CFStringRef		serviceID);
+
+/* SCNetworkInterface.c — the interface's position in the default order. */
+int
+__SCNetworkInterfaceOrder		(SCNetworkInterfaceRef	interface);
+
+/* SCNetworkService.c — TRUE iff a service in `services` uses `interface`. */
+Boolean
+__SCNetworkServiceExistsForInterface	(CFArrayRef		services,
+					 SCNetworkInterfaceRef	interface);
+
+/* SCNetworkService.c — the service's name with its numeric suffix bumped. */
+CFStringRef
+__SCNetworkServiceNextName		(SCNetworkServiceRef	service);
+
+/* SCBondInterface.c, SCBridgeInterface.c — add each member to `set`. */
+void
+__SCBondInterfaceListCollectMembers	(CFArrayRef		interfaces,
+					 CFMutableSetRef	set);
+
+void
+__SCBridgeInterfaceListCollectMembers	(CFArrayRef		interfaces,
+					 CFMutableSetRef	set);
 
 #endif	/* _SCNETWORKCONFIGURATIONINTERNAL_H */

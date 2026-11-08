@@ -113,6 +113,35 @@ __bondStoreSet(SCNetworkInterfacePrivateRef ip, CFStringRef key,
 }
 
 
+void
+__SCBondInterfaceListCollectMembers(CFArrayRef interfaces, CFMutableSetRef set)
+{
+	CFIndex	i;
+	CFIndex	n;
+
+	n = CFArrayGetCount(interfaces);
+	for (i = 0; i < n; i++) {
+		SCBondInterfaceRef	bondInterface;
+		CFArrayRef		members;
+
+		bondInterface = CFArrayGetValueAtIndex(interfaces, i);
+		members = SCBondInterfaceGetMemberInterfaces(bondInterface);
+		if (members != NULL) {
+			CFIndex	j;
+			CFIndex	n_members;
+
+			// exclude the member interfaces of this bond
+			n_members = CFArrayGetCount(members);
+			for (j = 0; j < n_members; j++) {
+				CFSetAddValue(set, CFArrayGetValueAtIndex(members, j));
+			}
+		}
+	}
+
+	return;
+}
+
+
 #pragma mark -
 #pragma mark SCBondInterface APIs
 

@@ -118,6 +118,35 @@ __bridgeStoreSet(SCNetworkInterfacePrivateRef ip, CFStringRef key,
 }
 
 
+void
+__SCBridgeInterfaceListCollectMembers(CFArrayRef interfaces, CFMutableSetRef set)
+{
+	CFIndex	i;
+	CFIndex	n;
+
+	n = CFArrayGetCount(interfaces);
+	for (i = 0; i < n; i++) {
+		SCBridgeInterfaceRef	bridgeInterface;
+		CFArrayRef		members;
+
+		bridgeInterface = CFArrayGetValueAtIndex(interfaces, i);
+		members = SCBridgeInterfaceGetMemberInterfaces(bridgeInterface);
+		if (members != NULL) {
+			CFIndex	j;
+			CFIndex	n_members;
+
+			// exclude the member interfaces of this bridge
+			n_members = CFArrayGetCount(members);
+			for (j = 0; j < n_members; j++) {
+				CFSetAddValue(set, CFArrayGetValueAtIndex(members, j));
+			}
+		}
+	}
+
+	return;
+}
+
+
 #pragma mark -
 #pragma mark SCBridgeInterface APIs
 
