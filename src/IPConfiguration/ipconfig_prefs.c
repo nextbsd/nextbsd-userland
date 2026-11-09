@@ -108,7 +108,8 @@ ipconfig_method_string(ipconfig_method_t m)
 bool
 ipconfig_method_is_served(ipconfig_method_t m)
 {
-	return (m == ipconfig_method_dhcp_e || m == ipconfig_method_manual_e);
+	return (m == ipconfig_method_dhcp_e || m == ipconfig_method_manual_e ||
+	    m == ipconfig_method_linklocal_e);
 }
 
 /* The IPv6 ConfigMethod names (ipconfig_method_from_cfstring_ipv6). */

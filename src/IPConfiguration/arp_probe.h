@@ -40,6 +40,14 @@
 int	arp_probe(const char *ifname, struct in_addr target);
 
 /*
+ * The same for a link-local candidate (#426): another host's ARP probe for
+ * `target` counts as a conflict too, as two hosts picking one address at
+ * once must both move on (RFC 3927 §2.2.1;
+ * arp_client_set_probes_are_collisions).
+ */
+int	arp_probe_linklocal(const char *ifname, struct in_addr target);
+
+/*
  * Announce ownership of `our_ip` on `ifname` per RFC 5227 §2.3.
  *
  *   0  on full success

@@ -8,10 +8,9 @@
  * server-id + yiaddr, receives DHCPACK, parses lease options
  * (subnet, router, lease time, DNS) into struct dhcp_lease.
  *
- * Both transmits use the RFC 2131 retransmit ladder (4 / 8 / 16
- * seconds with ±1s jitter). The first DISCOVER on QEMU SLIRP is
- * always answered in well under 100ms; the ladder exists so a
- * lossy real network gets standard-compliant behavior.
+ * Both transmits use Darwin's ladder (1, 2, 4, then 8 seconds, #426).
+ * The first DISCOVER on QEMU SLIRP is always answered in well under
+ * 100ms; the ladder exists for a lossy or server-less network.
  *
  * BPF reads are signal-aware: SIGTERM/SIGHUP between reads or
  * during a blocking BIOCSRTIMEOUT wait short-circuits the loop
@@ -920,9 +919,20 @@ send_dhcp(int bpf_fd, const uint8_t *frame, size_t frame_len)
 	return (-1);
 }
 
-/* RFC 2131 retransmit ladder: 4s, 8s, 16s with ±1s jitter. */
+/* RFC 2131 retransmit ladder: 4s, 8s, 16s with ±1s jitter. Renewal only. */
 static const int retry_seconds[] = { 4, 8, 16 };
 #define DHCP_MAX_RETRIES	(int)(sizeof(retry_seconds) / sizeof(retry_seconds[0]))
+
+/*
+ * Darwin's INIT and SELECT ladder, Info.plist InitialRetryTimeSeconds,
+ * MaximumRetryTimeSeconds, RetryCount and DHCPSelectRetryCount (#426): 1, 2,
+ * 4, then 8 s, with up to a second of fuzz, and RetryCount+1 DISCOVERs before
+ * dhcp.c decides no server is answering.
+ */
+#define	DHCP_INITIAL_WAIT_SECS		1
+#define	DHCP_MAX_WAIT_SECS		8
+#define	DHCP_RETRY_COUNT		9
+#define	DHCP_SELECT_RETRY_COUNT		3
 
 static void
 deadline_in(struct timespec *out, int seconds)
@@ -944,14 +954,28 @@ deadline_in(struct timespec *out, int seconds)
 	}
 }
 
+/* `seconds` from now plus up to a second, dhcp.c's random_range() fuzz. */
+static void
+deadline_after(struct timespec *out, int seconds)
+{
+	(void)clock_gettime(CLOCK_MONOTONIC, out);
+	out->tv_sec += seconds;
+	out->tv_nsec += (long)random() % 1000000000L;
+	if (out->tv_nsec >= 1000000000L) {
+		out->tv_nsec -= 1000000000L;
+		out->tv_sec++;
+	}
+}
+
 int
 dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
-    struct saved_pkt *saved, volatile sig_atomic_t *stop)
+    struct saved_pkt *saved, volatile sig_atomic_t *stop, dhcp_try_cb on_try,
+    void *on_try_arg)
 {
 	uint8_t mac[6];
 	uint8_t frame[1024];
 	uint32_t xid;
-	int bpf_fd = -1, try;
+	int bpf_fd = -1, try, wait_secs;
 	size_t frame_len;
 	struct timespec deadline;
 	struct dhcp_lease offer;
@@ -959,15 +983,15 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
 	/*
 	 * A failure while the daemon or the worker is being stopped is the
 	 * stop, not a bind failure: every give-up below takes `shutdown`
-	 * then, which never logs IPCFG-BOUND-FAIL (#417).
+	 * then, and the caller checks for a stop before it logs
+	 * IPCFG-BOUND-FAIL (#417).
 	 */
 	if (get_interface_mac(ifname, mac) != 0) {
 		if (got_term || (stop != NULL && *stop))
 			goto shutdown;
 		xlog("get_interface_mac(%s) failed: %s",
 		    ifname, strerror(errno));
-		xlog("IPCFG-BOUND-FAIL");
-		return (-1);
+		return (DHCP_ACQUIRE_ERROR);
 	}
 	xlog("iface %s mac %02x:%02x:%02x:%02x:%02x:%02x",
 	    ifname, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
@@ -975,15 +999,13 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
 	if (bring_interface_up(ifname) != 0) {
 		if (got_term || (stop != NULL && *stop))
 			goto shutdown;
-		xlog("IPCFG-BOUND-FAIL");
-		return (-1);
+		return (DHCP_ACQUIRE_ERROR);
 	}
 
 	bpf_fd = bpf_open(ifname);
 	if (bpf_fd < 0) {
 		xlog("bpf_open(%s) failed: %s", ifname, strerror(errno));
-		xlog("IPCFG-BOUND-FAIL");
-		return (-1);
+		return (DHCP_ACQUIRE_ERROR);
 	}
 
 	{
@@ -997,7 +1019,8 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
 
 	/* ---- SELECTING: send DISCOVER until an OFFER arrives ---- */
 	(void)memset(&offer, 0, sizeof(offer));
-	for (try = 0; try < DHCP_MAX_RETRIES; try++) {
+	wait_secs = DHCP_INITIAL_WAIT_SECS;
+	for (try = 1; try <= DHCP_RETRY_COUNT + 1; try++) {
 		int r;
 
 		if (got_term || (stop != NULL && *stop))
@@ -1007,27 +1030,35 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
 		if (send_dhcp(bpf_fd, frame, frame_len) != 0) {
 			if (got_term || (stop != NULL && *stop))
 				goto shutdown;
-			xlog("IPCFG-BOUND-FAIL");
 			(void)close(bpf_fd);
-			return (-1);
+			return (DHCP_ACQUIRE_ERROR);
 		}
 		xlog("sent DHCPDISCOVER (xid=0x%08x, try=%d/%d)", xid,
-		    try + 1, DHCP_MAX_RETRIES);
+		    try, DHCP_RETRY_COUNT + 1);
 
-		deadline_in(&deadline, retry_seconds[try]);
+		/*
+		 * The deadline comes first: what on_try does eats into this
+		 * wait, not the ladder, and the BPF descriptor holds what
+		 * arrives meanwhile.
+		 */
+		deadline_after(&deadline, wait_secs);
+		if (on_try != NULL)
+			on_try(try, on_try_arg);
 		r = recv_dhcp_reply(bpf_fd, xid, DHCP_MTYPE_OFFER,
 		    &deadline, &offer, NULL, stop);
 		if (r == 1)
 			break;
 		if (r < 0)
 			goto shutdown;
+		wait_secs *= 2;
+		if (wait_secs > DHCP_MAX_WAIT_SECS)
+			wait_secs = DHCP_MAX_WAIT_SECS;
 	}
-	if (try == DHCP_MAX_RETRIES) {
-		xlog("no DHCPOFFER after %d retries (iface=%s xid=0x%08x)",
-		    DHCP_MAX_RETRIES, ifname, xid);
-		xlog("IPCFG-BOUND-FAIL");
+	if (try > DHCP_RETRY_COUNT + 1) {
+		xlog("no DHCPOFFER after %d tries (iface=%s xid=0x%08x)",
+		    DHCP_RETRY_COUNT + 1, ifname, xid);
 		(void)close(bpf_fd);
-		return (-1);
+		return (DHCP_ACQUIRE_NO_SERVER);
 	}
 	{
 		char y[INET_ADDRSTRLEN], s[INET_ADDRSTRLEN];
@@ -1042,11 +1073,9 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
 	 * Defends against the DHCP server handing out an address that
 	 * another host on the segment is already using (a misconfigured
 	 * static client, a leaked lease, etc.). On conflict we DECLINE
-	 * the offer and bail — iter 6 doesn't loop back to INIT (that
-	 * needs a per-attempt xid + a §3.1.5-mandated 10s wait between
-	 * decline and a new DISCOVER, which is iter 7 work). The daemon
-	 * stays alive on its Mach service; CI's SLIRP gateway can't
-	 * actually replicate a conflict, so the conflict branch is
+	 * the offer and the caller goes back to INIT after RFC 2131
+	 * §3.1.5's ten seconds, as dhcp_decline() does. CI's SLIRP gateway
+	 * can't actually replicate a conflict, so the conflict branch is
 	 * exercised only by the unit/logic path. */
 	{
 		int pr = arp_probe(ifname, offer.addr);
@@ -1059,9 +1088,8 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
 				xlog("DHCPDECLINE send failed");
 			else
 				xlog("sent DHCPDECLINE (xid=0x%08x)", xid);
-			xlog("IPCFG-BOUND-FAIL");
 			(void)close(bpf_fd);
-			return (-1);
+			return (DHCP_ACQUIRE_DECLINED);
 		}
 		if (pr == 0)
 			xlog("IPCFG-ARP-OK");
@@ -1073,7 +1101,8 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
 	}
 
 	/* ---- REQUESTING: send REQUEST until an ACK arrives ---- */
-	for (try = 0; try < DHCP_MAX_RETRIES; try++) {
+	wait_secs = DHCP_INITIAL_WAIT_SECS;
+	for (try = 1; try <= DHCP_SELECT_RETRY_COUNT + 1; try++) {
 		int r;
 
 		if (got_term || (stop != NULL && *stop))
@@ -1083,28 +1112,29 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
 		if (send_dhcp(bpf_fd, frame, frame_len) != 0) {
 			if (got_term || (stop != NULL && *stop))
 				goto shutdown;
-			xlog("IPCFG-BOUND-FAIL");
 			(void)close(bpf_fd);
-			return (-1);
+			return (DHCP_ACQUIRE_ERROR);
 		}
 		xlog("sent DHCPREQUEST (xid=0x%08x, try=%d/%d)", xid,
-		    try + 1, DHCP_MAX_RETRIES);
+		    try, DHCP_SELECT_RETRY_COUNT + 1);
 
-		deadline_in(&deadline, retry_seconds[try]);
+		deadline_after(&deadline, wait_secs);
 		r = recv_dhcp_reply(bpf_fd, xid, DHCP_MTYPE_ACK,
 		    &deadline, lease_out, saved, stop);
 		if (r == 1) {
 			(void)close(bpf_fd);
-			return (0);
+			return (DHCP_ACQUIRE_OK);
 		}
 		if (r < 0)
 			goto shutdown;
+		wait_secs *= 2;
+		if (wait_secs > DHCP_MAX_WAIT_SECS)
+			wait_secs = DHCP_MAX_WAIT_SECS;
 	}
-	xlog("no DHCPACK after %d retries (iface=%s xid=0x%08x)",
-	    DHCP_MAX_RETRIES, ifname, xid);
-	xlog("IPCFG-BOUND-FAIL");
+	xlog("no DHCPACK after %d tries (iface=%s xid=0x%08x)",
+	    DHCP_SELECT_RETRY_COUNT + 1, ifname, xid);
 	(void)close(bpf_fd);
-	return (-1);
+	return (DHCP_ACQUIRE_NO_ACK);
 
 shutdown:
 	if (bpf_fd >= 0)
@@ -1117,16 +1147,15 @@ shutdown:
 		 */
 		xlog("%s: DHCP exchange interrupted by signal %d", ifname,
 		    (int)got_term);
-		return (-1);
+		return (DHCP_ACQUIRE_ERROR);
 	}
 	if (stop != NULL && *stop) {
 		/* Not a failure: the service was stopped (#410). */
 		xlog("%s: DHCP exchange stopped", ifname);
-		return (-1);
+		return (DHCP_ACQUIRE_ERROR);
 	}
 	/* recv_dhcp_reply's read(bpf) failed; it logged why. */
-	xlog("IPCFG-BOUND-FAIL");
-	return (-1);
+	return (DHCP_ACQUIRE_ERROR);
 }
 
 int

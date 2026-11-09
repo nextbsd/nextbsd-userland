@@ -237,10 +237,10 @@ _ipconfig_get_packet(mach_port_t server, InterfaceName name,
 
 /*
  * `ipconfig set <if> <method>`. Root only, as on Apple. The method
- * dictionary is Apple's: DHCP, MANUAL, NONE and, each changing only its own
- * family (#423), MANUAL-V6, AUTOMATIC-V6, NONE-V6 and NONE-V4 are served;
- * INFORM, BOOTP, LinkLocal, Failover and 6TO4 have no service behind them
- * yet, so they answer operation_not_supported.
+ * dictionary is Apple's: DHCP, MANUAL, LINKLOCAL, NONE and, each changing
+ * only its own family (#423), MANUAL-V6, AUTOMATIC-V6, NONE-V6 and NONE-V4 are
+ * served; INFORM, BOOTP, Failover and 6TO4 have no service behind them yet,
+ * so they answer operation_not_supported.
  */
 kern_return_t
 _ipconfig_set(mach_port_t server, InterfaceName name, xmlData_t method_data,
@@ -328,8 +328,8 @@ _ipconfig_set(mach_port_t server, InterfaceName name, xmlData_t method_data,
 	/*
 	 * Apple's ipconfig_method_info_from_dict(), then set_if() (#58).
 	 * An unknown ConfigMethod, or Manual without an address, is an
-	 * invalid parameter; INFORM, BOOTP, LinkLocal and Failover parse
-	 * but have no service behind them, and ipconfigd_set_method()
+	 * invalid parameter; INFORM, BOOTP and Failover parse but have no
+	 * service behind them, and ipconfigd_set_method()
 	 * answers operation_not_supported for those.
 	 */
 	if (!ipconfig_method_info_from_dict(
@@ -411,7 +411,9 @@ service_summary(const char *ifname, ipconfig_method_t m)
 		if (lease.router.s_addr != INADDR_ANY)
 			dict_set_addr(svc, CFSTR("Router"), lease.router,
 			    false);
-		dhcp = (m != ipconfig_method_dhcp_e) ? NULL :
+		/* A link-local fallback address is not a DHCP binding. */
+		dhcp = (m != ipconfig_method_dhcp_e ||
+		    bound_state_is_linklocal(ifname)) ? NULL :
 		    CFDictionaryCreateMutable(NULL, 0,
 		    &kCFTypeDictionaryKeyCallBacks,
 		    &kCFTypeDictionaryValueCallBacks);

@@ -63,6 +63,19 @@ int	iface_rank(const char *ifname);
 void	bound_state_set(const char *ifname, const struct dhcp_lease *lease);
 
 /*
+ * The same for a 169.254 address (#426), from a LinkLocal service or a DHCP
+ * service's fallback. It counts as bound everywhere except the election: a
+ * link-local binding is primary only when nothing else is bound, so a DHCP
+ * failure on em0 cannot take the default service away from a healthy wlan0.
+ * bound_state_set() on the same interface clears the flag.
+ */
+void	bound_state_set_linklocal(const char *ifname,
+	    const struct dhcp_lease *lease);
+
+/* Is this interface's binding a link-local one? */
+bool	bound_state_is_linklocal(const char *ifname);
+
+/*
  * Drop `ifname`'s binding. The absence of this call is what made #37's
  * re-arm dead code: on_link_event cleared its in-flight flag after a
  * lease expired, but bound_state_any() still reported the interface
@@ -81,7 +94,8 @@ int	bound_state_count(void);
 int	bound_state_list(char names[][IF_NAMESIZE], int max);
 
 /*
- * The primary service: the highest-ranked bound interface (#41).
+ * The primary service: the highest-ranked bound interface (#41), with
+ * link-local bindings considered only when no other is bound (#426).
  * Returns false when nothing is bound. Ties (two wired NICs) are broken
  * by table order, which is stable for a given boot.
  */
