@@ -9,11 +9,10 @@
  * the parsed form as ipconfig_method_info_t (bootp/bootplib/
  * ipconfig_types.h); this is the subset ipconfigd serves.
  *
- * ipconfigd serves DHCP, Manual, LinkLocal and NONE. An interface no service
- * names stays on DHCP, so a machine with no network preferences behaves
- * exactly as it did before methods existed. The other methods parse but
- * are not served: an interface configured with one is left alone rather
- * than DHCP'd behind the administrator's back.
+ * ipconfigd serves every IPv4 method: DHCP, Manual, BOOTP, INFORM, LinkLocal,
+ * Failover and NONE. An interface no service names stays on DHCP, so a
+ * machine with no network preferences behaves exactly as it did before
+ * methods existed.
  */
 #ifndef _IPCFG_IPCONFIG_METHOD_H_
 #define _IPCFG_IPCONFIG_METHOD_H_
@@ -51,8 +50,10 @@ typedef enum {
 } ipconfig_method_t;
 
 /*
- * A parsed IPv4 method. addr/mask/router are used by Manual (and would
- * be by INFORM). Zero-filled fields are absent.
+ * A parsed IPv4 method. addr/mask are used by Manual, INFORM and Failover,
+ * router by Manual only, and failover_timeout by Failover (seconds, 0 for
+ * no limit). Zero-filled fields are absent. An INFORM mask is left zero when
+ * none is configured, so that the server's can be used.
  *
  * The service's DNS entity is deliberately not here (#425): on Darwin it
  * sits beside IPv4, and the method is compared whole to decide whether a
@@ -64,6 +65,7 @@ struct ipconfig_method_info {
 	struct in_addr		addr;
 	struct in_addr		mask;
 	struct in_addr		router;
+	uint32_t		failover_timeout;
 };
 
 /*
@@ -81,15 +83,18 @@ struct ipconfig_v6_method_info {
 /* Apple's ConfigMethod spelling for `m` ("DHCP", "Manual", ...). */
 const char	*ipconfig_method_string(ipconfig_method_t m);
 
-/* Does ipconfigd run a service for `m`? (DHCP, Manual and LinkLocal.) */
+/* Does ipconfigd run a service for `m`? (Every IPv4 method but NONE.) */
 bool		ipconfig_method_is_served(ipconfig_method_t m);
+
+/* The classful mask for `a`, for an address with no configured mask. */
+struct in_addr	ipconfig_classful_mask(struct in_addr a);
 
 /*
  * Parse an IPv4 entity into `out` — Apple's
  * ipconfig_method_info_from_dict(). The argument is a CFDictionaryRef,
  * spelled as its underlying type so plain-C callers need not pull
  * CoreFoundation. Returns false when the dictionary is not a valid method
- * (unknown ConfigMethod, Manual with no address).
+ * (unknown ConfigMethod; Manual, INFORM or Failover with no address).
  */
 struct __CFDictionary;
 bool		ipconfig_method_info_from_dict(

@@ -58,6 +58,15 @@
 #define DHCP_CLIENT_PORT	68
 #define DHCP_SERVER_PORT	67
 
+/*
+ * build_dhcp_msg()'s msgtype for a BOOTREQUEST (no message type at all), and
+ * what parse_dhcp_reply() takes as want_msgtype for the two exchanges that
+ * accept more than one kind of reply (#569).
+ */
+#define	DHCP_MTYPE_NONE		0
+#define	DHCP_WANT_BOOTP		DHCP_MTYPE_NONE
+#define	DHCP_WANT_INFORM	0xfe
+
 static void
 xlog(const char *fmt, ...)
 {
@@ -342,7 +351,9 @@ build_dhcp_msg(uint8_t *buf, const uint8_t mac[6], uint32_t xid,
 	dh->dp_htype = HTYPE_ETHERNET;
 	dh->dp_hlen = 6;
 	dh->dp_xid = htonl(xid);
-	dh->dp_flags = htons(DHCP_FLAG_BROADCAST);
+	/* make_dhcp_request(..., must_broadcast FALSE) for INFORM and BOOTP. */
+	if (msgtype != DHCP_MTYPE_NONE && msgtype != DHCP_MTYPE_INFORM)
+		dh->dp_flags = htons(DHCP_FLAG_BROADCAST);
 	if (ciaddr != NULL)
 		dh->dp_ciaddr = *ciaddr;
 	(void)memcpy(dh->dp_chaddr, mac, 6);
@@ -350,6 +361,12 @@ build_dhcp_msg(uint8_t *buf, const uint8_t mac[6], uint32_t xid,
 	opt = (uint8_t *)dh + sizeof(*dh);
 	(void)memcpy(opt, cookie, 4);
 	opt += 4;
+
+	/* make_bootp_request(): the cookie and nothing else. */
+	if (msgtype == DHCP_MTYPE_NONE) {
+		*opt++ = DHCP_OPT_END;
+		goto pad;
+	}
 
 	/* 53 message type */
 	*opt++ = DHCP_OPT_MESSAGE_TYPE;
@@ -393,7 +410,8 @@ build_dhcp_msg(uint8_t *buf, const uint8_t mac[6], uint32_t xid,
 	 * DISCOVER and REQUEST (incl. renew); skipped on DECLINE/RELEASE.
 	 * gethostname(3) returns the synthesised name launchd PID-1 set at
 	 * early init (see hostnamed / freebsd_synthesize_hostname). */
-	if (msgtype == DHCP_MTYPE_DISCOVER || msgtype == DHCP_MTYPE_REQUEST) {
+	if (msgtype == DHCP_MTYPE_DISCOVER || msgtype == DHCP_MTYPE_REQUEST ||
+	    msgtype == DHCP_MTYPE_INFORM) {
 		char hn[256];
 
 		if (gethostname(hn, sizeof(hn)) == 0 && hn[0] != '\0') {
@@ -424,6 +442,7 @@ build_dhcp_msg(uint8_t *buf, const uint8_t mac[6], uint32_t xid,
 	*opt++ = DHCP_OPT_SERVER_ID;
 	*opt++ = DHCP_OPT_END;
 
+pad:
 	/* Pad to RFC-2131 minimum 576 IP bytes. */
 	frame_len = (size_t)(opt - buf);
 	while (frame_len < sizeof(*eh) + DHCP_PACKET_MIN)
@@ -709,11 +728,17 @@ save_packet(const uint8_t *frame, size_t frame_len, const struct udphdr *udp,
  * about (addr / netmask / router / server / lease_time / DNS),
  * `saved` (may be NULL) with the raw packet, and returns 1. Returns 0
  * on a non-match (skip; caller continues the read loop).
+ *
+ * want_msgtype may also be DHCP_WANT_BOOTP (any reply with a usable yiaddr,
+ * as bootp_request() takes) or DHCP_WANT_INFORM (a DHCPACK or a reply with no
+ * message type, as inform_request() takes). Those two need no RFC 2132 cookie
+ * and leave lease->netmask zero if the reply has no mask. `chaddr` (NULL: not
+ * checked) must match the reply's client hardware address.
  */
 static int
 parse_dhcp_reply(const uint8_t *frame, size_t frame_len,
     uint32_t want_xid, uint8_t want_msgtype, struct dhcp_lease *lease,
-    struct saved_pkt *saved)
+    struct saved_pkt *saved, const uint8_t *chaddr)
 {
 	const struct ether_header *eh;
 	const struct ip *ip;
@@ -724,6 +749,8 @@ parse_dhcp_reply(const uint8_t *frame, size_t frame_len,
 	const uint8_t *v;
 	size_t opts_len;
 	uint8_t l = 0;
+	bool lenient = want_msgtype == DHCP_WANT_BOOTP ||
+	    want_msgtype == DHCP_WANT_INFORM;
 
 	if (frame_len < sizeof(*eh) + sizeof(*ip) + sizeof(*udp) +
 	    sizeof(*dh) + 4)
@@ -744,16 +771,29 @@ parse_dhcp_reply(const uint8_t *frame, size_t frame_len,
 		return (0);
 	if (ntohl(dh->dp_xid) != want_xid)
 		return (0);
+	if (chaddr != NULL && memcmp(dh->dp_chaddr, chaddr, 6) != 0)
+		return (0);
 
 	opts = (const uint8_t *)dh + sizeof(*dh);
 	opts_len = (size_t)(frame + frame_len - opts);
-	if (opts_len < 4 || memcmp(opts, cookie, 4) != 0)
-		return (0);
+	if (opts_len < 4 || memcmp(opts, cookie, 4) != 0) {
+		if (!lenient)
+			return (0);
+		opts_len = 0;	/* a BOOTP reply with no options */
+	}
 
 	/* Message type */
 	v = dhcp_option(opts, opts_len, DHCP_OPT_MESSAGE_TYPE, &l);
-	if (v == NULL || l != 1 || *v != want_msgtype)
+	if (want_msgtype == DHCP_WANT_BOOTP) {
+		if (dh->dp_yiaddr.s_addr == htonl(INADDR_ANY) ||
+		    dh->dp_yiaddr.s_addr == htonl(INADDR_BROADCAST))
+			return (0);
+	} else if (want_msgtype == DHCP_WANT_INFORM) {
+		if (v != NULL && (l != 1 || *v != DHCP_MTYPE_ACK))
+			return (0);
+	} else if (v == NULL || l != 1 || *v != want_msgtype) {
 		return (0);
+	}
 
 	(void)memset(lease, 0, sizeof(*lease));
 	lease->addr.s_addr = dh->dp_yiaddr.s_addr;
@@ -767,7 +807,7 @@ parse_dhcp_reply(const uint8_t *frame, size_t frame_len,
 	v = dhcp_option(opts, opts_len, DHCP_OPT_SUBNET_MASK, &l);
 	if (v != NULL && l == 4)
 		(void)memcpy(&lease->netmask.s_addr, v, 4);
-	else
+	else if (!lenient)
 		lease->netmask.s_addr = htonl(0xff000000);
 
 	/* 3 router (first only) */
@@ -840,12 +880,14 @@ parse_dhcp_reply(const uint8_t *frame, size_t frame_len,
  *
  * The BPF descriptor has a 1s BIOCSRTIMEOUT so the wait wakes
  * every second to re-check got_term, `*stop` (NULL: none) and the
- * deadline. `saved` (may be NULL) gets the matching packet.
+ * deadline. `saved` (may be NULL) gets the matching packet. `chaddr` is
+ * parse_dhcp_reply()'s.
  */
 static int
 recv_dhcp_reply(int bpf_fd, uint32_t want_xid, uint8_t want_msgtype,
     struct timespec *deadline, struct dhcp_lease *lease,
-    struct saved_pkt *saved, volatile sig_atomic_t *stop)
+    struct saved_pkt *saved, volatile sig_atomic_t *stop,
+    const uint8_t *chaddr)
 {
 	uint8_t rxbuf[4096];
 
@@ -885,7 +927,7 @@ recv_dhcp_reply(int bpf_fd, uint32_t want_xid, uint8_t want_msgtype,
 			if (pkt + caplen > end)
 				break;
 			if (parse_dhcp_reply(pkt, caplen, want_xid,
-			    want_msgtype, lease, saved))
+			    want_msgtype, lease, saved, chaddr))
 				return (1);
 			p += BPF_WORDALIGN(bh.bh_hdrlen + caplen);
 		}
@@ -1045,7 +1087,7 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
 		if (on_try != NULL)
 			on_try(try, on_try_arg);
 		r = recv_dhcp_reply(bpf_fd, xid, DHCP_MTYPE_OFFER,
-		    &deadline, &offer, NULL, stop);
+		    &deadline, &offer, NULL, stop, NULL);
 		if (r == 1)
 			break;
 		if (r < 0)
@@ -1120,7 +1162,7 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
 
 		deadline_after(&deadline, wait_secs);
 		r = recv_dhcp_reply(bpf_fd, xid, DHCP_MTYPE_ACK,
-		    &deadline, lease_out, saved, stop);
+		    &deadline, lease_out, saved, stop, NULL);
 		if (r == 1) {
 			(void)close(bpf_fd);
 			return (DHCP_ACQUIRE_OK);
@@ -1156,6 +1198,78 @@ shutdown:
 	}
 	/* recv_dhcp_reply's read(bpf) failed; it logged why. */
 	return (DHCP_ACQUIRE_ERROR);
+}
+
+/*
+ * The exchange dhcp_inform() and dhcp_bootp() share: send the request down
+ * the INIT ladder until a matching reply. A stop or a local failure ends it.
+ * Returns a DHCP_ACQUIRE_ code.
+ */
+static int
+single_exchange(const char *ifname, uint8_t msgtype, uint8_t want,
+    const struct in_addr *ciaddr, struct dhcp_lease *out,
+    struct saved_pkt *saved, volatile sig_atomic_t *stop)
+{
+	uint8_t mac[6];
+	uint8_t frame[1024];
+	uint32_t xid;
+	struct timespec deadline;
+	size_t frame_len;
+	int bpf_fd, try, wait_secs, rc = DHCP_ACQUIRE_NO_SERVER;
+
+	if (get_interface_mac(ifname, mac) != 0 ||
+	    bring_interface_up(ifname) != 0)
+		return (DHCP_ACQUIRE_ERROR);
+	bpf_fd = bpf_open(ifname);
+	if (bpf_fd < 0) {
+		xlog("bpf_open(%s) failed: %s", ifname, strerror(errno));
+		return (DHCP_ACQUIRE_ERROR);
+	}
+	xid = arc4random();
+	frame_len = build_dhcp_msg(frame, mac, xid, msgtype, NULL, NULL,
+	    ciaddr);
+
+	wait_secs = DHCP_INITIAL_WAIT_SECS;
+	for (try = 1; try <= DHCP_RETRY_COUNT + 1; try++) {
+		int r;
+
+		if (got_term || (stop != NULL && *stop) ||
+		    send_dhcp(bpf_fd, frame, frame_len) != 0) {
+			rc = DHCP_ACQUIRE_ERROR;
+			break;
+		}
+		xlog("sent %s (xid=0x%08x, try=%d/%d)",
+		    msgtype == DHCP_MTYPE_INFORM ? "DHCPINFORM" : "BOOTREQUEST",
+		    xid, try, DHCP_RETRY_COUNT + 1);
+		deadline_after(&deadline, wait_secs);
+		r = recv_dhcp_reply(bpf_fd, xid, want, &deadline, out, saved,
+		    stop, mac);
+		if (r != 0) {
+			rc = r == 1 ? DHCP_ACQUIRE_OK : DHCP_ACQUIRE_ERROR;
+			break;
+		}
+		wait_secs *= 2;
+		if (wait_secs > DHCP_MAX_WAIT_SECS)
+			wait_secs = DHCP_MAX_WAIT_SECS;
+	}
+	(void)close(bpf_fd);
+	return (rc);
+}
+
+int
+dhcp_inform(const char *ifname, struct in_addr ciaddr, struct dhcp_lease *out,
+    struct saved_pkt *saved, volatile sig_atomic_t *stop)
+{
+	return (single_exchange(ifname, DHCP_MTYPE_INFORM, DHCP_WANT_INFORM,
+	    &ciaddr, out, saved, stop));
+}
+
+int
+dhcp_bootp(const char *ifname, struct dhcp_lease *out,
+    struct saved_pkt *saved, volatile sig_atomic_t *stop)
+{
+	return (single_exchange(ifname, DHCP_MTYPE_NONE, DHCP_WANT_BOOTP,
+	    NULL, out, saved, stop));
 }
 
 int
@@ -1239,7 +1353,7 @@ dhcp_renew(const char *ifname, const struct dhcp_lease *existing,
 
 		deadline_in(&deadline, retry_seconds[try]);
 		r = recv_dhcp_reply(bpf_fd, xid, DHCP_MTYPE_ACK,
-		    &deadline, new_lease, saved, NULL);
+		    &deadline, new_lease, saved, NULL, NULL);
 		if (r == 1) {
 			(void)close(bpf_fd);
 			return (0);

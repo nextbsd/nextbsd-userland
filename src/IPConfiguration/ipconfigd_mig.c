@@ -237,10 +237,9 @@ _ipconfig_get_packet(mach_port_t server, InterfaceName name,
 
 /*
  * `ipconfig set <if> <method>`. Root only, as on Apple. The method
- * dictionary is Apple's: DHCP, MANUAL, LINKLOCAL, NONE and, each changing
- * only its own family (#423), MANUAL-V6, AUTOMATIC-V6, NONE-V6 and NONE-V4 are
- * served; INFORM, BOOTP, Failover and 6TO4 have no service behind them yet,
- * so they answer operation_not_supported.
+ * dictionary is Apple's: every IPv4 method and, each changing only its own
+ * family (#423), MANUAL-V6, AUTOMATIC-V6, NONE-V6 and NONE-V4 are served; 6TO4
+ * has no service behind it yet, so it answers operation_not_supported.
  */
 kern_return_t
 _ipconfig_set(mach_port_t server, InterfaceName name, xmlData_t method_data,
@@ -327,10 +326,8 @@ _ipconfig_set(mach_port_t server, InterfaceName name, xmlData_t method_data,
 	}
 	/*
 	 * Apple's ipconfig_method_info_from_dict(), then set_if() (#58).
-	 * An unknown ConfigMethod, or Manual without an address, is an
-	 * invalid parameter; INFORM, BOOTP and Failover parse but have no
-	 * service behind them, and ipconfigd_set_method()
-	 * answers operation_not_supported for those.
+	 * An unknown ConfigMethod, or Manual, INFORM or Failover without an
+	 * address, is an invalid parameter.
 	 */
 	if (!ipconfig_method_info_from_dict(
 	    (const struct __CFDictionary *)dict, &info))

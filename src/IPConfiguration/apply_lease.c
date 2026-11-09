@@ -378,6 +378,12 @@ apply_lease(const char *ifname, const struct dhcp_lease *lease)
 }
 
 int
+apply_lease_router(const struct dhcp_lease *lease)
+{
+	return (default_route(lease, RTM_ADD));
+}
+
+int
 deconfigure_lease(const char *ifname, const struct dhcp_lease *lease)
 {
 	int rc = 0;

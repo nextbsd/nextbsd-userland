@@ -134,6 +134,13 @@
  * lease replaces (dhcp.c's linklocal_service_change()). Link-local bindings
  * stand aside in the primary election, and they are never defended: another
  * claim on one means picking a new address, as linklocal.c does.
+ *
+ * INFORM, BOOTP and Failover (#569) — INFORM is a Manual address that asks a
+ * DHCP server for the rest, and keeps the address with no answer. BOOTP is a
+ * single request with no lease, retried two minutes after giving up. Failover
+ * is a Manual address with no router that starts at a random moment and can
+ * expire. Darwin defends none of them: another claim makes BOOTP fail and
+ * Failover start over, and INFORM only logs it.
  */
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -252,6 +259,10 @@ struct dhcp_worker {
  */
 #define	DHCP_ALLOCATE_LINKLOCAL_AT_RETRY_COUNT	4
 #define	DHCP_INIT_RETRY_INTERVAL_SECS		60
+
+/* bootp.c's RETRY_INTERVAL_SECS and failover.c's retry after a conflict. */
+#define	BOOTP_RETRY_INTERVAL_SECS		(2 * 60)
+#define	FAILOVER_CONFLICT_RETRY_SECS		10
 
 static pthread_mutex_t	g_workers_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct dhcp_worker g_workers[BOUND_MAX_IF];
@@ -604,6 +615,9 @@ service_run_bound(const char *ifname, struct dhcp_lease *lease,
 	} else {
 		xlog("IPCFG-STORE-OK");
 	}
+	/* What an INFORM or BOOTP reply carried; its marker is DHCP's alone. */
+	if (pub != NULL && !dhcp && saved != NULL)
+		(void)sc_publish_dhcp(pub, ifname, lease);
 	if (pub != NULL && dhcp) {
 		/*
 		 * Issue #88: publish State:/Network/Service/<UUID>/DHCP
@@ -654,16 +668,24 @@ service_run_bound(const char *ifname, struct dhcp_lease *lease,
 		v6_service_wait_first_result(ifname, stop);
 
 	/*
-	 * Parks here for the life of the lease. A Manual configuration has
-	 * nothing to renew; it holds until the link drops, its method
-	 * changes, or the daemon exits.
+	 * Parks here for the life of the lease. Another method has nothing to
+	 * renew; it holds until the link drops, its method changes, or the
+	 * daemon exits. A Failover address can also run out of time, with
+	 * lease_time carrying FailoverAddressTimeout (#569).
 	 */
-	if (dhcp)
+	if (dhcp) {
 		(void)lease_loop_run(ifname, lease, pub, lease_cap_secs,
 		    worker_renew_flag(ifname), stop);
-	else
-		while (!got_term && !(stop != NULL && *stop))
+	} else {
+		time_t expires = 0;
+
+		if (method == ipconfig_method_failover_e &&
+		    lease->lease_time != 0)
+			expires = monotonic_secs() + lease->lease_time;
+		while (!got_term && !(stop != NULL && *stop) &&
+		    (expires == 0 || monotonic_secs() < expires))
 			(void)sleep(1);
+	}
 
 	/*
 	 * Teardown (#37, #39).
@@ -688,7 +710,7 @@ service_run_bound(const char *ifname, struct dhcp_lease *lease,
 	} else {
 		xlog("%s: %s — deconfiguring", ifname, dhcp
 		    ? "lease lost, link down, method changed or address in use"
-		    : "link down, method changed or address in use");
+		    : "link down, method changed, address in use or expired");
 		(void)deconfigure_lease(ifname, lease);
 		if (pub != NULL)
 			(void)sc_publish_remove(pub, ifname);
@@ -978,6 +1000,196 @@ manual_run_on_interface(const char *ifname,
 	    ipconfig_method_manual_e);
 }
 
+/* Sleep up to `secs`, a second at a time. False if stopped meanwhile. */
+static bool
+service_wait(unsigned secs, volatile sig_atomic_t *stop)
+{
+	unsigned i;
+
+	for (i = 0; i < secs && !got_term && !(stop != NULL && *stop); i++)
+		(void)sleep(1);
+	return (!got_term && !(stop != NULL && *stop));
+}
+
+/*
+ * A method that has not configured an address but is carrying on: it counts
+ * as given up for readiness and for the IPv6 service, as a worker that
+ * exited used to (service_publish_failure() on Darwin). Repeats are harmless.
+ */
+static void
+service_gave_up(const char *ifname)
+{
+	startup_mark_ready(ifname);
+	v6_service_v4_result(ifname);
+}
+
+/*
+ * inform_run_on_interface — the INFORM service (#569), dhcp.c's inform_*():
+ * Manual's probe and install, then DHCPINFORM from the address. The reply
+ * can supply the router, the DNS and, if none is configured, the mask. With
+ * no reply the address stays and the service is configured as it stands.
+ */
+static void
+inform_run_on_interface(const char *ifname,
+    const struct ipconfig_method_info *info, volatile sig_atomic_t *stop)
+{
+	struct dhcp_lease lease, reply;
+	struct saved_pkt saved;
+	char a[INET_ADDRSTRLEN];
+	int r;
+
+	(void)memset(&lease, 0, sizeof(lease));
+	lease.addr = info->addr;
+	lease.netmask = info->mask.s_addr != INADDR_ANY ? info->mask :
+	    ipconfig_classful_mask(info->addr);
+
+	(void)inet_ntop(AF_INET, &lease.addr, a, sizeof(a));
+	xlog("selected interface for INFORM: %s (%s)", ifname, a);
+	while (arp_probe(ifname, lease.addr) == 1) {
+		xlog("%s: %s is in use by another host — trying again in %ds",
+		    ifname, a, MANUAL_CONFLICT_RETRY_INTERVAL_SECS);
+		service_gave_up(ifname);
+		if (!service_wait(MANUAL_CONFLICT_RETRY_INTERVAL_SECS, stop))
+			return;
+	}
+	if (got_term || (stop != NULL && *stop))
+		return;
+	if (apply_lease(ifname, &lease) != 0) {
+		xlog("apply_lease(%s) failed for INFORM %s", ifname, a);
+		return;
+	}
+
+	r = dhcp_inform(ifname, lease.addr, &reply, &saved, stop);
+	if (got_term || (stop != NULL && *stop)) {
+		if (!got_term)
+			(void)deconfigure_lease(ifname, &lease);
+		return;
+	}
+	if (r == DHCP_ACQUIRE_OK) {
+		struct in_addr installed = lease.netmask;
+
+		/* What the reply offers, around the address that is ours. */
+		reply.addr = lease.addr;
+		reply.netmask = (info->mask.s_addr == INADDR_ANY &&
+		    reply.netmask.s_addr != INADDR_ANY) ? reply.netmask :
+		    lease.netmask;
+		if (reply.netmask.s_addr != installed.s_addr) {
+			(void)deconfigure_lease(ifname, &lease);
+			if (apply_lease(ifname, &reply) != 0)
+				xlog("apply_lease(%s) failed for INFORM reply",
+				    ifname);
+		} else if (apply_lease_router(&reply) != 0) {
+			xlog("%s: could not add the INFORM router", ifname);
+		}
+		lease = reply;
+	} else {
+		xlog("%s: no reply to DHCPINFORM — keeping %s", ifname, a);
+	}
+	service_run_bound(ifname, &lease, r == DHCP_ACQUIRE_OK ? &saved : NULL,
+	    0, stop, ipconfig_method_inform_e);
+}
+
+/*
+ * bootp_run_on_interface — the BOOTP service (#569), bootp.c: one exchange,
+ * a probe of the address, then installed with no lease and held until the
+ * link or method changes. No reply, or an address in use, tries again in two
+ * minutes.
+ */
+static void
+bootp_run_on_interface(const char *ifname, volatile sig_atomic_t *stop)
+{
+	struct dhcp_lease lease;
+	struct saved_pkt saved;
+	char a[INET_ADDRSTRLEN];
+
+	xlog("selected interface for BOOTP: %s", ifname);
+	for (;;) {
+		int r;
+
+		r = dhcp_bootp(ifname, &lease, &saved, stop);
+		if (got_term || (stop != NULL && *stop))
+			return;
+		if (r == DHCP_ACQUIRE_OK) {
+			(void)inet_ntop(AF_INET, &lease.addr, a, sizeof(a));
+			if (arp_probe(ifname, lease.addr) == 1) {
+				xlog("%s: BOOTP address %s is in use by "
+				    "another host", ifname, a);
+			} else if (got_term || (stop != NULL && *stop)) {
+				return;
+			} else {
+				if (lease.netmask.s_addr == INADDR_ANY)
+					lease.netmask =
+					    ipconfig_classful_mask(lease.addr);
+				if (apply_lease(ifname, &lease) == 0) {
+					service_run_bound(ifname, &lease,
+					    &saved, 0, stop,
+					    ipconfig_method_bootp_e);
+					return;
+				}
+				xlog("apply_lease(%s) failed for BOOTP %s",
+				    ifname, a);
+			}
+		}
+		xlog("%s: no BOOTP address — trying again in %ds", ifname,
+		    BOOTP_RETRY_INTERVAL_SECS);
+		service_gave_up(ifname);
+		if (!service_wait(BOOTP_RETRY_INTERVAL_SECS, stop))
+			return;
+	}
+}
+
+/*
+ * failover_run_on_interface — the Failover service (#569), failover.c: a
+ * Manual address with no router, after a random 0-4 s so that two peers
+ * starting together do not both win. In use: try again after 10 s. When
+ * FailoverAddressTimeout runs out the address goes and the service idles
+ * until the link or its method changes.
+ */
+static void
+failover_run_on_interface(const char *ifname,
+    const struct ipconfig_method_info *info, volatile sig_atomic_t *stop)
+{
+	struct dhcp_lease lease;
+	char a[INET_ADDRSTRLEN];
+
+	(void)memset(&lease, 0, sizeof(lease));
+	lease.addr = info->addr;
+	lease.netmask = info->mask;
+	lease.lease_time = info->failover_timeout;
+
+	(void)inet_ntop(AF_INET, &lease.addr, a, sizeof(a));
+	xlog("selected interface for Failover: %s (%s)", ifname, a);
+	for (;;) {
+		struct timespec ts = { .tv_sec = 0,
+		    .tv_nsec = (long)arc4random_uniform(1000000000U) };
+
+		(void)nanosleep(&ts, NULL);
+		if (!service_wait(arc4random_uniform(5), stop))
+			return;
+		if (arp_probe(ifname, lease.addr) != 1)
+			break;
+		xlog("%s: %s is in use by another host — trying again in %ds",
+		    ifname, a, FAILOVER_CONFLICT_RETRY_SECS);
+		service_gave_up(ifname);
+		if (!service_wait(FAILOVER_CONFLICT_RETRY_SECS, stop))
+			return;
+	}
+	if (got_term || (stop != NULL && *stop))
+		return;
+	if (apply_lease(ifname, &lease) != 0) {
+		xlog("apply_lease(%s) failed for Failover %s", ifname, a);
+		return;
+	}
+	service_run_bound(ifname, &lease, NULL, 0, stop,
+	    ipconfig_method_failover_e);
+	if (got_term || (stop != NULL && *stop))
+		return;
+
+	xlog("%s: Failover address timer fired", ifname);
+	while (service_wait(1, stop))
+		;
+}
+
 /*
  * linklocal_run_on_interface — the LinkLocal service (#426): an RFC 3927
  * address, then service_run_bound() as for Manual, with no router and no
@@ -1035,6 +1247,23 @@ linklocal_run_on_interface(const char *ifname, volatile sig_atomic_t *stop)
  */
 static void	service_start(const char *ifname);
 
+/* How long a method waits to run again after giving its address up (#349). */
+static unsigned
+conflict_retry_secs(ipconfig_method_t m)
+{
+	switch (m) {
+	case ipconfig_method_manual_e:
+		return (MANUAL_CONFLICT_RETRY_INTERVAL_SECS);
+	case ipconfig_method_bootp_e:
+		return (BOOTP_RETRY_INTERVAL_SECS);
+	case ipconfig_method_linklocal_e:	/* picks a new address at once */
+	case ipconfig_method_failover_e:	/* has its own random start */
+		return (0);
+	default:
+		return (DHCP_DECLINE_WAIT_SECS);
+	}
+}
+
 /*
  * A service moved here from another interface (#568): Darwin's
  * S_set_service stops it there first. The old worker is already unwinding,
@@ -1081,13 +1310,27 @@ dhcp_worker_main(void *arg)
 		bool conflict;
 		unsigned wait, i;
 
-		if (method.method == ipconfig_method_manual_e)
+		switch (method.method) {
+		case ipconfig_method_manual_e:
 			manual_run_on_interface(ifname, &method, &w->stop);
-		else if (method.method == ipconfig_method_linklocal_e)
+			break;
+		case ipconfig_method_linklocal_e:
 			linklocal_run_on_interface(ifname, &w->stop);
-		else
+			break;
+		case ipconfig_method_inform_e:
+			inform_run_on_interface(ifname, &method, &w->stop);
+			break;
+		case ipconfig_method_bootp_e:
+			bootp_run_on_interface(ifname, &w->stop);
+			break;
+		case ipconfig_method_failover_e:
+			failover_run_on_interface(ifname, &method, &w->stop);
+			break;
+		default:
 			dhcp_run_on_interface(ifname, w->lease_cap_secs,
 			    &w->stop);
+			break;
+		}
 
 		/*
 		 * Unwound by an address conflict (#349) rather than a link
@@ -1105,13 +1348,7 @@ dhcp_worker_main(void *arg)
 		pthread_mutex_unlock(&g_workers_lock);
 		if (!conflict || got_term)
 			break;
-		/* linklocal.c picks a new address at once. */
-		if (method.method == ipconfig_method_linklocal_e)
-			wait = 0;
-		else
-			wait = method.method == ipconfig_method_manual_e
-			    ? MANUAL_CONFLICT_RETRY_INTERVAL_SECS
-			    : DHCP_DECLINE_WAIT_SECS;
+		wait = conflict_retry_secs(method.method);
 		xlog("%s: address in use — running %s again in %us", ifname,
 		    ipconfig_method_string(method.method), wait);
 		for (i = 0; i < wait && !got_term && !w->stop; i++)
@@ -1187,6 +1424,12 @@ set_service_method_string(ipconfig_method_t m)
 		return ("DHCP");
 	case ipconfig_method_linklocal_e:
 		return ("LINKLOCAL");
+	case ipconfig_method_bootp_e:
+		return ("BOOTP");
+	case ipconfig_method_inform_e:
+		return ("INFORM");
+	case ipconfig_method_failover_e:
+		return ("FAILOVER");
 	default:
 		return ("NONE");
 	}
@@ -1939,6 +2182,21 @@ on_arp_collision(const char *ifname, struct in_addr ip, const uint8_t *hw,
 		pthread_mutex_unlock(&g_workers_lock);
 		xlog("%s: link-local %s in use by %s — giving it up", ifname, a,
 		    h);
+		return;
+	}
+	if (w->method.method == ipconfig_method_inform_e) {
+		/* inform_thread() only reports it; the address stays. */
+		pthread_mutex_unlock(&g_workers_lock);
+		xlog("%s: %s in use by %s", ifname, a, h);
+		return;
+	}
+	if (w->method.method == ipconfig_method_bootp_e ||
+	    w->method.method == ipconfig_method_failover_e) {
+		/* Neither defends: bootp_failed(), failover_start(). */
+		w->conflict = true;
+		w->stop = 1;
+		pthread_mutex_unlock(&g_workers_lock);
+		xlog("%s: %s in use by %s — giving it up", ifname, a, h);
 		return;
 	}
 	manual = w->method.method == ipconfig_method_manual_e;
