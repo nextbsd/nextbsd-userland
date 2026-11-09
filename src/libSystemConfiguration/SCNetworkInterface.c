@@ -488,7 +488,9 @@ SCNetworkInterfaceGetSupportedProtocolTypes(SCNetworkInterfaceRef interface)
  * "Interface" path. A hardware interface needs only its type and BSD
  * device name; the localized name is kept so a removed interface still
  * has a readable label. (Apple's entity also carries IORegistry detail
- * — irrelevant without IOKit.)
+ * — irrelevant without IOKit.) Wi-Fi is Type Ethernet, Hardware AirPort
+ * (Apple's configurations[] table), which is what a reader of the
+ * entity gets to see of it.
  */
 CFDictionaryRef
 __SCNetworkInterfaceCopyInterfaceEntity(SCNetworkInterfaceRef interface)
@@ -500,10 +502,15 @@ __SCNetworkInterfaceCopyInterfaceEntity(SCNetworkInterfaceRef interface)
 					   &kCFTypeDictionaryKeyCallBacks,
 					   &kCFTypeDictionaryValueCallBacks);
 	if (ip->interface_type != NULL) {
+		Boolean	wifi = CFEqual(ip->interface_type,
+				       kSCNetworkInterfaceTypeIEEE80211);
+
 		CFDictionarySetValue(entity, kSCPropNetInterfaceType,
-				     ip->interface_type);
+				     wifi ? kSCEntNetEthernet
+					  : ip->interface_type);
 		CFDictionarySetValue(entity, kSCPropNetInterfaceHardware,
-				     ip->interface_type);
+				     wifi ? kSCEntNetAirPort
+					  : ip->interface_type);
 	}
 	if (ip->entity_device != NULL) {
 		CFDictionarySetValue(entity, kSCPropNetInterfaceDeviceName,
@@ -546,7 +553,19 @@ _SCNetworkInterfaceCreateWithEntity(CFAllocatorRef allocator,
 	}
 
 	if ((type != NULL) && (CFGetTypeID(type) == CFStringGetTypeID())) {
-		ip->interface_type = (CFStringRef)CFRetain(type);
+		CFStringRef	hardware;
+
+		hardware = CFDictionaryGetValue(entity,
+						kSCPropNetInterfaceHardware);
+		if (CFEqual(type, kSCEntNetEthernet) && (hardware != NULL) &&
+		    (CFGetTypeID(hardware) == CFStringGetTypeID()) &&
+		    CFEqual(hardware, kSCEntNetAirPort)) {
+			/* Type Ethernet, Hardware AirPort: Wi-Fi */
+			ip->interface_type = (CFStringRef)CFRetain(
+				kSCNetworkInterfaceTypeIEEE80211);
+		} else {
+			ip->interface_type = (CFStringRef)CFRetain(type);
+		}
 	} else {
 		ip->interface_type =
 			(CFStringRef)CFRetain(kSCNetworkInterfaceTypeEthernet);

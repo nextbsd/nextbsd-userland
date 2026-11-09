@@ -522,6 +522,12 @@ SCPreferencesLock(SCPreferencesRef prefs, Boolean wait)
 		oflag |= O_NONBLOCK;
 	}
 	fd = open(prefsPrivate->lockPath, oflag, 0644);
+	if ((fd == -1) && (errno == EROFS)) {
+		/* a read-only file system needs no lock (SCPLock.c) */
+		prefsPrivate->locked = TRUE;
+		_SCErrorSet(kSCStatusOK);
+		return TRUE;
+	}
 	if (fd == -1) {
 		_SCErrorSet((errno == EWOULDBLOCK)
 				? kSCStatusPrefsBusy : kSCStatusFailed);
@@ -596,8 +602,12 @@ __SCPreferencesWriteFile(SCPreferencesRef prefs)
 
 	fd = open(newPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 	if (fd == -1) {
+		int	open_errno	= errno;
+
 		CFRelease(xmlData);
-		_SCErrorSet(kSCStatusAccessError);
+		/* a caller may tolerate EROFS, as PreferencesMonitor does */
+		_SCErrorSet((open_errno == EROFS)
+				? EROFS : kSCStatusAccessError);
 		return FALSE;
 	}
 
