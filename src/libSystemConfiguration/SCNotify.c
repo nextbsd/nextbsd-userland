@@ -21,11 +21,20 @@
  * The watch set (notifyset) and the changed-key list (notifychanges)
  * both cross the wire as configd's length-prefixed key-list encoding
  * (config_wire.h), not as serialized property lists.
+ *
+ * configd restarts: as on Darwin, configd holds the only send right to
+ * notifyPort, so a no-senders notification on the port says configd's
+ * process is gone (__sc_source_handler). Darwin then reconnects the
+ * session; this library reports it instead
+ * (_SCDynamicStoreSetServerDeathCallBack). The daemons that publish to the
+ * store (PreferencesMonitor, ipconfigd, hostnamed), Darwin's configd
+ * plugins, then exit and launchd's KeepAlive relaunches them.
  */
 
 #include "SCInternal.h"
 #include "config_wire.h"
 
+#include <mach/notify.h>		/* MACH_NOTIFY_NO_SENDERS */
 #include <dispatch/dispatch.h>
 
 
@@ -155,6 +164,7 @@ mach_port_t
 __SCDynamicStoreAddNotificationPort(SCDynamicStoreRef store)
 {
 	mach_port_t			port		= MACH_PORT_NULL;
+	mach_port_t			oldNotify	= MACH_PORT_NULL;
 	kern_return_t			kr;
 
 	(void)store;
@@ -180,6 +190,22 @@ __SCDynamicStoreAddNotificationPort(SCDynamicStoreRef store)
 					  MACH_PORT_RIGHT_RECEIVE, -1);
 		_SCErrorSet(kSCStatusFailed);
 		return MACH_PORT_NULL;
+	}
+
+	/* Request a notification when/if the server dies (rlsSchedule()). */
+	kr = mach_port_request_notification(mach_task_self(), port,
+					    MACH_NOTIFY_NO_SENDERS, 1, port,
+					    MACH_MSG_TYPE_MAKE_SEND_ONCE,
+					    &oldNotify);
+	if (kr != KERN_SUCCESS) {
+		(void) mach_port_deallocate(mach_task_self(), port);
+		(void) mach_port_mod_refs(mach_task_self(), port,
+					  MACH_PORT_RIGHT_RECEIVE, -1);
+		_SCErrorSet(kSCStatusFailed);
+		return MACH_PORT_NULL;
+	}
+	if (oldNotify != MACH_PORT_NULL) {
+		(void) mach_port_deallocate(mach_task_self(), oldNotify);
 	}
 
 	return port;
@@ -256,6 +282,38 @@ __SCDynamicStoreDeliverChanges(SCDynamicStoreRef store)
 }
 
 /*
+ * configd went away: run the client's callout. Darwin's pushDisconnect(),
+ * minus the reconnect that comes before it there (see the file comment).
+ */
+static void
+__SCDynamicStorePushServerDeath(SCDynamicStoreRef store)
+{
+	SCDynamicStorePrivateRef	storePrivate	= (SCDynamicStorePrivateRef)store;
+	SCDynamicStoreServerDeathCallBack	callout;
+	void				*info;
+	void				(*info_release)(const void *);
+
+	callout = storePrivate->serverDeathFunction;
+	if (callout == NULL) {
+		return;
+	}
+
+	if (storePrivate->rlsContext.retain != NULL) {
+		info = (void *)storePrivate->rlsContext.retain(storePrivate->rlsContext.info);
+		info_release = storePrivate->rlsContext.release;
+	} else {
+		info = storePrivate->rlsContext.info;
+		info_release = NULL;
+	}
+
+	(*callout)(store, info);
+
+	if (info_release != NULL) {
+		info_release(info);
+	}
+}
+
+/*
  * MACH_RECV source event handler. configd posts a bare Mach message to
  * notifyPort whenever a watched key changes; the native EVFILT_MACHPORT
  * source wakes us here (#168/#250 — the task-#41 "doesn't reliably
@@ -269,17 +327,24 @@ __SCDynamicStoreDeliverChanges(SCDynamicStoreRef store)
  * an unbounded drain can't be flooded. Then run the active delivery. Runs on
  * the caller's dispatch queue (dispatch mode) or the private notifyQueue
  * (run-loop mode).
+ *
+ * The kernel's no-senders notification, armed in
+ * __SCDynamicStoreAddNotificationPort, arrives the same way and is larger
+ * than a bare header. It means configd died unless this client cancelled:
+ * notifycancel also drops configd's send right, and notifyStatus is cleared
+ * before that RPC goes out.
  */
 static void
 __sc_source_handler(void *context)
 {
 	SCDynamicStoreRef		store		= (SCDynamicStoreRef)context;
 	SCDynamicStorePrivateRef	storePrivate	= (SCDynamicStorePrivateRef)store;
+	Boolean				serverDied	= FALSE;
 
 	for (;;) {
-		struct {
+		union {
 			mach_msg_header_t	hdr;
-			mach_msg_max_trailer_t	trailer;
+			char			buf[256];
 		} rmsg;
 		kern_return_t	kr;
 
@@ -289,6 +354,17 @@ __sc_source_handler(void *context)
 		if (kr != KERN_SUCCESS) {
 			break;		/* drained (RCV_TIMED_OUT) or port error */
 		}
+		if (rmsg.hdr.msgh_id == MACH_NOTIFY_NO_SENDERS) {
+			serverDied = TRUE;
+		}
+	}
+
+	if (serverDied) {
+		/* the session is dead; there is nothing to deliver */
+		if (storePrivate->notifyStatus != NotifierNotRegistered) {
+			__SCDynamicStorePushServerDeath(store);
+		}
+		return;
 	}
 
 	if (storePrivate->notifyStatus == Using_NotifierInformViaDispatch) {
@@ -514,6 +590,21 @@ __SCDynamicStoreNotifyCancel(SCDynamicStoreRef store)
 	if (queue != NULL) {
 		dispatch_release(queue);
 	}
+}
+
+
+Boolean
+_SCDynamicStoreSetServerDeathCallBack(SCDynamicStoreRef store,
+				      SCDynamicStoreServerDeathCallBack callback)
+{
+	SCDynamicStorePrivateRef	storePrivate	= (SCDynamicStorePrivateRef)store;
+
+	if (!isA_SCDynamicStore(store)) {
+		_SCErrorSet(kSCStatusNoStoreSession);
+		return FALSE;
+	}
+	storePrivate->serverDeathFunction = callback;
+	return TRUE;
 }
 
 

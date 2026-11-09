@@ -50,6 +50,13 @@
  * A read-only root is normal on live media: a commit that fails with EROFS
  * still applies, as on Darwin, and the session then keeps its uncommitted
  * preferences rather than re-reading the file.
+ *
+ * configd restarts: Setup: lived in configd's memory, so it goes with it.
+ * On Darwin a restarted configd loads this plugin again. Here the daemon
+ * notices configd has gone, exits, and launchd's KeepAlive relaunches it;
+ * main() then waits for configd and publishes Setup: again, with no Apply.
+ * On a read-only root the uncommitted preferences go too, and the relaunch
+ * builds them again, as a boot does.
  */
 
 #include <sys/types.h>
@@ -57,6 +64,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <SystemConfiguration/SystemConfiguration.h>
 #include <SystemConfiguration/SCNetworkConfigurationPrivate.h>
+#include <SystemConfiguration/SCPrivate.h>
 #include <SystemConfiguration/SCSchemaDefinitions.h>
 #include <dispatch/dispatch.h>
 
@@ -543,6 +551,16 @@ prime(void *ctx)
 	update_setup();
 }
 
+/* See the comment at the top of the file. */
+static void
+configd_gone(SCDynamicStoreRef store, void *info)
+{
+	(void)store;
+	(void)info;
+	xlog("configd went away: exiting so that launchd relaunches us");
+	exit(0);
+}
+
 static void
 on_sigterm(void *ctx)
 {
@@ -598,6 +616,8 @@ main(int argc, char **argv)
 		    SCErrorString(SCError()));
 		return (1);
 	}
+
+	(void)_SCDynamicStoreSetServerDeathCallBack(g_store, configd_gone);
 
 	pat = CFSTR(PM_LINK_PATTERN);
 	patterns = CFArrayCreate(NULL, &pat, 1, &kCFTypeArrayCallBacks);

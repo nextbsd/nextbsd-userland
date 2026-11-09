@@ -23,6 +23,7 @@
 #include <pthread.h>
 
 #include <SystemConfiguration/SCDynamicStore.h>
+#include <SystemConfiguration/SCPrivate.h>
 
 /*
  * kSCStatusNoStoreServer — configd not (or no longer) reachable. A
@@ -79,6 +80,9 @@ typedef struct __SCDynamicStore {
 	 */
 	SCDynamicStoreCallBack	rlsFunction;
 	SCDynamicStoreContext	rlsContext;
+
+	/* Called when configd goes away (SCNotify.c), or NULL. */
+	SCDynamicStoreServerDeathCallBack	serverDeathFunction;
 
 	/*
 	 * Notification delivery state (SCNotify.c). configd notifies the
