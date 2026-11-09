@@ -7,7 +7,8 @@
  * the default route stays and blackholes IPv6.
  *
  * ra_router keeps listening for RAs on the interface for the life of the
- * binding and tracks each advertising router's lifetime (RFC 4861 §6.3.4).
+ * binding and tracks each advertising router's lifetime (RFC 4861 §6.3.4),
+ * whether or not the RA gave the interface an address.
  * Darwin reference: bootp ipconfigd.c's router-expired handling.
  *
  *   - an RA with a non-zero router lifetime refreshes that router and
@@ -25,15 +26,24 @@
 
 struct ra_router;
 
+/* The next RA heard after ra_router_request_sample(). */
+typedef void (*ra_router_sample_t)(void *arg, const struct ra_info *ra);
+
 /*
- * Start tracking routers on `ifname`. `ra` is the RA apply_ra_lease just
- * acted on (its router is taken to be the installed ::/0 gateway) and
- * `addr` the SLAAC address published for it; both are copied. Runs on its
- * own thread with its own configd session. Returns NULL on failure, in
- * which case the ::/0 route is left as installed.
+ * Start tracking routers on `ifname`. `ra` is the RA the caller just acted
+ * on (its router is taken to be the installed ::/0 gateway) and `addr` the
+ * SLAAC address published for it, or NULL if the RA gave none: the router
+ * is still tracked, and there is simply nothing to republish. Both are
+ * copied. `sample`, if not NULL, is called with `arg` on the tracker's
+ * thread for the next RA after ra_router_request_sample(). Runs on its own
+ * thread with its own configd session. Returns NULL on failure, in which
+ * case the ::/0 route is left as installed.
  */
 struct ra_router *ra_router_start(const char *ifname, const struct ra_info *ra,
-    const struct in6_addr *addr);
+    const struct in6_addr *addr, ra_router_sample_t sample, void *arg);
+
+/* Pass the next RA heard to the `sample` callback, once (a renew). */
+void ra_router_request_sample(struct ra_router *r);
 
 /*
  * Stop tracking and wait for the thread to exit. With `remove_route` the

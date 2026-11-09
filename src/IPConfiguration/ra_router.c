@@ -56,6 +56,7 @@ struct ra_router_ent {
 struct ra_router {
 	char			ifname[IFNAMSIZ];
 	unsigned		ifindex;
+	bool			have_addr;	/* a SLAAC address is published */
 	struct in6_addr		addr;		/* published SLAAC address */
 	uint8_t			prefix_len;
 	struct ra_router_ent	rtr[RA_MAX_ROUTERS];
@@ -65,6 +66,9 @@ struct ra_router {
 	struct sc_publish	*pub;
 	pthread_t		tid;
 	volatile sig_atomic_t	stop;
+	ra_router_sample_t	sample;
+	void			*sample_arg;
+	volatile sig_atomic_t	sample_wanted;
 };
 
 static void
@@ -164,7 +168,7 @@ expire_routers(struct ra_router *r, time_t now)
 static void
 publish(struct ra_router *r)
 {
-	if (r->pub == NULL)
+	if (r->pub == NULL || !r->have_addr)
 		return;
 	if (sc_publish_ipv6(r->pub, r->ifname, &r->addr, r->prefix_len,
 	    r->have_default ? &r->dflt : NULL) != 0)
@@ -239,8 +243,14 @@ ra_router_main(void *arg)
 		}
 
 		now = now_sec();
-		if (rc == 1)
+		if (rc == 1) {
 			note_router(r, &ra, now);
+			if (r->sample_wanted) {
+				r->sample_wanted = 0;
+				if (r->sample != NULL)
+					r->sample(r->sample_arg, &ra);
+			}
+		}
 		expire_routers(r, now);
 		select_default(r, rc == 1 && r->have_default &&
 		    IN6_ARE_ADDR_EQUAL(&ra.router_lladdr, &r->dflt));
@@ -253,7 +263,7 @@ ra_router_main(void *arg)
 
 struct ra_router *
 ra_router_start(const char *ifname, const struct ra_info *ra,
-    const struct in6_addr *addr)
+    const struct in6_addr *addr, ra_router_sample_t sample, void *arg)
 {
 	struct ra_router *r;
 	int rc;
@@ -263,8 +273,13 @@ ra_router_start(const char *ifname, const struct ra_info *ra,
 		return (NULL);
 	(void)strlcpy(r->ifname, ifname, sizeof(r->ifname));
 	r->ifindex = ra->router_scope_id;
-	r->addr = *addr;
+	if (addr != NULL) {
+		r->have_addr = true;
+		r->addr = *addr;
+	}
 	r->prefix_len = ra->prefix_len;
+	r->sample = sample;
+	r->sample_arg = arg;
 
 	/*
 	 * apply_ra_lease installed ::/0 via this RA's router. Seed the
@@ -289,6 +304,13 @@ ra_router_start(const char *ifname, const struct ra_info *ra,
 		return (NULL);
 	}
 	return (r);
+}
+
+void
+ra_router_request_sample(struct ra_router *r)
+{
+	if (r != NULL)
+		r->sample_wanted = 1;
 }
 
 void

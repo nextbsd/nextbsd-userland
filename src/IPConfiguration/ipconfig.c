@@ -13,6 +13,8 @@
  *   ipconfig set <if> <method> [args]	→  ipconfig_set
  *
  *   ipconfig getpacket <if>		→  ipconfig_get_packet
+ *   ipconfig getv6packet <if>		→  ipconfig_get_v6_packet
+ *   ipconfig getdhcpduid		→  ipconfig_get_dhcp_duid
  *
  * Apple's client.c at the 10.9 baseline also has setverbose, the
  * addService family and the NetBoot commands; those stay out. A later
@@ -42,6 +44,9 @@
 #include "ipconfig_mig_types.h"
 #include "ipconfig.h"		/* MIG: ipconfig_* client stubs */
 #include "dhcp_options.h"	/* vendored: dhcptag_*, dhcp_packet_print */
+#include "DHCPv6.h"		/* vendored: DHCPv6PacketFPrint */
+#include "DHCPv6Options.h"	/* vendored: DHCPv6OptionListFPrint */
+#include "DHCPDUID.h"		/* vendored: DHCPDUIDFPrint */
 
 #include <signal.h>
 #include <stdbool.h>
@@ -322,6 +327,74 @@ S_get_packet(mach_port_t svc, int argc, char **argv)
 	if (data != NULL)
 		(void)vm_deallocate(mach_task_self(), (vm_address_t)data,
 		    data_len);
+	return (0);
+}
+
+/*
+ * getv6packet <if> — Apple's S_get_v6_packet(): print the DHCPv6 packet the
+ * interface's IPv6 service last accepted, and its options. Nothing is
+ * printed, and the exit status is 1, if it has none.
+ */
+static int
+S_get_v6_packet(mach_port_t svc, int argc, char **argv)
+{
+	InterfaceName name;
+	dataOut_t data = NULL;
+	mach_msg_type_number_t data_len = 0;
+	ipconfig_status_t status = ipconfig_status_internal_error_e;
+	kern_return_t kr;
+	DHCPv6OptionErrorString err;
+	DHCPv6OptionListRef options;
+
+	(void)argc;
+	InterfaceNameInit(name, argv[0]);
+	kr = ipconfig_get_v6_packet(svc, name, &data, &data_len, &status);
+	if (kr != KERN_SUCCESS) {
+		(void)fprintf(stderr, "ipconfig_get_v6_packet failed, 0x%x\n",
+		    (unsigned)kr);
+		return (1);
+	}
+	if (status != ipconfig_status_success_e)
+		return (1);
+	DHCPv6PacketFPrint(stdout, (DHCPv6PacketRef)(void *)data,
+	    (int)data_len);
+	options = DHCPv6OptionListCreateWithPacket(
+	    (DHCPv6PacketRef)(void *)data, (int)data_len, &err);
+	if (options != NULL) {
+		DHCPv6OptionListFPrint(stdout, options);
+		DHCPv6OptionListRelease(&options);
+	}
+	if (data != NULL)
+		(void)vm_deallocate(mach_task_self(), (vm_address_t)data,
+		    data_len);
+	return (0);
+}
+
+/*
+ * getdhcpduid — Apple's S_get_dhcp_duid(), from a tag newer than the 10.9
+ * baseline: print this host's DHCPv6 client identifier.
+ */
+static int
+S_get_dhcp_duid(mach_port_t svc, int argc, char **argv)
+{
+	dataOut_t duid = NULL;
+	mach_msg_type_number_t duid_cnt = 0;
+	ipconfig_status_t status = ipconfig_status_internal_error_e;
+	kern_return_t kr;
+
+	(void)argc;
+	(void)argv;
+	kr = ipconfig_get_dhcp_duid(svc, &duid, &duid_cnt, &status);
+	if (kr != KERN_SUCCESS) {
+		(void)fprintf(stderr, "ipconfig_get_dhcp_duid failed, 0x%x\n",
+		    (unsigned)kr);
+		return (1);
+	}
+	if (status != ipconfig_status_success_e || duid == NULL)
+		return (1);
+	DHCPDUIDFPrint(stdout, (const DHCPDUIDRef)(void *)duid, (int)duid_cnt);
+	(void)printf("\n");
+	(void)vm_deallocate(mach_task_self(), (vm_address_t)duid, duid_cnt);
 	return (0);
 }
 
@@ -737,6 +810,8 @@ static const struct command_info {
 	{ "getoption",	S_get_option,	2,
 	  " <interface name | \"\" > <option name> | <option code>", 0 },
 	{ "getpacket",	S_get_packet,	1, " <interface name>", 0 },
+	{ "getv6packet", S_get_v6_packet, 1, " <interface name>", 0 },
+	{ "getdhcpduid", S_get_dhcp_duid, 0, "", 0 },
 	{ "getsummary",	S_get_summary,	1, " <interface name>", 0 },
 	{ "set",	S_set,		2,
 	  "<interface name> <method> <method args>\n"

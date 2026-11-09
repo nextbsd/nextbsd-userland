@@ -13,7 +13,9 @@
  *   20002  ipconfig_if_addr		ipconfig getifaddr
  *   20003  ipconfig_get_packet	ipconfig getpacket
  *   20004  ipconfig_set		ipconfig set (#59)
+ *   20012  ipconfig_get_v6_packet	ipconfig getv6packet (#424)
  *   20017  ipconfig_get_summary	ipconfig getsummary (#59)
+ *   20019  ipconfig_get_dhcp_duid	ipconfig getdhcpduid (#424)
  *
  * The vendored routines are Apple's as-is: out-of-line `^ array []`
  * xmlData / xmlDataOut / dataOut payloads (as config.defs carries them
@@ -125,7 +127,18 @@ routine ipconfig_set(
 	skip;	/* 20009 ipconfig_find_service */
 	skip;	/* 20010 ipconfig_remove_service */
 	skip;	/* 20011 ipconfig_set_service */
-	skip;	/* 20012 ipconfig_get_v6_packet */
+
+/*
+ * ipconfig_get_v6_packet — the DHCPv6 packet `name`'s service last accepted.
+ * status = not_found_e if the interface has none.
+ */
+routine ipconfig_get_v6_packet(
+	server		: mach_port_t;
+	name		: if_name;
+	out packet	: dataOut, dealloc;
+	out status	: ipconfig_status
+);
+
 	skip;	/* 20013 ipconfig_remove_service_on_interface */
 	skip;	/* 20014 ipconfig_refresh_service */
 	skip;	/* 20015 ipconfig_forget_network */
@@ -141,4 +154,16 @@ routine ipconfig_get_summary(
 	out state	: xmlDataOut, dealloc;
 	out status	: ipconfig_status;
 	ServerAuditToken audit_token : audit_token_t
+);
+
+	skip;	/* 20018 ipconfig_get_interface_list */
+
+/*
+ * ipconfig_get_dhcp_duid — this host's DHCPv6 client identifier, raw.
+ * status = not_found_e if none can be determined.
+ */
+routine ipconfig_get_dhcp_duid(
+	server		: mach_port_t;
+	out dhcp_duid	: dataOut, dealloc;
+	out status	: ipconfig_status
 );

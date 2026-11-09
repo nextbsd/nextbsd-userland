@@ -16,7 +16,7 @@
  *      sockaddr_in6 carries sin6_scope_id = ifindex so the kernel knows
  *      which interface the LL belongs to.
  *
- * Deferred for later iters: lifetime renewal, RDNSS, multiple
+ * Deferred for later iters: lifetime renewal, multiple
  * prefixes, RFC 7217 stable privacy addresses (iter 7a uses
  * deterministic EUI-64; the privacy mode is configurable in Apple's
  * IPConfiguration but tied to per-interface policy that doesn't

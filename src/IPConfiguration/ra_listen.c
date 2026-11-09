@@ -16,10 +16,12 @@
  * Receive path: ICMP6_FILTER allows only ND_ROUTER_ADVERT, then
  * recvmsg with IPV6_PKTINFO + IPV6_HOPLIMIT cmsgs. RFC 4861 §6.1.2
  * requires hop-limit == 255 on the received frame (anti-spoofing).
- * Walk options after the 16-byte RA header looking for the first
- * Prefix Information Option (type=3, len=4) with on-link + autonomous
- * flags set; copy out its prefix + lifetimes + the RA's source
- * link-local address (the router for default-route purposes).
+ * Walk options after the 16-byte RA header: the first Prefix Information
+ * Option (type=3, len=4) with on-link + autonomous flags set gives the
+ * SLAAC prefix + lifetimes, every on-link prefix is listed, and the RDNSS
+ * option gives DNS servers. The M and O flags and the RA's source
+ * link-local address (the router for default-route purposes) come from
+ * the header. Any valid RA is returned, whether or not it has a prefix.
  *
  * ra_acquire is one-shot. The recurring listener that tracks router
  * lifetime after that first RA lives in ra_router.c and reuses
@@ -42,6 +44,7 @@
 #include <ifaddrs.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -196,16 +199,51 @@ send_rs(int sock, const char *ifname, const uint8_t mac[6])
 }
 
 /*
- * Walk RA options starting at `opts` for `len` bytes. On the first
- * Prefix Information Option (type=3) with both on-link (L) and
- * autonomous (A) flags set, copy out prefix + lifetimes and return 1.
- * Returns 0 if no eligible PIO was found, -1 if the option chain is
- * malformed (length=0 in any option, RFC 4861 §4.6).
+ * RTADVSocket.c find_rdnss(): the first RDNSS option with a non-zero
+ * lifetime supplies the servers. A too-short option ends the search, and
+ * the lifetime is otherwise not tracked; the list stands until the next
+ * RA is sampled.
+ */
+#define	ND_OPT_RDNSS_HDR_LEN	8
+#define	ND_OPT_RDNSS_MIN_LEN	(ND_OPT_RDNSS_HDR_LEN + 16)
+
+static void
+parse_rdnss(const uint8_t *opt, size_t obytes, struct ra_info *out, bool *done)
+{
+	uint32_t lifetime;
+	size_t i, count;
+
+	if (obytes < ND_OPT_RDNSS_MIN_LEN) {
+		*done = true;	/* invalid option */
+		return;
+	}
+	(void)memcpy(&lifetime, opt + 4, sizeof(lifetime));
+	if (lifetime == 0)
+		return;		/* skip it */
+	*done = true;
+	count = (obytes - ND_OPT_RDNSS_HDR_LEN) / sizeof(struct in6_addr);
+	if (count > RA_MAX_RDNSS)
+		count = RA_MAX_RDNSS;
+	for (i = 0; i < count; i++)
+		(void)memcpy(&out->rdnss[i],
+		    opt + ND_OPT_RDNSS_HDR_LEN + i * sizeof(struct in6_addr),
+		    sizeof(struct in6_addr));
+	out->rdnss_count = (unsigned)count;
+}
+
+/*
+ * Walk RA options starting at `opts` for `len` bytes, the whole chain:
+ * every on-link prefix (L set) and the RDNSS servers go into `out`. On
+ * the first Prefix Information Option (type=3) with both on-link (L) and
+ * autonomous (A) flags set, copy out prefix + lifetimes. Returns 1 if
+ * such a PIO was found, 0 if not, -1 if the option chain is malformed
+ * (length=0 in any option, RFC 4861 §4.6).
  */
 static int
 parse_options(const uint8_t *opts, size_t len, struct ra_info *out)
 {
 	size_t off = 0;
+	bool have_pio = false, rdnss_done = false;
 
 	while (off + 2 <= len) {
 		uint8_t type = opts[off];
@@ -224,6 +262,15 @@ parse_options(const uint8_t *opts, size_t len, struct ra_info *out)
 			pi = (const struct nd_opt_prefix_info *)
 			    (const void *)(opts + off);
 			if ((pi->nd_opt_pi_flags_reserved &
+			    ND_OPT_PI_FLAG_ONLINK) != 0 &&
+			    out->onlink_count < RA_MAX_ONLINK) {
+				struct ra_onlink_prefix *p =
+				    &out->onlink[out->onlink_count++];
+
+				p->prefix = pi->nd_opt_pi_prefix;
+				p->prefix_len = pi->nd_opt_pi_prefix_len;
+			}
+			if (!have_pio && (pi->nd_opt_pi_flags_reserved &
 			    (ND_OPT_PI_FLAG_ONLINK |
 			     ND_OPT_PI_FLAG_AUTO)) ==
 			    (ND_OPT_PI_FLAG_ONLINK |
@@ -234,22 +281,23 @@ parse_options(const uint8_t *opts, size_t len, struct ra_info *out)
 				    ntohl(pi->nd_opt_pi_valid_time);
 				out->preferred_lifetime =
 				    ntohl(pi->nd_opt_pi_preferred_time);
-				return (1);
+				have_pio = true;
 			}
+		} else if (type == ND_OPT_RDNSS && !rdnss_done) {
+			parse_rdnss(opts + off, obytes, out, &rdnss_done);
 		}
 		off += obytes;
 	}
-	return (0);
+	return (have_pio ? 1 : 0);
 }
 
 /*
  * Single recvmsg, validate hop-limit + ifindex, parse RA. Returns
  *   1  — RA received and PIO extracted (out populated, including
  *        router_lladdr from the source address).
- *   2  — valid RA with no eligible PIO; only the router fields of
- *        `out` (router_lladdr, router_scope_id, router_lifetime) are
- *        meaningful. ra_acquire keeps listening; the router tracker
- *        still uses it to refresh the router's lifetime.
+ *   2  — valid RA with no eligible PIO; prefix_len is 0 and the rest of
+ *        `out` (router fields, M/O flags, RDNSS, on-link prefixes) is
+ *        meaningful. Router handling doesn't depend on a prefix.
  *   0  — recv timed out or the packet was rejected.
  *  -1  — fatal (shutdown or unrecoverable error).
  */
@@ -341,6 +389,8 @@ recv_one(int sock, unsigned want_ifindex, struct ra_info *out)
 	out->router_lladdr = from.sin6_addr;
 	out->router_scope_id = want_ifindex;
 	out->router_lifetime = ntohs(ra->nd_ra_router_lifetime);
+	out->managed = (ra->nd_ra_flags_reserved & ND_RA_FLAG_MANAGED) != 0;
+	out->other = (ra->nd_ra_flags_reserved & ND_RA_FLAG_OTHER) != 0;
 
 	{
 		const uint8_t *opts = buf + sizeof(struct nd_router_advert);
@@ -404,20 +454,34 @@ ra_acquire(const char *ifname, unsigned timeout_ms, struct ra_info *out)
 		}
 
 		r = recv_one(sock, ifindex, out);
-		if (r == 1) {
+		if (r == 1 || r == 2) {
 			char pbuf[INET6_ADDRSTRLEN];
 			char rbuf[INET6_ADDRSTRLEN];
 
-			(void)inet_ntop(AF_INET6, &out->prefix, pbuf,
-			    sizeof(pbuf));
 			(void)inet_ntop(AF_INET6, &out->router_lladdr, rbuf,
 			    sizeof(rbuf));
-			xlog("RA: prefix=%s/%u router=%s%%%s "
-			    "valid=%us preferred=%us router-lifetime=%us",
-			    pbuf, (unsigned)out->prefix_len, rbuf, ifname,
-			    (unsigned)out->valid_lifetime,
-			    (unsigned)out->preferred_lifetime,
-			    (unsigned)out->router_lifetime);
+			if (r == 1) {
+				(void)inet_ntop(AF_INET6, &out->prefix, pbuf,
+				    sizeof(pbuf));
+				xlog("RA: prefix=%s/%u router=%s%%%s "
+				    "valid=%us preferred=%us "
+				    "router-lifetime=%us%s%s rdnss=%u",
+				    pbuf, (unsigned)out->prefix_len, rbuf,
+				    ifname, (unsigned)out->valid_lifetime,
+				    (unsigned)out->preferred_lifetime,
+				    (unsigned)out->router_lifetime,
+				    out->managed ? " [Managed]" : "",
+				    out->other ? " [OtherConfig]" : "",
+				    out->rdnss_count);
+			} else {
+				xlog("RA with no eligible PIO (on-link+auto): "
+				    "router=%s%%%s router-lifetime=%us%s%s "
+				    "rdnss=%u", rbuf, ifname,
+				    (unsigned)out->router_lifetime,
+				    out->managed ? " [Managed]" : "",
+				    out->other ? " [OtherConfig]" : "",
+				    out->rdnss_count);
+			}
 			(void)close(sock);
 			return (0);
 		}
@@ -425,9 +489,7 @@ ra_acquire(const char *ifname, unsigned timeout_ms, struct ra_info *out)
 			(void)close(sock);
 			return (-1);
 		}
-		if (r == 2)
-			xlog("RA with no eligible PIO (on-link+auto); waiting");
-		/* r == 0 or 2: keep listening */
+		/* r == 0: keep listening */
 	}
 	(void)close(sock);
 	return (-1);
