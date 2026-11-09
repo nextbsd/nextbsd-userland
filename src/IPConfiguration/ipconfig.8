@@ -24,6 +24,11 @@
 .Cm getpacket
 .Ar interface-name
 .Nm
+.Cm getv6packet
+.Ar interface-name
+.Nm
+.Cm getdhcpduid
+.Nm
 .Cm getsummary
 .Ar interface-name
 .Nm
@@ -124,6 +129,15 @@ the DHCP server.  This command is useful to check what the server
 provided, and whether the values are sensible.  This command outputs nothing
 if DHCP is not active on the interface, or the attempt to acquire an
 IP address was unsuccessful.
+.Pp
+.It Cm getv6packet Ar interface-name
+Prints to standard output the DHCPv6 packet that the client last accepted
+from a DHCPv6 server.  This command outputs nothing if DHCPv6 is not
+active on the interface or no server has answered.
+.Pp
+.It Cm getdhcpduid
+Prints to standard output this host's DHCPv6 client identifier (DUID), for
+registering the machine with a DHCPv6 server.
 .Pp
 .It Cm getsummary Ar interface-name
 Prints to standard output a summary of the current IPConfiguration state

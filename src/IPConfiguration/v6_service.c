@@ -5,7 +5,8 @@
  * the link goes down. A slot runs one thread for the method in force; the
  * thread configures the address, parks, and tears down what it installed.
  * What the thread does per method is Darwin's rtadv.c, manual_v6.c and
- * linklocal_v6.c; off is inet6_detach_interface().
+ * linklocal_v6.c; off is inet6_detach_interface(). DHCPv6 (#424) runs in a
+ * client of its own, started from the first RA of a service start.
  *
  * Like the IPv4 side, a stop on SIGTERM leaves the address and route in
  * place, so the machine stays on the network across an ipconfigd restart.
@@ -29,6 +30,7 @@
 
 #include "apply_lease_v6.h"
 #include "bound_state.h"	/* BOUND_MAX_IF */
+#include "dhcpv6_client.h"
 #include "dns_config.h"
 #include "ipconfig_method.h"
 #include "ipconfigd.h"
@@ -74,11 +76,20 @@ struct v6_service {
 	int			state;
 	bool			dup;
 	struct in6_addr		dup_addr;
+	bool			have_addr;	/* addr holds a SLAAC address */
 	struct in6_addr		addr;
 	bool			have_router;	/* ::/0 via router */
 	struct in6_addr		router;
 	unsigned		ifindex;
 	struct ra_router	*rtr;
+
+	bool			ready;		/* IPv6 is published */
+	struct dhcpv6_client	*dhcp_client;	/* Automatic only */
+	/* The service's IPv6 DNS: RDNSS, and the DHCPv6 reply's. */
+	struct in6_addr		rdnss[RA_MAX_RDNSS];
+	unsigned		rdnss_count;
+	bool			have_dhcp_dns;
+	struct ipconfig_dns	dhcp_dns;
 };
 
 static pthread_mutex_t		g_v6_services_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -196,9 +207,11 @@ v6_commit(struct v6_service *s, const struct in6_addr *addr,
 		s->state = V6_NONE;
 	} else if (s->dup && IN6_ARE_ADDR_EQUAL(&s->dup_addr, addr)) {
 		s->state = V6_NONE;
+		s->ready = false;
 		dup = true;
 	} else {
 		s->state = V6_ACTIVE;
+		s->have_addr = true;
 		s->addr = *addr;
 		s->have_router = router != NULL;
 		if (router != NULL)
@@ -210,6 +223,131 @@ v6_commit(struct v6_service *s, const struct in6_addr *addr,
 	pthread_mutex_unlock(&g_v6_services_lock);
 	if (dup)
 		v6_withdraw(s->ifname, addr, router, ifindex, rtr);
+}
+
+/*
+ * The service's IPv6 DNS for the merge: the DHCPv6 reply's servers, then
+ * RDNSS, de-duplicated, as DNSEntityCreateWithDHCPv6Info() orders them.
+ * dns_config.c merges it after DHCPv4's, and needs active IPv6 to use it.
+ */
+static void
+v6_dns_refresh(struct v6_service *s, const char *ifname)
+{
+	struct ipconfig_dns dns;
+	unsigned i, j;
+
+	(void)memset(&dns, 0, sizeof(dns));
+	pthread_mutex_lock(&g_v6_services_lock);
+	if (s->have_dhcp_dns)
+		dns = s->dhcp_dns;
+	for (i = 0; i < s->rdnss_count &&
+	    dns.server_count < IPCFG_DNS_MAX_SERVERS; i++) {
+		char a[INET6_ADDRSTRLEN];
+
+		if (inet_ntop(AF_INET6, &s->rdnss[i], a, sizeof(a)) == NULL)
+			continue;
+		for (j = 0; j < dns.server_count; j++) {
+			if (strcmp(dns.servers[j], a) == 0)
+				break;
+		}
+		if (j == dns.server_count)
+			(void)strlcpy(dns.servers[dns.server_count++], a,
+			    IPCFG_DNS_ADDR_LEN);
+	}
+	pthread_mutex_unlock(&g_v6_services_lock);
+	dns_config_set_v6_source(ifname, dns.server_count > 0 ? &dns : NULL);
+}
+
+/* The DHCPv6 client saved a reply: take its DNS. On the client's thread. */
+static void
+v6_dhcp_notify(void *arg, struct dhcpv6_client *client)
+{
+	struct v6_service *s = arg;
+	struct ipconfig_dns dns;
+	char ifname[IFNAMSIZ];
+	bool have;
+
+	have = dhcpv6_client_copy_dns(client, &dns);
+	pthread_mutex_lock(&g_v6_services_lock);
+	(void)strlcpy(ifname, s->ifname, sizeof(ifname));
+	s->have_dhcp_dns = have;
+	if (have)
+		s->dhcp_dns = dns;
+	pthread_mutex_unlock(&g_v6_services_lock);
+	v6_dns_refresh(s, ifname);
+}
+
+/*
+ * rtadv.c's IFEventID_data_e: the sampled RA's flags choose DHCPv6, and its
+ * RDNSS replaces what was held. O without M is stateless; a restart here
+ * re-asks. M alone gets no client yet (#576).
+ */
+static void
+v6_sample_ra(struct v6_service *s, const char *ifname, const struct ra_info *ra)
+{
+	struct dhcpv6_client *client;
+	bool stateless = ra->other && !ra->managed;
+	unsigned i;
+
+	pthread_mutex_lock(&g_v6_services_lock);
+	client = s->dhcp_client;
+	s->dhcp_client = NULL;
+	s->rdnss_count = ra->rdnss_count;
+	for (i = 0; i < ra->rdnss_count; i++)
+		s->rdnss[i] = ra->rdnss[i];
+	if (!stateless)
+		s->have_dhcp_dns = false;
+	pthread_mutex_unlock(&g_v6_services_lock);
+
+	dhcpv6_client_stop(&client);
+	v6_dns_refresh(s, ifname);
+	if (!stateless || got_term || s->stop)
+		return;
+	client = dhcpv6_client_start(ifname, ra->router_scope_id,
+	    v6_dhcp_notify, s);
+	pthread_mutex_lock(&g_v6_services_lock);
+	s->dhcp_client = client;
+	pthread_mutex_unlock(&g_v6_services_lock);
+}
+
+/* ra_router's sample callback: the RA that answered a renew. */
+static void
+v6_on_ra_sample(void *arg, const struct ra_info *ra)
+{
+	struct v6_service *s = arg;
+	char ifname[IFNAMSIZ];
+
+	pthread_mutex_lock(&g_v6_services_lock);
+	(void)strlcpy(ifname, s->ifname, sizeof(ifname));
+	pthread_mutex_unlock(&g_v6_services_lock);
+	xlog("%s: renew: resampling RA", ifname);
+	v6_sample_ra(s, ifname, ra);
+}
+
+/*
+ * The RA gave no address. rtadv.c takes the router regardless, so ::/0 and
+ * lifetime tracking don't wait for a prefix; there is nothing to publish
+ * until DHCPv6 (or a later RA) supplies an address.
+ */
+static void
+v6_track_router_only(struct v6_service *s, const char *ifname,
+    const struct ra_info *ra)
+{
+	struct ra_router *rtr;
+
+	if (install_v6_default_route(&ra->router_lladdr,
+	    ra->router_scope_id) != 0)
+		xlog("default ::/0 route install failed (non-fatal)");
+	rtr = ra_router_start(ifname, ra, NULL, v6_on_ra_sample, s);
+
+	pthread_mutex_lock(&g_v6_services_lock);
+	s->state = V6_ACTIVE;
+	s->have_addr = false;
+	s->have_router = true;
+	s->router = ra->router_lladdr;
+	s->ifindex = ra->router_scope_id;
+	s->rtr = rtr;
+	pthread_mutex_unlock(&g_v6_services_lock);
 }
 
 /* A Darwin rtadv service, as ipconfigd has always run it after IPv4 binds. */
@@ -240,6 +378,13 @@ v6_run_automatic(struct v6_service *s, const char *ifname,
 		char a6[INET6_ADDRSTRLEN];
 
 		/*
+		 * M, O and RDNSS come from this first RA (rtadv.c), whatever
+		 * else it holds. DHCPv6 runs on its own thread and never
+		 * holds up the result the DHCP worker is waiting for.
+		 */
+		v6_sample_ra(s, ifname, &ra);
+
+		/*
 		 * DAD runs in the kernel after the install. Hold ::/0 and the
 		 * publish until it has passed (#407), as rtadv.c does; a
 		 * duplicate also comes back as the IPv6DuplicatedAddress
@@ -247,8 +392,13 @@ v6_run_automatic(struct v6_service *s, const char *ifname,
 		 * us here — after a timed-out wait, say.
 		 */
 		v6_pending(s);
-		if (apply_ra_lease(ifname, &ra, &v6) != 0) {
+		if (ra.prefix_len == 0) {
 			v6_commit(s, NULL, NULL, 0, NULL);
+			v6_track_router_only(s, ifname, &ra);
+			xlog("IPCFG-RA-MISS: RA has no usable prefix");
+		} else if (apply_ra_lease(ifname, &ra, &v6) != 0) {
+			v6_commit(s, NULL, NULL, 0, NULL);
+			v6_track_router_only(s, ifname, &ra);
 			xlog("IPCFG-RA-MISS: apply_ra_lease failed");
 		} else if (sc_v6_dad_wait(ifname, &v6,
 		    v6_dad_budget_ms(ifname)) == SC_V6_DAD_DUPLICATED) {
@@ -271,14 +421,19 @@ v6_run_automatic(struct v6_service *s, const char *ifname,
 				    "(non-fatal)");
 			/* IPv6 servers now count as reachable (#425). */
 			if (pub != NULL && sc_publish_ipv6(pub, ifname, &v6,
-			    ra.prefix_len, &ra.router_lladdr) == 0)
+			    ra.prefix_len, &ra.router_lladdr) == 0) {
+				pthread_mutex_lock(&g_v6_services_lock);
+				s->ready = true;
+				pthread_mutex_unlock(&g_v6_services_lock);
 				dns_config_set_v6_active(ifname, true);
+			}
 			xlog("IPCFG-RA-OK");
 			/*
 			 * Keep hearing RAs so ::/0 follows the router's
 			 * lifetime instead of outliving it (#350).
 			 */
-			rtr = ra_router_start(ifname, &ra, &v6);
+			rtr = ra_router_start(ifname, &ra, &v6,
+			    v6_on_ra_sample, s);
 			v6_commit(s, &v6, &ra.router_lladdr,
 			    ra.router_scope_id, rtr);
 		}
@@ -382,6 +537,7 @@ v6_service_main(void *arg)
 	struct ipconfig_v6_method_info method;
 	struct sc_publish *pub;
 	struct ra_router *rtr;
+	struct dhcpv6_client *client;
 	struct in6_addr addr, router;
 	char ifname[IFNAMSIZ];
 	unsigned ifindex;
@@ -423,20 +579,28 @@ v6_service_main(void *arg)
 
 	/*
 	 * Stop the router tracker first, so it cannot republish behind the
-	 * teardown. A duplicate may already have taken all of this back.
+	 * teardown or restart the DHCPv6 client after a renew. A duplicate
+	 * may already have taken all of this back.
 	 */
 	pthread_mutex_lock(&g_v6_services_lock);
-	had_addr = s->state == V6_ACTIVE;
-	rtr = had_addr ? s->rtr : NULL;
+	had_addr = s->state == V6_ACTIVE && s->have_addr;
+	rtr = s->state == V6_ACTIVE ? s->rtr : NULL;
 	addr = s->addr;
 	router = s->router;
-	have_router = had_addr && s->have_router;
+	have_router = s->state == V6_ACTIVE && s->have_router;
 	ifindex = s->ifindex;
 	s->rtr = NULL;
 	s->state = V6_NONE;
+	s->ready = false;
 	pthread_mutex_unlock(&g_v6_services_lock);
 
 	ra_router_stop(rtr, !got_term);
+
+	pthread_mutex_lock(&g_v6_services_lock);
+	client = s->dhcp_client;
+	s->dhcp_client = NULL;
+	pthread_mutex_unlock(&g_v6_services_lock);
+	dhcpv6_client_stop(&client);
 
 	if (got_term) {
 		xlog("%s: daemon shutting down — leaving IPv6 installed",
@@ -488,7 +652,12 @@ v6_spawn_locked(struct v6_service *s,
 	s->first_result = false;
 	s->state = V6_NONE;
 	s->dup = false;
+	s->have_addr = false;
 	s->rtr = NULL;
+	s->ready = false;
+	s->dhcp_client = NULL;
+	s->rdnss_count = 0;
+	s->have_dhcp_dns = false;
 	s->running = true;
 
 	(void)pthread_attr_init(&attr);
@@ -599,6 +768,9 @@ v6_service_solicit(const char *ifname)
 	if (s != NULL && s->running && !s->stop)
 		automatic = s->method.method == ipconfig_method_automatic_v6_e ||
 		    s->method.method == ipconfig_method_rtadv_e;
+	/* Under the lock, so the tracker can't be stopped in between. */
+	if (automatic && s->rtr != NULL)
+		ra_router_request_sample(s->rtr);
 	pthread_mutex_unlock(&g_v6_services_lock);
 	if (automatic)
 		(void)ra_solicit(ifname);
@@ -626,7 +798,7 @@ v6_service_on_duplicated(const char *ifname, const struct in6_addr *addr)
 		    ifname, a);
 		return;
 	}
-	if (s == NULL || s->state != V6_ACTIVE ||
+	if (s == NULL || s->state != V6_ACTIVE || !s->have_addr ||
 	    !IN6_ARE_ADDR_EQUAL(&s->addr, addr)) {
 		pthread_mutex_unlock(&g_v6_services_lock);
 		xlog("%s: %s reported duplicated — not an address we "
@@ -639,8 +811,23 @@ v6_service_on_duplicated(const char *ifname, const struct in6_addr *addr)
 	ifindex = s->ifindex;
 	s->rtr = NULL;
 	s->state = V6_NONE;
+	s->ready = false;
 	pthread_mutex_unlock(&g_v6_services_lock);
 	v6_withdraw(ifname, addr, have_router ? &router : NULL, ifindex, rtr);
+}
+
+bool
+v6_service_get_packet(const char *ifname, void *buf, size_t size, size_t *len)
+{
+	struct v6_service *s;
+	bool ok = false;
+
+	pthread_mutex_lock(&g_v6_services_lock);
+	s = v6_find_locked(ifname);
+	if (s != NULL && s->running && s->ready && s->dhcp_client != NULL)
+		ok = dhcpv6_client_copy_packet(s->dhcp_client, buf, size, len);
+	pthread_mutex_unlock(&g_v6_services_lock);
+	return (ok);
 }
 
 void

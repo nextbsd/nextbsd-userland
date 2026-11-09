@@ -889,7 +889,8 @@ comp "ipconfig(8) CLI"
 # CF + SC (+ dispatch/blocks, which the SC header pulls) for `set` /
 # `getsummary` (property lists) and `waitall` (SCDynamicStore) — the
 # same libraries ipconfigd links. vendored/ is Apple's DHCP option table and
-# packet printer for `getoption` / `getpacket`.
+# packet printer for `getoption` / `getpacket`, and its DHCPv6 printers for
+# `getv6packet` / `getdhcpduid`.
 $CROSS_CC --sysroot="$SYSROOT" -fblocks \
     -I"$IPCFG_MIG" -I"$SRC/IPConfiguration" -I"$SRC/IPConfiguration/vendored" \
     -I"$SRC/launchd/liblaunch" -I"$SRC/launchd/freebsd-shims" \
@@ -901,6 +902,9 @@ $CROSS_CC --sysroot="$SYSROOT" -fblocks \
     "$SRC/IPConfiguration/vendored/dhcplib.c" \
     "$SRC/IPConfiguration/vendored/ptrlist.c" \
     "$SRC/IPConfiguration/vendored/DNSNameList.c" \
+    "$SRC/IPConfiguration/vendored/DHCPv6.c" \
+    "$SRC/IPConfiguration/vendored/DHCPv6Options.c" \
+    "$SRC/IPConfiguration/vendored/DHCPDUID.c" \
     -llaunch -lsystem_kernel \
     -lSystemConfiguration -lCoreFoundation -lsystem_dispatch -l:libsystem_blocks.so
 test -x "$DESTDIR/usr/sbin/ipconfig" || { echo "FAIL: /usr/sbin/ipconfig not built"; exit 1; }

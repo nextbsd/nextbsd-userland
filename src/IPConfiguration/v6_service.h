@@ -9,7 +9,8 @@
  * The method comes from the service's IPv6 entity or from `ipconfig set`
  * (ipconfigd_v6_lookup()):
  *
- *   Automatic, RouterAdvertisement  SLAAC from a Router Advertisement
+ *   Automatic, RouterAdvertisement  SLAAC from a Router Advertisement, with
+ *                                   DHCPv6 when its M or O flag asks (#424)
  *   Manual                          a static address (Addresses, PrefixLength)
  *   LinkLocal                       fe80:: only
  *   off (NONE-V6, or no entity)     ND6_IFF_IFDISABLED, no addresses
@@ -29,6 +30,7 @@
 
 #include <signal.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #include <netinet/in.h>
 
@@ -57,12 +59,23 @@ void	v6_service_reconfigure(const char *ifname);
  */
 bool	v6_service_wants_link(const char *ifname);
 
-/* A renew request (#572): solicit, if an Automatic service is running. */
+/*
+ * A renew request (#572): solicit, if an Automatic service is running, and
+ * as rtadv.c does on a renew, take M, O and RDNSS from the RA that answers.
+ */
 void	v6_service_solicit(const char *ifname);
 
 /* IPv6DuplicatedAddress for `addr` on `ifname` (#349). */
 void	v6_service_on_duplicated(const char *ifname,
 	    const struct in6_addr *addr);
+
+/*
+ * The DHCPv6 packet `ifname`'s service last accepted (Apple's
+ * get_if_v6_packet()): copied into `buf`, length in `*len`. False when the
+ * service isn't publishing, or has no packet that fits in `size`.
+ */
+bool	v6_service_get_packet(const char *ifname, void *buf, size_t size,
+	    size_t *len);
 
 /*
  * Wait for the IPv6 service's first result on `ifname`: its address

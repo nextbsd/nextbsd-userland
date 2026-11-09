@@ -15,6 +15,9 @@
 #include "ipconfig_mig_types.h"
 #include "ipconfigd.h"
 #include "sc_link_watch.h"		/* link_active_in_store() */
+#include "dhcp_duid_iaid.h"
+#include "dhcpv6_client.h"		/* DHCPV6_PACKET_MAX */
+#include "v6_service.h"
 #include "dhcp_options.h"		/* vendored: dhcpol_* */
 
 #include <mach/mach.h>
@@ -229,6 +232,62 @@ _ipconfig_get_packet(mach_port_t server, InterfaceName name,
 		return (KERN_SUCCESS);
 	}
 	if (!ool_reply(saved.pkt, saved.pkt_size, packet, packetCnt))
+		*status = ipconfig_status_allocation_failed_e;
+	else
+		*status = ipconfig_status_success_e;
+	return (KERN_SUCCESS);
+}
+
+/*
+ * `ipconfig getv6packet <if>`: the DHCPv6 packet the interface's IPv6
+ * service last accepted (Apple's get_if_v6_packet()).
+ */
+kern_return_t
+_ipconfig_get_v6_packet(mach_port_t server, InterfaceName name,
+    dataOut_t *packet, mach_msg_type_number_t *packetCnt,
+    ipconfig_status_t *status)
+{
+	char ifname[IF_NAMESIZE];
+	uint8_t pkt[DHCPV6_PACKET_MAX];
+	size_t len = 0;
+
+	(void)server;
+	*packet = NULL;
+	*packetCnt = 0;
+	ifname_from_mig(ifname, name);
+
+	if (!v6_service_get_packet(ifname, pkt, sizeof(pkt), &len)) {
+		*status = no_packet_status(ifname);
+		return (KERN_SUCCESS);
+	}
+	if (!ool_reply(pkt, len, packet, packetCnt))
+		*status = ipconfig_status_allocation_failed_e;
+	else
+		*status = ipconfig_status_success_e;
+	return (KERN_SUCCESS);
+}
+
+/*
+ * `ipconfig getdhcpduid`: the DUID this host's DHCPv6 client uses, made
+ * and stored if it has none yet (Apple's get_dhcp_duid(), newer than the
+ * 10.9 baseline; useful for registering a client with a server).
+ */
+kern_return_t
+_ipconfig_get_dhcp_duid(mach_port_t server, dataOut_t *dhcp_duid,
+    mach_msg_type_number_t *dhcp_duidCnt, ipconfig_status_t *status)
+{
+	CFDataRef duid;
+
+	(void)server;
+	*dhcp_duid = NULL;
+	*dhcp_duidCnt = 0;
+	duid = DHCPDUIDGet();
+	if (duid == NULL) {
+		*status = ipconfig_status_not_found_e;
+		return (KERN_SUCCESS);
+	}
+	if (!ool_reply(CFDataGetBytePtr(duid), (size_t)CFDataGetLength(duid),
+	    dhcp_duid, dhcp_duidCnt))
 		*status = ipconfig_status_allocation_failed_e;
 	else
 		*status = ipconfig_status_success_e;

@@ -22,6 +22,7 @@ SRCS+=		ra_listen.c apply_lease_v6.c ra_router.c v6_service.c
 SRCS+=		sc_link_watch.c
 SRCS+=		ipconfig_prefs.c
 SRCS+=		dns_config.c dns_configuration.c nwi_configuration.c
+SRCS+=		dhcp_duid_iaid.c dhcpv6_socket.c dhcpv6_client.c
 
 # The dnsinfo server: configd-596.15 dnsinfo/ and libSystemConfiguration/.
 # Apple builds these into configd's IPMonitor plugin; here ipconfigd owns the
@@ -39,11 +40,13 @@ CFLAGS+=	-I${.CURDIR}/../libSystemConfiguration/libSC_info
 SRCS+=		network_information_priv.c network_information_server.c
 CFLAGS+=	-I${.CURDIR}/../libSystemConfiguration/nwi
 
-# Apple's DHCP option list and tag table, bootp-268.1 bootplib, trimmed
-# (vendored/): answers ipconfig getoption from the saved packet. The
-# ipconfig CLI links these too; see build-userland.sh.
+# Apple's DHCP option list and tag table and its DHCPv6 packet and option
+# code, bootp-268.1 bootplib, trimmed (vendored/): answers ipconfig getoption
+# from the saved packet, and parses DHCPv6. The ipconfig CLI links these
+# too; see build-userland.sh.
 .PATH:		${.CURDIR}/vendored
 SRCS+=		dhcp_options.c ptrlist.c DNSNameList.c
+SRCS+=		DHCPv6.c DHCPv6Options.c DHCPDUID.c
 CFLAGS+=	-I${.CURDIR}/vendored
 
 # ipconfigServer.c — MIG-generated server stub for ipconfig.defs
