@@ -51,7 +51,7 @@ ipconfig_status_t	ipconfigd_set_v6_method(const char *ifname,
 
 /*
  * The IPv6 method `ifname` should run and the service ID it publishes under
- * (SC_PUBLISH_SERVICE_ID_LEN bytes; empty for an interface no service names).
+ * (SC_PUBLISH_SERVICE_ID_LEN bytes; empty when no service names the interface).
  */
 void			ipconfigd_v6_lookup(const char *ifname,
 			    struct ipconfig_v6_method_info *out,

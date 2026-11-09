@@ -77,9 +77,7 @@
  * ConfigMethod of the network service that names it in SCPreferences
  * (ipconfig_prefs.c), or the method `ipconfig set` gave it: DHCP, Manual
  * (static address, mask, router, DNS — installed and published through
- * the same path as a lease), or NONE (left entirely alone). An interface
- * nothing configures stays on DHCP, so an unconfigured machine behaves
- * exactly as before.
+ * the same path as a lease), or NONE (left entirely alone).
  *
  * address conflicts (#349) — configd posts the kernel's ARP-collision and
  * duplicate-address events as notify-only keys, and the link watch hands
@@ -115,10 +113,8 @@
  * service IDs (#568) — a service publishes under its SCPreferences service
  * ID, as Darwin's does, so its Setup: and State: keys line up. `ipconfig
  * set` services are <Method>-<if>, as bootp's IFState_service_add() names
- * one with no service ID. An interface nothing configures keeps the
- * MAC-derived ID until #480. Worker slots stay keyed by interface, so a
- * service whose ID changes unwinds and starts again, and a disabled
- * service's interface is left alone.
+ * one with no service ID. Worker slots stay keyed by interface, so a
+ * service whose ID changes unwinds and starts again.
  *
  * IPv6 methods (#423) — IPv4 and IPv6 are now two services on an interface,
  * as on Darwin. The workers here run IPv4 only. v6_service.c runs IPv6 under
@@ -141,6 +137,15 @@
  * is a Manual address with no router that starts at a random moment and can
  * expire. Darwin defends none of them: another claim makes BOOTP fail and
  * Failover start over, and INFORM only logs it.
+ *
+ * services, not links (#570) — ipconfigd configures what the network
+ * services in Setup:/Network/Service/* say, and nothing else: an interface
+ * no service names is left alone, down if it was down. Services come from
+ * PreferencesMonitor's flatten of the current set (ipconfig_prefs.c), which
+ * also carries ServiceOrder and PrimaryRank, the inputs to the primary
+ * election (bound_state.c). Link events still start and stop a running
+ * service, and `ipconfig set` still works. Each link type allows what
+ * Darwin's config_method_start() allows (method_allowed_on_link()).
  */
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -148,6 +153,7 @@
 
 #include <net/if.h>
 #include <net/if_dl.h>
+#include <net/if_types.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>		/* inet_ntop for the BOUND log line */
 
@@ -397,6 +403,9 @@ startup_check(void)
 	bool all_ready = true;
 	int i;
 
+	/* Until PreferencesMonitor has spoken, "no services" means nothing. */
+	if (!ipconfig_prefs_loaded())
+		return;
 	pthread_mutex_lock(&g_workers_lock);
 	if (g_startup_done) {
 		pthread_mutex_unlock(&g_workers_lock);
@@ -1437,11 +1446,11 @@ set_service_method_string(ipconfig_method_t m)
 
 /*
  * The IPv4 method `ifname` should run (#58): an `ipconfig set` method
- * first, then its network service in SCPreferences, and DHCP when
- * nothing configures it — which is what keeps an unconfigured machine
- * exactly as it was. `service_id`, if not NULL, gets the ID that service
- * publishes under (SC_PUBLISH_SERVICE_ID_LEN bytes, #568): `ipconfig set`'s
- * <Method>-<if>, the preferences service's ID, or empty for no service.
+ * first, then its network service in Setup:, and NONE when nothing configures
+ * it (#570). `service_id`, if not NULL, gets the ID that service publishes
+ * under (SC_PUBLISH_SERVICE_ID_LEN bytes, #568): `ipconfig set`'s
+ * <Method>-<if>, the service's own ID, or <Method>-<if> if that is too long
+ * to keep. It is empty for no service.
  */
 static void
 service_lookup(const char *ifname, struct ipconfig_method_info *out,
@@ -1468,10 +1477,15 @@ service_lookup(const char *ifname, struct ipconfig_method_info *out,
 	if (service_id != NULL)
 		service_id[0] = '\0';
 	if (ipconfig_prefs_lookup(ifname, out, service_id,
-	    SC_PUBLISH_SERVICE_ID_LEN))
+	    SC_PUBLISH_SERVICE_ID_LEN)) {
+		if (service_id != NULL && service_id[0] == '\0')
+			(void)snprintf(service_id, SC_PUBLISH_SERVICE_ID_LEN,
+			    "%s-%s", set_service_method_string(out->method),
+			    ifname);
 		return;
+	}
 	(void)memset(out, 0, sizeof(*out));
-	out->method = ipconfig_method_dhcp_e;
+	out->method = ipconfig_method_none_e;
 }
 
 static void
@@ -1483,8 +1497,8 @@ method_lookup(const char *ifname, struct ipconfig_method_info *out)
 /*
  * The IPv6 method `ifname` should run (#423), and the ID its service publishes
  * under: an `ipconfig set` method first (Darwin names such a service
- * <Method>-<if>), then the service in SCPreferences, and Automatic when
- * nothing configures it (#480 drops that fallback).
+ * <Method>-<if>), then the service in Setup:. With no service, IPv6 is left
+ * alone (#570).
  */
 void
 ipconfigd_v6_lookup(const char *ifname, struct ipconfig_v6_method_info *out,
@@ -1508,10 +1522,66 @@ ipconfigd_v6_lookup(const char *ifname, struct ipconfig_v6_method_info *out,
 
 	service_id[0] = '\0';
 	if (ipconfig_prefs_lookup_v6(ifname, out, service_id,
-	    SC_PUBLISH_SERVICE_ID_LEN))
+	    SC_PUBLISH_SERVICE_ID_LEN)) {
+		if (service_id[0] == '\0')
+			(void)snprintf(service_id, SC_PUBLISH_SERVICE_ID_LEN,
+			    "%s-%s", ipconfig_v6_method_string(out->method),
+			    ifname);
 		return;
+	}
 	(void)memset(out, 0, sizeof(*out));
-	out->method = ipconfig_method_automatic_v6_e;
+	out->method = ipconfig_method_unmanaged_v6_e;
+}
+
+/* `ifname`'s interface type, from its AF_LINK address; -1 if unknown. */
+static int
+iface_link_type(const char *ifname)
+{
+	struct ifaddrs *ifa, *p;
+	int type = -1;
+
+	if (getifaddrs(&ifa) != 0)
+		return (-1);
+	for (p = ifa; p != NULL; p = p->ifa_next) {
+		if (p->ifa_addr == NULL ||
+		    p->ifa_addr->sa_family != AF_LINK ||
+		    strcmp(p->ifa_name, ifname) != 0)
+			continue;
+		type = ((const struct sockaddr_dl *)(void *)p->ifa_addr)->
+		    sdl_type;
+		break;
+	}
+	freeifaddrs(ifa);
+	return (type);
+}
+
+/*
+ * config_method_start()'s per-type rules (bootp ipconfigd.c). Darwin's
+ * VLAN, bond and bridge interfaces report IFT_ETHER once configured
+ * (xnu if_vlan.c, if_bond.c, if_bridge.c); here they keep their own types,
+ * so they count as Ethernet class. Anything else cannot do ARP, so manual
+ * methods only; loopback does Manual only.
+ */
+static bool
+method_allowed_on_link(const char *ifname, ipconfig_method_t method)
+{
+	switch (iface_link_type(ifname)) {
+	case -1:		/* not there yet: the link path will say */
+	case IFT_ETHER:
+	case IFT_L2VLAN:
+	case IFT_BRIDGE:
+	case IFT_IEEE8023ADLAG:
+		return (true);
+	case IFT_IEEE1394:
+		return (method != ipconfig_method_bootp_e);
+	case IFT_LOOP:
+		return (method == ipconfig_method_manual_e);
+	default:
+		return (method != ipconfig_method_dhcp_e &&
+		    method != ipconfig_method_bootp_e &&
+		    method != ipconfig_method_inform_e &&
+		    method != ipconfig_method_linklocal_e);
+	}
 }
 
 /*
@@ -1532,6 +1602,11 @@ dhcp_worker_start(const char *ifname, uint32_t lease_cap_secs)
 	service_lookup(ifname, &method, service_id);
 	if (!ipconfig_method_is_served(method.method))
 		return (false);
+	if (!method_allowed_on_link(ifname, method.method)) {
+		xlog("%s: ConfigMethod %s is not possible on this interface",
+		    ifname, ipconfig_method_string(method.method));
+		return (false);
+	}
 
 	pthread_mutex_lock(&g_workers_lock);
 	for (i = 0; i < BOUND_MAX_IF; i++) {
@@ -1613,7 +1688,8 @@ service_start(const char *ifname)
 		xlog("%s: could not bring up: %s", ifname, strerror(errno));
 		return;
 	}
-	if (!link_active_in_store(ifname))
+	/* Loopback has no link to wait for; nothing watches lo0's. */
+	if (strncmp(ifname, "lo", 2) != 0 && !link_active_in_store(ifname))
 		return;
 	if (!served)
 		v6_service_v4_result(ifname);	/* IPv4 NONE is a result */
@@ -1669,12 +1745,10 @@ service_reconfigure(const char *ifname)
 	service_start(ifname);
 }
 
-/* SCPreferences commit changed `ifname`'s service (ipconfig_prefs.c). */
+/* An Apply changed `ifname`'s service (ipconfig_prefs.c). */
 static void
 on_prefs_changed(const char *ifname)
 {
-	if (strncmp(ifname, "lo", 2) == 0)
-		return;
 	service_reconfigure(ifname);
 }
 
@@ -1688,6 +1762,26 @@ on_prefs_dns_changed(const char *ifname)
 	if (strncmp(ifname, "lo", 2) == 0)
 		return;
 	dns_config_update(ifname);
+}
+
+/*
+ * ServiceOrder or a PrimaryRank moved (#570): the same interfaces are bound,
+ * but the winner may not be. As after any bind or teardown, re-elect and
+ * re-render DNS from whoever won.
+ */
+static void
+on_prefs_order_changed(void)
+{
+	struct sc_publish *pub;
+	char primary[IFNAMSIZ];
+
+	pub = sc_publish_open("ipconfigd");
+	if (pub != NULL) {
+		(void)sc_publish_update_primary(pub);
+		sc_publish_close(pub);
+	}
+	if (bound_state_primary(primary, sizeof(primary)))
+		dns_config_update(primary);
 }
 
 static ipconfig_status_t set_check_ifname(const char *ifname);
@@ -1714,6 +1808,10 @@ ipconfigd_set_method(const char *ifname,
 	if (info->method == ipconfig_method_manual_e &&
 	    info->addr.s_addr == INADDR_ANY)
 		return (ipconfig_status_invalid_parameter_e);
+	/* Darwin's set_if() reports config_method_start()'s answer. */
+	if (info->method != ipconfig_method_none_e &&
+	    !method_allowed_on_link(ifname, info->method))
+		return (ipconfig_status_invalid_operation_e);
 
 	pthread_mutex_lock(&g_workers_lock);
 	for (i = 0; i < BOUND_MAX_IF; i++) {
@@ -2251,7 +2349,6 @@ main(int argc, char **argv)
 {
 	struct sigaction sa;
 	uint32_t lease_cap_secs;
-	char ifname[IFNAMSIZ] = "";
 
 	(void)argc;
 	(void)argv;
@@ -2304,10 +2401,10 @@ main(int argc, char **argv)
 	 * after we scan — the failure mode that left a stock-kernel box
 	 * without a lease once hwregd's attach event was removed), we:
 	 *
-	 *   1. bring the candidate Ethernet administratively up so its
-	 *      link starts negotiating, then
-	 *   2. watch State:/Network/Interface/<if>/Link and run DHCP only
-	 *      when KernelEventMonitor reports the link Active.
+	 *   1. bring each interface that has a service administratively up
+	 *      so its link starts negotiating, then
+	 *   2. watch State:/Network/Interface/<if>/Link and start the
+	 *      service when KernelEventMonitor reports the link Active.
 	 *
 	 * The watch's initial scan + KernelEventMonitor's startup snapshot
 	 * make this fire immediately when the link is already up (CI /
@@ -2320,30 +2417,11 @@ main(int argc, char **argv)
 	 */
 	/*
 	 * Per-interface methods (#58), loaded before anything acts on an
-	 * interface. No network preferences — the default — leaves the
-	 * table empty and every interface on DHCP.
+	 * interface. Reading Setup: starts the service of each interface that
+	 * has one, which brings it up: no service, no IFF_UP (#570).
 	 */
-	(void)ipconfig_prefs_start(on_prefs_changed, on_prefs_dns_changed);
-
-	if (dhcp_pick_interface(ifname, sizeof(ifname)) == 0) {
-		struct ipconfig_method_info method;
-
-		method_lookup(ifname, &method);
-		if (!ipconfig_method_is_served(method.method) &&
-		    !v6_service_wants_link(ifname))
-			xlog("%s is configured %s; leaving it alone", ifname,
-			    ipconfig_method_string(method.method));
-		else if (iface_bring_up(ifname) == 0)
-			xlog("brought %s up; awaiting link-active to DHCP",
-			    ifname);
-		else
-			xlog("could not bring %s up: %s — relying on link "
-			    "watch", ifname, strerror(errno));
-	} else {
-		xlog("no Ethernet at startup; will DHCP when one links up");
-		/* Nothing to configure: don't hold up `ipconfig waitall`. */
-		startup_check();
-	}
+	(void)ipconfig_prefs_start(on_prefs_changed, on_prefs_dns_changed,
+	    startup_check, on_prefs_order_changed);
 
 	if (sc_link_watch_start(on_link_event, on_addr_conflict,
 	    on_link_refresh, lease_cap_secs) != 0)

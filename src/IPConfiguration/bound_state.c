@@ -10,6 +10,7 @@
  * keeps every operation a single critical section.
  */
 #include "bound_state.h"
+#include "ipconfig_prefs.h"	/* the election's inputs (#570) */
 
 #include <pthread.h>
 #include <string.h>
@@ -48,23 +49,45 @@ find_locked(const char *ifname)
 	return (NULL);
 }
 
-/* Caller holds the lock. The highest-ranked bound slot of one kind, or NULL. */
+/*
+ * The election order (#570). PrimaryRank first (First, default, Last; Never
+ * is out altogether), then the service's place in ServiceOrder, then the
+ * wired-over-wireless iface_rank() for interfaces no service orders. Returns
+ * <0 if `a` should win over `b`, 0 if they tie.
+ */
+int
+bound_state_election_cmp(const char *a, const char *b)
+{
+	int ra, oa, rb, ob;
+
+	ipconfig_prefs_primary_rank(a, &ra, &oa);
+	ipconfig_prefs_primary_rank(b, &rb, &ob);
+	if (ra != rb)
+		return (ra < rb ? -1 : 1);
+	if (oa != ob)
+		return (oa < ob ? -1 : 1);
+	return (iface_rank(b) - iface_rank(a));
+}
+
+/* Caller holds the lock. The best bound slot of one kind, or NULL. */
 static struct bound_entry *
 best_locked(bool linklocal)
 {
 	struct bound_entry *best = NULL;
-	int best_rank = -1, i;
+	int i;
 
 	for (i = 0; i < BOUND_MAX_IF; i++) {
-		int r;
+		int rank, order;
 
 		if (!g_bound.e[i].bound || g_bound.e[i].linklocal != linklocal)
 			continue;
-		r = iface_rank(g_bound.e[i].ifname);
-		if (r > best_rank) {
-			best_rank = r;
+		ipconfig_prefs_primary_rank(g_bound.e[i].ifname, &rank, &order);
+		if (rank == IPCFG_PRIMARY_RANK_NEVER ||
+		    iface_rank(g_bound.e[i].ifname) == IFRANK_NEVER)
+			continue;
+		if (best == NULL || bound_state_election_cmp(
+		    g_bound.e[i].ifname, best->ifname) < 0)
 			best = &g_bound.e[i];
-		}
 	}
 	return (best);
 }
@@ -108,10 +131,8 @@ iface_rank(const char *ifname)
 	if (strncmp(ifname, "wlan", 4) == 0)
 		return (IFRANK_WIRELESS);
 	/*
-	 * Everything else that got far enough to hold a DHCP lease came
-	 * through dhcp_pick_interface()'s IFT_ETHER filter, so treating it
-	 * as wired is right. Note this deliberately catches wlan0 *only* by
-	 * name: net80211 VAPs report IFT_ETHER too (they go through
+	 * Everything else is treated as wired. Note this deliberately catches
+	 * wlan0 *only* by name: net80211 VAPs report IFT_ETHER too (they go through
 	 * ether_ifattach), so there is no media type to test against.
 	 */
 	return (IFRANK_WIRED);

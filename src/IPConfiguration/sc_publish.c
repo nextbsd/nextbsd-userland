@@ -5,11 +5,8 @@
  * CFDictionary and pushes it into configd via libSystemConfiguration.
  * The <serviceID> is the network service's ID in SCPreferences (#568), so
  * a service's Setup: and State: keys line up, or `ipconfig set`'s
- * <Method>-<if>. An interface no service names gets a deterministic
- * 8-4-4-4-12-hex string derived from its MAC, stable across daemon
- * restarts, so a watcher's regex match stays put. Either way the ID is
- * fixed once per service and cached (#409), so the keys can still be
- * removed after the interface — and its MAC — is gone.
+ * <Method>-<if>. Either way the ID is fixed once per service and cached
+ * (#409), so the keys can still be removed after the interface is gone.
  *
  * Single CF translation unit on purpose: everything else in the
  * daemon stays plain-C / plain-Apple-headers.
@@ -83,69 +80,11 @@ mkstr(const char *s)
 	return (CFStringCreateWithCString(NULL, s, kCFStringEncodingUTF8));
 }
 
-static int
-get_mac(const char *ifname, uint8_t mac[6])
-{
-	struct ifaddrs *ifa, *p;
-	int ok = -1;
-
-	if (getifaddrs(&ifa) != 0)
-		return (-1);
-	for (p = ifa; p != NULL; p = p->ifa_next) {
-		const struct sockaddr_dl *dl;
-
-		if (p->ifa_addr == NULL ||
-		    p->ifa_addr->sa_family != AF_LINK)
-			continue;
-		if (strcmp(p->ifa_name, ifname) != 0)
-			continue;
-		dl = (const struct sockaddr_dl *)(const void *)p->ifa_addr;
-		if (dl->sdl_alen != 6)
-			break;
-		(void)memcpy(mac, LLADDR(dl), 6);
-		ok = 0;
-		break;
-	}
-	freeifaddrs(ifa);
-	return (ok);
-}
-
-#define	SVC_UUID_LEN	37	/* 8-4-4-4-12 + NUL */
-
-/*
- * Format an Apple-shaped UUID string from the interface MAC, for an
- * interface no SCNetworkService names (#568); Darwin has no such case,
- * since every configured interface has a service there. Format is real
- * 8-4-4-4-12 lowercase hex so downstream observers that regex-match on
- * UUID keys work unchanged.
- *
- *   00000000-0000-0000-AABB-AABBCCDDEEFF
- *                      ^^^^ ^^^^^^^^^^^^
- *                      MAC[0..1] MAC[0..5]
- *
- * Returns get_mac()'s result; on failure `buf` holds the all-zero MAC.
- */
-static int
-format_service_uuid(const char *ifname, char buf[SVC_UUID_LEN])
-{
-	uint8_t mac[6] = { 0, 0, 0, 0, 0, 0 };
-	int rc;
-
-	rc = get_mac(ifname, mac);
-	(void)snprintf(buf, SVC_UUID_LEN,
-	    "00000000-0000-0000-%02x%02x-%02x%02x%02x%02x%02x%02x",
-	    mac[0], mac[1],
-	    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-	return (rc);
-}
-
 /*
  * Per-interface service ID cache (#409). Apple's IPConfiguration keys a
- * service by its SCPreferences service ID, held for the life of the
- * service; re-deriving a MAC-based ID from the live MAC broke removal once
- * the interface departed — get_mac() failed and every key name came out as
- * 00000000-...-000000000000, so the real keys stayed in configd. Shared
- * by every sc_publish session (workers, ra_router, on_link_departed).
+ * service by its service ID, held for the life of the service, so the keys
+ * can be removed after the interface has departed. Shared by every
+ * sc_publish session (workers, ra_router, on_link_departed).
  */
 #define	SVC_ID_MAX	(2 * BOUND_MAX_IF)
 
@@ -176,7 +115,7 @@ svc_id_store_locked(struct svc_id_entry *table, const char *ifname,
 	}
 	if (i == SVC_ID_MAX) {
 		if (free_slot < 0)
-			return;		/* full: callers fall back to the MAC */
+			return;		/* full: the interface name is used */
 		i = free_slot;
 		(void)strlcpy(table[i].ifname, ifname, sizeof(table[i].ifname));
 	}
@@ -187,14 +126,8 @@ static void
 service_begin(struct svc_id_entry *table, const char *ifname,
     const char *service_id)
 {
-	char buf[SVC_UUID_LEN];
-
-	if (service_id == NULL || service_id[0] == '\0') {
-		/* No MAC: keep whatever an earlier service cached. */
-		if (format_service_uuid(ifname, buf) != 0)
-			return;
-		service_id = buf;
-	}
+	if (service_id == NULL || service_id[0] == '\0')
+		return;		/* keep whatever an earlier service cached */
 	(void)pthread_mutex_lock(&g_svc_id_lock);
 	svc_id_store_locked(table, ifname, service_id);
 	(void)pthread_mutex_unlock(&g_svc_id_lock);
@@ -213,8 +146,9 @@ sc_publish_service_begin_v6(const char *ifname, const char *service_id)
 }
 
 /*
- * The service ID for `ifname`: the cached one, else derived from the MAC
- * now (and cached, if the MAC was readable). Result is heap-allocated;
+ * The service ID for `ifname`: the cached one, else the interface name.
+ * Every running service begins by caching its ID, so the fallback is only
+ * for a late removal that nothing published. Result is heap-allocated;
  * caller releases with CFRelease.
  */
 static CFStringRef
@@ -231,8 +165,8 @@ make_service_id(const char *ifname)
 			break;
 		}
 	}
-	if (i == SVC_ID_MAX && format_service_uuid(ifname, buf) == 0)
-		svc_id_store_locked(g_svc_id, ifname, buf);
+	if (i == SVC_ID_MAX)
+		(void)strlcpy(buf, ifname, sizeof(buf));
 	(void)pthread_mutex_unlock(&g_svc_id_lock);
 	return (mkstr(buf));
 }

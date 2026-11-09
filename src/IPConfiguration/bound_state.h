@@ -46,6 +46,12 @@
 #define	IFRANK_OTHER	10
 #define	IFRANK_NEVER	0	/* loopback — never a primary service */
 
+/*
+ * The primary election's order for two interfaces: <0 if `a` beats `b`.
+ * PrimaryRank, then ServiceOrder, then iface_rank() (#570).
+ */
+int	bound_state_election_cmp(const char *a, const char *b);
+
 /* Initialize the table. Safe to call before any writer. */
 void	bound_state_init(void);
 
