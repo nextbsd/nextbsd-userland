@@ -44,9 +44,9 @@
 .Br
 .Nm
 .Fl -renew Ar interface
-.\".Br
-.\".Nm
-.\".Fl -net
+.Br
+.Nm
+.Fl -net
 .Sh DESCRIPTION
 Invoked with no options,
 .Nm
@@ -118,10 +118,10 @@ configuration in addition to the first listed.
 The
 .Fl -proxy
 option reports the current system proxy configuration.
-.\".Pp
-.\"Lastly, the
-.\".Fl -net
-.\"option provides a means of managing the system's network configuration.
+.Pp
+Lastly, the
+.Fl -net
+option provides a means of managing the system's network configuration.
 .Sh OPTIONS
 .Bl -tag -width xx
 .It Fl w Ar dynamic-store-key Op Fl t Ar timeout
@@ -214,17 +214,22 @@ Asks the system to renew the configuration of the named network
 interface now: a DHCP lease is renewed at once, and a Router
 Solicitation is sent if the interface has IPv6.
 An interface configured manually keeps its IPv4 configuration.
-.\".It Fl -net
-.\"Provides a command line interface to the
-.\".Qq network configuration .
-.\"Interaction with this data (using the SystemConfiguration.framework
-.\"SCNetworkConfiguration APIs) is handled with a set of commands read
-.\"from standard input.  A list of the available commands is available
-.\"by entering the help directive.
-.\".Pp
-.\"The
-.\".Fl -net
-.\"option requires super-user access.
+.It Fl -net
+Provides a command line interface to the
+.Qq network configuration .
+Interaction with this data (using the SystemConfiguration.framework
+SCNetworkConfiguration APIs) is handled with a set of commands read
+from standard input.  A list of the available commands is available
+by entering the help directive.
+The
+.Ar commit
+command writes changes to the preference file, and the
+.Ar apply
+command asks the running system to act on what the file holds.
+.Pp
+The
+.Fl -net
+option requires super-user access.
 .El
 .Sh SEE ALSO
 .Xr configd 8

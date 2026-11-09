@@ -52,6 +52,9 @@ extern const int	nCommands_store;
 extern const cmdInfo	commands_prefs[];
 extern const int	nCommands_prefs;
 
+extern const cmdInfo	commands_net[];
+extern const int	nCommands_net;
+
 extern const cmdInfo	*commands;
 extern int		nCommands;
 extern Boolean		enablePrivateAPI;
