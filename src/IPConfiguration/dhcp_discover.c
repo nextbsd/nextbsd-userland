@@ -720,7 +720,7 @@ parse_dhcp_reply(const uint8_t *frame, size_t frame_len,
 	const uint8_t *opts;
 	const uint8_t cookie[4] = DHCP_MAGIC_COOKIE;
 	const uint8_t *v;
-	size_t opts_len;
+	size_t ip_hlen, opts_len;
 	uint8_t l = 0;
 	bool lenient = want_msgtype == DHCP_WANT_BOOTP ||
 	    want_msgtype == DHCP_WANT_INFORM;
@@ -732,10 +732,17 @@ parse_dhcp_reply(const uint8_t *frame, size_t frame_len,
 	if (ntohs(eh->ether_type) != ETHERTYPE_IP)
 		return (0);
 	ip = (const struct ip *)(const void *)(frame + sizeof(*eh));
-	if (ip->ip_v != 4 || ip->ip_p != IPPROTO_UDP)
+	ip_hlen = (size_t)ip->ip_hl * 4;
+	if (ip->ip_v != 4 || ip->ip_p != IPPROTO_UDP || ip_hlen < sizeof(*ip))
+		return (0);
+	/*
+	 * The check above assumed no IP options. Apple reads replies from a
+	 * UDP socket, where the kernel has done this; BPF has not.
+	 */
+	if (frame_len < sizeof(*eh) + ip_hlen + sizeof(*udp) + sizeof(*dh))
 		return (0);
 	udp = (const struct udphdr *)(const void *)
-	    (frame + sizeof(*eh) + (ip->ip_hl * 4));
+	    (frame + sizeof(*eh) + ip_hlen);
 	if (ntohs(udp->uh_dport) != DHCP_CLIENT_PORT)
 		return (0);
 	dh = (const struct dhcp *)(const void *)
