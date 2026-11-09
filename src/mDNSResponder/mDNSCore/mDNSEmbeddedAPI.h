@@ -481,7 +481,7 @@ typedef struct { mDNSu8 c[256]; } UTF8str255;       // Null-terminated C string
 // the multicast traffic required to refresh these records, the same 75 minute TTL is now used for all record types.
 
 #define kStandardTTL (3600UL * 100 / 80)
-#define kHostNameTTL kStandardTTL           // Was 120UL
+#define kHostNameTTL 120UL                  // NextBSD: 10.9's value, so peers drop a renamed host promptly
 
 // Multicast DNS uses announcements (gratuitous responses) to update peer caches.
 // This means it is feasible to use relatively larger TTL values than we might otherwise
