@@ -267,7 +267,11 @@ establish_configuration(void)
 		}
 	}
 
-	interfaces = SCNetworkInterfaceCopyAll();
+	/*
+	 * Darwin's order, so wired comes before Wi-Fi in ServiceOrder on a
+	 * machine that has both at first boot.
+	 */
+	interfaces = _SCNetworkInterfaceCopyAllWithPreferences(g_prefs);
 	n = (interfaces != NULL) ? CFArrayGetCount(interfaces) : 0;
 	for (i = 0; i < n; i++) {
 		SCNetworkInterfaceRef interface;
