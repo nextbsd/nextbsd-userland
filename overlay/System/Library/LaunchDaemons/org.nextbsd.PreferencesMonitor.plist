@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  org.nextbsd.PreferencesMonitor.plist
+
+  The first-boot "Automatic" network set, a default service for a new
+  Ethernet or Wi-Fi interface, the known-interface list, and the flatten of
+  the current set into Setup:. Darwin does this in configd plugins and
+  SCMonitor; NextBSD's configd has no plugin loader (#480).
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>org.nextbsd.PreferencesMonitor</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/libexec/PreferencesMonitor</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/var/log/PreferencesMonitor.stderr</string>
+	<key>StandardErrorPath</key>
+	<string>/var/log/PreferencesMonitor.stderr</string>
+	<key>LimitLoadToSessionType</key>
+	<string>System</string>
+</dict>
+</plist>

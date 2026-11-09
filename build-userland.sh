@@ -1108,6 +1108,15 @@ mkdir -p "$DESTDIR/usr/sbin"
 run_buildenv "make -C $SRC/hostnamed DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
 test -x "$DESTDIR/usr/sbin/hostnamed" || { echo "FAIL: /usr/sbin/hostnamed not installed"; exit 1; }
 echo "==> hostnamed built"
+
+# ---- PreferencesMonitor ------------------------------------------------------
+# org.nextbsd.PreferencesMonitor (#480): default network services and the
+# Setup: flatten. A configd plugin on Darwin; a small daemon here.
+comp "PreferencesMonitor"
+mkdir -p "$DESTDIR/usr/libexec"
+run_buildenv "make -C $SRC/PreferencesMonitor DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/libexec/PreferencesMonitor" || { echo "FAIL: /usr/libexec/PreferencesMonitor not installed"; exit 1; }
+echo "==> PreferencesMonitor built"
 # DROPPED: hostnametest/hostnameprefset/hostnamedhcpset/hostnamedmdnsset
 #          (all host-exec CI fixtures — moved to the boot test).
 
