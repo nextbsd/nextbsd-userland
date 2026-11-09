@@ -127,7 +127,7 @@ LDADD+=		-lsystem_kernel -llaunch
 LDADD+=		-lxpc
 # -lnotify: nwi_state_copy() watches the nwi notify key for changes.
 LDADD+=		-lnotify
-# SCNetworkReachability.c calls into libdns_sd (DNSServiceQueryRecord
+# SCNetworkReachability.c's PTR path calls into libdns_sd (DNSServiceQueryRecord
 # against mDNSResponder) but libdns_sd builds AFTER libSC in
 # build.sh's Phase K order, so we cannot link -ldns_sd here. Leave
 # the libdns_sd symbols as undefined-at-libSC-link-time; consumers

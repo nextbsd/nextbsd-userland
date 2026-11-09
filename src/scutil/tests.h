@@ -40,7 +40,9 @@
 
 __BEGIN_DECLS
 
-/* NextBSD: only "-w", "--dns", "--proxy" and "--renew" are carried; see tests.c. */
+/* NextBSD: only "-w", "-r", "--dns", "--proxy" and "--renew" are carried; see tests.c. */
+void	do_checkReachability		(int argc, char **argv);
+void	do_watchReachability		(int argc, char **argv);
 void	do_showDNSConfiguration		(int argc, char **argv);
 void	do_nwi				(int argc, char **argv);
 void	do_showProxyConfiguration	(int argc, char **argv);

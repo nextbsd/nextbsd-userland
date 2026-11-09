@@ -27,8 +27,8 @@
  * uses. The later configd scutil's other sources come from changed this
  * output (the "reach" line, for one), so scutil takes the 10.9.5 printer
  * from here. NextBSD: SCPrint comes from scutil_shim.h and _sc_debug
- * from tests.c; the "reach" line waits on reach_flags (see
- * dnsinfo_create.c).
+ * from tests.c, and tests.c includes SCNetworkReachabilityInternal.h
+ * before this header for the "reach" line's flag printer.
  */
 
 #ifndef _S_DNSINFO_INTERNAL_H
@@ -135,7 +135,6 @@ _dns_resolver_print(dns_resolver_t *resolver, int index)
 		SCPrint(TRUE, stdout, CFSTR("\n"));
 	}
 
-#ifdef DNSINFO_HAVE_REACH_FLAGS
 	if (resolver->reach_flags != 0) {
 		uint32_t	flags	= resolver->reach_flags;
 
@@ -145,7 +144,6 @@ _dns_resolver_print(dns_resolver_t *resolver, int index)
 		SCPrint(_sc_debug, stdout, CFSTR(")"));
 		SCPrint(TRUE, stdout, CFSTR("\n"));
 	}
-#endif /* DNSINFO_HAVE_REACH_FLAGS */
 
 	if (resolver->search_order != 0) {
 		SCPrint(TRUE, stdout, CFSTR("  order    : %d\n"), resolver->search_order);

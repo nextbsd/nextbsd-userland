@@ -37,15 +37,13 @@
  */
 
 /*
- * NextBSD: of Apple's tests.c the "-w" key wait, "--dns", "--nwi",
+ * NextBSD: of Apple's tests.c the "-w" key wait, "-r", "-W", "--dns", "--nwi",
  * "--proxy" and "--renew" are carried. The rest backs options whose APIs our
- * libSystemConfiguration does not have yet -- "-r"
- * (SCNetworkReachabilityCreateWithName/WithAddress), "--snapshot",
- * "--advisory" and "--rank".
+ * libSystemConfiguration does not have yet -- "--snapshot", "--advisory" and
+ * "--rank".
  *
- * "--dns" is configd-596.15's, not this file's later tag: its printer
- * (dnsinfo_internal.h) is the 10.9.5 one, matching the dnsinfo the server
- * stores. "--dns <hostname>" needs reachability and is not carried yet.
+ * "-r", "-W" and "--dns" are configd-596.15's, not this file's later tag, as
+ * is their printer (dnsinfo_internal.h) and the dnsinfo the server stores.
  * "--nwi" is configd-596.15's too, for the same reason. Its "%p" arguments
  * are cast to pointer width: reach_flags is 32 bits and SCPrint reads a
  * pointer for that format.
@@ -55,8 +53,11 @@
 #include <sys/time.h>
 #include <sys/socket.h>
 #include <net/if.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include <SystemConfiguration/SCDynamicStoreCopySpecificPrivate.h>
+#include <SystemConfiguration/SCNetworkReachability.h>
 
 #include "scutil.h"
 #include "prefs.h"
@@ -64,11 +65,449 @@
 
 /* NextBSD: "-d" is not carried, and dnsinfo_internal.h prints under it. */
 #define	_sc_debug	FALSE
+#include "SCNetworkReachabilityInternal.h"	/* before dnsinfo_internal.h */
 #include <dnsinfo.h>
 #include "dnsinfo_internal.h"
 #include <network_information.h>
-#include "SCNetworkReachabilityInternal.h"
 #include <CommonCrypto/CommonDigest.h>
+
+static Boolean resolver_bypass;
+
+static CF_RETURNS_RETAINED CFMutableDictionaryRef
+_setupReachabilityOptions(int argc, char **argv, const char *interface)
+{
+	int			i;
+	CFMutableDictionaryRef	options;
+
+	options = CFDictionaryCreateMutable(NULL,
+					    0,
+					    &kCFTypeDictionaryKeyCallBacks,
+					    &kCFTypeDictionaryValueCallBacks);
+
+	for (i = 0; i < argc; i++) {
+		if (strcasecmp(argv[i], "interface") == 0) {
+			if (++i >= argc) {
+				SCPrint(TRUE, stderr, CFSTR("No interface\n"));
+				CFRelease(options);
+				exit(1);
+			}
+
+			interface = argv[i];
+			continue;
+		}
+
+		/*
+		 * NextBSD: Apple's "server", "no-server" and
+		 * "no-connection-on-demand" are not carried; there is no
+		 * reachability server or on-demand here.
+		 */
+
+		if (strcasecmp(argv[i], "no-resolve") == 0) {
+			CFDictionarySetValue(options,
+					     kSCNetworkReachabilityOptionResolverBypass,
+					     kCFBooleanTrue);
+			resolver_bypass = TRUE;
+			continue;
+		}
+
+		if (strlen(argv[i]) == 0) {
+			continue;
+		}
+
+		SCPrint(TRUE, stderr, CFSTR("Unrecognized option: %s\n"), argv[i]);
+		CFRelease(options);
+		exit(1);
+	}
+
+	if (interface != NULL) {
+		CFStringRef	str;
+
+		if (if_nametoindex(interface) == 0) {
+			SCPrint(TRUE, stderr, CFSTR("No interface: %s\n"), interface);
+			exit(1);
+		}
+
+		str  = CFStringCreateWithCString(NULL, interface, kCFStringEncodingASCII);
+		CFDictionarySetValue(options, kSCNetworkReachabilityOptionInterface, str);
+		CFRelease(str);
+	}
+
+	if (CFDictionaryGetCount(options) == 0) {
+		CFRelease(options);
+		options = NULL;
+	}
+
+	return options;
+}
+
+
+static SCNetworkReachabilityRef
+_setupReachability(int argc, char **argv, SCNetworkReachabilityContext *context)
+{
+	char				*ip_address	= argv[0];
+	const char			*interface;
+	CFMutableDictionaryRef		options		= NULL;
+	char				*remote_address	= NULL;
+	struct sockaddr_in		r_sin;
+	struct sockaddr_in		sin;
+	struct sockaddr_in6		sin6;
+	SCNetworkReachabilityRef	target		= NULL;
+
+	bzero(&sin, sizeof(sin));
+	sin.sin_len    = sizeof(sin);
+	sin.sin_family = AF_INET;
+
+	bzero(&sin6, sizeof(sin6));
+	sin6.sin6_len    = sizeof(sin6);
+	sin6.sin6_family = AF_INET6;
+
+	interface = strchr(argv[0], '%');
+	if (interface != NULL) {
+		ip_address = strdup(argv[0]);
+		ip_address[interface - argv[0]] = '\0';
+		interface++;
+	}
+
+	if (inet_aton(ip_address, &sin.sin_addr) == 1) {
+		if (argc > 1) {
+			bzero(&r_sin, sizeof(r_sin));
+			r_sin.sin_len    = sizeof(r_sin);
+			r_sin.sin_family = AF_INET;
+			remote_address   = argv[1];
+		}
+
+		if ((argc == 1)
+		    || ((argc > 1) && (strlen(argv[1]) == 0))
+		    || inet_aton(remote_address, &r_sin.sin_addr) == 0) {
+			if (argc > 2) {
+				options = _setupReachabilityOptions(argc - 2, argv + 2, interface);
+			}
+			if (options == NULL) {
+				target = SCNetworkReachabilityCreateWithAddress(NULL, (struct sockaddr *)&sin);
+				if (context != NULL) {
+					context->info = "by address";
+				}
+			} else {
+				CFDataRef	data;
+
+				data = CFDataCreate(NULL, (const UInt8 *)&sin, sizeof(sin));
+				CFDictionarySetValue(options, kSCNetworkReachabilityOptionRemoteAddress, data);
+				CFRelease(data);
+
+				if (context != NULL) {
+					if (CFDictionaryContainsKey(options,
+								    kSCNetworkReachabilityOptionInterface)) {
+						if (CFDictionaryGetCount(options) == 2) {
+							context->info = "by address w/scope";
+						} else {
+							context->info = "by address w/scope and options";
+						}
+					} else {
+						context->info = "by address w/options";
+					}
+				}
+			}
+		} else {
+			const char		*interface2;
+
+			interface2 = strchr(argv[1], '%');
+			if (interface2 != NULL) {
+				remote_address = strdup(argv[1]);
+				remote_address[interface2 - argv[1]] = '\0';
+				interface2++;
+
+				if ((interface != NULL) && (strcmp(interface, interface2) != 0)) {
+					SCPrint(TRUE, stderr,
+						CFSTR("Interface mismatch \"%s\" != \"%s\"\n"),
+						interface,
+						interface2);
+					exit(1);
+				}
+
+				interface = interface2;
+			}
+
+			if (remote_address != argv[1]) {
+				free(remote_address);
+			}
+
+			options = _setupReachabilityOptions(argc - 2, argv + 2, interface);
+			if (options == NULL) {
+				target = SCNetworkReachabilityCreateWithAddressPair(NULL,
+										    (struct sockaddr *)&sin,
+										    (struct sockaddr *)&r_sin);
+				if (context != NULL) {
+					context->info = "by address pair";
+				}
+			} else {
+				CFDataRef	data;
+
+				data = CFDataCreate(NULL, (const UInt8 *)&sin, sizeof(sin));
+				CFDictionarySetValue(options, kSCNetworkReachabilityOptionLocalAddress, data);
+				CFRelease(data);
+				data = CFDataCreate(NULL, (const UInt8 *)&r_sin, sizeof(r_sin));
+				CFDictionarySetValue(options, kSCNetworkReachabilityOptionRemoteAddress, data);
+				CFRelease(data);
+
+				if (context != NULL) {
+					if (CFDictionaryContainsKey(options,
+								    kSCNetworkReachabilityOptionInterface)) {
+						if (CFDictionaryGetCount(options) == 3) {
+							context->info = "by address pair w/scope";
+						} else {
+							context->info = "by address pair w/scope and options";
+						}
+					} else {
+						context->info = "by address pair w/options";
+					}
+				}
+			}
+		}
+	} else if (inet_pton(AF_INET6, ip_address, &sin6.sin6_addr) == 1) {
+		struct sockaddr_in6	r_sin6;
+
+		if (interface != NULL) {
+			sin6.sin6_scope_id = if_nametoindex(interface);
+		}
+
+		if (argc >1) {
+			bzero(&r_sin6, sizeof(r_sin6));
+			r_sin6.sin6_len    = sizeof(r_sin6);
+			r_sin6.sin6_family = AF_INET6;
+		}
+
+		if ((argc == 1)
+		    || ((argc > 1) && (strlen(argv[1]) == 0))
+		    || inet_pton(AF_INET6, argv[1], &r_sin6.sin6_addr) == 0) {
+			if (argc > 2) {
+				options = _setupReachabilityOptions(argc - 2, argv + 2, NULL);
+			}
+			if (options == NULL) {
+				target = SCNetworkReachabilityCreateWithAddress(NULL, (struct sockaddr *)&sin6);
+				if (context != NULL) {
+					context->info = "by (v6) address";
+				}
+			} else {
+				CFDataRef	data;
+
+				data = CFDataCreate(NULL, (const UInt8 *)&sin6, sizeof(sin6));
+				CFDictionarySetValue(options, kSCNetworkReachabilityOptionRemoteAddress, data);
+				CFRelease(data);
+
+				if (context != NULL) {
+					context->info = "by (v6) address w/options";
+				}
+			}
+		} else {
+			interface = strchr(argv[1], '%');
+			if (interface != NULL) {
+				r_sin6.sin6_scope_id = if_nametoindex(interface + 1);
+			}
+
+			options = _setupReachabilityOptions(argc - 2, argv + 2, NULL);
+			if (options == NULL) {
+				target = SCNetworkReachabilityCreateWithAddressPair(NULL,
+										    (struct sockaddr *)&sin6,
+										    (struct sockaddr *)&r_sin6);
+				if (context != NULL) {
+					context->info = "by (v6) address pair";
+				}
+			} else {
+				CFDataRef	data;
+
+				data = CFDataCreate(NULL, (const UInt8 *)&sin6, sizeof(sin6));
+				CFDictionarySetValue(options, kSCNetworkReachabilityOptionLocalAddress, data);
+				CFRelease(data);
+				data = CFDataCreate(NULL, (const UInt8 *)&r_sin6, sizeof(r_sin6));
+				CFDictionarySetValue(options, kSCNetworkReachabilityOptionRemoteAddress, data);
+				CFRelease(data);
+
+				if (context != NULL) {
+					context->info = "by (v6) address pair w/options";
+				}
+			}
+		}
+	} else {
+		if (argc == 1) {
+			target = SCNetworkReachabilityCreateWithName(NULL, argv[0]);
+			if (context != NULL) {
+				context->info = "by name";
+			}
+		} else {
+			options = _setupReachabilityOptions(argc - 1, argv + 1, NULL);
+			if (options == NULL) {
+				target = SCNetworkReachabilityCreateWithName(NULL, argv[0]);
+				if (context != NULL) {
+					context->info = "by name";
+				}
+			} else {
+				CFStringRef	str;
+
+				str  = CFStringCreateWithCString(NULL, argv[0], kCFStringEncodingUTF8);
+				CFDictionarySetValue(options, kSCNetworkReachabilityOptionNodeName, str);
+				CFRelease(str);
+
+				if (context != NULL) {
+					context->info = "by name w/options";
+				}
+			}
+		}
+	}
+
+	if (ip_address != argv[0]) {
+		free(ip_address);
+	}
+
+	if ((target == NULL) && (options != NULL)) {
+		target = SCNetworkReachabilityCreateWithOptions(NULL, options);
+		CFRelease(options);
+	}
+
+	return target;
+}
+
+
+static void
+_printReachability(SCNetworkReachabilityRef target)
+{
+	SCNetworkReachabilityFlags	flags;
+	Boolean				ok;
+
+	ok = SCNetworkReachabilityGetFlags(target, &flags);
+	if (!ok) {
+		SCPrint(TRUE, stderr, CFSTR("    could not determine reachability, %s\n"), SCErrorString(SCError()));
+		return;
+	}
+
+	SCPrint(_sc_debug, stdout, CFSTR("flags = 0x%08x ("), flags);
+	__SCNetworkReachabilityPrintFlags(flags);
+	SCPrint(_sc_debug, stdout, CFSTR(")"));
+	SCPrint(TRUE, stdout, CFSTR("\n"));
+
+	if (resolver_bypass) {
+		int	if_index;
+
+		if_index = SCNetworkReachabilityGetInterfaceIndex(target);
+		SCPrint(_sc_debug, stdout, CFSTR("interface index = %d\n"), if_index);
+	}
+
+	return;
+}
+
+
+__private_extern__
+void
+do_checkReachability(int argc, char **argv)
+{
+	SCNetworkReachabilityRef	target;
+
+	target = _setupReachability(argc, argv, NULL);
+	if (target == NULL) {
+		SCPrint(TRUE, stderr, CFSTR("  Could not determine status: %s\n"), SCErrorString(SCError()));
+		exit(1);
+	}
+
+	_printReachability(target);
+	CFRelease(target);
+	exit(0);
+}
+
+
+static void
+callout(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void *info)
+{
+	static int	n = 3;
+	struct tm	tm_now;
+	struct timeval	tv_now;
+
+	(void)gettimeofday(&tv_now, NULL);
+	(void)localtime_r(&tv_now.tv_sec, &tm_now);
+
+	SCPrint(TRUE, stdout, CFSTR("\n*** %2d:%02d:%02d.%03d\n\n"),
+		tm_now.tm_hour,
+		tm_now.tm_min,
+		tm_now.tm_sec,
+		(int)(tv_now.tv_usec / 1000));
+	SCPrint(TRUE, stdout, CFSTR("%2d: callback w/flags=0x%08x (info=\"%s\")\n"), n++, flags, (char *)info);
+	SCPrint(TRUE, stdout, CFSTR("    %@\n"), target);
+	_printReachability(target);
+	SCPrint(TRUE, stdout, CFSTR("\n"));
+	return;
+}
+
+
+__private_extern__
+void
+do_watchReachability(int argc, char **argv)
+{
+	SCNetworkReachabilityContext	context	= { 0, NULL, NULL, NULL, NULL };
+	SCNetworkReachabilityRef	target;
+	SCNetworkReachabilityRef	target_async;
+
+	target = _setupReachability(argc, argv, NULL);
+	if (target == NULL) {
+		SCPrint(TRUE, stderr, CFSTR("  Could not determine status: %s\n"), SCErrorString(SCError()));
+		exit(1);
+	}
+
+	target_async = _setupReachability(argc, argv, &context);
+	if (target_async == NULL) {
+		SCPrint(TRUE, stderr, CFSTR("  Could not determine status: %s\n"), SCErrorString(SCError()));
+		exit(1);
+	}
+
+	// Normally, we don't want to make any calls to SCNetworkReachabilityGetFlags()
+	// until after the "target" has been scheduled on a run loop.  Otherwise, we'll
+	// end up making a synchronous DNS request and that's not what we want.
+	//
+	// To test the case were an application first calls SCNetworkReachabilityGetFlags()
+	// we provide the "CHECK_REACHABILITY_BEFORE_SCHEDULING" environment variable.
+	if (getenv("CHECK_REACHABILITY_BEFORE_SCHEDULING") != NULL) {
+		CFRelease(target_async);
+		target_async = CFRetain(target);
+	}
+
+	// Direct check of reachability
+	SCPrint(TRUE, stdout, CFSTR(" 0: direct\n"));
+	SCPrint(TRUE, stdout, CFSTR("   %@\n"), target);
+	_printReachability(target);
+	CFRelease(target);
+	SCPrint(TRUE, stdout, CFSTR("\n"));
+
+	// schedule the target
+	SCPrint(TRUE, stdout, CFSTR(" 1: start\n"));
+	SCPrint(TRUE, stdout, CFSTR("   %@\n"), target_async);
+//	_printReachability(target_async);
+	SCPrint(TRUE, stdout, CFSTR("\n"));
+
+	if (!SCNetworkReachabilitySetCallback(target_async, callout, &context)) {
+		printf("SCNetworkReachabilitySetCallback() failed: %s\n", SCErrorString(SCError()));
+		exit(1);
+	}
+
+	if (doDispatch) {
+		if (!SCNetworkReachabilitySetDispatchQueue(target_async, dispatch_get_main_queue())) {
+			printf("SCNetworkReachabilitySetDispatchQueue() failed: %s\n", SCErrorString(SCError()));
+			exit(1);
+		}
+	} else {
+		if (!SCNetworkReachabilityScheduleWithRunLoop(target_async, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode)) {
+			printf("SCNetworkReachabilityScheduleWithRunLoop() failed: %s\n", SCErrorString(SCError()));
+			exit(1);
+		}
+	}
+
+	// Note: now that we are scheduled on a run loop we can call SCNetworkReachabilityGetFlags()
+	//       to get the current status.  For "names", a DNS lookup has already been initiated.
+	SCPrint(TRUE, stdout, CFSTR(" 2: on %s\n"), doDispatch ? "dispatch queue" : "runloop");
+	SCPrint(TRUE, stdout, CFSTR("   %@\n"), target_async);
+	_printReachability(target_async);
+	SCPrint(TRUE, stdout, CFSTR("\n"));
+
+	CFRunLoopRun();
+	exit(0);
+}
+
 
 static void
 _printNWIFlags(nwi_ifstate_flags flags)
@@ -205,9 +644,10 @@ do_nwi(int argc, char **argv)
 
 __private_extern__
 void
-do_showDNSConfiguration(int argc __unused, char **argv __unused)
+do_showDNSConfiguration(int argc, char **argv)
 {
 	dns_config_t	*dns_config;
+	SCNetworkReachabilityRef	target;
 
 	dns_config = dns_configuration_copy();
 
@@ -216,7 +656,56 @@ do_showDNSConfiguration(int argc __unused, char **argv __unused)
 		exit(1);
 	}
 
-	_dns_configuration_print(dns_config);
+	/*
+	 * NextBSD: Apple tests "argc > 1", so "--dns <hostname>" alone prints
+	 * the whole configuration there. The form with just a name is the one
+	 * this port documents, so test for an argument at all.
+	 */
+	if (argc > 0) {
+		int				dns_config_index = -1;
+		SCNetworkReachabilityFlags	flags = 0;
+		Boolean				haveDNS = FALSE;
+		unsigned int			if_index = 0;
+		const char			*name;
+		Boolean				ok = FALSE;
+		dns_resolver_t			*resolver;
+		uint32_t			resolver_if_index;
+
+		target = _setupReachability(argc, argv, NULL);
+
+		name = (target != NULL) ? __SCNetworkReachabilityGetTargetName(target, &if_index) : NULL;
+		if (name == NULL) {
+			SCPrint(TRUE, stdout, CFSTR("\"%s\" is not a hostname.\n"), argv[0]);
+			exit(1);
+		}
+
+		ok = __SC_checkResolverReachabilityInternal(&store, &flags,
+							    &haveDNS, name,
+							    &resolver_if_index, &dns_config_index);
+
+		/*
+		 * NextBSD: dns_config_index stays -1 when there is no resolver
+		 * at all, and Apple would then index resolver[-1].
+		 */
+		if (!ok || (dns_config_index < 0)) {
+			SCPrint(TRUE, stdout, CFSTR("No DNS configuration available.\n" ));
+			exit(1);
+		}
+
+		SCPrint(TRUE, stdout, CFSTR("DNS configuration for %s\n"), name);
+
+		if (if_index == 0) {
+			resolver = dns_config->resolver[dns_config_index];
+		} else {
+			resolver = dns_config->scoped_resolver[dns_config_index];
+		}
+
+		_dns_resolver_print(resolver, dns_config_index + 1);
+
+		CFRelease(target);
+	} else {
+		_dns_configuration_print(dns_config);
+	}
 
 	dns_configuration_free(dns_config);
 	exit(0);

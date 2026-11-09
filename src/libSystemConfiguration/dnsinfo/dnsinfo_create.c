@@ -26,11 +26,12 @@
  * baseline) dnsinfo/dnsinfo_create.c: builds the configuration
  * blob ipconfigd stores. NextBSD: SHA-1 comes from libmd through the
  * CommonCrypto shim next to this file. _dns_resolver_set_reach_flags()
- * needs SCNetworkReachabilityCreateWithOptions() with a remote address,
- * which arrives with full reachability (nextbsd-userland#575); until
- * then reach_flags stays 0 and scutil --dns leaves the "reach" line out.
+ * asks SCNetworkReachability about each nameserver, as IPMonitor does,
+ * so "scutil --dns" and the reachability of a name both follow the
+ * resolver's route.
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <strings.h>
 #include <mach/mach.h>
@@ -422,7 +423,6 @@ _dns_resolver_set_port(dns_create_resolver_t *_resolver, uint16_t port)
 }
 
 
-#ifdef DNSINFO_HAVE_REACH_FLAGS
 /*
  * rankReachability()
  *   Not reachable       == 0
@@ -456,9 +456,6 @@ _dns_resolver_set_reach_flags(dns_create_resolver_t _resolver)
 							  0,
 							  &kCFTypeDictionaryKeyCallBacks,
 							  &kCFTypeDictionaryValueCallBacks);
-		CFDictionarySetValue(targetOptions,
-				     kSCNetworkReachabilityOptionServerBypass,
-				     kCFBooleanTrue);
 		if (resolver->resolver.if_index != 0) {
 			char		if_name[IFNAMSIZ];
 
@@ -508,9 +505,8 @@ _dns_resolver_set_reach_flags(dns_create_resolver_t _resolver)
 					}
 
 					// address not valid?
-					my_log(LOG_ERR,
-					       "_dns_resolver_set_reach_flags SCNetworkReachabilityCreateWithOptions() failed:\n  options = %@",
-					       targetOptions);
+					(void)fprintf(stderr, "ipconfigd[dnsinfo] _dns_resolver_set_reach_flags"
+					    " SCNetworkReachabilityCreateWithOptions() failed\n");
 					break;
 				}
 
@@ -538,15 +534,6 @@ _dns_resolver_set_reach_flags(dns_create_resolver_t _resolver)
 
 	return;
 }
-
-
-#else /* !DNSINFO_HAVE_REACH_FLAGS */
-static void
-_dns_resolver_set_reach_flags(dns_create_resolver_t _resolver __unused)
-{
-	return;
-}
-#endif /* DNSINFO_HAVE_REACH_FLAGS */
 
 
 __private_extern__

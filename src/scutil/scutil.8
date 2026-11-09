@@ -30,7 +30,11 @@
 .Fl -error Ar err#
 .Br
 .Nm
-.Fl -dns
+.Fl -dns Op Ar hostname
+.Br
+.Nm
+.Op Fl W
+.Fl r Ar nodename | address | local-address remote-address
 .Br
 .Nm
 .Fl -nwi Op Ar interface
@@ -168,8 +172,30 @@ option requires super-user access.
 .It Fl -error Ar err#
 Reports the descriptive message for the given SystemConfiguration
 status code.
-.It Fl -dns
+.It Fl -dns Op Ar hostname
 Reports the current DNS configuration.
+With
+.Ar hostname ,
+reports only the resolver that would answer a query for that name.
+.It Oo Fl W Oc Fl r Ar nodename | address | local-address remote-address
+Reports the reachability of the node name, address, or address pair.
+The flags printed are
+.Qq Reachable ,
+.Qq Connection Required ,
+.Qq Local Address
+and
+.Qq Directly Reachable Address .
+.Qq Not Reachable
+is printed when none of them apply.
+The node name or first address may be followed by
+.Dq Li interface Ar name
+to scope the lookup to a network interface, or by
+.Li no-resolve
+to report only whether the name's resolver is reachable.
+With
+.Fl W ,
+.Nm
+keeps running and prints the reachability again each time it changes.
 .It Fl -nwi Op Ar interface
 Reports the network information: the interfaces with connectivity, for
 IPv4 and for IPv6, best first, with their flags and reachability.

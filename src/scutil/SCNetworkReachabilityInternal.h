@@ -24,8 +24,9 @@
 /*
  * From apple-oss-distributions/configd @ configd-596.15
  * SystemConfiguration.fproj/SCNetworkReachabilityInternal.h: only the flag
- * printer scutil uses. The rest of the header goes with the full
- * SCNetworkReachability port (#575).
+ * printer scutil uses. The struct behind SCNetworkReachabilityRef stays in
+ * libSystemConfiguration; scutil gets the name of a by-name target through
+ * __SCNetworkReachabilityGetTargetName().
  */
 
 #ifndef _SCNETWORKREACHABILITYINTERNAL_H
