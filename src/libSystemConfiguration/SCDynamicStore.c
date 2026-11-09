@@ -148,6 +148,7 @@ __SCDynamicStoreCreatePrivate(CFAllocatorRef		allocator,
 	storePrivate->rlsRunLoop	= NULL;
 	storePrivate->rlsScheduled	= 0;
 	storePrivate->rlsFunction = callout;
+	storePrivate->serverDeathFunction = NULL;
 	memset(&storePrivate->rlsContext, 0, sizeof(storePrivate->rlsContext));
 	if (context != NULL) {
 		memcpy(&storePrivate->rlsContext, context, sizeof(SCDynamicStoreContext));

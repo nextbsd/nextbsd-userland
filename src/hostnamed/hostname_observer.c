@@ -49,9 +49,12 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 
+#include <SystemConfiguration/SCPrivate.h>
+
 #include <dispatch/dispatch.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>		/* sethostname */
 
@@ -227,6 +230,22 @@ observer_cb(SCDynamicStoreRef store, CFArrayRef changedKeys, void *info)
 	reconcile(store);
 }
 
+/* configd went away (#603), and with it Setup:/System and
+ * Setup:/Network/HostNames, which prefs_monitor publishes at startup. On
+ * Darwin a restarted configd loads the plugins that publish them again;
+ * here launchd's KeepAlive relaunches hostnamed. Detected on this session
+ * because the other one that has a notification port is the vendored
+ * set-hostname.c's, which stays as Apple wrote it. */
+static void
+configd_gone(SCDynamicStoreRef store, void *info)
+{
+	(void)store;
+	(void)info;
+	xlog("hostname_observer: configd went away; exiting so that launchd "
+	    "relaunches us");
+	exit(0);
+}
+
 /* Entry: open SCDS, subscribe to State:/Network/HostNames on the supplied
  * dispatch queue, do an initial reconcile (covers a conflict already
  * published before we started). Returns 0 on success; non-zero on a
@@ -268,6 +287,8 @@ hostname_observer_start(dispatch_queue_t queue)
 		return (-1);
 	}
 	CFRelease(keys);
+
+	(void)_SCDynamicStoreSetServerDeathCallBack(g_state.store, configd_gone);
 
 	if (!SCDynamicStoreSetDispatchQueue(g_state.store, queue)) {
 		xlog("hostname_observer: SetDispatchQueue failed");

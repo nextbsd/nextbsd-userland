@@ -45,7 +45,40 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 
+#include <SystemConfiguration/SCDynamicStore.h>
+
 __BEGIN_DECLS
+
+/*!
+	@typedef SCDynamicStoreServerDeathCallBack
+	@discussion Called once when configd has gone away (see
+		_SCDynamicStoreSetServerDeathCallBack).
+ */
+typedef void (*SCDynamicStoreServerDeathCallBack)(SCDynamicStoreRef store,
+						  void *info);
+
+/*!
+	@function _SCDynamicStoreSetServerDeathCallBack
+	@discussion Asks to be told when this session's configd has gone
+		away. The session must deliver notifications with
+		SCDynamicStoreSetDispatchQueue or a run-loop source: the
+		detection is the no-senders notification on its notification
+		port (Darwin's SCDNotifierInformViaCallback.c), and the
+		callback runs on the queue that delivers its changes.
+
+		This is not Darwin's SCDynamicStoreSetDisconnectCallBack,
+		whose callback runs after the library has reconnected. This
+		library does not reconnect, so the session is dead when the
+		callback runs, and the store it was publishing to has been
+		emptied. The caller's job is to get itself restarted or to
+		make new sessions.
+	@param store the session
+	@param callback the function to call, or NULL for none
+	@result TRUE, or FALSE if store is not a session.
+ */
+Boolean
+_SCDynamicStoreSetServerDeathCallBack	(SCDynamicStoreRef		store,
+					 SCDynamicStoreServerDeathCallBack callback);
 
 /*!
 	@function _SC_cfstring_to_cstring

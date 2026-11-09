@@ -43,6 +43,13 @@
  * therefore a fresh trigger, even though /Link never moved.
  * ---------------------------------------------------------------------
  *
+ * configd restarts (#603). Everything this daemon published lived in
+ * configd's memory, and every session it holds is dead. So when configd goes
+ * away the daemon exits, leaving its addresses and routes installed as a
+ * SIGTERM does, and launchd's KeepAlive relaunches it. Darwin's IPConfiguration
+ * is a configd plugin, so a restarted configd starts it again the same way.
+ * The relaunch is an ordinary start, so the IPCFG markers come in boot order.
+ *
  * Threading: the SC change callout runs on a dedicated serial delivery
  * queue (under SCDynamicStoreSetDispatchQueue). To keep that queue
  * free, the callout never runs DHCP itself — it dispatches each
@@ -90,6 +97,7 @@
 
 #include <SystemConfiguration/SCDynamicStore.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <SystemConfiguration/SCPrivate.h>
 #include <dispatch/dispatch.h>
 
 #include <sys/types.h>
@@ -586,6 +594,16 @@ link_changed(SCDynamicStoreRef store, CFArrayRef changedKeys, void *info)
 		handle_iface_key(store, CFArrayGetValueAtIndex(changedKeys, i));
 }
 
+/* configd went away: see the comment at the top of the file. */
+static void
+configd_gone(SCDynamicStoreRef store, void *info)
+{
+	(void)store;
+	(void)info;
+	xlog("configd went away: exiting so that launchd relaunches us");
+	exit(0);
+}
+
 int
 sc_link_watch_start(sc_link_watch_cb cb, sc_addr_conflict_cb conflict_cb,
     sc_link_refresh_cb refresh_cb, uint32_t lease_cap_secs)
@@ -629,6 +647,8 @@ sc_link_watch_start(sc_link_watch_cb cb, sc_addr_conflict_cb conflict_cb,
 		    SCErrorString(SCError()));
 		return (-1);
 	}
+
+	(void)_SCDynamicStoreSetServerDeathCallBack(store, configd_gone);
 
 	/*
 	 * Subscribe to BOTH entities. A change to either one re-runs
