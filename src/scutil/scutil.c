@@ -320,6 +320,11 @@ usage(const char *command)
 	SCPrint(TRUE, stderr, CFSTR("   or: %s --prefs [preference-file]\n"), command);
 	SCPrint(TRUE, stderr, CFSTR("\tinteractive access to the [raw] stored preferences.\n"));
 	SCPrint(TRUE, stderr, CFSTR("\n"));
+	SCPrint(TRUE, stderr, CFSTR("   or: %s [-W] -r nodename\n"), command);
+	SCPrint(TRUE, stderr, CFSTR("   or: %s [-W] -r address\n"), command);
+	SCPrint(TRUE, stderr, CFSTR("   or: %s [-W] -r local-address remote-address\n"), command);
+	SCPrint(TRUE, stderr, CFSTR("\tcheck reachability of node, address, or address pair (-W to \"watch\").\n"));
+	SCPrint(TRUE, stderr, CFSTR("\n"));
 	SCPrint(TRUE, stderr, CFSTR("   or: %s -w dynamic-store-key [ -t timeout ]\n"), command);
 	SCPrint(TRUE, stderr, CFSTR("\t-w\twait for presense of dynamic store key\n"));
 	SCPrint(TRUE, stderr, CFSTR("\t-t\ttime to wait for key\n"));
@@ -336,7 +341,7 @@ usage(const char *command)
 	SCPrint(TRUE, stderr, CFSTR("   or: %s --error err#\n"), command);
 	SCPrint(TRUE, stderr, CFSTR("\tdisplay a descriptive message for the given error code\n"));
 	SCPrint(TRUE, stderr, CFSTR("\n"));
-	SCPrint(TRUE, stderr, CFSTR("   or: %s --dns\n"), command);
+	SCPrint(TRUE, stderr, CFSTR("   or: %s --dns [hostname]\n"), command);
 	SCPrint(TRUE, stderr, CFSTR("\tshow DNS configuration.\n"));
 	SCPrint(TRUE, stderr, CFSTR("\n"));
 	SCPrint(TRUE, stderr, CFSTR("   or: %s --nwi\n"), command);
@@ -364,6 +369,8 @@ main(int argc, char * const argv[])
 	Boolean			doProxy			= FALSE;
 	char			*error			= NULL;
 	char			*get			= NULL;
+	Boolean			doReach			= FALSE;
+	Boolean			watch			= FALSE;
 	extern int		optind;
 	int			opt;
 	int			opti;
@@ -379,7 +386,7 @@ main(int argc, char * const argv[])
 
 	/* process any arguments */
 
-	while ((opt = getopt_long(argc, argv, "Dpt:w:", longopts, &opti)) != -1) {
+	while ((opt = getopt_long(argc, argv, "Dprt:w:W", longopts, &opti)) != -1) {
 		switch(opt) {
 		case 'D':
 			doDispatch = TRUE;
@@ -387,12 +394,19 @@ main(int argc, char * const argv[])
 		case 'p':
 			enablePrivateAPI = TRUE;
 			break;
+		case 'r':
+			doReach = TRUE;
+			xStore++;
+			break;
 		case 't':
 			timeout = atoi(optarg);
 			break;
 		case 'w':
 			wait = optarg;
 			xStore++;
+			break;
+		case 'W':
+			watch = TRUE;
 			break;
 		case 0:
 			if        (strcmp(longopts[opti].name, "error") == 0) {
@@ -433,6 +447,19 @@ main(int argc, char * const argv[])
 	if (xStore > 1) {
 		// if we are attempting to process more than one type of request
 		usage(prog);
+	}
+
+	/* are we checking (or watching) the reachability of a host/address */
+	if (doReach) {
+		if (argc < 1) {
+			usage(prog);
+		}
+		if (watch) {
+			do_watchReachability(argc, (char **)argv);
+		} else {
+			do_checkReachability(argc, (char **)argv);
+		}
+		/* NOT REACHED */
 	}
 
 	/* are we waiting on the presense of a dynamic store key */
@@ -478,10 +505,6 @@ main(int argc, char * const argv[])
 
 	/* are we looking up the DNS configuration */
 	if (doDNS) {
-		/* NextBSD: "--dns <hostname>" needs reachability */
-		if (argc != 0) {
-			usage(prog);
-		}
 		do_showDNSConfiguration(argc, (char **)argv);
 		/* NOT REACHED */
 	}

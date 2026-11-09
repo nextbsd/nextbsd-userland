@@ -31,8 +31,10 @@
 #define _SCNETWORKREACHABILITY_H
 
 #include <sys/cdefs.h>
+#include <sys/socket.h>
 #include <dispatch/dispatch.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <SystemConfiguration/SCDynamicStore.h>
 
 /*!
 	@typedef SCNetworkReachabilityRef
@@ -59,10 +61,12 @@ typedef struct {
 
 /*!
 	@typedef SCNetworkReachabilityFlags
-	@discussion Bitmask describing the resolved reachability state.
-		Apple's full enum has many bits; the PTR-only shim only
-		ever sets kSCNetworkReachabilityFlagsReachable on success
-		and 0 on failure.
+	@discussion Bitmask describing the reachability state. NextBSD has
+		no PPP, on-demand or VPN, so Reachable, IsLocalAddress,
+		IsDirect and ConnectionRequired are the only flags set;
+		TransientConnection, ConnectionOnTraffic, ConnectionOnDemand
+		and InterventionRequired stay defined for source
+		compatibility.
  */
 typedef uint32_t	SCNetworkReachabilityFlags;
 
@@ -74,6 +78,7 @@ typedef uint32_t	SCNetworkReachabilityFlags;
 #define	kSCNetworkReachabilityFlagsConnectionOnDemand		(1 << 5)
 #define	kSCNetworkReachabilityFlagsIsLocalAddress		(1 << 16)
 #define	kSCNetworkReachabilityFlagsIsDirect			(1 << 17)
+#define	kSCNetworkReachabilityFlagsConnectionAutomatic		kSCNetworkReachabilityFlagsConnectionOnTraffic
 
 /*!
 	@typedef SCNetworkReachabilityCallBack
@@ -96,6 +101,24 @@ typedef void (*SCNetworkReachabilityCallBack)(
  */
 extern const CFStringRef	kSCNetworkReachabilityOptionPTRAddress;
 
+/*!
+	@constant kSCNetworkReachabilityOptionNodeName
+	@discussion Options-dictionary keys for
+		SCNetworkReachabilityCreateWithOptions(), from configd-596.15
+		SCPrivate.h (dnsinfo_shim.h's static _SC_* helpers cannot
+		coexist with SCPrivate.h, so they live here). The value of
+		NodeName and Interface is a CFString, of LocalAddress and
+		RemoteAddress a CFData holding a struct sockaddr, and of
+		ResolverBypass a CFBoolean. The reachability server and
+		on-demand keys have nothing to act on here and are not
+		defined.
+*/
+#define kSCNetworkReachabilityOptionNodeName		CFSTR("nodename")
+#define kSCNetworkReachabilityOptionLocalAddress	CFSTR("local-address")
+#define kSCNetworkReachabilityOptionRemoteAddress	CFSTR("remote-address")
+#define kSCNetworkReachabilityOptionInterface		CFSTR("interface")
+#define kSCNetworkReachabilityOptionResolverBypass	CFSTR("ResolverBypass")
+
 __BEGIN_DECLS
 
 /*!
@@ -106,10 +129,40 @@ CFTypeID
 SCNetworkReachabilityGetTypeID	(void);
 
 /*!
+	@function SCNetworkReachabilityCreateWithAddress
+	@discussion Create a target for a host address. Caller releases.
+ */
+SCNetworkReachabilityRef
+SCNetworkReachabilityCreateWithAddress
+				(CFAllocatorRef			allocator,
+				 const struct sockaddr *	address);
+
+/*!
+	@function SCNetworkReachabilityCreateWithAddressPair
+	@discussion Create a target for a local and/or remote address.
+		Caller releases.
+ */
+SCNetworkReachabilityRef
+SCNetworkReachabilityCreateWithAddressPair
+				(CFAllocatorRef			allocator,
+				 const struct sockaddr *	localAddress,
+				 const struct sockaddr *	remoteAddress);
+
+/*!
+	@function SCNetworkReachabilityCreateWithName
+	@discussion Create a target for a node name. Caller releases.
+ */
+SCNetworkReachabilityRef
+SCNetworkReachabilityCreateWithName
+				(CFAllocatorRef			allocator,
+				 const char *			nodename);
+
+/*!
 	@function SCNetworkReachabilityCreateWithOptions
-	@discussion Create a target from an options dictionary. The
-		PTR-only port supports a single option key
-		kSCNetworkReachabilityOptionPTRAddress. Caller releases.
+	@discussion Create a target from an options dictionary. The keys
+		are the kSCNetworkReachabilityOption* below, plus
+		kSCNetworkReachabilityOptionPTRAddress for a reverse
+		lookup. Caller releases.
  */
 SCNetworkReachabilityRef
 SCNetworkReachabilityCreateWithOptions
@@ -119,8 +172,8 @@ SCNetworkReachabilityCreateWithOptions
 /*!
 	@function SCNetworkReachabilitySetCallback
 	@discussion Sets (or clears, with NULL) the callback the target
-		fires when its resolved state changes. Must be called
-		before SetDispatchQueue. Returns TRUE on success.
+		fires when its reachability changes. Must be called before
+		scheduling. Returns TRUE on success.
  */
 Boolean
 SCNetworkReachabilitySetCallback
@@ -131,8 +184,8 @@ SCNetworkReachabilitySetCallback
 /*!
 	@function SCNetworkReachabilitySetDispatchQueue
 	@discussion Schedules callback delivery on a dispatch queue. Pass
-		NULL to unschedule (this cancels the in-flight PTR query
-		and fires no further callbacks). Returns TRUE on success.
+		NULL to unschedule (this cancels any in-flight query and
+		fires no further callbacks). Returns TRUE on success.
  */
 Boolean
 SCNetworkReachabilitySetDispatchQueue
@@ -153,6 +206,69 @@ CFArrayRef
 SCNetworkReachabilityCopyResolvedAddress
 				(SCNetworkReachabilityRef	target,
 				 int *				error_num);
+
+/*!
+	@function SCNetworkReachabilityGetFlags
+	@discussion Determines the reachability of the target. Returns
+		FALSE if it could not be determined.
+ */
+Boolean
+SCNetworkReachabilityGetFlags	(SCNetworkReachabilityRef	target,
+				 SCNetworkReachabilityFlags *	flags);
+
+/*!
+	@function SCNetworkReachabilityGetInterfaceIndex
+	@discussion Returns the index of the interface the target is
+		reached through, or -1 if it is not reachable.
+ */
+int
+SCNetworkReachabilityGetInterfaceIndex
+				(SCNetworkReachabilityRef	target);
+
+/*!
+	@function SCNetworkReachabilityScheduleWithRunLoop
+	@discussion Schedules callback delivery on a run loop.
+ */
+Boolean
+SCNetworkReachabilityScheduleWithRunLoop
+				(SCNetworkReachabilityRef	target,
+				 CFRunLoopRef			runLoop,
+				 CFStringRef			runLoopMode);
+
+/*!
+	@function SCNetworkReachabilityUnscheduleFromRunLoop
+	@discussion Removes callback delivery from a run loop.
+ */
+Boolean
+SCNetworkReachabilityUnscheduleFromRunLoop
+				(SCNetworkReachabilityRef	target,
+				 CFRunLoopRef			runLoop,
+				 CFStringRef			runLoopMode);
+
+/*!
+	@function __SC_checkResolverReachabilityInternal
+	@discussion SPI: which resolver would answer a query for nodename,
+		and whether it is reachable. scutil --dns <hostname>.
+ */
+Boolean
+__SC_checkResolverReachabilityInternal
+				(SCDynamicStoreRef *		storeP,
+				 SCNetworkReachabilityFlags *	flags,
+				 Boolean *			haveDNS,
+				 const char *			nodename,
+				 uint32_t *			resolver_if_index,
+				 int *				dns_config_index);
+
+/*!
+	@function __SCNetworkReachabilityGetTargetName
+	@discussion SPI: the node name of a by-name target and its scope, or
+		NULL for an address target. Apple's scutil reads the private
+		struct for these.
+ */
+const char *
+__SCNetworkReachabilityGetTargetName
+				(SCNetworkReachabilityRef	target,
+				 unsigned int *			if_index);
 
 __END_DECLS
 

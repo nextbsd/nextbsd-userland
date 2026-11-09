@@ -101,6 +101,8 @@ SCErrorString(int status)
 		return "Preferences update currently in progress";
 	case kSCStatusNeedLock :
 		return "Lock not held";
+	case 4001 :	/* kSCStatusReachabilityUnknown */
+		return "Network reachability cannot be determined";
 	default :
 		return "Unknown error";
 	}
