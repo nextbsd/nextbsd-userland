@@ -47,6 +47,7 @@
 #include <ifaddrs.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -183,14 +184,17 @@ build_arp_frame(uint8_t *buf, const uint8_t mac[6],
  * address equals our MAC, ignore (some hubs / bridges loop the
  * frame back to us; without this guard our own probes look
  * like conflicts).
+ *
+ * `probes_are_collisions`: another host's probe for `target` (a request
+ * with a zero sender and `target` as the target) counts too (#426).
  */
 static int
 is_conflict(const uint8_t *frame, size_t len, const uint8_t our_mac[6],
-    struct in_addr target)
+    struct in_addr target, bool probes_are_collisions)
 {
 	const struct ether_header *eh;
 	const struct ether_arp *ea;
-	struct in_addr spa;
+	struct in_addr spa, tpa;
 	uint16_t op;
 
 	if (len < sizeof(*eh) + sizeof(*ea))
@@ -210,7 +214,11 @@ is_conflict(const uint8_t *frame, size_t len, const uint8_t our_mac[6],
 	if (memcmp(ea->arp_sha, our_mac, 6) == 0)
 		return (0);	/* our own frame looped back */
 	(void)memcpy(&spa.s_addr, ea->arp_spa, 4);
-	return (spa.s_addr == target.s_addr ? 1 : 0);
+	if (spa.s_addr == target.s_addr)
+		return (1);
+	(void)memcpy(&tpa.s_addr, ea->arp_tpa, 4);
+	return (probes_are_collisions && op == ARPOP_REQUEST &&
+	    spa.s_addr == INADDR_ANY && tpa.s_addr == target.s_addr ? 1 : 0);
 }
 
 /*
@@ -220,7 +228,7 @@ is_conflict(const uint8_t *frame, size_t len, const uint8_t our_mac[6],
  */
 static int
 listen_for_conflict(int bpf_fd, const uint8_t our_mac[6],
-    struct in_addr target, unsigned ms)
+    struct in_addr target, unsigned ms, bool probes_are_collisions)
 {
 	/* 4096 — FreeBSD's default BPF buffer size (BIOCGBLEN). A
 	 * read smaller than that returns EINVAL even when no packet
@@ -271,7 +279,8 @@ listen_for_conflict(int bpf_fd, const uint8_t our_mac[6],
 			caplen = bh.bh_caplen;
 			if (pkt + caplen > end)
 				break;
-			if (is_conflict(pkt, caplen, our_mac, target))
+			if (is_conflict(pkt, caplen, our_mac, target,
+			    probes_are_collisions))
 				return (1);
 			p += BPF_WORDALIGN(bh.bh_hdrlen + caplen);
 		}
@@ -298,8 +307,9 @@ arp_send(int bpf_fd, const uint8_t *frame, size_t len)
 	return (-1);
 }
 
-int
-arp_probe(const char *ifname, struct in_addr target)
+static int
+probe_address(const char *ifname, struct in_addr target,
+    bool probes_are_collisions)
 {
 	uint8_t mac[6];
 	uint8_t frame[42];
@@ -331,7 +341,8 @@ arp_probe(const char *ifname, struct in_addr target)
 			return (-1);
 		}
 		xlog("probe %d/3 sent (target=%s)", i + 1, tbuf);
-		r = listen_for_conflict(bpf_fd, mac, target, 1000);
+		r = listen_for_conflict(bpf_fd, mac, target, 1000,
+		    probes_are_collisions);
 		if (r == 1) {
 			xlog("CONFLICT: %s already in use", tbuf);
 			(void)close(bpf_fd);
@@ -345,6 +356,18 @@ arp_probe(const char *ifname, struct in_addr target)
 	xlog("no conflict for %s after 3 probes", tbuf);
 	(void)close(bpf_fd);
 	return (0);
+}
+
+int
+arp_probe(const char *ifname, struct in_addr target)
+{
+	return (probe_address(ifname, target, false));
+}
+
+int
+arp_probe_linklocal(const char *ifname, struct in_addr target)
+{
+	return (probe_address(ifname, target, true));
 }
 
 int

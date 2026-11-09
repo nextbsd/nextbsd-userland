@@ -16,6 +16,7 @@
 
 struct bound_entry {
 	bool			bound;
+	bool			linklocal;	/* a 169.254 binding (#426) */
 	char			ifname[IF_NAMESIZE];
 	struct dhcp_lease	lease;
 	struct saved_pkt	packet;		/* pkt_size 0: none */
@@ -47,9 +48,9 @@ find_locked(const char *ifname)
 	return (NULL);
 }
 
-/* Caller holds the lock. Returns the highest-ranked bound slot, or NULL. */
+/* Caller holds the lock. The highest-ranked bound slot of one kind, or NULL. */
 static struct bound_entry *
-primary_locked(void)
+best_locked(bool linklocal)
 {
 	struct bound_entry *best = NULL;
 	int best_rank = -1, i;
@@ -57,7 +58,7 @@ primary_locked(void)
 	for (i = 0; i < BOUND_MAX_IF; i++) {
 		int r;
 
-		if (!g_bound.e[i].bound)
+		if (!g_bound.e[i].bound || g_bound.e[i].linklocal != linklocal)
 			continue;
 		r = iface_rank(g_bound.e[i].ifname);
 		if (r > best_rank) {
@@ -68,6 +69,18 @@ primary_locked(void)
 	return (best);
 }
 
+/*
+ * Caller holds the lock. A link-local binding has no router, so it is primary
+ * only when nothing else is bound (#426).
+ */
+static struct bound_entry *
+primary_locked(void)
+{
+	struct bound_entry *best = best_locked(false);
+
+	return (best != NULL ? best : best_locked(true));
+}
+
 void
 bound_state_init(void)
 {
@@ -76,6 +89,7 @@ bound_state_init(void)
 	(void)pthread_mutex_lock(&g_bound.lock);
 	for (i = 0; i < BOUND_MAX_IF; i++) {
 		g_bound.e[i].bound = false;
+		g_bound.e[i].linklocal = false;
 		g_bound.e[i].ifname[0] = '\0';
 		(void)memset(&g_bound.e[i].lease, 0,
 		    sizeof(g_bound.e[i].lease));
@@ -103,8 +117,8 @@ iface_rank(const char *ifname)
 	return (IFRANK_WIRED);
 }
 
-void
-bound_state_set(const char *ifname, const struct dhcp_lease *lease)
+static void
+set_entry(const char *ifname, const struct dhcp_lease *lease, bool linklocal)
 {
 	struct bound_entry *e;
 	int i;
@@ -124,6 +138,7 @@ bound_state_set(const char *ifname, const struct dhcp_lease *lease)
 	}
 	if (e != NULL) {
 		e->bound = true;
+		e->linklocal = linklocal;
 		(void)strlcpy(e->ifname, ifname, sizeof(e->ifname));
 		e->lease = *lease;
 	}
@@ -131,6 +146,18 @@ bound_state_set(const char *ifname, const struct dhcp_lease *lease)
 	 * BOUND_MAX_IF is far above any real machine, so this is a
 	 * can't-happen guard, not a policy. */
 	(void)pthread_mutex_unlock(&g_bound.lock);
+}
+
+void
+bound_state_set(const char *ifname, const struct dhcp_lease *lease)
+{
+	set_entry(ifname, lease, false);
+}
+
+void
+bound_state_set_linklocal(const char *ifname, const struct dhcp_lease *lease)
+{
+	set_entry(ifname, lease, true);
 }
 
 void
@@ -144,11 +171,27 @@ bound_state_clear(const char *ifname)
 	e = find_locked(ifname);
 	if (e != NULL) {
 		e->bound = false;
+		e->linklocal = false;
 		e->ifname[0] = '\0';
 		(void)memset(&e->lease, 0, sizeof(e->lease));
 		e->packet.pkt_size = 0;
 	}
 	(void)pthread_mutex_unlock(&g_bound.lock);
+}
+
+bool
+bound_state_is_linklocal(const char *ifname)
+{
+	struct bound_entry *e;
+	bool hit;
+
+	if (ifname == NULL)
+		return (false);
+	(void)pthread_mutex_lock(&g_bound.lock);
+	e = find_locked(ifname);
+	hit = (e != NULL && e->linklocal);
+	(void)pthread_mutex_unlock(&g_bound.lock);
+	return (hit);
 }
 
 bool

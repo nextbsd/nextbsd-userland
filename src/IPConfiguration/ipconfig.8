@@ -132,6 +132,7 @@ over the specific interface.
 .It Cm set Ar interface-name Cm NONE
 .It Cm set Ar interface-name Cm DHCP
 .It Cm set Ar interface-name Cm MANUAL Ar ip-address Ar subnet-mask
+.It Cm set Ar interface-name Cm LINKLOCAL
 .It Cm set Ar interface-name Cm NONE-V4
 .It Cm set Ar interface-name Cm NONE-V6
 .It Cm set Ar interface-name Cm AUTOMATIC-V6
@@ -154,7 +155,12 @@ and a prefix length
 A link-local address is not accepted.
 .Pp
 DHCP requires no additional arguments. The IP address, subnet mask,
-router, and DNS information are retrieved automatically.
+router, and DNS information are retrieved automatically.  If no server
+responds, a link-local address is configured after about 15 seconds and
+DHCP keeps trying; a lease replaces the link-local address.
+.Pp
+LINKLOCAL configures a 169.254/16 link-local address and requires no
+additional arguments.
 .Pp
 MANUAL requires the specification of an IP address
 .Ar ip-address

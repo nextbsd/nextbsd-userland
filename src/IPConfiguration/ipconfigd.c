@@ -126,6 +126,14 @@
  * `ipconfig set` changes one family at a time. An IPv6 service starts after
  * the interface's first IPv4 result and stops with the link, but otherwise
  * does not care what IPv4 is doing.
+ *
+ * link-local and DHCP retry (#426) — a LinkLocal service is an RFC 3927
+ * address (linklocal.c) through the same bound path as Manual. A DHCP service
+ * with no lease no longer exits: it runs Darwin's ladder and tries INIT again
+ * every minute, and from its fifth DISCOVER holds a link-local address that a
+ * lease replaces (dhcp.c's linklocal_service_change()). Link-local bindings
+ * stand aside in the primary election, and they are never defended: another
+ * claim on one means picking a new address, as linklocal.c does.
  */
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -160,6 +168,7 @@
 #include "ipconfig_prefs.h"
 #include "ipconfigd.h"
 #include "lease_loop.h"
+#include "linklocal.h"
 #include "mach_service.h"
 #include "sc_link_watch.h"
 #include "sc_publish.h"
@@ -218,6 +227,7 @@ struct dhcp_worker {
 	 * ServiceIPv4 ip_assigned_time / ip_conflict_*).
 	 */
 	bool			conflict;
+	volatile sig_atomic_t	ll_conflict;	/* the fallback's address: #426 */
 	time_t			v4_assigned;	/* monotonic secs at bind */
 	time_t			conflict_time;
 	int			conflict_count;
@@ -232,9 +242,16 @@ struct dhcp_worker {
  * §3.1.5's minimum wait between DHCPDECLINE and a fresh DISCOVER.
  */
 #define	DEFEND_IP_ADDRESS_INTERVAL_SECS		10
-#define	DEFEND_IP_ADDRESS_COUNT			5
+#define	DEFEND_IP_ADDRESS_COUNT			3
 #define	MANUAL_CONFLICT_RETRY_INTERVAL_SECS	300
 #define	DHCP_DECLINE_WAIT_SECS			10
+
+/*
+ * Darwin's defaults (#426): DHCPAllocateLinkLocalAtRetryCount, and dhcp.c's
+ * INIT_RETRY_INTERVAL_SECS.
+ */
+#define	DHCP_ALLOCATE_LINKLOCAL_AT_RETRY_COUNT	4
+#define	DHCP_INIT_RETRY_INTERVAL_SECS		60
 
 static pthread_mutex_t	g_workers_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct dhcp_worker g_workers[BOUND_MAX_IF];
@@ -459,6 +476,22 @@ worker_renew_flag(const char *ifname)
 	return (flag);
 }
 
+/* Take `ifname`'s pending fallback-address conflict, if any (#426). */
+static bool
+worker_take_ll_conflict(const char *ifname)
+{
+	struct dhcp_worker *w;
+	bool conflict = false;
+
+	pthread_mutex_lock(&g_workers_lock);
+	if ((w = worker_find_locked(ifname)) != NULL && w->ll_conflict) {
+		w->ll_conflict = 0;
+		conflict = true;
+	}
+	pthread_mutex_unlock(&g_workers_lock);
+	return (conflict);
+}
+
 /* Did `ifname`'s service just unwind because its address was in use? */
 static bool
 worker_conflicted(const char *ifname)
@@ -503,11 +536,11 @@ read_lease_cap_env(void)
 /*
  * service_run_bound — everything after an IPv4 configuration is installed
  * on `ifname`: record it, publish it, elect the primary, open the door for
- * the IPv6 service, park, then tear it all down. Shared by the DHCP and Manual
- * services (#58), which differ only in how they get `lease` and in
- * whether parking means a renewal loop. `saved` is the ACK for a DHCP
- * service and NULL for a Manual one (#430). Runs on the interface's
- * worker thread.
+ * the IPv6 service, park, then tear it all down. Shared by the DHCP, Manual
+ * and LinkLocal services (#58, #426), which differ only in how they get
+ * `lease` and in whether parking means a renewal loop. `saved` is the ACK for
+ * a DHCP service and NULL otherwise (#430). Runs on the interface's worker
+ * thread.
  *
  * Returns when the lease is lost, the link goes down or the method
  * changes (*stop), or the daemon is shutting down (got_term). Every one
@@ -520,9 +553,9 @@ read_lease_cap_env(void)
 static void
 service_run_bound(const char *ifname, struct dhcp_lease *lease,
     const struct saved_pkt *saved, uint32_t lease_cap_secs,
-    volatile sig_atomic_t *stop)
+    volatile sig_atomic_t *stop, ipconfig_method_t method)
 {
-	bool dhcp = (saved != NULL);
+	bool dhcp = (method == ipconfig_method_dhcp_e);
 	struct sc_publish *pub = NULL;
 	char a[INET_ADDRSTRLEN], m[INET_ADDRSTRLEN];
 	char r[INET_ADDRSTRLEN], s[INET_ADDRSTRLEN];
@@ -536,14 +569,18 @@ service_run_bound(const char *ifname, struct dhcp_lease *lease,
 		    "server=%s lease=%us",
 		    ifname, a, m, r, s, (unsigned)lease->lease_time);
 	else
-		xlog("configured: iface=%s method=Manual addr=%s netmask=%s "
-		    "router=%s", ifname, a, m, r);
+		xlog("configured: iface=%s method=%s addr=%s netmask=%s "
+		    "router=%s", ifname, ipconfig_method_string(method), a, m,
+		    r);
 	/*
 	 * Make the lease visible to the Mach service worker before the
 	 * BOUND marker fires — so any client racing IPCFG-RPC-OK against
 	 * IPCFG-BOUND-OK sees the address it expects.
 	 */
-	bound_state_set(ifname, lease);
+	if (method == ipconfig_method_linklocal_e)
+		bound_state_set_linklocal(ifname, lease);
+	else
+		bound_state_set(ifname, lease);
 	if (saved != NULL)
 		bound_state_set_packet(ifname, saved);
 	worker_v4_assigned(ifname);
@@ -667,50 +704,238 @@ service_run_bound(const char *ifname, struct dhcp_lease *lease,
 }
 
 /*
- * dhcp_run_on_interface — DHCPv4 INIT → BOUND on `ifname`, then
- * service_run_bound().
+ * The link-local address a DHCP service holds while it has no lease (#426):
+ * dhcp.c's linklocal_service_change(LINKLOCAL_ALLOCATE), from the worker
+ * thread instead of a child service. Published under the DHCP service's own
+ * ID, with no marker and no router, and flagged in bound_state so it stands
+ * aside in the election.
+ */
+struct dhcp_fallback {
+	const char		*ifname;
+	volatile sig_atomic_t	*stop;
+	bool			no_server;	/* reached try 5 */
+	bool			installed;
+	struct dhcp_lease	lease;
+	struct linklocal_probe	probe;
+};
+
+static void
+fallback_install(struct dhcp_fallback *f, struct in_addr addr)
+{
+	struct sc_publish *pub;
+	char a[INET_ADDRSTRLEN];
+
+	linklocal_lease(&f->lease, addr);
+	if (apply_lease(f->ifname, &f->lease) != 0) {
+		xlog("apply_lease(%s) failed for link-local fallback",
+		    f->ifname);
+		return;
+	}
+	bound_state_set_linklocal(f->ifname, &f->lease);
+	worker_v4_assigned(f->ifname);
+	f->installed = true;
+	(void)inet_ntop(AF_INET, &addr, a, sizeof(a));
+	xlog("%s: no DHCP server — link-local fallback %s", f->ifname, a);
+
+	pub = sc_publish_open("ipconfigd");
+	if (pub != NULL) {
+		(void)sc_publish_ipv4(pub, f->ifname, &f->lease);
+		(void)sc_publish_update_primary(pub);
+		sc_publish_close(pub);
+	}
+	dns_config_update(f->ifname);
+}
+
+static void
+fallback_remove(struct dhcp_fallback *f)
+{
+	struct sc_publish *pub;
+
+	(void)deconfigure_lease(f->ifname, &f->lease);
+	pub = sc_publish_open("ipconfigd");
+	if (pub != NULL)
+		(void)sc_publish_remove(pub, f->ifname);
+	bound_state_clear(f->ifname);
+	if (pub != NULL) {
+		(void)sc_publish_update_primary(pub);
+		sc_publish_close(pub);
+	}
+	dns_config_update(f->ifname);
+	f->installed = false;
+}
+
+/*
+ * One round of the fallback on the worker thread: give up an address another
+ * host claimed (no defence, as linklocal.c's arp_collision case), then probe
+ * one candidate if the service needs one and has none. A probe blocks for a
+ * few seconds and is the only thing here that does.
+ */
+static void
+fallback_step(struct dhcp_fallback *f)
+{
+	struct in_addr addr;
+
+	if (worker_take_ll_conflict(f->ifname) && f->installed) {
+		xlog("%s: link-local fallback address in use by another host",
+		    f->ifname);
+		fallback_remove(f);
+		linklocal_forget(f->ifname);
+		linklocal_probe_init(&f->probe, f->ifname);
+	}
+	if (!f->no_server || f->installed || got_term ||
+	    (f->stop != NULL && *f->stop))
+		return;
+	if (linklocal_probe_next(&f->probe, f->ifname, &addr) == 1 &&
+	    !got_term && !(f->stop != NULL && *f->stop))
+		fallback_install(f, addr);
+}
+
+/*
+ * dhcp_lease_acquire's on_try. From dhcp.c's INIT: at try 5 (about 15 s) a
+ * service with no server allocates a link-local address, and that is also
+ * IPv4's first result as far as the IPv6 service goes (#423).
+ */
+static void
+dhcp_on_try(int try, void *arg)
+{
+	struct dhcp_fallback *f = arg;
+
+	if (try >= DHCP_ALLOCATE_LINKLOCAL_AT_RETRY_COUNT + 1 &&
+	    !f->no_server) {
+		f->no_server = true;
+		v6_service_v4_result(f->ifname);
+	}
+	fallback_step(f);
+}
+
+/*
+ * dhcp_run_on_interface — the DHCP service: INIT → BOUND on `ifname`, then
+ * service_run_bound(), until stopped. With no lease it does not exit (#426):
+ * dhcp_no_server() tries INIT again after a minute, forever, and meanwhile
+ * the fallback keeps a link-local address.
+ *
+ * IPCFG-BOUND-FAIL is logged once per acquire, however many retries that
+ * acquire goes through, and never for a stop.
  */
 static void
 dhcp_run_on_interface(const char *ifname, uint32_t lease_cap_secs,
     volatile sig_atomic_t *stop)
 {
+	struct dhcp_fallback f;
 	struct dhcp_lease lease;
 	struct saved_pkt saved;
+	volatile sig_atomic_t *renew;
+	bool reported = false;
+
+	(void)memset(&f, 0, sizeof(f));
+	f.ifname = ifname;
+	f.stop = stop;
+	linklocal_probe_init(&f.probe, ifname);
+	renew = worker_renew_flag(ifname);
 
 	xlog("selected interface for DHCPv4: %s", ifname);
-	if (dhcp_lease_acquire(ifname, &lease, &saved, stop) != 0) {
+	for (;;) {
+		int r;
+		time_t until;
+
+		r = dhcp_lease_acquire(ifname, &lease, &saved, stop,
+		    dhcp_on_try, &f);
+
 		/*
-		 * dhcp_lease_acquire logged IPCFG-BOUND-FAIL on its own line,
-		 * or gave up early because `stop` was set (#410).
+		 * dhcp_lease_acquire gives up on `stop`, but a stop can still
+		 * land between the ACK and here. Do not install a lease we are
+		 * about to have to rip back out. Nor is a stop a failure, so
+		 * no marker either (#410, #417).
 		 */
-		return;
+		if (got_term || (stop != NULL && *stop)) {
+			if (r == DHCP_ACQUIRE_OK)
+				xlog("%s: link/daemon went away during DHCP — "
+				    "discarding lease", ifname);
+			break;
+		}
+
+		if (r == DHCP_ACQUIRE_OK) {
+			if (apply_lease(ifname, &lease) == 0) {
+				/*
+				 * The lease replaces the fallback (dhcp.c,
+				 * LINKLOCAL_NO_ALLOCATE). service_run_bound()
+				 * overwrites its bound_state and publish.
+				 */
+				linklocal_remove_addresses(ifname, lease.addr);
+				f.installed = false;
+				f.no_server = false;
+				linklocal_probe_init(&f.probe, ifname);
+				/* A request from before this lease is answered. */
+				if (renew != NULL)
+					*renew = 0;
+				service_run_bound(ifname, &lease, &saved,
+				    lease_cap_secs, stop,
+				    ipconfig_method_dhcp_e);
+
+				/*
+				 * Gave the address up to another host (#349):
+				 * it is off the interface now, so tell the
+				 * server, as dhcp.c's arp_collision path does
+				 * with dhcp_decline(). The worker restarts DHCP
+				 * after the RFC wait.
+				 */
+				if (!got_term && worker_conflicted(ifname))
+					(void)dhcp_decline(ifname, &lease);
+				if (got_term || (stop != NULL && *stop))
+					break;
+
+				/* Expired: back to INIT, a new acquire. */
+				xlog("%s: lease ended — back to INIT", ifname);
+				reported = false;
+				continue;
+			}
+			xlog("apply_lease(%s) failed", ifname);
+			r = DHCP_ACQUIRE_ERROR;
+		}
+
+		/*
+		 * Giving up is IPv4's result for readiness and for the IPv6
+		 * service, as the worker's exit used to be; retrying does not
+		 * make either wait again.
+		 */
+		if (!reported) {
+			reported = true;
+			xlog("IPCFG-BOUND-FAIL");
+			startup_mark_ready(ifname);
+			v6_service_v4_result(ifname);
+		}
+
+		switch (r) {
+		case DHCP_ACQUIRE_NO_ACK:
+			/* dhcp_select() goes straight back to INIT. */
+			until = monotonic_secs();
+			break;
+		case DHCP_ACQUIRE_DECLINED:
+			until = monotonic_secs() + DHCP_DECLINE_WAIT_SECS;
+			break;
+		default:
+			until = monotonic_secs() + DHCP_INIT_RETRY_INTERVAL_SECS;
+			break;
+		}
+		xlog("%s: no lease — running INIT again in %lds", ifname,
+		    (long)(until - monotonic_secs()));
+		while (monotonic_secs() < until && !got_term &&
+		    !(stop != NULL && *stop)) {
+			/* dhcp.c's renew case on an unbound service: INIT now. */
+			if (renew != NULL && *renew) {
+				*renew = 0;
+				break;
+			}
+			fallback_step(&f);
+			(void)sleep(1);
+		}
+		if (got_term || (stop != NULL && *stop))
+			break;
 	}
 
-	/*
-	 * dhcp_lease_acquire gives up on `stop`, but a stop can still land
-	 * between the ACK and here. Do not install a lease we are about to
-	 * have to rip back out.
-	 */
-	if (got_term || (stop != NULL && *stop)) {
-		xlog("%s: link/daemon went away during DHCP — discarding lease",
-		    ifname);
-		return;
-	}
-
-	if (apply_lease(ifname, &lease) != 0) {
-		xlog("apply_lease(%s) failed", ifname);
-		xlog("IPCFG-BOUND-FAIL");
-		return;
-	}
-	service_run_bound(ifname, &lease, &saved, lease_cap_secs, stop);
-
-	/*
-	 * Gave the address up to another host (#349): it is off the interface
-	 * now, so tell the server, as dhcp.c's arp_collision path does with
-	 * dhcp_decline(). The worker restarts DHCP after the RFC wait.
-	 */
-	if (!got_term && worker_conflicted(ifname))
-		(void)dhcp_decline(ifname, &lease);
+	/* As for a lease, SIGTERM leaves the address installed. */
+	if (f.installed && !got_term)
+		fallback_remove(&f);
 }
 
 /*
@@ -749,7 +974,56 @@ manual_run_on_interface(const char *ifname,
 		xlog("apply_lease(%s) failed for Manual %s", ifname, a);
 		return;
 	}
-	service_run_bound(ifname, &lease, NULL, 0, stop);
+	service_run_bound(ifname, &lease, NULL, 0, stop,
+	    ipconfig_method_manual_e);
+}
+
+/*
+ * linklocal_run_on_interface — the LinkLocal service (#426): an RFC 3927
+ * address, then service_run_bound() as for Manual, with no router and no
+ * DNS. linklocal.c probes candidates until one is free; when that has
+ * gone on past its initial tries, the service counts as given up for
+ * readiness and the IPv6 service, and keeps probing behind the back-off.
+ */
+static void
+linklocal_run_on_interface(const char *ifname, volatile sig_atomic_t *stop)
+{
+	struct linklocal_probe lp;
+	struct dhcp_lease lease;
+	struct in_addr addr;
+	bool gave_up = false;
+
+	xlog("selected interface for LinkLocal: %s", ifname);
+	linklocal_probe_init(&lp, ifname);
+	for (;;) {
+		int r;
+
+		if (got_term || (stop != NULL && *stop))
+			return;
+		r = linklocal_probe_next(&lp, ifname, &addr);
+		if (r == 1)
+			break;
+		if (lp.retry_at != 0 && !gave_up && !got_term &&
+		    !(stop != NULL && *stop)) {
+			gave_up = true;
+			startup_mark_ready(ifname);
+			v6_service_v4_result(ifname);
+		}
+		if (lp.retry_at > monotonic_secs())
+			(void)sleep(1);
+	}
+	if (got_term || (stop != NULL && *stop))
+		return;
+
+	linklocal_lease(&lease, addr);
+	if (apply_lease(ifname, &lease) != 0) {
+		xlog("apply_lease(%s) failed for LinkLocal", ifname);
+		return;
+	}
+	service_run_bound(ifname, &lease, NULL, 0, stop,
+	    ipconfig_method_linklocal_e);
+	if (!got_term && worker_conflicted(ifname))
+		linklocal_forget(ifname);
 }
 
 /*
@@ -809,6 +1083,8 @@ dhcp_worker_main(void *arg)
 
 		if (method.method == ipconfig_method_manual_e)
 			manual_run_on_interface(ifname, &method, &w->stop);
+		else if (method.method == ipconfig_method_linklocal_e)
+			linklocal_run_on_interface(ifname, &w->stop);
 		else
 			dhcp_run_on_interface(ifname, w->lease_cap_secs,
 			    &w->stop);
@@ -829,9 +1105,13 @@ dhcp_worker_main(void *arg)
 		pthread_mutex_unlock(&g_workers_lock);
 		if (!conflict || got_term)
 			break;
-		wait = method.method == ipconfig_method_manual_e
-		    ? MANUAL_CONFLICT_RETRY_INTERVAL_SECS
-		    : DHCP_DECLINE_WAIT_SECS;
+		/* linklocal.c picks a new address at once. */
+		if (method.method == ipconfig_method_linklocal_e)
+			wait = 0;
+		else
+			wait = method.method == ipconfig_method_manual_e
+			    ? MANUAL_CONFLICT_RETRY_INTERVAL_SECS
+			    : DHCP_DECLINE_WAIT_SECS;
 		xlog("%s: address in use — running %s again in %us", ifname,
 		    ipconfig_method_string(method.method), wait);
 		for (i = 0; i < wait && !got_term && !w->stop; i++)
@@ -905,6 +1185,8 @@ set_service_method_string(ipconfig_method_t m)
 		return ("MANUAL");
 	case ipconfig_method_dhcp_e:
 		return ("DHCP");
+	case ipconfig_method_linklocal_e:
+		return ("LINKLOCAL");
 	default:
 		return ("NONE");
 	}
@@ -1034,6 +1316,7 @@ dhcp_worker_start(const char *ifname, uint32_t lease_cap_secs)
 	w->ready = false;
 	w->restart = false;
 	w->conflict = false;
+	w->ll_conflict = 0;
 	w->v4_assigned = 0;
 	w->conflict_time = 0;
 	w->conflict_count = 0;
@@ -1555,9 +1838,9 @@ on_link_event(const char *ifname, int active, uint32_t lease_cap_secs)
 
 /*
  * Link-watch renew callback (#572), on a dispatch worker: Darwin's
- * link_refresh(). Only a bound service acts on it, as dhcp.c's renew case
- * does. The lease loop notices the flag within a second and renews on its
- * own thread. A Manual service leaves IPv4 alone. An Automatic IPv6 service
+ * link_refresh(). A bound DHCP service renews, its lease loop noticing the
+ * flag within a second; one with no lease goes back to INIT now (dhcp.c's
+ * renew case). A Manual service leaves IPv4 alone. An Automatic IPv6 service
  * solicits whatever the IPv4 side is doing, as rtadv.c restarts solicitation
  * on a renew (#423).
  */
@@ -1567,18 +1850,16 @@ on_link_refresh(const char *ifname)
 	struct dhcp_worker *w;
 	bool dhcp = false;
 
-	if (bound_state_is_bound(ifname)) {
-		pthread_mutex_lock(&g_workers_lock);
-		w = worker_find_locked(ifname);
-		if (w != NULL && !w->stop) {
-			dhcp = w->method.method == ipconfig_method_dhcp_e;
-			if (dhcp)
-				w->renew = 1;
-		}
-		pthread_mutex_unlock(&g_workers_lock);
+	pthread_mutex_lock(&g_workers_lock);
+	w = worker_find_locked(ifname);
+	if (w != NULL && !w->stop) {
+		dhcp = w->method.method == ipconfig_method_dhcp_e;
+		if (dhcp)
+			w->renew = 1;
 	}
+	pthread_mutex_unlock(&g_workers_lock);
 	xlog("%s: configuration refresh requested%s", ifname,
-	    dhcp ? " — renewing the lease" : "");
+	    dhcp ? " — renewing or restarting DHCP" : "");
 	v6_service_solicit(ifname);
 }
 
@@ -1618,7 +1899,7 @@ on_arp_collision(const char *ifname, struct in_addr ip, const uint8_t *hw,
 	struct dhcp_worker *w;
 	uint32_t bound;
 	time_t now;
-	bool defend = false, manual;
+	bool defend = false, linklocal, manual;
 	int count;
 	char a[INET_ADDRSTRLEN], h[3 * 16];
 	int i;
@@ -1628,6 +1909,7 @@ on_arp_collision(const char *ifname, struct in_addr ip, const uint8_t *hw,
 		return;
 	if (!bound_state_get_addr(ifname, &bound) || bound != ip.s_addr)
 		return;
+	linklocal = bound_state_is_linklocal(ifname);
 
 	(void)inet_ntop(AF_INET, &ip, a, sizeof(a));
 	h[0] = '\0';
@@ -1640,6 +1922,23 @@ on_arp_collision(const char *ifname, struct in_addr ip, const uint8_t *hw,
 	w = worker_find_locked(ifname);
 	if (w == NULL || w->stop) {
 		pthread_mutex_unlock(&g_workers_lock);
+		return;
+	}
+	if (linklocal) {
+		/*
+		 * linklocal.c does not defend: the address is given up and
+		 * another picked, at once for a LinkLocal service and on the
+		 * worker's next round for a DHCP service's fallback (#426).
+		 */
+		if (w->method.method == ipconfig_method_linklocal_e) {
+			w->conflict = true;
+			w->stop = 1;
+		} else {
+			w->ll_conflict = 1;
+		}
+		pthread_mutex_unlock(&g_workers_lock);
+		xlog("%s: link-local %s in use by %s — giving it up", ifname, a,
+		    h);
 		return;
 	}
 	manual = w->method.method == ipconfig_method_manual_e;

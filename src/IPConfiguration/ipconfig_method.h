@@ -9,8 +9,8 @@
  * the parsed form as ipconfig_method_info_t (bootp/bootplib/
  * ipconfig_types.h); this is the subset ipconfigd serves.
  *
- * ipconfigd serves DHCP, Manual and NONE. An interface no service names
- * stays on DHCP, so a machine with no network preferences behaves
+ * ipconfigd serves DHCP, Manual, LinkLocal and NONE. An interface no service
+ * names stays on DHCP, so a machine with no network preferences behaves
  * exactly as it did before methods existed. The other methods parse but
  * are not served: an interface configured with one is left alone rather
  * than DHCP'd behind the administrator's back.
@@ -81,7 +81,7 @@ struct ipconfig_v6_method_info {
 /* Apple's ConfigMethod spelling for `m` ("DHCP", "Manual", ...). */
 const char	*ipconfig_method_string(ipconfig_method_t m);
 
-/* Does ipconfigd run a service for `m`? (DHCP and Manual.) */
+/* Does ipconfigd run a service for `m`? (DHCP, Manual and LinkLocal.) */
 bool		ipconfig_method_is_served(ipconfig_method_t m);
 
 /*
