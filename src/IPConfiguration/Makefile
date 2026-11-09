@@ -21,7 +21,7 @@ SRCS+=		arp_probe.c
 SRCS+=		ra_listen.c apply_lease_v6.c ra_router.c v6_service.c
 SRCS+=		sc_link_watch.c
 SRCS+=		ipconfig_prefs.c
-SRCS+=		dns_config.c dns_configuration.c
+SRCS+=		dns_config.c dns_configuration.c nwi_configuration.c
 
 # The dnsinfo server: configd-596.15 dnsinfo/ and libSystemConfiguration/.
 # Apple builds these into configd's IPMonitor plugin; here ipconfigd owns the
@@ -32,6 +32,12 @@ SRCS+=		dnsinfo_create.c dnsinfo_server.c
 SRCS+=		libSystemConfiguration_server.c
 CFLAGS+=	-I${.CURDIR}/../libSystemConfiguration/dnsinfo
 CFLAGS+=	-I${.CURDIR}/../libSystemConfiguration/libSC_info
+
+# The network_information server, from configd-596.15 nwi/, likewise. The
+# client half (network_information.c) is in libSystemConfiguration.
+.PATH:		${.CURDIR}/../libSystemConfiguration/nwi
+SRCS+=		network_information_priv.c network_information_server.c
+CFLAGS+=	-I${.CURDIR}/../libSystemConfiguration/nwi
 
 # Apple's DHCP option list and tag table, bootp-268.1 bootplib, trimmed
 # (vendored/): answers ipconfig getoption from the saved packet. The
@@ -101,7 +107,7 @@ LDADD+=		-lsystem_dispatch -l:libsystem_blocks.so
 # -lnotify: notify_post(com.apple.system.config.network_change) after a
 # primary election and a resolv.conf rewrite, as Darwin's IPMonitor does.
 LDADD+=		-lnotify
-# -lxpc: the dnsinfo XPC service (org.nextbsd.SystemConfiguration.DNSConfiguration).
+# -lxpc: the dnsinfo and nwi XPC services (org.nextbsd.SystemConfiguration.*).
 LDADD+=		-lxpc
 
 BINDIR=		/usr/sbin

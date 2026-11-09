@@ -616,19 +616,6 @@ run_mig "$CONFIGD_MIG" -I"$SRC/libmach/include" \
 test -s "$CONFIGD_MIG/configServer.c" || { echo "FAIL: mig produced no configServer.c"; exit 1; }
 # DROPPED: configtest/notifytest/patterntest/listtest/multitest (host-exec).
 
-# ---- libSystemConfiguration -------------------------------------------------
-# build.sh ~1621-1651. Reuses configUser.c MIG stubs (MIGOUT=$CONFIGD_MIG) +
-# config_wire.c; links CF + liblaunch. Pre-create the SC include dir.
-comp "libSystemConfiguration"
-mkdir -p "$DESTDIR/usr/include/SystemConfiguration"
-run_buildenv "make -C $SRC/libSystemConfiguration DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$CONFIGD_MIG all install"
-sync_sysroot
-test -f "$DESTDIR/usr/lib/system/libSystemConfiguration.so.1" \
-    || { echo "FAIL: libSystemConfiguration.so.1 not installed"; exit 1; }
-test -f "$DESTDIR/usr/include/SystemConfiguration/SCDynamicStore.h" \
-    || { echo "FAIL: SCDynamicStore.h not installed"; exit 1; }
-# DROPPED: sctest/scnotifytest/scbridgetest (host-exec) + chroot ldconfig/ldd.
-
 # ---- Libnotify (libnotify) + notifyd ----------------------------------------
 # libnotify is built here, ahead of libIOKit: libIOKit's power source and
 # power management clients (IOPowerSources.c, IOPMAssertions.c,
@@ -700,6 +687,20 @@ run_buildenv "make -C $SRC/Libnotify DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$L
 sync_sysroot
 test -f "$DESTDIR/usr/lib/system/libnotify.so.1" || { echo "FAIL: libnotify.so.1 not installed"; exit 1; }
 echo "==> NOTIFY-LIB-OK"
+
+# ---- libSystemConfiguration -------------------------------------------------
+# build.sh ~1621-1651. Reuses configUser.c MIG stubs (MIGOUT=$CONFIGD_MIG) +
+# config_wire.c; links CF + liblaunch, and libnotify for nwi_state_copy()
+# (#574), so it builds after libnotify. Pre-create the SC include dir.
+comp "libSystemConfiguration"
+mkdir -p "$DESTDIR/usr/include/SystemConfiguration"
+run_buildenv "make -C $SRC/libSystemConfiguration DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$CONFIGD_MIG all install"
+sync_sysroot
+test -f "$DESTDIR/usr/lib/system/libSystemConfiguration.so.1" \
+    || { echo "FAIL: libSystemConfiguration.so.1 not installed"; exit 1; }
+test -f "$DESTDIR/usr/include/SystemConfiguration/SCDynamicStore.h" \
+    || { echo "FAIL: SCDynamicStore.h not installed"; exit 1; }
+# DROPPED: sctest/scnotifytest/scbridgetest (host-exec) + chroot ldconfig/ldd.
 
 # ---- libIOKit + ioreg -------------------------------------------------------
 # build.sh ~1910-1939 (lib) and ~2059-2077 (ioreg). libIOKit is bsd.lib.mk;

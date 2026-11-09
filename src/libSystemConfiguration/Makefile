@@ -35,6 +35,14 @@ SRCS+=		SCDPrivate.c LinkConfiguration.c
 SRCS+=		dnsinfo_copy.c libSystemConfiguration_client.c
 CFLAGS+=	-I${.CURDIR}/dnsinfo -I${.CURDIR}/libSC_info
 
+# nwi_state_copy() and friends: the client half of network_information,
+# from configd-596.15 nwi/. ipconfigd builds the server half.
+.PATH:		${.CURDIR}/nwi
+SRCS+=		network_information.c
+CFLAGS+=	-I${.CURDIR}/nwi
+# <notify.h> includes os/base.h from the libnotify shims.
+CFLAGS+=	-I${.CURDIR}/../Libnotify/freebsd-shims
+
 # configUser.c — MIG-generated config.defs client stubs (same file
 # configd's test clients link). config_wire.c — configd's shared
 # length-prefixed key-list decoder, reused by SCDynamicStoreCopyKeyList
@@ -114,8 +122,11 @@ LIBDIR=		${PREFIX}/lib/system
 # handlers are blocks (-fblocks).
 LDADD+=		-lCoreFoundation -lsystem_dispatch -l:libsystem_blocks.so
 LDADD+=		-lsystem_kernel -llaunch
-# -lxpc: dns_configuration_copy() reaches the dnsinfo service over XPC.
+# -lxpc: dns_configuration_copy() and nwi_state_copy() reach their services
+# over XPC.
 LDADD+=		-lxpc
+# -lnotify: nwi_state_copy() watches the nwi notify key for changes.
+LDADD+=		-lnotify
 # SCNetworkReachability.c calls into libdns_sd (DNSServiceQueryRecord
 # against mDNSResponder) but libdns_sd builds AFTER libSC in
 # build.sh's Phase K order, so we cannot link -ldns_sd here. Leave

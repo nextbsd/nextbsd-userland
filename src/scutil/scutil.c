@@ -50,9 +50,10 @@
  * (scutil.tproj/scutil.c). Carried: the interactive SCDynamicStore
  * session, "-w key [-t timeout]", "--prefs [file]", "--get" / "--set"
  * for ComputerName, HostName and LocalHostName (plus the extended
- * "--get file path key"), "--proxy", "--renew" and "--error". Dropped
+ * "--get file path key"), "--dns", "--nwi", "--proxy", "--renew" and
+ * "--error". Dropped
  * until their backing APIs exist in our libSystemConfiguration:
- * "-r" / "-W" reachability, "--dns", "--nwi", "--net", "--snapshot",
+ * "-r" / "-W" reachability, "--net", "--snapshot",
  * "--configuration", "--advisory", "--rank", "--log" and the interface
  * preference switches. "--nc" (VPN) is out of scope: there is no VPN
  * stack.
@@ -99,6 +100,7 @@ static const struct option longopts[] = {
 	{ "help",		no_argument,		NULL,	'?'	},
 	{ "prefs",		no_argument,		NULL,	0	},
 	{ "dns",		no_argument,		NULL,	0	},
+	{ "nwi",		no_argument,		NULL,	0	},
 	{ "proxy",		no_argument,		NULL,	0	},
 	{ "renew",		required_argument,	NULL,	0	},
 	{ "set",		required_argument,	NULL,	0	},
@@ -337,6 +339,9 @@ usage(const char *command)
 	SCPrint(TRUE, stderr, CFSTR("   or: %s --dns\n"), command);
 	SCPrint(TRUE, stderr, CFSTR("\tshow DNS configuration.\n"));
 	SCPrint(TRUE, stderr, CFSTR("\n"));
+	SCPrint(TRUE, stderr, CFSTR("   or: %s --nwi\n"), command);
+	SCPrint(TRUE, stderr, CFSTR("\tshow network information\n"));
+	SCPrint(TRUE, stderr, CFSTR("\n"));
 	SCPrint(TRUE, stderr, CFSTR("   or: %s --proxy\n"), command);
 	SCPrint(TRUE, stderr, CFSTR("\tshow \"proxy\" configuration.\n"));
 
@@ -365,6 +370,7 @@ main(int argc, char * const argv[])
 	const char		*prog			= argv[0];
 	char			*renew			= NULL;
 	Boolean			doDNS			= FALSE;
+	Boolean			doNWI			= FALSE;
 	char			*set			= NULL;
 	InputRef		src;
 	int			timeout			= 15;	/* default timeout (in seconds) */
@@ -400,6 +406,9 @@ main(int argc, char * const argv[])
 				xStore++;
 			} else if (strcmp(longopts[opti].name, "dns") == 0) {
 				doDNS = TRUE;
+				xStore++;
+			} else if (strcmp(longopts[opti].name, "nwi") == 0) {
+				doNWI = TRUE;
 				xStore++;
 			} else if (strcmp(longopts[opti].name, "proxy") == 0) {
 				doProxy = TRUE;
@@ -474,6 +483,11 @@ main(int argc, char * const argv[])
 			usage(prog);
 		}
 		do_showDNSConfiguration(argc, (char **)argv);
+		/* NOT REACHED */
+	}
+
+	if (doNWI) {
+		do_nwi(argc, (char**)argv);
 		/* NOT REACHED */
 	}
 

@@ -39,6 +39,8 @@
         <true/>
         <key>org.nextbsd.SystemConfiguration.DNSConfiguration</key>
         <true/>
+        <key>org.nextbsd.SystemConfiguration.NetworkInformation</key>
+        <true/>
     </dict>
     <key>StandardOutPath</key>
     <string>/var/log/ipconfigd.stderr</string>

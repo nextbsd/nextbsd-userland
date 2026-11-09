@@ -13,6 +13,7 @@
 #include "apply_lease.h"
 #include "bound_state.h"
 #include "dns_configuration.h"
+#include "nwi_configuration.h"
 #include "ipconfig_prefs.h"
 #include "ipconfigd.h"
 #include "sc_publish.h"
@@ -400,6 +401,7 @@ dnsinfo_update_locked(void)
 	static struct ipconfig_dns merged[DNSINFO_MAX_SERVICES];
 	static struct dnsinfo_service svcs[DNSINFO_MAX_SERVICES];
 	static char names[DNSINFO_MAX_SERVICES][IF_NAMESIZE];
+	static struct nwi_service nwi[DNSINFO_MAX_SERVICES];
 	char primary[IF_NAMESIZE] = "";
 	int count, i, j, n = 0, primary_idx = -1;
 
@@ -430,8 +432,25 @@ dnsinfo_update_locked(void)
 	for (i = 0; i < count; i++) {
 		const struct dns_service *s;
 		uint32_t addr;
+		char a6[INET6_ADDRSTRLEN];
+		bool have_dns;
 
-		if (!service_merged_locked(names[i], &merged[n]))
+		have_dns = service_merged_locked(names[i], &merged[n]);
+
+		/* network_information's lists have every interface, DNS or not. */
+		s = service_find_locked(names[i], false);
+		(void)memset(&nwi[i], 0, sizeof(nwi[i]));
+		(void)strlcpy(nwi[i].ifname, names[i], sizeof(nwi[i].ifname));
+		nwi[i].rank = iface_rank(names[i]);
+		nwi[i].have_dns = have_dns;
+		nwi[i].have_v4 = bound_state_get_addr(names[i],
+		    &nwi[i].v4_addr.s_addr);
+		if (s != NULL && s->v6_active &&
+		    global_v6_addr(names[i], a6, sizeof(a6)))
+			nwi[i].have_v6 = inet_pton(AF_INET6, a6,
+			    &nwi[i].v6_addr) == 1;
+
+		if (!have_dns)
 			continue;
 		(void)memset(&svcs[n], 0, sizeof(svcs[n]));
 		(void)strlcpy(svcs[n].ifname, names[i], sizeof(svcs[n].ifname));
@@ -439,7 +458,6 @@ dnsinfo_update_locked(void)
 		if (bound_state_get_addr(names[i], &addr))
 			(void)inet_ntop(AF_INET, &addr, svcs[n].v4_addr,
 			    sizeof(svcs[n].v4_addr));
-		s = service_find_locked(names[i], false);
 		if (s != NULL && s->v6_active)
 			(void)global_v6_addr(names[i], svcs[n].v6_addr,
 			    sizeof(svcs[n].v6_addr));
@@ -448,6 +466,13 @@ dnsinfo_update_locked(void)
 		n++;
 	}
 	dns_configuration_update(svcs, (unsigned)n, primary_idx);
+	/*
+	 * nwi after dnsinfo, for the same reason Apple runs them in one pass:
+	 * every election ends here (sc_publish_update_primary() is always
+	 * followed by dns_config_update()), and so does every IPv6 change, and
+	 * the DNS flag can only be known once the merge above has run.
+	 */
+	nwi_configuration_update(nwi, (unsigned)count);
 }
 
 void
