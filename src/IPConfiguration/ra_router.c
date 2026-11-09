@@ -11,13 +11,11 @@
  *     flapping to whichever router spoke last (RFC 4861 §6.3.6);
  *   - otherwise the first live router takes over, or there is none.
  *
- * A change of default deletes the old ::/0, adds the new one, and
- * republishes State:/Network/Service/<UUID>/IPv6 with the new Router (or
- * without one). An RA from the current default also re-adds ::/0, so a
- * route removed behind our back comes back while the router is valid.
- *
- * The thread has its own configd session: the DHCP worker's session is in
- * use by lease_loop on the worker thread at the same time.
+ * A change of default deletes the old ::/0, adds the new one, and has the
+ * IPv6 service republish State:/Network/Service/<UUID>/IPv6 with the new
+ * Router (or without one). An RA from the current default also re-adds
+ * ::/0, so a route removed behind our back comes back while the router is
+ * valid.
  */
 #include "ra_router.h"
 
@@ -41,7 +39,6 @@
 #include <unistd.h>
 
 #include "apply_lease_v6.h"
-#include "sc_publish.h"
 
 extern volatile sig_atomic_t got_term;
 
@@ -56,18 +53,15 @@ struct ra_router_ent {
 struct ra_router {
 	char			ifname[IFNAMSIZ];
 	unsigned		ifindex;
-	bool			have_addr;	/* a SLAAC address is published */
-	struct in6_addr		addr;		/* published SLAAC address */
-	uint8_t			prefix_len;
 	struct ra_router_ent	rtr[RA_MAX_ROUTERS];
 	int			nrtr;
 	bool			have_default;	/* ::/0 installed via dflt */
 	struct in6_addr		dflt;
-	struct sc_publish	*pub;
 	pthread_t		tid;
 	volatile sig_atomic_t	stop;
+	ra_router_changed_t	changed;
 	ra_router_sample_t	sample;
-	void			*sample_arg;
+	void			*arg;
 	volatile sig_atomic_t	sample_wanted;
 };
 
@@ -168,11 +162,8 @@ expire_routers(struct ra_router *r, time_t now)
 static void
 publish(struct ra_router *r)
 {
-	if (r->pub == NULL || !r->have_addr)
-		return;
-	if (sc_publish_ipv6(r->pub, r->ifname, &r->addr, r->prefix_len,
-	    r->have_default ? &r->dflt : NULL) != 0)
-		xlog("%s: republish State:/.../IPv6 failed", r->ifname);
+	if (r->changed != NULL)
+		r->changed(r->arg, r->have_default ? &r->dflt : NULL);
 }
 
 /*
@@ -248,7 +239,7 @@ ra_router_main(void *arg)
 			if (r->sample_wanted) {
 				r->sample_wanted = 0;
 				if (r->sample != NULL)
-					r->sample(r->sample_arg, &ra);
+					r->sample(r->arg, &ra);
 			}
 		}
 		expire_routers(r, now);
@@ -263,7 +254,7 @@ ra_router_main(void *arg)
 
 struct ra_router *
 ra_router_start(const char *ifname, const struct ra_info *ra,
-    const struct in6_addr *addr, ra_router_sample_t sample, void *arg)
+    ra_router_changed_t changed, ra_router_sample_t sample, void *arg)
 {
 	struct ra_router *r;
 	int rc;
@@ -273,13 +264,9 @@ ra_router_start(const char *ifname, const struct ra_info *ra,
 		return (NULL);
 	(void)strlcpy(r->ifname, ifname, sizeof(r->ifname));
 	r->ifindex = ra->router_scope_id;
-	if (addr != NULL) {
-		r->have_addr = true;
-		r->addr = *addr;
-	}
-	r->prefix_len = ra->prefix_len;
+	r->changed = changed;
 	r->sample = sample;
-	r->sample_arg = arg;
+	r->arg = arg;
 
 	/*
 	 * apply_ra_lease installed ::/0 via this RA's router. Seed the
@@ -290,16 +277,9 @@ ra_router_start(const char *ifname, const struct ra_info *ra,
 	r->have_default = true;
 	note_router(r, ra, now_sec());
 
-	r->pub = sc_publish_open("ipconfigd-ra");
-	if (r->pub == NULL)
-		xlog("%s: no configd session; router changes will not be "
-		    "republished", ifname);
-
 	rc = pthread_create(&r->tid, NULL, ra_router_main, r);
 	if (rc != 0) {
 		xlog("%s: pthread_create failed: %s", ifname, strerror(rc));
-		if (r->pub != NULL)
-			sc_publish_close(r->pub);
 		free(r);
 		return (NULL);
 	}
@@ -328,7 +308,5 @@ ra_router_stop(struct ra_router *r, int remove_route)
 		xlog("%s: removed ::/0 via %s", r->ifname,
 		    addr_str(&r->dflt, buf, sizeof(buf)));
 
-	if (r->pub != NULL)
-		sc_publish_close(r->pub);
 	free(r);
 }

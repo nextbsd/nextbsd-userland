@@ -16,6 +16,8 @@
 #ifndef _IPCFG_SC_PUBLISH_H_
 #define _IPCFG_SC_PUBLISH_H_
 
+#include <stddef.h>
+
 #include "dhcp_packet.h"
 
 #include <netinet/in.h>
@@ -98,11 +100,28 @@ int	sc_publish_remove_dns_global(struct sc_publish *p);
  * `router_lladdr` may be NULL when there is no default router (its
  * lifetime expired); Router is then left out of the dict.
  *
- * Single-address publish only; iter 7a doesn't track multiple PIOs.
+ * One address; sc_publish_ipv6_addrs() is the list form.
  */
 int	sc_publish_ipv6(struct sc_publish *p, const char *ifname,
 	    const struct in6_addr *addr, uint8_t prefix_len,
 	    const struct in6_addr *router_lladdr);
+
+/*
+ * The same, for `count` addresses (rtadv.c's list: SLAAC and DHCPv6, #576).
+ */
+int	sc_publish_ipv6_addrs(struct sc_publish *p, const char *ifname,
+	    const struct in6_addr *addrs, const uint8_t *prefix_lens, int count,
+	    const struct in6_addr *router_lladdr);
+
+/*
+ * Publish State:/Network/Service/<serviceID>/DHCPv6, Apple's
+ * DHCPv6InfoDictionaryCreate(): an Option_<code> array of data per option in
+ * the accepted packet. `sc_publish_remove_dhcpv6` takes it away. Return 0 on
+ * success.
+ */
+int	sc_publish_dhcpv6(struct sc_publish *p, const char *ifname,
+	    const void *pkt, size_t pkt_len);
+int	sc_publish_remove_dhcpv6(struct sc_publish *p, const char *ifname);
 
 /*
  * Publish DHCP state under State:/Network/Service/<serviceID>/DHCP. Mirrors

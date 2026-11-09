@@ -37,6 +37,14 @@ int bring_v6_up(const char *ifname, bool accept_rtadv, struct in6_addr *ll_out);
 int v6_turn_off(const char *ifname);
 
 /*
+ * Install a DHCPv6 address (#576) with the lease's lifetimes and no
+ * IN6_IFF_AUTOCONF, as Apple's DHCPv6Client does. Calling it again for an
+ * address already there updates the lifetimes.
+ */
+int install_v6_dhcp_address(const char *ifname, const struct in6_addr *addr,
+    uint8_t prefix_len, uint32_t valid_lifetime, uint32_t preferred_lifetime);
+
+/*
  * Install a Manual IPv6 address (#423): infinite lifetimes and no
  * IN6_IFF_AUTOCONF, as Apple's manual_v6 does. Tentative until DAD passes,
  * like a SLAAC address.
