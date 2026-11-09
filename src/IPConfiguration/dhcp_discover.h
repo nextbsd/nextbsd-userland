@@ -111,11 +111,4 @@ int	dhcp_renew(const char *ifname,
  */
 int	dhcp_decline(const char *ifname, const struct dhcp_lease *lease);
 
-/*
- * Pick the first non-loopback Ethernet interface (the QEMU guest's
- * em0 in CI). Writes the name into ifname_out (buffer is at least
- * IFNAMSIZ).  Returns 0 on success.
- */
-int	dhcp_pick_interface(char *ifname_out, size_t ifname_sz);
-
 #endif /* _IPCFG_DHCP_DISCOVER_H_ */

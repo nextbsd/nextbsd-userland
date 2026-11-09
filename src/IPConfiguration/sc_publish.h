@@ -27,8 +27,8 @@ struct sc_publish;
 
 /*
  * Longest service ID kept, NUL included. A preferences service ID is a
- * UUID on Darwin, `ipconfig set`'s is <Method>-<if>, and the MAC-derived
- * one is 36 characters; this leaves room for a hand-written one.
+ * UUID on Darwin and `ipconfig set`'s is <Method>-<if>; this leaves room
+ * for a hand-written one.
  */
 #define	SC_PUBLISH_SERVICE_ID_LEN	128
 
@@ -45,9 +45,7 @@ struct sc_publish	*sc_publish_open(const char *session_name);
  * A service is starting on `ifname`: fix the <serviceID> every later
  * publish and remove uses (#409), so the keys can still be removed once
  * the interface has departed. `service_id` is the service's own ID (#568);
- * NULL or empty means an interface no service names, whose ID is derived
- * from its MAC now. With no service ID and no readable MAC this is a
- * no-op, and the ID is cached on the first publish that can read the MAC.
+ * NULL or empty is a no-op, keeping whatever an earlier service cached.
  */
 void	sc_publish_service_begin(const char *ifname, const char *service_id);
 

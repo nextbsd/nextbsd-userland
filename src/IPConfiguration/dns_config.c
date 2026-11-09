@@ -417,13 +417,13 @@ dnsinfo_update_locked(void)
 			(void)strlcpy(names[count++], g_services[i].ifname,
 			    IF_NAMESIZE);
 	}
-	/* Insertion sort, so equal ranks keep table order as the election does. */
+	/* Insertion sort, so ties keep table order as the election does. */
 	for (i = 1; i < count; i++) {
 		char tmp[IF_NAMESIZE];
 
 		(void)strlcpy(tmp, names[i], sizeof(tmp));
-		for (j = i; j > 0 && iface_rank(tmp) > iface_rank(names[j - 1]);
-		    j--)
+		for (j = i; j > 0 &&
+		    bound_state_election_cmp(tmp, names[j - 1]) < 0; j--)
 			(void)strlcpy(names[j], names[j - 1], IF_NAMESIZE);
 		(void)strlcpy(names[j], tmp, IF_NAMESIZE);
 	}
@@ -441,7 +441,19 @@ dnsinfo_update_locked(void)
 		s = service_find_locked(names[i], false);
 		(void)memset(&nwi[i], 0, sizeof(nwi[i]));
 		(void)strlcpy(nwi[i].ifname, names[i], sizeof(nwi[i].ifname));
-		nwi[i].rank = iface_rank(names[i]);
+		/*
+		 * Following the election (#570): rank by position, so the
+		 * primary is first; Never stays out of the list.
+		 */
+		{
+			int prank, porder;
+
+			ipconfig_prefs_primary_rank(names[i], &prank, &porder);
+			nwi[i].rank = (prank == IPCFG_PRIMARY_RANK_NEVER ||
+			    iface_rank(names[i]) == IFRANK_NEVER) ?
+			    IFRANK_NEVER : IFRANK_WIRED - (i < IFRANK_WIRED - 1 ?
+			    i : IFRANK_WIRED - 1);
+		}
 		nwi[i].have_dns = have_dns;
 		nwi[i].have_v4 = bound_state_get_addr(names[i],
 		    &nwi[i].v4_addr.s_addr);

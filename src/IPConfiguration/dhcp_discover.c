@@ -99,33 +99,6 @@ in_cksum(const void *buf, size_t len)
 	return ((uint16_t)~sum);
 }
 
-int
-dhcp_pick_interface(char *ifname_out, size_t ifname_sz)
-{
-	struct ifaddrs *ifa, *p;
-	int found = 0;
-
-	if (getifaddrs(&ifa) != 0)
-		return (-1);
-	for (p = ifa; p != NULL; p = p->ifa_next) {
-		const struct sockaddr_dl *dl;
-
-		if (p->ifa_addr == NULL ||
-		    p->ifa_addr->sa_family != AF_LINK)
-			continue;
-		if ((p->ifa_flags & IFF_LOOPBACK) != 0)
-			continue;
-		dl = (const struct sockaddr_dl *)(void *)p->ifa_addr;
-		if (dl->sdl_type != 6)	/* IFT_ETHER */
-			continue;
-		(void)strlcpy(ifname_out, p->ifa_name, ifname_sz);
-		found = 1;
-		break;
-	}
-	freeifaddrs(ifa);
-	return (found ? 0 : -1);
-}
-
 /*
  * One getifaddrs pass for ifname's AF_LINK address. Returns 0 with mac
  * filled, else -1 with errno saying why: the getifaddrs errno, ENXIO for

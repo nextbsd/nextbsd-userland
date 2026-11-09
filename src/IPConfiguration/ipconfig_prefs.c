@@ -1,6 +1,6 @@
 /*
- * ipconfig_prefs.c — per-interface IPv4 and IPv6 methods from SCPreferences
- * (#58, #423).
+ * ipconfig_prefs.c — per-interface IPv4 and IPv6 methods from Setup: (#570,
+ * #58, #423).
  *
  * See ipconfig_prefs.h for the model. This is the only CF translation
  * unit on the configuration side: ipconfigd.c sees plain-C
@@ -11,8 +11,8 @@
 #include "sc_publish.h"		/* SC_PUBLISH_SERVICE_ID_LEN, proxies */
 #include "dns_config.h"
 
+#include <SystemConfiguration/SCDynamicStore.h>
 #include <SystemConfiguration/SCNetworkConfiguration.h>
-#include <SystemConfiguration/SCPreferences.h>
 #include <SystemConfiguration/SCSchemaDefinitions.h>
 #include <CoreFoundation/CoreFoundation.h>
 
@@ -26,7 +26,9 @@
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /*
  * The SCSchema names the IPv4 / DNS entities use. Apple takes them from
@@ -47,6 +49,7 @@
 #define	kIPCfgPropDNSMatchDomains	CFSTR("SupplementalMatchDomains")
 #define	kIPCfgPropDNSMatchOrders	CFSTR("SupplementalMatchOrders")
 #define	kIPCfgPropDNSMatchNoSearch	CFSTR("SupplementalMatchDomainsNoSearch")
+#define	kIPCfgPropServiceOrder		CFSTR("ServiceOrder")
 
 struct prefs_entry {
 	char				ifname[IFNAMSIZ];
@@ -55,6 +58,8 @@ struct prefs_entry {
 	struct ipconfig_v6_method_info	v6;
 	bool				have_dns;
 	struct ipconfig_dns		dns;	/* zeroed unless have_dns */
+	int				order;	/* in ServiceOrder (#570) */
+	int				primary_rank; /* IPCFG_PRIMARY_RANK_* */
 };
 
 struct prefs_table {
@@ -66,7 +71,10 @@ static pthread_mutex_t		g_prefs_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct prefs_table	g_table;	/* guarded by g_prefs_lock */
 static ipconfig_prefs_cb	g_cb;
 static ipconfig_prefs_cb	g_dns_cb;
-static SCPreferencesRef		g_prefs;
+static ipconfig_prefs_event_cb	g_loaded_cb;
+static ipconfig_prefs_event_cb	g_order_cb;
+static SCDynamicStoreRef	g_store;
+static bool			g_loaded;	/* guarded by g_prefs_lock */
 
 static void
 xlog(const char *fmt, ...)
@@ -485,187 +493,288 @@ dns_from_dict(CFDictionaryRef d, struct ipconfig_dns *out)
 	    kIPCfgPropDNSMatchNoSearch), &out->no_search);
 }
 
-/* An enabled protocol entity of `service`, or NULL. Not retained. */
+/* The value of the Setup: key `key` in `values`, if it is a dictionary. */
 static CFDictionaryRef
-service_entity(SCNetworkServiceRef service, CFStringRef type,
-    SCNetworkProtocolRef *proto_out)
+dict_value(CFDictionaryRef values, CFStringRef key)
 {
-	SCNetworkProtocolRef proto;
-	CFDictionaryRef config;
+	CFTypeRef v = CFDictionaryGetValue(values, key);
 
-	*proto_out = NULL;
-	proto = SCNetworkServiceCopyProtocol(service, type);
-	if (proto == NULL)
-		return (NULL);
-	if (!SCNetworkProtocolGetEnabled(proto)) {
-		CFRelease(proto);
-		return (NULL);
-	}
-	config = SCNetworkProtocolGetConfiguration(proto);
-	if (config == NULL) {
-		CFRelease(proto);
-		return (NULL);
-	}
-	*proto_out = proto;	/* keeps `config` alive */
-	return (config);
+	return (v != NULL && CFGetTypeID(v) == CFDictionaryGetTypeID()
+	    ? (CFDictionaryRef)v : NULL);
 }
 
-/* `service`'s BSD interface name, into `ifname` (IFNAMSIZ bytes). */
-static bool
-service_ifname(SCNetworkServiceRef service, char *ifname)
+/* Setup:/Network/Service/<id>[/<entity>]. Caller releases. */
+static CFStringRef
+service_key(CFStringRef sid, CFStringRef entity)
 {
-	SCNetworkInterfaceRef iface;
-	CFStringRef bsd;
+	if (entity == NULL)
+		return (CFStringCreateWithFormat(NULL, NULL,
+		    CFSTR("Setup:/Network/Service/%@"), sid));
+	return (CFStringCreateWithFormat(NULL, NULL,
+	    CFSTR("Setup:/Network/Service/%@/%@"), sid, entity));
+}
 
-	iface = SCNetworkServiceGetInterface(service);
-	bsd = (iface != NULL) ? SCNetworkInterfaceGetBSDName(iface) : NULL;
-	return (bsd != NULL && CFStringGetCString(bsd, ifname, IFNAMSIZ,
-	    kCFStringEncodingASCII));
+/* The entity of service `sid` from `values`, or NULL. */
+static CFDictionaryRef
+service_entity(CFDictionaryRef values, CFStringRef sid, CFStringRef entity)
+{
+	CFStringRef key = service_key(sid, entity);
+	CFDictionaryRef d = dict_value(values, key);
+
+	CFRelease(key);
+	return (d);
+}
+
+/*
+ * Does a service with this Interface Type get configured? Darwin's
+ * copy_ipv4_service_dict: Ethernet, FireWire, Loopback. Bond, Bridge, VLAN
+ * and an older Wi-Fi entity (IEEE80211) are Ethernet-class here: SCNetwork
+ * writes those Type values for them.
+ */
+static bool
+interface_type_is_configured(CFStringRef type)
+{
+	return (CFEqual(type, CFSTR("Ethernet")) ||
+	    CFEqual(type, CFSTR("FireWire")) ||
+	    CFEqual(type, CFSTR("Loopback")) ||
+	    CFEqual(type, CFSTR("IEEE80211")) ||
+	    CFEqual(type, CFSTR("Bond")) ||
+	    CFEqual(type, CFSTR("Bridge")) ||
+	    CFEqual(type, CFSTR("VLAN")));
 }
 
 static const struct prefs_entry *table_find(const struct prefs_table *t,
     const char *ifname);
 
-/* Rebuild `t` from the current set in `prefs`. */
-static void
-prefs_read(SCPreferencesRef prefs, struct prefs_table *t)
+/* One service's table entry, from Setup:. False: skip this service. */
+static bool
+service_entry(CFDictionaryRef values, CFStringRef sid, int order,
+    struct prefs_entry *e)
 {
-	SCNetworkSetRef set;
-	CFArrayRef services;
+	CFDictionaryRef iface, ipv4, ipv6, dns, svc;
+	CFStringRef dev, type, rank;
+
+	(void)memset(e, 0, sizeof(*e));
+	e->order = order;
+	e->primary_rank = IPCFG_PRIMARY_RANK_DEFAULT;
+
+	iface = service_entity(values, sid, kSCEntNetInterface);
+	if (iface == NULL)
+		return (false);
+	dev = CFDictionaryGetValue(iface, kSCPropNetInterfaceDeviceName);
+	type = CFDictionaryGetValue(iface, kSCPropNetInterfaceType);
+	if (dev == NULL || CFGetTypeID(dev) != CFStringGetTypeID() ||
+	    !CFStringGetCString(dev, e->ifname, sizeof(e->ifname),
+	    kCFStringEncodingASCII))
+		return (false);
+	if (type != NULL && (CFGetTypeID(type) != CFStringGetTypeID() ||
+	    !interface_type_is_configured(type))) {
+		xlog("%s: not a kind of interface ipconfigd configures",
+		    e->ifname);
+		return (false);
+	}
+
+	if (!CFStringGetCString(sid, e->service_id, sizeof(e->service_id),
+	    kCFStringEncodingUTF8)) {
+		xlog("%s: service ID is too long", e->ifname);
+		e->service_id[0] = '\0';
+	}
+
+	svc = service_entity(values, sid, NULL);
+	rank = (svc != NULL) ? CFDictionaryGetValue(svc,
+	    kSCPropNetServicePrimaryRank) : NULL;
+	if (rank != NULL && CFGetTypeID(rank) == CFStringGetTypeID()) {
+		if (CFEqual(rank, kSCValNetServicePrimaryRankFirst))
+			e->primary_rank = IPCFG_PRIMARY_RANK_FIRST;
+		else if (CFEqual(rank, kSCValNetServicePrimaryRankLast))
+			e->primary_rank = IPCFG_PRIMARY_RANK_LAST;
+		else if (CFEqual(rank, kSCValNetServicePrimaryRankNever))
+			e->primary_rank = IPCFG_PRIMARY_RANK_NEVER;
+	}
+
+	ipv4 = service_entity(values, sid, kSCEntNetIPv4);
+	ipv6 = service_entity(values, sid, kSCEntNetIPv6);
+	dns = service_entity(values, sid, kSCEntNetDNS);
+	if (ipv4 == NULL) {
+		/* A service with IPv4 off: Apple runs no v4 service. */
+		e->info.method = ipconfig_method_none_e;
+	} else if (!ipconfig_method_info_from_dict(
+	    (const struct __CFDictionary *)ipv4, &e->info)) {
+		/*
+		 * Unusable ConfigMethod (or Manual with no address).
+		 * Leaving the interface alone is safer than DHCP'ing
+		 * over what the administrator meant.
+		 */
+		xlog("%s: invalid IPv4 configuration; leaving it alone",
+		    e->ifname);
+		(void)memset(&e->info, 0, sizeof(e->info));
+		e->info.method = ipconfig_method_none_e;
+	}
+	/*
+	 * IPv6 (#423). No entity, or an invalid one, means no IPv6 service
+	 * and IPv6 off, as on Darwin (an inactive one never reaches Setup:).
+	 * 6to4 parses but has no service behind it, so that interface's IPv6
+	 * is left alone, like an unserved IPv4 method. Loopback does Manual
+	 * or nothing (#570).
+	 */
+	e->v6.method = ipconfig_method_none_v6_e;
+	if (ipv6 != NULL && !ipconfig_v6_method_info_from_dict(
+	    (const struct __CFDictionary *)ipv6, &e->v6)) {
+		xlog("%s: invalid IPv6 configuration; IPv6 off", e->ifname);
+		(void)memset(&e->v6, 0, sizeof(e->v6));
+		e->v6.method = ipconfig_method_none_v6_e;
+	}
+	if (e->v6.method == ipconfig_method_stf_e) {
+		xlog("%s: IPv6 ConfigMethod 6to4 is not supported; "
+		    "leaving IPv6 alone", e->ifname);
+		(void)memset(&e->v6, 0, sizeof(e->v6));
+		e->v6.method = ipconfig_method_unmanaged_v6_e;
+	}
+	if (strncmp(e->ifname, "lo", 2) == 0 &&
+	    e->v6.method != ipconfig_method_manual_v6_e) {
+		(void)memset(&e->v6, 0, sizeof(e->v6));
+		e->v6.method = ipconfig_method_unmanaged_v6_e;
+	}
+	if (dns != NULL) {
+		dns_from_dict(dns, &e->dns);
+		e->have_dns = true;
+	}
+	if (!ipconfig_method_is_served(e->info.method) &&
+	    e->info.method != ipconfig_method_none_e)
+		xlog("%s: ConfigMethod %s is not supported; leaving it alone",
+		    e->ifname, ipconfig_method_string(e->info.method));
+	return (true);
+}
+
+/* Add `sid`'s service to `t`; the first service naming an interface wins. */
+static void
+table_add(struct prefs_table *t, CFDictionaryRef values, CFStringRef sid,
+    int order)
+{
+	struct prefs_entry e;
+
+	if (!service_entry(values, sid, order, &e))
+		return;
+	if (table_find(t, e.ifname) != NULL) {
+		xlog("%s: more than one service names it; using the first",
+		    e.ifname);
+		return;
+	}
+	if (t->n == BOUND_MAX_IF) {
+		xlog("%s: too many configured services; ignoring", e.ifname);
+		return;
+	}
+	t->e[t->n++] = e;
+}
+
+/* The service ID out of a Setup:/Network/Service/<id>/Interface key. */
+static CFStringRef
+service_id_of_key(CFStringRef key)
+{
+	CFArrayRef parts;
+	CFStringRef sid = NULL;
+
+	parts = CFStringCreateArrayBySeparatingStrings(NULL, key, CFSTR("/"));
+	if (parts != NULL && CFArrayGetCount(parts) >= 4)
+		sid = CFRetain(CFArrayGetValueAtIndex(parts, 3));
+	if (parts != NULL)
+		CFRelease(parts);
+	return (sid);
+}
+
+static CFComparisonResult
+compare_ids(const void *a, const void *b, void *ctx)
+{
+	(void)ctx;
+	return (CFStringCompare(a, b, 0));
+}
+
+/*
+ * Rebuild `t` from Setup: (#570), in service order as Darwin's
+ * make_ordered does: PreferencesMonitor flattens the current set there on
+ * every Apply, so an inactive service is simply not present. Returns whether
+ * the configuration has been read at all: a Setup: key says it has, and an
+ * interface no service names is then really unconfigured.
+ */
+static bool
+prefs_read(struct prefs_table *t)
+{
+	CFStringRef patterns_v[1];
+	CFStringRef keys_v[2];
+	CFArrayRef patterns, keys, order;
+	CFDictionaryRef values, global;
+	CFMutableArrayRef ids;
 	CFIndex i, n;
-	int j;
+	const void **all;
+	bool loaded;
 
 	(void)memset(t, 0, sizeof(*t));
-	set = SCNetworkSetCopyCurrent(prefs);
-	if (set == NULL)
-		return;		/* no network preferences: all DHCP */
-	services = SCNetworkSetCopyServices(set);
-	CFRelease(set);
-	if (services == NULL)
-		return;
+	if (g_store == NULL)
+		return (false);
 
-	n = CFArrayGetCount(services);
+	keys_v[0] = kSCDynamicStoreDomainSetup;
+	keys_v[1] = CFSTR("Setup:/Network/Global/IPv4");
+	keys = CFArrayCreate(NULL, (const void **)keys_v, 2,
+	    &kCFTypeArrayCallBacks);
+	patterns_v[0] = CFSTR("Setup:/Network/Service/.*");
+	patterns = CFArrayCreate(NULL, (const void **)patterns_v, 1,
+	    &kCFTypeArrayCallBacks);
+	values = SCDynamicStoreCopyMultiple(g_store, keys, patterns);
+	CFRelease(keys);
+	CFRelease(patterns);
+	if (values == NULL)
+		return (false);
+
+	loaded = CFDictionaryContainsKey(values, kSCDynamicStoreDomainSetup);
+
+	ids = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
+	n = CFDictionaryGetCount(values);
+	all = calloc((size_t)(n > 0 ? n : 1), sizeof(*all));
+	if (n > 0)
+		CFDictionaryGetKeysAndValues(values, all, NULL);
 	for (i = 0; i < n; i++) {
-		SCNetworkServiceRef service;
-		SCNetworkProtocolRef p4, p6, pdns;
-		CFDictionaryRef ipv4, ipv6, dns;
-		CFStringRef sid;
-		struct prefs_entry e;
-		bool dup = false;
+		CFStringRef key = all[i], sid;
 
-		service = CFArrayGetValueAtIndex(services, i);
-		/* Handled below, once the enabled services have their say. */
-		if (!SCNetworkServiceGetEnabled(service))
+		if (!CFStringHasSuffix(key, CFSTR("/Interface")))
 			continue;
-		(void)memset(&e, 0, sizeof(e));
-		if (!service_ifname(service, e.ifname))
-			continue;
-
-		for (j = 0; j < t->n; j++) {
-			if (strcmp(t->e[j].ifname, e.ifname) == 0)
-				dup = true;
+		sid = service_id_of_key(key);
+		if (sid != NULL) {
+			CFArrayAppendValue(ids, sid);
+			CFRelease(sid);
 		}
-		if (dup) {
-			xlog("%s: more than one service names it; using the "
-			    "first", e.ifname);
-			continue;
-		}
-		if (t->n == BOUND_MAX_IF) {
-			xlog("%s: too many configured services; ignoring",
-			    e.ifname);
-			continue;
-		}
-
-		sid = SCNetworkServiceGetServiceID(service);
-		if (sid == NULL || !CFStringGetCString(sid, e.service_id,
-		    sizeof(e.service_id), kCFStringEncodingUTF8)) {
-			xlog("%s: service ID is too long; publishing under "
-			    "the interface's own ID", e.ifname);
-			e.service_id[0] = '\0';
-		}
-
-		ipv4 = service_entity(service, kSCEntNetIPv4, &p4);
-		ipv6 = service_entity(service, kSCEntNetIPv6, &p6);
-		dns = service_entity(service, kSCEntNetDNS, &pdns);
-		if (ipv4 == NULL) {
-			/* A service with IPv4 off: Apple runs no v4 service. */
-			e.info.method = ipconfig_method_none_e;
-		} else if (!ipconfig_method_info_from_dict(
-		    (const struct __CFDictionary *)ipv4, &e.info)) {
-			/*
-			 * Unusable ConfigMethod (or Manual with no address).
-			 * Leaving the interface alone is safer than DHCP'ing
-			 * over what the administrator meant.
-			 */
-			xlog("%s: invalid IPv4 configuration; leaving it "
-			    "alone", e.ifname);
-			(void)memset(&e.info, 0, sizeof(e.info));
-			e.info.method = ipconfig_method_none_e;
-		}
-		/*
-		 * IPv6 (#423). No entity, or a disabled or invalid one, means
-		 * no IPv6 service and IPv6 off, as on Darwin. 6to4 parses but
-		 * has no service behind it, so that interface's IPv6 is left
-		 * alone, like an unserved IPv4 method.
-		 */
-		e.v6.method = ipconfig_method_none_v6_e;
-		if (ipv6 != NULL && !ipconfig_v6_method_info_from_dict(
-		    (const struct __CFDictionary *)ipv6, &e.v6)) {
-			xlog("%s: invalid IPv6 configuration; IPv6 off",
-			    e.ifname);
-			(void)memset(&e.v6, 0, sizeof(e.v6));
-			e.v6.method = ipconfig_method_none_v6_e;
-		}
-		if (e.v6.method == ipconfig_method_stf_e) {
-			xlog("%s: IPv6 ConfigMethod 6to4 is not supported; "
-			    "leaving IPv6 alone", e.ifname);
-			(void)memset(&e.v6, 0, sizeof(e.v6));
-			e.v6.method = ipconfig_method_unmanaged_v6_e;
-		}
-		if (dns != NULL) {
-			dns_from_dict(dns, &e.dns);
-			e.have_dns = true;
-		}
-		if (p6 != NULL)
-			CFRelease(p6);
-		if (p4 != NULL)
-			CFRelease(p4);
-		if (pdns != NULL)
-			CFRelease(pdns);
-
-		if (!ipconfig_method_is_served(e.info.method) &&
-		    e.info.method != ipconfig_method_none_e)
-			xlog("%s: ConfigMethod %s is not supported; leaving "
-			    "it alone", e.ifname,
-			    ipconfig_method_string(e.info.method));
-		t->e[t->n++] = e;
 	}
+	free(all);
+	/* A dictionary's order means nothing: stable ties. */
+	CFArraySortValues(ids, CFRangeMake(0, CFArrayGetCount(ids)),
+	    compare_ids, NULL);
 
-	/*
-	 * A disabled service's interface is left alone (#568). Darwin's
-	 * PreferencesMonitor drops the service (prefsmon.c), and with no
-	 * service IPConfiguration does nothing; here an interface with no
-	 * table entry would fall back to DHCP, so it gets a NONE entry.
-	 * Second, because an enabled service on the interface wins whatever
-	 * the order.
-	 */
+	global = dict_value(values, keys_v[1]);
+	order = (global != NULL) ? CFDictionaryGetValue(global,
+	    kIPCfgPropServiceOrder) : NULL;
+	n = (order != NULL && CFGetTypeID(order) == CFArrayGetTypeID())
+	    ? CFArrayGetCount(order) : 0;
 	for (i = 0; i < n; i++) {
-		SCNetworkServiceRef service;
-		struct prefs_entry e;
+		CFStringRef sid = CFArrayGetValueAtIndex(order, i);
+		CFIndex at;
 
-		service = CFArrayGetValueAtIndex(services, i);
-		if (SCNetworkServiceGetEnabled(service))
+		if (CFGetTypeID(sid) != CFStringGetTypeID())
 			continue;
-		(void)memset(&e, 0, sizeof(e));
-		if (!service_ifname(service, e.ifname) ||
-		    table_find(t, e.ifname) != NULL || t->n == BOUND_MAX_IF)
+		at = CFArrayGetFirstIndexOfValue(ids,
+		    CFRangeMake(0, CFArrayGetCount(ids)), sid);
+		if (at == kCFNotFound)
 			continue;
-		e.info.method = ipconfig_method_none_e;
-		e.v6.method = ipconfig_method_unmanaged_v6_e;
-		xlog("%s: its service is disabled; leaving it alone", e.ifname);
-		t->e[t->n++] = e;
+		table_add(t, values, sid, (int)i);
+		CFArrayRemoveValueAtIndex(ids, at);
 	}
-	CFRelease(services);
+	/* Services ServiceOrder does not list come after those it does. */
+	n = CFArrayGetCount(ids);
+	for (i = 0; i < n; i++)
+		table_add(t, values, CFArrayGetValueAtIndex(ids, i),
+		    IPCFG_ORDER_UNLISTED);
+
+	CFRelease(ids);
+	CFRelease(values);
+	return (loaded);
 }
 
 static const struct prefs_entry *
@@ -730,33 +839,49 @@ log_table(const struct prefs_table *t)
 	}
 }
 
-/*
- * SCPreferences commit from another process (a network pane, scutil
- * --prefs). Re-read, swap the table, and tell ipconfigd about each
- * interface whose method or DNS moved. The tables are static because they
- * are large for a queue thread's stack; the queue is serial.
- */
-static void
-prefs_changed(SCPreferencesRef prefs, SCPreferencesNotification type,
-    void *info)
+/* Did a service's place in the election move between `a` and `b`? */
+static bool
+table_order_changed(const struct prefs_table *a, const struct prefs_table *b)
 {
-	static struct prefs_table next, prev;
 	int i;
 
-	(void)info;
-	/* As Apple's PreferencesMonitor: a commit alone changes nothing. */
-	if ((type & kSCPreferencesNotificationApply) == 0)
-		return;
-	SCPreferencesSynchronize(prefs);
-	prefs_read(prefs, &next);
+	if (a->n != b->n)
+		return (true);
+	for (i = 0; i < a->n; i++) {
+		if (strcmp(a->e[i].ifname, b->e[i].ifname) != 0 ||
+		    a->e[i].order != b->e[i].order ||
+		    a->e[i].primary_rank != b->e[i].primary_rank)
+			return (true);
+	}
+	return (false);
+}
+
+/*
+ * Setup: changed: PreferencesMonitor flattened an Apply. Re-read it, swap
+ * the table, and tell ipconfigd about each interface whose method or DNS
+ * moved. The tables are static because they are large for a queue thread's
+ * stack; the queue is serial.
+ */
+static void
+prefs_refresh(void *ctx)
+{
+	static struct prefs_table next, prev;
+	bool loaded, first_load;
+	int i;
+
+	(void)ctx;
+	loaded = prefs_read(&next);
 
 	pthread_mutex_lock(&g_prefs_lock);
 	prev = g_table;
 	g_table = next;
+	first_load = loaded && !g_loaded;
+	if (loaded)
+		g_loaded = true;
 	pthread_mutex_unlock(&g_prefs_lock);
 
 	log_table(&next);
-	/* A commit can change the primary service's Proxies alone (#573). */
+	/* An Apply can change the primary service's Proxies alone (#573). */
 	sc_publish_refresh_proxies();
 	if (g_cb != NULL) {
 		for (i = 0; i < prev.n; i++) {
@@ -779,94 +904,130 @@ prefs_changed(SCPreferencesRef prefs, SCPreferencesNotification type,
 				g_dns_cb(next.e[i].ifname);
 		}
 	}
+	if (g_order_cb != NULL && table_order_changed(&prev, &next))
+		g_order_cb();
+	if (first_load && g_loaded_cb != NULL)
+		g_loaded_cb();
+}
+
+static void
+setup_changed(SCDynamicStoreRef store, CFArrayRef changed, void *info)
+{
+	(void)store;
+	(void)changed;
+	(void)info;
+	prefs_refresh(NULL);
 }
 
 int
-ipconfig_prefs_start(ipconfig_prefs_cb cb, ipconfig_prefs_cb dns_cb)
+ipconfig_prefs_start(ipconfig_prefs_cb cb, ipconfig_prefs_cb dns_cb,
+    ipconfig_prefs_event_cb loaded_cb, ipconfig_prefs_event_cb order_cb)
 {
-	SCPreferencesContext ctx;
 	dispatch_queue_t q;
-	static struct prefs_table t;
+	CFStringRef keys_v[2], patterns_v[1];
+	CFArrayRef keys, patterns;
+	int tries;
 
 	g_cb = cb;
 	g_dns_cb = dns_cb;
-	g_prefs = SCPreferencesCreate(NULL, CFSTR("com.apple.IPConfiguration"),
-	    CFSTR("preferences.plist"));
-	if (g_prefs == NULL) {
-		xlog("SCPreferencesCreate failed; every interface is DHCP");
-		return (-1);
-	}
-	prefs_read(g_prefs, &t);
-	pthread_mutex_lock(&g_prefs_lock);
-	g_table = t;
-	pthread_mutex_unlock(&g_prefs_lock);
-	log_table(&t);
+	g_loaded_cb = loaded_cb;
+	g_order_cb = order_cb;
 
-	(void)memset(&ctx, 0, sizeof(ctx));
-	q = dispatch_queue_create("com.apple.IPConfiguration.prefs", NULL);
-	if (q == NULL ||
-	    !SCPreferencesSetCallback(g_prefs, prefs_changed, &ctx) ||
-	    !SCPreferencesSetDispatchQueue(g_prefs, q)) {
-		xlog("cannot watch SCPreferences; configuration is read "
-		    "once at startup");
+	/* ipconfigd and configd are both RunAtLoad, with no ordering. */
+	for (tries = 0; tries < 60; tries++) {
+		g_store = SCDynamicStoreCreate(NULL, CFSTR("ipconfigd-setup"),
+		    setup_changed, NULL);
+		if (g_store != NULL)
+			break;
+		(void)sleep(1);
+	}
+	if (g_store == NULL) {
+		xlog("no configd session; no service can be configured");
 		return (-1);
 	}
+
+	keys_v[0] = kSCDynamicStoreDomainSetup;
+	keys_v[1] = CFSTR("Setup:/Network/Global/IPv4");
+	keys = CFArrayCreate(NULL, (const void **)keys_v, 2,
+	    &kCFTypeArrayCallBacks);
+	patterns_v[0] = CFSTR("Setup:/Network/Service/.*");
+	patterns = CFArrayCreate(NULL, (const void **)patterns_v, 1,
+	    &kCFTypeArrayCallBacks);
+	q = dispatch_queue_create("com.apple.IPConfiguration.prefs", NULL);
+	if (q == NULL || !SCDynamicStoreSetNotificationKeys(g_store, keys,
+	    patterns) || !SCDynamicStoreSetDispatchQueue(g_store, q)) {
+		xlog("cannot watch Setup:; configuration is read once at "
+		    "startup");
+		CFRelease(keys);
+		CFRelease(patterns);
+		prefs_refresh(NULL);
+		return (-1);
+	}
+	CFRelease(keys);
+	CFRelease(patterns);
+	/* On the queue, so a change cannot overtake the first read. */
+	dispatch_sync_f(q, NULL, prefs_refresh);
 	return (0);
+}
+
+bool
+ipconfig_prefs_loaded(void)
+{
+	bool loaded;
+
+	pthread_mutex_lock(&g_prefs_lock);
+	loaded = g_loaded;
+	pthread_mutex_unlock(&g_prefs_lock);
+	return (loaded);
 }
 
 const struct __CFDictionary *
 ipconfig_prefs_copy_proxies(const char *ifname)
 {
-	SCPreferencesRef prefs;
-	SCNetworkSetRef set;
-	CFArrayRef services;
-	CFStringRef name;
-	CFDictionaryRef copy = NULL;
-	CFIndex i, n;
+	SCDynamicStoreRef store;
+	const struct prefs_entry *e;
+	char sid[SC_PUBLISH_SERVICE_ID_LEN] = "";
+	CFStringRef key;
+	CFDictionaryRef copy;
 
-	name = CFStringCreateWithCString(NULL, ifname, kCFStringEncodingASCII);
-	if (name == NULL)
+	pthread_mutex_lock(&g_prefs_lock);
+	e = table_find(&g_table, ifname);
+	if (e != NULL)
+		(void)strlcpy(sid, e->service_id, sizeof(sid));
+	pthread_mutex_unlock(&g_prefs_lock);
+	if (sid[0] == '\0')
 		return (NULL);
-	prefs = SCPreferencesCreate(NULL, CFSTR("ipconfigd-proxies"),
-	    CFSTR("preferences.plist"));
-	if (prefs == NULL) {
-		CFRelease(name);
+
+	store = SCDynamicStoreCreate(NULL, CFSTR("ipconfigd-proxies"), NULL,
+	    NULL);
+	if (store == NULL)
 		return (NULL);
+	key = CFStringCreateWithFormat(NULL, NULL,
+	    CFSTR("Setup:/Network/Service/%s/Proxies"), sid);
+	copy = SCDynamicStoreCopyValue(store, key);
+	CFRelease(key);
+	CFRelease(store);
+	if (copy != NULL && CFGetTypeID(copy) != CFDictionaryGetTypeID()) {
+		CFRelease(copy);
+		copy = NULL;
 	}
-	set = SCNetworkSetCopyCurrent(prefs);
-	services = (set != NULL) ? SCNetworkSetCopyServices(set) : NULL;
-	if (set != NULL)
-		CFRelease(set);
-
-	n = (services != NULL) ? CFArrayGetCount(services) : 0;
-	for (i = 0; i < n; i++) {
-		SCNetworkServiceRef service;
-		SCNetworkInterfaceRef iface;
-		SCNetworkProtocolRef proto;
-		CFDictionaryRef config;
-		CFStringRef bsd;
-
-		service = CFArrayGetValueAtIndex(services, i);
-		if (!SCNetworkServiceGetEnabled(service))
-			continue;
-		iface = SCNetworkServiceGetInterface(service);
-		bsd = (iface != NULL) ? SCNetworkInterfaceGetBSDName(iface)
-		    : NULL;
-		if (bsd == NULL || !CFEqual(bsd, name))
-			continue;
-		/* The first enabled service naming it, as prefs_read() takes. */
-		config = service_entity(service, kSCEntNetProxies, &proto);
-		if (config != NULL) {
-			copy = CFDictionaryCreateCopy(NULL, config);
-			CFRelease(proto);
-		}
-		break;
-	}
-	if (services != NULL)
-		CFRelease(services);
-	CFRelease(prefs);
-	CFRelease(name);
 	return ((const struct __CFDictionary *)copy);
+}
+
+void
+ipconfig_prefs_primary_rank(const char *ifname, int *rank_out, int *order_out)
+{
+	const struct prefs_entry *e;
+
+	*rank_out = IPCFG_PRIMARY_RANK_DEFAULT;
+	*order_out = IPCFG_ORDER_UNLISTED;
+	pthread_mutex_lock(&g_prefs_lock);
+	e = table_find(&g_table, ifname);
+	if (e != NULL) {
+		*rank_out = e->primary_rank;
+		*order_out = e->order;
+	}
+	pthread_mutex_unlock(&g_prefs_lock);
 }
 
 bool

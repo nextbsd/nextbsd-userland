@@ -10,9 +10,7 @@
  * ipconfig_types.h); this is the subset ipconfigd serves.
  *
  * ipconfigd serves every IPv4 method: DHCP, Manual, BOOTP, INFORM, LinkLocal,
- * Failover and NONE. An interface no service names stays on DHCP, so a
- * machine with no network preferences behaves exactly as it did before
- * methods existed.
+ * Failover and NONE. An interface no service names is left alone (#570).
  */
 #ifndef _IPCFG_IPCONFIG_METHOD_H_
 #define _IPCFG_IPCONFIG_METHOD_H_
