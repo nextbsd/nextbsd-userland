@@ -851,6 +851,41 @@ __doIPv6Addresses(CFStringRef key, const char *description, void *info, int argc
 }
 
 
+// PrefixLength is an array parallel to Addresses; ipconfigd rejects a bare
+// number.  Darwin's scutil stores a number here, so this differs on purpose.
+static int
+__doIPv6PrefixLength(CFStringRef key, const char *description, void *info, int argc, char * const argv[], CFMutableDictionaryRef newConfiguration)
+{
+	if (argc < 1) {
+		SCPrint(TRUE, stdout,
+			CFSTR("%s not specified\n"),
+			description != NULL ? description : "value");
+		return -1;
+	}
+
+	if (strlen(argv[0]) > 0) {
+		CFNumberRef	num;
+
+		num = _copy_number(argv[0]);
+		if (num != NULL) {
+			CFArrayRef	prefixLengths;
+
+			prefixLengths = CFArrayCreate(NULL, (const void **)&num, 1, &kCFTypeArrayCallBacks);
+			CFDictionarySetValue(newConfiguration, key, prefixLengths);
+			CFRelease(prefixLengths);
+			CFRelease(num);
+		} else {
+			SCPrint(TRUE, stdout, CFSTR("invalid value\n"));
+			return -1;
+		}
+	} else {
+		CFDictionaryRemoveValue(newConfiguration, key);
+	}
+
+	return 1;
+}
+
+
 static options ipv6Options[] = {
 	{ "ConfigMethod", "configuration method"
 					 , isChooseOne, kSCPropNetIPv6ConfigMethod, __doIPv6ConfigMethod, (void *)ipv6ConfigMethods },
@@ -858,7 +893,7 @@ static options ipv6Options[] = {
 					 , isChooseOne, kSCPropNetIPv6ConfigMethod, __doIPv6ConfigMethod, (void *)ipv6ConfigMethods },
 	{ "Addresses"   , "address"      , isOther    , kSCPropNetIPv6Addresses   , __doIPv6Addresses   , (void *)TRUE              },
 	{   "address"   , "address"      , isOther    , kSCPropNetIPv6Addresses   , __doIPv6Addresses   , (void *)TRUE              },
-	{ "PrefixLength", "prefix length", isNumber   , kSCPropNetIPv6PrefixLength, NULL                , NULL                      },
+	{ "PrefixLength", "prefix length", isOther    , kSCPropNetIPv6PrefixLength, __doIPv6PrefixLength, NULL                      },
 	{ "Router"      , "address"      , isOther    , kSCPropNetIPv6Router      , __doIPv6Addresses   , (void *)FALSE             },
 
 	{ "?"           , NULL           , isHelp     , NULL                       , NULL                ,
