@@ -44,6 +44,12 @@ int	apply_lease(const char *ifname, const struct dhcp_lease *lease);
 int	deconfigure_lease(const char *ifname, const struct dhcp_lease *lease);
 
 /*
+ * Add `lease`'s default route alone, for an address already installed: an
+ * INFORM service only learns its router from the reply (#569).
+ */
+int	apply_lease_router(const struct dhcp_lease *lease);
+
+/*
  * Regenerate /etc/resolv.conf from `dns`, the merged DNS of the primary
  * service on `ifname`, in Apple's set_dns() order: search (or else
  * domain), then every nameserver, then sortlist. Writes atomically. With

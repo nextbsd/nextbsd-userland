@@ -67,6 +67,25 @@ int	dhcp_lease_acquire(const char *ifname, struct dhcp_lease *out,
 	    dhcp_try_cb on_try, void *on_try_arg);
 
 /*
+ * One DHCPINFORM exchange for `ciaddr`, already installed on `ifname` (#569,
+ * dhcp.c's inform_request()): Darwin's INIT ladder, accepting a DHCPACK or a
+ * plain BOOTP reply. DHCP_ACQUIRE_OK fills `*out` with what the reply gave,
+ * leaving out->netmask zero if it had no mask. DHCP_ACQUIRE_NO_SERVER is no
+ * reply and DHCP_ACQUIRE_ERROR a local failure or a stop.
+ */
+int	dhcp_inform(const char *ifname, struct in_addr ciaddr,
+	    struct dhcp_lease *out, struct saved_pkt *saved,
+	    volatile sig_atomic_t *stop);
+
+/*
+ * One BOOTREQUEST/BOOTREPLY exchange on `ifname` (#569, bootp.c's
+ * bootp_request()), with the same ladder and results. out->addr is the
+ * reply's yiaddr, netmask zero if it had none, and there is no lease.
+ */
+int	dhcp_bootp(const char *ifname, struct dhcp_lease *out,
+	    struct saved_pkt *saved, volatile sig_atomic_t *stop);
+
+/*
  * Renew a bound lease — send a DHCPREQUEST in BOUND/RENEWING form
  * (ciaddr=current addr, no opt 50/54, broadcast flag set so SLIRP
  * and other simple servers accept it without ARP-resolving the

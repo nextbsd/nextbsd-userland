@@ -34,6 +34,7 @@
  * needed so far, so spell them here.
  */
 #define	kIPCfgPropConfigMethod		CFSTR("ConfigMethod")
+#define	kIPCfgPropFailoverAddressTimeout CFSTR("FailoverAddressTimeout")
 #define	kIPCfgPropDNSServerAddresses	CFSTR("ServerAddresses")
 #define	kIPCfgPropDNSSearchDomains	CFSTR("SearchDomains")
 #define	kIPCfgPropDNSDomainName		CFSTR("DomainName")
@@ -108,8 +109,17 @@ ipconfig_method_string(ipconfig_method_t m)
 bool
 ipconfig_method_is_served(ipconfig_method_t m)
 {
-	return (m == ipconfig_method_dhcp_e || m == ipconfig_method_manual_e ||
-	    m == ipconfig_method_linklocal_e);
+	switch (m) {
+	case ipconfig_method_manual_e:
+	case ipconfig_method_bootp_e:
+	case ipconfig_method_dhcp_e:
+	case ipconfig_method_inform_e:
+	case ipconfig_method_linklocal_e:
+	case ipconfig_method_failover_e:
+		return (true);
+	default:
+		return (false);
+	}
 }
 
 /* The IPv6 ConfigMethod names (ipconfig_method_from_cfstring_ipv6). */
@@ -174,8 +184,8 @@ cf_first_in_addr(CFTypeRef v, struct in_addr *out)
  * The classful mask for `a`, which is what a Manual service with no
  * SubnetMasks gets (Apple's ip_mask_for_addr fallback).
  */
-static struct in_addr
-classful_mask(struct in_addr a)
+struct in_addr
+ipconfig_classful_mask(struct in_addr a)
 {
 	struct in_addr m;
 	uint32_t h = ntohl(a.s_addr);
@@ -188,6 +198,9 @@ classful_mask(struct in_addr a)
 		m.s_addr = htonl(IN_CLASSC_NET);
 	return (m);
 }
+
+static bool	cf_is_array(CFTypeRef v);
+static bool	cf_to_int32(CFTypeRef v, int32_t *out);
 
 bool
 ipconfig_method_info_from_dict(const struct __CFDictionary *ipv4,
@@ -223,27 +236,36 @@ ipconfig_method_info_from_dict(const struct __CFDictionary *ipv4,
 	if (!known)
 		return (false);
 
-	/* Manual and INFORM carry the address; Manual must have one. */
+	/* ipconfig_method_is_manual(): each of these must have an address. */
 	if (out->method == ipconfig_method_manual_e ||
-	    out->method == ipconfig_method_inform_e) {
+	    out->method == ipconfig_method_inform_e ||
+	    out->method == ipconfig_method_failover_e) {
 		if (!cf_first_in_addr(CFDictionaryGetValue(d,
 		    kSCPropNetIPv4Addresses), &out->addr) ||
-		    out->addr.s_addr == INADDR_ANY) {
-			if (out->method == ipconfig_method_manual_e)
-				return (false);
-		} else if (!cf_first_in_addr(CFDictionaryGetValue(d,
+		    out->addr.s_addr == INADDR_ANY)
+			return (false);
+		if (!cf_first_in_addr(CFDictionaryGetValue(d,
 		    kSCPropNetIPv4SubnetMasks), &out->mask) ||
 		    out->mask.s_addr == INADDR_ANY) {
-			out->mask = classful_mask(out->addr);
+			/* INFORM takes the server's mask if it has none. */
+			out->mask.s_addr = INADDR_ANY;
+			if (out->method != ipconfig_method_inform_e)
+				out->mask = ipconfig_classful_mask(out->addr);
 		}
+	}
+	if (out->method == ipconfig_method_manual_e)
 		(void)cf_to_in_addr(CFDictionaryGetValue(d,
 		    kSCPropNetIPv4Router), &out->router);
+	if (out->method == ipconfig_method_failover_e) {
+		int32_t timeout;
+
+		if (cf_to_int32(CFDictionaryGetValue(d,
+		    kIPCfgPropFailoverAddressTimeout), &timeout) &&
+		    timeout > 0)
+			out->failover_timeout = (uint32_t)timeout;
 	}
 	return (true);
 }
-
-static bool	cf_is_array(CFTypeRef v);
-static bool	cf_to_int32(CFTypeRef v, int32_t *out);
 
 /* A CFString holding an IPv6 address (my_CFStringToIPv6Address). */
 static bool

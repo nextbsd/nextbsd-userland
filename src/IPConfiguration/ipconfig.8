@@ -147,6 +147,9 @@ over the specific interface.
 .It Cm set Ar interface-name Cm DHCP
 .It Cm set Ar interface-name Cm MANUAL Ar ip-address Ar subnet-mask
 .It Cm set Ar interface-name Cm LINKLOCAL
+.It Cm set Ar interface-name Cm BOOTP
+.It Cm set Ar interface-name Cm INFORM Ar ip-address Op Ar subnet-mask
+.It Cm set Ar interface-name Cm FAILOVER Ar ip-address Op Ar subnet-mask Op Ar timeout
 .It Cm set Ar interface-name Cm NONE-V4
 .It Cm set Ar interface-name Cm NONE-V6
 .It Cm set Ar interface-name Cm AUTOMATIC-V6
@@ -175,6 +178,21 @@ DHCP keeps trying; a lease replaces the link-local address.
 .Pp
 LINKLOCAL configures a 169.254/16 link-local address and requires no
 additional arguments.
+.Pp
+BOOTP requires no additional arguments.  It configures the address from a
+BOOTP server, with no lease, and if none responds tries again every two
+minutes.
+.Pp
+INFORM configures the given address and asks a DHCP server for the router,
+the DNS servers and, if
+.Ar subnet-mask
+is not given, the mask.  The address stays if no server responds.
+.Pp
+FAILOVER configures the given address with no router, starting after up to
+five seconds.  If
+.Ar timeout
+is given and is greater than zero, the address is removed after that many
+seconds, until the link or the method changes.
 .Pp
 MANUAL requires the specification of an IP address
 .Ar ip-address
