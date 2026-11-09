@@ -332,6 +332,14 @@ install_v6_manual_address(const char *ifname, const struct in6_addr *addr,
 }
 
 int
+install_v6_dhcp_address(const char *ifname, const struct in6_addr *addr,
+    uint8_t prefix_len, uint32_t valid_lifetime, uint32_t preferred_lifetime)
+{
+	return (install_v6_address(ifname, addr, prefix_len, valid_lifetime,
+	    preferred_lifetime, 0));
+}
+
+int
 remove_v6_address(const char *ifname, const struct in6_addr *addr)
 {
 	struct in6_ifreq ifr;

@@ -18,6 +18,8 @@
 #include "bound_state.h"	/* primary election (#41) */
 #include "ipconfig_prefs.h"	/* the primary service's Proxies (#573) */
 #include "dns_config.h"		/* struct ipconfig_dns (#425) */
+#include "DHCPv6.h"			/* vendored: DHCPv6 packet (#576) */
+#include "DHCPv6Options.h"		/* vendored: its options */
 
 #include <SystemConfiguration/SCDynamicStore.h>
 #include <SystemConfiguration/SCPrivate.h>	/* _SC_NOTIFY_NETWORK_CHANGE */
@@ -253,7 +255,7 @@ make_key(const char *ifname, const char *suffix)
  * back to the interface's IPv4 service ID if the IPv6 one is not cached.
  */
 static CFStringRef
-make_v6_key(const char *ifname)
+make_v6_entity_key(const char *ifname, const char *entity)
 {
 	char buf[SC_PUBLISH_SERVICE_ID_LEN] = "";
 	CFStringRef id, key;
@@ -270,9 +272,15 @@ make_v6_key(const char *ifname)
 	(void)pthread_mutex_unlock(&g_svc_id_lock);
 	id = (buf[0] != '\0') ? mkstr(buf) : make_service_id(ifname);
 	key = CFStringCreateWithFormat(NULL, NULL,
-	    CFSTR("State:/Network/Service/%@/IPv6"), id);
+	    CFSTR("State:/Network/Service/%@/%s"), id, entity);
 	CFRelease(id);
 	return (key);
+}
+
+static CFStringRef
+make_v6_key(const char *ifname)
+{
+	return (make_v6_entity_key(ifname, "IPv6"));
 }
 
 struct sc_publish *
@@ -651,24 +659,28 @@ sc_publish_ipv6(struct sc_publish *p, const char *ifname,
     const struct in6_addr *addr, uint8_t prefix_len,
     const struct in6_addr *router_lladdr)
 {
+	return (sc_publish_ipv6_addrs(p, ifname, addr, &prefix_len, 1,
+	    router_lladdr));
+}
+
+int
+sc_publish_ipv6_addrs(struct sc_publish *p, const char *ifname,
+    const struct in6_addr *addrs, const uint8_t *prefix_lens, int count,
+    const struct in6_addr *router_lladdr)
+{
 	CFMutableDictionaryRef dict;
+	CFMutableArrayRef addr_arr, plen_arr;
 	CFStringRef key, k_addresses, k_prefixlen, k_router;
 	CFStringRef k_iface, k_flags;
-	CFStringRef iface_str, addr_str, router_str;
-	CFArrayRef addr_arr, plen_arr;
-	CFNumberRef plen_num, flags_num;
-	const void *addr_vals[1];
-	const void *plen_vals[1];
-	char abuf[INET6_ADDRSTRLEN];
+	CFStringRef iface_str, router_str;
+	CFNumberRef flags_num;
 	char rbuf[INET6_ADDRSTRLEN + IFNAMSIZ + 2];
-	int plen_i, flags_i = 0;
+	int flags_i = 0, i;
 	Boolean ok;
 
-	if (p == NULL || p->store == NULL)
+	if (p == NULL || p->store == NULL || count <= 0)
 		return (-1);
 
-	if (inet_ntop(AF_INET6, addr, abuf, sizeof(abuf)) == NULL)
-		return (-1);
 	if (router_lladdr != NULL) {
 		char rbase[INET6_ADDRSTRLEN];
 
@@ -690,20 +702,27 @@ sc_publish_ipv6(struct sc_publish *p, const char *ifname,
 	k_iface = mkstr("InterfaceName");
 	k_flags = mkstr("Flags");
 
-	addr_str = mkstr(abuf);
-	addr_vals[0] = addr_str;
-	addr_arr = CFArrayCreate(NULL, addr_vals, 1, &kCFTypeArrayCallBacks);
-	CFDictionarySetValue(dict, k_addresses, addr_arr);
-	CFRelease(addr_arr);
-	CFRelease(addr_str);
+	addr_arr = CFArrayCreateMutable(NULL, count, &kCFTypeArrayCallBacks);
+	plen_arr = CFArrayCreateMutable(NULL, count, &kCFTypeArrayCallBacks);
+	for (i = 0; i < count; i++) {
+		CFStringRef addr_str;
+		CFNumberRef plen_num;
+		char abuf[INET6_ADDRSTRLEN];
+		int plen_i = prefix_lens[i];
 
-	plen_i = prefix_len;
-	plen_num = CFNumberCreate(NULL, kCFNumberIntType, &plen_i);
-	plen_vals[0] = plen_num;
-	plen_arr = CFArrayCreate(NULL, plen_vals, 1, &kCFTypeArrayCallBacks);
+		if (inet_ntop(AF_INET6, &addrs[i], abuf, sizeof(abuf)) == NULL)
+			continue;
+		addr_str = mkstr(abuf);
+		CFArrayAppendValue(addr_arr, addr_str);
+		CFRelease(addr_str);
+		plen_num = CFNumberCreate(NULL, kCFNumberIntType, &plen_i);
+		CFArrayAppendValue(plen_arr, plen_num);
+		CFRelease(plen_num);
+	}
+	CFDictionarySetValue(dict, k_addresses, addr_arr);
 	CFDictionarySetValue(dict, k_prefixlen, plen_arr);
+	CFRelease(addr_arr);
 	CFRelease(plen_arr);
-	CFRelease(plen_num);
 
 	/* No default router (its lifetime expired): omit Router. */
 	if (router_lladdr != NULL) {
@@ -737,6 +756,112 @@ sc_publish_ipv6(struct sc_publish *p, const char *ifname,
 		return (-1);
 	}
 	return (0);
+}
+
+/* DHCPv6InfoDictionaryCreate(), for the options Apple's client accepts. */
+static bool
+dhcpv6_option_is_ok(int option)
+{
+	switch (option) {
+	case kDHCPv6OPTION_CLIENTID:
+	case kDHCPv6OPTION_SERVERID:
+	case kDHCPv6OPTION_ORO:
+	case kDHCPv6OPTION_ELAPSED_TIME:
+	case kDHCPv6OPTION_UNICAST:
+	case kDHCPv6OPTION_RAPID_COMMIT:
+	case kDHCPv6OPTION_IA_NA:
+	case kDHCPv6OPTION_IAADDR:
+	case kDHCPv6OPTION_STATUS_CODE:
+	case kDHCPv6OPTION_IA_TA:
+	case kDHCPv6OPTION_PREFERENCE:
+	case kDHCPv6OPTION_RELAY_MSG:
+	case kDHCPv6OPTION_AUTH:
+	case kDHCPv6OPTION_USER_CLASS:
+	case kDHCPv6OPTION_VENDOR_CLASS:
+	case kDHCPv6OPTION_VENDOR_OPTS:
+	case kDHCPv6OPTION_INTERFACE_ID:
+	case kDHCPv6OPTION_RECONF_MSG:
+	case kDHCPv6OPTION_RECONF_ACCEPT:
+	case kDHCPv6OPTION_DNS_SERVERS:
+	case kDHCPv6OPTION_DOMAIN_LIST:
+		return (true);
+	default:
+		return (false);
+	}
+}
+
+int
+sc_publish_dhcpv6(struct sc_publish *p, const char *ifname, const void *pkt,
+    size_t pkt_len)
+{
+	DHCPv6OptionErrorString err;
+	DHCPv6OptionListRef options;
+	CFMutableDictionaryRef dict;
+	CFStringRef key;
+	int count, i;
+	Boolean ok = FALSE;
+
+	if (p == NULL || p->store == NULL)
+		return (-1);
+	options = DHCPv6OptionListCreateWithPacket(
+	    (DHCPv6PacketRef)(uintptr_t)pkt, (int)pkt_len, &err);
+	if (options == NULL)
+		return (-1);
+	dict = CFDictionaryCreateMutable(NULL, 0,
+	    &kCFTypeDictionaryKeyCallBacks,
+	    &kCFTypeDictionaryValueCallBacks);
+	count = DHCPv6OptionListGetCount(options);
+	for (i = 0; i < count; i++) {
+		DHCPv6OptionRef option;
+		CFMutableArrayRef array;
+		CFDataRef data;
+		CFStringRef opt_key;
+		int code;
+
+		option = DHCPv6OptionListGetOptionAtIndex(options, i);
+		code = DHCPv6OptionGetCode(option);
+		if (!dhcpv6_option_is_ok(code))
+			continue;
+		data = CFDataCreate(NULL, DHCPv6OptionGetData(option),
+		    DHCPv6OptionGetLength(option));
+		opt_key = CFStringCreateWithFormat(NULL, NULL,
+		    CFSTR("Option_%d"), code);
+		array = (CFMutableArrayRef)(uintptr_t)
+		    CFDictionaryGetValue(dict, opt_key);
+		if (array == NULL) {
+			/* allocate an array to hold the value(s) */
+			array = CFArrayCreateMutable(NULL, 0,
+			    &kCFTypeArrayCallBacks);
+			CFDictionarySetValue(dict, opt_key, array);
+			CFRelease(array);
+		}
+		CFArrayAppendValue(array, data);
+		CFRelease(opt_key);
+		CFRelease(data);
+	}
+	DHCPv6OptionListRelease(&options);
+	key = make_v6_entity_key(ifname, "DHCPv6");
+	if (CFDictionaryGetCount(dict) > 0)
+		ok = SCDynamicStoreSetValue(p->store, key, dict);
+	else
+		ok = SCDynamicStoreRemoveValue(p->store, key);
+	CFRelease(key);
+	CFRelease(dict);
+	return (ok ? 0 : -1);
+}
+
+int
+sc_publish_remove_dhcpv6(struct sc_publish *p, const char *ifname)
+{
+	CFStringRef key;
+	Boolean ok;
+
+	if (p == NULL || p->store == NULL)
+		return (-1);
+	key = make_v6_entity_key(ifname, "DHCPv6");
+	ok = SCDynamicStoreRemoveValue(p->store, key);
+	CFRelease(key);
+	return (ok ? 0 : -1);
 }
 
 /*
