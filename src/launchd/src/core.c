@@ -816,6 +816,9 @@ static void job_postfork_become_user(job_t j);
 static void job_postfork_test_user(job_t j);
 static void job_log_pids_with_weird_uids(job_t j);
 static void job_setup_exception_port(job_t j, task_t target_task);
+#ifdef __FreeBSD__
+static void job_hold_ref_for_service(job_t j, const char *servicename);
+#endif
 static void job_callback(void *obj, struct kevent *kev);
 static void job_callback_proc(job_t j, struct kevent *kev);
 static void job_callback_timer(job_t j, void *ident);
@@ -7709,6 +7712,40 @@ job_checkin(job_t j)
 	j->checkedin = true;
 }
 
+#ifdef __FreeBSD__
+/*
+ * NextBSD: an anonymous job (a process launchd did not start) that creates
+ * a Mach service in this bootstrap keeps this launchd alive until it exits.
+ *
+ * A per-user launchd exits 10 seconds after its busy count drops to zero
+ * (runtime_install_timer()), and it counts only the jobs it started itself
+ * plus anonymous jobs that hold a reference. Apple takes that reference
+ * when an anonymous job moves into a session or creates a subset
+ * (job_mig_switch_to_session(), job_mig_move_subset(), job_mig_subset()),
+ * so a login that moved into a session keeps its launchd. A process started
+ * by hand in a Background session (an SSH login through pam_launchd) does
+ * neither: once the session's bootstrapper (com.apple.launchctl.Background)
+ * exits, the per-user launchd idles out and takes every service such a
+ * process checked in or registered with it, while the process still runs
+ * and holds the receive right. The next request respawns an empty per-user
+ * launchd, so lookups fail with BOOTSTRAP_UNKNOWN_SERVICE
+ * (nextbsd/nextbsd-userland#615).
+ *
+ * Take the same reference Apple takes for a session switch. job_reap()
+ * drops it when the process exits; the services go with the job then, as
+ * they always have.
+ */
+static void
+job_hold_ref_for_service(job_t j, const char *servicename)
+{
+	if (j->anonymous && !j->holds_ref) {
+		job_log(j, LOG_PERF, "Anonymous job created Mach service %s; holding a reference.", servicename);
+		j->holds_ref = true;
+		runtime_add_ref();
+	}
+}
+#endif
+
 bool job_is_god(job_t j)
 {
 	return j->embedded_god;
@@ -9301,6 +9338,9 @@ job_mig_check_in2(job_t j, name_t servicename, mach_port_t *serviceportp, uuid_t
 			if (!(j->anonymous || j->legacy_LS_job || j->legacy_mach_job)) {
 				job_log(j, LOG_APPLEONLY, "Please add the following service to the configuration file for this job: %s", servicename);
 			}
+#ifdef __FreeBSD__
+			job_hold_ref_for_service(j, servicename);
+#endif
 		} else {
 			return BOOTSTRAP_UNKNOWN_SERVICE;
 		}
@@ -9392,6 +9432,9 @@ job_mig_register2(job_t j, name_t servicename, mach_port_t serviceport, uint64_t
 	if (likely(serviceport != MACH_PORT_NULL)) {
 		if (likely(ms = machservice_new(j, servicename, &serviceport, flags & BOOTSTRAP_PER_PID_SERVICE ? true : false))) {
 			machservice_request_notifications(ms);
+#ifdef __FreeBSD__
+			job_hold_ref_for_service(j, servicename);
+#endif
 		} else {
 			return BOOTSTRAP_NO_MEMORY;
 		}
