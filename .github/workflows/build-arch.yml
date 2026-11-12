@@ -299,6 +299,7 @@ jobs:
           NB_SUITE: /usr/tests/freebsd-launchd-mach/run.sh
           NB_OVERLAY: nextbsd-ci/manifest/overlay-nextbsd-userland.tsv
           NB_DEBUG: '1'
+          NB_SMP: '1'   # EXPERIMENT: isolate -smp 2 (v0.3.8) from loader.env (v0.3.9)
         run: |
           set +e
           sh nextbsd-ci/harness/boot-test.sh disk.img
