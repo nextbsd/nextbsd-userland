@@ -32,7 +32,12 @@
 enum {
 	kDASessionStateIdle	= 0x00000001,	/* told it the daemon is idle */
 	kDASessionStateTimeout	= 0x00000002,	/* missed a response deadline */
-	kDASessionStateZombie	= 0x00000004	/* released; refs remain */
+	kDASessionStateZombie	= 0x00000004,	/* released; refs remain */
+	/*
+	 * Registered for disk appearances before the daemon's first idle:
+	 * DiskListComplete waits for that idle (DAStage.c).
+	 */
+	kDASessionStateListPending = 0x00000008
 };
 
 struct da_session;

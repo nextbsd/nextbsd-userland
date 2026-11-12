@@ -24,4 +24,13 @@ void	DAGeomInit(dispatch_queue_t queue);
  */
 void	DAGeomStorageChanged(void);
 
+/*
+ * The startup walk: run it now, on the DA queue, and return when the disks
+ * GEOM already has are in the model and their staging has been signalled.
+ * Apple's DAMain.c drains the media iterator in main() the same way, right
+ * after arming the notification, before it serves a client. Nothing at
+ * startup waits on a timer (#536).
+ */
+void	DAGeomWalkInitial(void);
+
 #endif /* DISKARBITRATION_DAGEOM_H */

@@ -18,6 +18,14 @@
  */
 extern int	gDAIdle;
 
+/*
+ * Set at the daemon's first idle after startup and never cleared: the
+ * disks present at boot have all been probed, mounted and announced. Until
+ * then a session that registers for appearances is not told the list is
+ * complete (DAServer.c); at that idle it is (DADiskListCompleteCallback).
+ */
+extern int	gDAStartupIdle;
+
 /* Set the daemon queue the stages run on. Call once, first. */
 void	DAStageInit(dispatch_queue_t queue);
 

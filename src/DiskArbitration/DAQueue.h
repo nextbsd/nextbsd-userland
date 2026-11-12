@@ -46,6 +46,13 @@ void	DADiskPeekCallback(struct da_disk *disk, struct da_callback *callback,
 void	DAIdleCallback(void);
 
 /*
+ * The daemon's first idle after startup: every session that registered for
+ * disk appearances before it gets DiskListComplete now (its disks went out
+ * as they appeared). Call before DAIdleCallback, so Idle follows it.
+ */
+void	DADiskListCompleteCallback(void);
+
+/*
  * Queue `callback` (one registered callback, or a request's completion)
  * for `disk` with `argument1` (a dissenter, a key array, or NULL), applying
  * the callback's match and watch (Apple's DAQueueCallback).

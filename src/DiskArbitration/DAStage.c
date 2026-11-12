@@ -24,7 +24,10 @@
  * and eject requests run once their disk has appeared and is not busy.
  *
  * When no disk has anything left to do the daemon is idle (gDAIdle) and
- * sessions that have not been told so get DAIdleCallback (#197).
+ * sessions that have not been told so get DAIdleCallback (#197). The first
+ * idle after startup also completes the disk list of every session that
+ * registered for appearances while the boot disks were still staging
+ * (gDAStartupIdle, #536).
  *
  * The console-user gate (#199) sits inside the Mount stage, in
  * DAMountWithArguments: a deferred mount returns ECANCELED and leaves the
@@ -55,6 +58,7 @@ static dispatch_queue_t	g_queue;
 static int		g_pending;
 static int		g_fresh = 1;
 int			gDAIdle;
+int			gDAStartupIdle;
 
 /* The whole disk a volume sits on (Apple compares DADiskGetBSDUnit). */
 static const struct da_disk *
@@ -301,6 +305,10 @@ stage_dispatch(void *ctx __unused)
 	if (gDAIdle)
 		return;
 	gDAIdle = 1;
+	if (!gDAStartupIdle) {
+		gDAStartupIdle = 1;
+		DADiskListCompleteCallback();
+	}
 	DAIdleCallback();
 	TAILQ_FOREACH(disk, &gDADiskList, link) {
 		if (disk->volume_only)

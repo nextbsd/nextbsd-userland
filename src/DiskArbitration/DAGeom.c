@@ -789,7 +789,8 @@ out:
 		free(links[i]);
 }
 
-static void
+/* Returns the number of whole disks in the model, or -1 if GEOM failed. */
+static int
 da_geom_walk(void)
 {
 	struct gmesh mesh;
@@ -808,7 +809,7 @@ da_geom_walk(void)
 			DAVolumeRefresh();
 		}
 		DAStageSignal();
-		return;
+		return (-1);
 	}
 
 	memset(&w, 0, sizeof(w));
@@ -847,7 +848,8 @@ da_geom_walk(void)
 		} else {
 			/* Out of memory: keep the model as it is. */
 			geom_deletetree(&mesh);
-			return;
+			DALog("DA-GEOM: walk %u: out of memory", g_walk_gen);
+			return (-1);
 		}
 	}
 
@@ -903,6 +905,7 @@ restart_wholes:
 	 * known as mounted, skips the clean check and is not mounted again.
 	 */
 	DAStageSignal();
+	return (wholes);
 }
 
 /* --- scheduling ----------------------------------------------------------- */
@@ -920,6 +923,22 @@ void
 DAGeomInit(dispatch_queue_t queue)
 {
 	g_da_queue = queue;
+}
+
+static void
+initial_walk_cb(void *ctx __unused)
+{
+	if (da_geom_walk() == 0)
+		DALog("DA-GEOM: startup walk: GEOM has no disks yet; they "
+		    "join the model when the kernel reports storage");
+}
+
+void
+DAGeomWalkInitial(void)
+{
+	if (g_da_queue == NULL)
+		return;
+	dispatch_sync_f(g_da_queue, NULL, initial_walk_cb);
 }
 
 void
