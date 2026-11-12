@@ -1905,9 +1905,14 @@ if [ -f "$DESTDIR/METALOG" ]; then
             if (mode != "") last[$1] = mode
         }
         END {
-            for (p in last)
-                if (length(last[p]) == 4 && substr(last[p], 1, 1) != "0")
-                    print last[p], p
+            # install(1) writes the mode with %#o ("04555"); after dropping
+            # the leading zeros, four digits means a special bit is set.
+            for (p in last) {
+                m = last[p]
+                sub(/^0+/, "", m)
+                if (length(m) == 4)
+                    print m, p
+            }
         }' "$DESTDIR/METALOG" | sort -k2 | while read -r mode path; do
         f="$DESTDIR/${path#./}"
         [ -f "$f" ] || { echo "FAIL: METALOG lists $path (mode $mode) but $f is missing"; exit 1; }
@@ -1921,7 +1926,11 @@ fi
 # The two this repo installs setuid today. Asserted so a regression fails the
 # build instead of shipping a passwd that cannot write the directory.
 for f in usr/bin/passwd usr/bin/chpass; do
-    [ -u "$DESTDIR/$f" ] || { echo "FAIL: /$f is not setuid in $DESTDIR"; exit 1; }
+    [ -u "$DESTDIR/$f" ] || {
+        echo "FAIL: /$f is not setuid in $DESTDIR; its METALOG entries:"
+        grep -F "./$f " "$DESTDIR/METALOG" || true
+        exit 1
+    }
 done
 
 tier "DONE : system layer (Tiers 0-2) + on-image tests staged into $DESTDIR for $T/$TA"
