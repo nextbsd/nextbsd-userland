@@ -53,6 +53,17 @@ extern volatile sig_atomic_t got_term;
  * `on_try` (may be NULL) is called after each DISCOVER is sent, with the
  * try number counting from 1; it runs on this thread, inside the wait for
  * that try's reply. See ipconfigd.c's link-local fallback.
+ *
+ * `*restart` (may be NULL) asks SELECTING to start over now: the link came
+ * back, or a renew was asked for (dhcp.c's link_status_changed and renew
+ * cases send an unbound client back to INIT). It is noticed on the same
+ * wakeups as `*stop`, cleared, and the ladder starts again from its first
+ * DISCOVER instead of waiting out the rest of its backoff (#628).
+ *
+ * Before the first DISCOVER the interface must be able to transmit:
+ * IFF_UP, IFF_RUNNING and a link state that is not down. The wait for that
+ * is driven by routing-socket messages (RTM_IFINFO and friends), not a
+ * poll, and is bounded by the 3 s the IFF_UP wait always had (#628).
  */
 #define	DHCP_ACQUIRE_OK		0
 #define	DHCP_ACQUIRE_NO_SERVER	(-1)
@@ -64,7 +75,8 @@ typedef void (*dhcp_try_cb)(int try, void *arg);
 
 int	dhcp_lease_acquire(const char *ifname, struct dhcp_lease *out,
 	    struct saved_pkt *saved, volatile sig_atomic_t *stop,
-	    dhcp_try_cb on_try, void *on_try_arg);
+	    volatile sig_atomic_t *restart, dhcp_try_cb on_try,
+	    void *on_try_arg);
 
 /*
  * One DHCPINFORM exchange for `ciaddr`, already installed on `ifname` (#569,

@@ -36,6 +36,7 @@
 #include <net/ethernet.h>
 #include <net/if.h>
 #include <net/if_dl.h>
+#include <net/route.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/udp.h>
@@ -46,6 +47,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <ifaddrs.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -184,17 +186,147 @@ get_interface_mac(const char *ifname, uint8_t mac[6])
 	return (-1);
 }
 
+/*
+ * How long bring_interface_up() waits for the interface to be able to
+ * transmit. The same 3 s its IFF_UP poll always had (30 x 100 ms); what
+ * changed is that the wait now ends on the routing-socket message that
+ * makes the interface ready, not on a sleep (#628).
+ */
+#define	LINK_READY_WAIT_MS	3000
+
+/*
+ * A PF_ROUTE socket that hears about interface state: RTM_IFINFO (flags and
+ * link state, from if_up()/if_down() and if_link_state_change()) and the
+ * address messages, which follow a driver re-init done for a first address.
+ * Opened before the state is read, so no change between the read and the
+ * wait is missed. Non-blocking; -1 if it cannot be opened.
+ */
+static int
+link_event_socket(void)
+{
+	int rs;
+
+	rs = socket(PF_ROUTE, SOCK_RAW, AF_UNSPEC);
+	if (rs < 0)
+		return (-1);
+#ifdef ROUTE_MSGFILTER
+	{
+		unsigned int filter = ROUTE_FILTER(RTM_IFINFO) |
+		    ROUTE_FILTER(RTM_NEWADDR) | ROUTE_FILTER(RTM_DELADDR) |
+		    ROUTE_FILTER(RTM_IFANNOUNCE);
+
+		(void)setsockopt(rs, PF_ROUTE, ROUTE_MSGFILTER, &filter,
+		    sizeof(filter));
+	}
+#endif
+	(void)fcntl(rs, F_SETFL, fcntl(rs, F_GETFL) | O_NONBLOCK);
+	return (rs);
+}
+
+/*
+ * `ifname`'s flags (if_flags | if_drv_flags, so IFF_RUNNING is there) and
+ * link state, from its AF_LINK record. False if it has none.
+ */
+static bool
+link_state_get(const char *ifname, unsigned *flags, int *link)
+{
+	struct ifaddrs *ifa, *p;
+	bool found = false;
+
+	if (getifaddrs(&ifa) != 0)
+		return (false);
+	for (p = ifa; p != NULL; p = p->ifa_next) {
+		if (p->ifa_addr == NULL || p->ifa_addr->sa_family != AF_LINK ||
+		    strcmp(p->ifa_name, ifname) != 0)
+			continue;
+		*flags = p->ifa_flags;
+		*link = p->ifa_data != NULL ?
+		    ((const struct if_data *)p->ifa_data)->ifi_link_state :
+		    LINK_STATE_UNKNOWN;
+		found = true;
+		break;
+	}
+	freeifaddrs(ifa);
+	return (found);
+}
+
+/*
+ * Can a frame written to BPF on this interface go out? ether_output()
+ * wants IFF_UP and IFF_DRV_RUNNING and iflib_if_transmit() also wants the
+ * link up; anything else is ENETDOWN. A driver that never reports link
+ * state (LINK_STATE_UNKNOWN) is taken at its flags.
+ */
+static bool
+link_ready(unsigned flags, int link)
+{
+	return ((flags & (IFF_UP | IFF_RUNNING)) == (IFF_UP | IFF_RUNNING) &&
+	    link != LINK_STATE_DOWN);
+}
+
+static const char *
+link_state_string(int link)
+{
+	switch (link) {
+	case LINK_STATE_UP:
+		return ("up");
+	case LINK_STATE_DOWN:
+		return ("down");
+	default:
+		return ("unknown");
+	}
+}
+
+/* Milliseconds from `from` to now, CLOCK_MONOTONIC. */
+static int
+ms_since(const struct timespec *from)
+{
+	struct timespec now;
+
+	(void)clock_gettime(CLOCK_MONOTONIC, &now);
+	return ((int)((now.tv_sec - from->tv_sec) * 1000 +
+	    (now.tv_nsec - from->tv_nsec) / 1000000));
+}
+
+/*
+ * Bring `ifname` up and wait until it can transmit (#628).
+ *
+ * Link Active in the store does not mean that. Under iflib (em(4) and
+ * friends) a NIC can carry IFF_UP while its driver is still in, or has not
+ * yet had, iflib_init_locked(): the drv flags read OACTIVE and not RUNNING
+ * (flags 0x8c03 on em0, against 0x8843 once running) and every BPF write is
+ * ENETDOWN. A boot-time worker that started in that window used to spend
+ * send_dhcp()'s one-second ENETDOWN budget, give up and sleep a minute.
+ *
+ * So, as Darwin's DHCP waits for the link before it transmits:
+ *   - not IFF_UP, or IFF_UP but not RUNNING: SIOCSIFFLAGS(IFF_UP). iflib
+ *     initialises an IFF_UP interface that is not running, synchronously,
+ *     and if another thread's init is already under way the call waits on
+ *     it, so either way RUNNING is settled when it returns. With RUNNING
+ *     already set it is never sent, so it never resets a working NIC.
+ *   - then wait for IFF_UP, IFF_RUNNING and link not down on routing-socket
+ *     messages, for at most LINK_READY_WAIT_MS. Not ready by then is logged
+ *     and the exchange goes ahead: send_dhcp() still reports what the
+ *     kernel says, and the worker restarts INIT when the link comes up.
+ *
+ * Returns 0 unless the interface could not be read or brought up.
+ */
 static int
 bring_interface_up(const char *ifname)
 {
 	struct ifreq ifr;
-	int sock, rc = -1, i;
+	struct timespec start;
 	unsigned before, after = 0;
+	int sock, rs, link = LINK_STATE_UNKNOWN;
+	bool ready = false, kicked = false;
 
+	(void)clock_gettime(CLOCK_MONOTONIC, &start);
+	rs = link_event_socket();
 	sock = socket(AF_INET, SOCK_DGRAM, 0);
 	if (sock < 0) {
 		xlog("bring_interface_up(%s): socket: %s", ifname,
 		    strerror(errno));
+		if (rs >= 0)
+			(void)close(rs);
 		return (-1);
 	}
 	(void)memset(&ifr, 0, sizeof(ifr));
@@ -202,35 +334,55 @@ bring_interface_up(const char *ifname)
 	if (ioctl(sock, SIOCGIFFLAGS, &ifr) != 0) {
 		xlog("SIOCGIFFLAGS(%s) failed: %s", ifname, strerror(errno));
 		(void)close(sock);
+		if (rs >= 0)
+			(void)close(rs);
 		return (-1);
 	}
 	before = (unsigned)(uint16_t)ifr.ifr_flags;
-	if ((ifr.ifr_flags & IFF_UP) == 0) {
+	if ((before & (IFF_UP | IFF_RUNNING)) != (IFF_UP | IFF_RUNNING)) {
 		ifr.ifr_flags |= IFF_UP;
-		rc = ioctl(sock, SIOCSIFFLAGS, &ifr);
-		if (rc != 0) {
+		if (ioctl(sock, SIOCSIFFLAGS, &ifr) != 0) {
 			xlog("SIOCSIFFLAGS(%s, +IFF_UP) failed: %s",
 			    ifname, strerror(errno));
 			(void)close(sock);
-			return (rc);
+			if (rs >= 0)
+				(void)close(rs);
+			return (-1);
 		}
-	} else {
-		rc = 0;
+		kicked = true;
 	}
-	for (i = 0; i < 30; i++) {
-		(void)memset(&ifr, 0, sizeof(ifr));
-		(void)strlcpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
-		if (ioctl(sock, SIOCGIFFLAGS, &ifr) == 0) {
-			after = (unsigned)(uint16_t)ifr.ifr_flags;
-			if ((after & IFF_UP) != 0)
-				break;
-		}
-		(void)usleep(100000);
-	}
-	xlog("bring_interface_up(%s) flags=0x%x -> 0x%x (waited %d/30)",
-	    ifname, before, after, i);
 	(void)close(sock);
-	return (rc);
+
+	for (;;) {
+		struct pollfd pfd;
+		char buf[2048];
+		int left;
+
+		if (link_state_get(ifname, &after, &link) &&
+		    link_ready(after, link)) {
+			ready = true;
+			break;
+		}
+		left = LINK_READY_WAIT_MS - ms_since(&start);
+		if (rs < 0 || left <= 0 || got_term)
+			break;
+		pfd.fd = rs;
+		pfd.events = POLLIN;
+		pfd.revents = 0;
+		if (poll(&pfd, 1, left) < 0 && errno != EINTR)
+			break;
+		/* Whatever arrived, the state is read again above. */
+		while (read(rs, buf, sizeof(buf)) > 0)
+			;
+	}
+	if (rs >= 0)
+		(void)close(rs);
+
+	xlog("bring_interface_up(%s) flags=0x%x -> 0x%x link %s%s, %s after "
+	    "%d ms", ifname, before, after & 0xffff, link_state_string(link),
+	    kicked ? " (SIOCSIFFLAGS)" : "",
+	    ready ? "ready" : "NOT ready", ms_since(&start));
+	return (0);
 }
 
 static int
@@ -855,19 +1007,19 @@ parse_dhcp_reply(const uint8_t *frame, size_t frame_len,
 /*
  * Wait up to `deadline` (CLOCK_MONOTONIC absolute) for a DHCP
  * reply matching want_xid + want_msgtype. Returns 1 on match, 0
- * on timeout, -1 on shutdown signal, stop request or fatal read
- * error.
+ * on timeout, 2 on a restart request, -1 on shutdown signal, stop
+ * request or fatal read error.
  *
  * The BPF descriptor has a 1s BIOCSRTIMEOUT so the wait wakes
- * every second to re-check got_term, `*stop` (NULL: none) and the
- * deadline. `saved` (may be NULL) gets the matching packet. `chaddr` is
+ * every second to re-check got_term, `*stop` (NULL: none), `*restart`
+ * (NULL: none; see dhcp_lease_acquire) and the deadline. `saved` (may be NULL) gets the matching packet. `chaddr` is
  * parse_dhcp_reply()'s.
  */
 static int
 recv_dhcp_reply(int bpf_fd, uint32_t want_xid, uint8_t want_msgtype,
     struct timespec *deadline, struct dhcp_lease *lease,
     struct saved_pkt *saved, volatile sig_atomic_t *stop,
-    const uint8_t *chaddr)
+    volatile sig_atomic_t *restart, const uint8_t *chaddr)
 {
 	uint8_t rxbuf[4096];
 
@@ -876,6 +1028,8 @@ recv_dhcp_reply(int bpf_fd, uint32_t want_xid, uint8_t want_msgtype,
 		ssize_t n;
 		uint8_t *p, *end;
 
+		if (restart != NULL && *restart)
+			return (2);
 		(void)clock_gettime(CLOCK_MONOTONIC, &now);
 		if (now.tv_sec > deadline->tv_sec ||
 		    (now.tv_sec == deadline->tv_sec &&
@@ -916,9 +1070,10 @@ recv_dhcp_reply(int bpf_fd, uint32_t want_xid, uint8_t want_msgtype,
 }
 
 /*
- * Send a DHCP message, handling em(4)/iflib's ~100ms post-IFF_UP
- * window where if_transmit returns ENETDOWN even after IFF_UP +
- * IFF_DRV_RUNNING are both set. iter 2 audited this in detail.
+ * Send a DHCP message. iflib_if_transmit() returns ENETDOWN until the
+ * link is up as well as IFF_UP + IFF_DRV_RUNNING; bring_interface_up()
+ * now waits for all three on routing-socket events (#628), so the short
+ * ENETDOWN retry here is only a guard for a link that drops mid-exchange.
  */
 static int
 send_dhcp(int bpf_fd, const uint8_t *frame, size_t frame_len)
@@ -991,8 +1146,8 @@ deadline_after(struct timespec *out, int seconds)
 
 int
 dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
-    struct saved_pkt *saved, volatile sig_atomic_t *stop, dhcp_try_cb on_try,
-    void *on_try_arg)
+    struct saved_pkt *saved, volatile sig_atomic_t *stop,
+    volatile sig_atomic_t *restart, dhcp_try_cb on_try, void *on_try_arg)
 {
 	uint8_t mac[6];
 	uint8_t frame[1024];
@@ -1067,11 +1222,26 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
 		if (on_try != NULL)
 			on_try(try, on_try_arg);
 		r = recv_dhcp_reply(bpf_fd, xid, DHCP_MTYPE_OFFER,
-		    &deadline, &offer, NULL, stop, NULL);
+		    &deadline, &offer, NULL, stop, restart, NULL);
 		if (r == 1)
 			break;
 		if (r < 0)
 			goto shutdown;
+		if (r == 2) {
+			/*
+			 * The link came back (or a renew was asked for):
+			 * dhcp.c's INIT again, from the first DISCOVER and
+			 * the bottom of the ladder, once the interface can
+			 * transmit (#628).
+			 */
+			*restart = 0;
+			xlog("%s: link up or renew — restarting DISCOVER",
+			    ifname);
+			(void)bring_interface_up(ifname);
+			wait_secs = DHCP_INITIAL_WAIT_SECS;
+			try = 0;
+			continue;
+		}
 		wait_secs *= 2;
 		if (wait_secs > DHCP_MAX_WAIT_SECS)
 			wait_secs = DHCP_MAX_WAIT_SECS;
@@ -1142,7 +1312,7 @@ dhcp_lease_acquire(const char *ifname, struct dhcp_lease *lease_out,
 
 		deadline_after(&deadline, wait_secs);
 		r = recv_dhcp_reply(bpf_fd, xid, DHCP_MTYPE_ACK,
-		    &deadline, lease_out, saved, stop, NULL);
+		    &deadline, lease_out, saved, stop, NULL, NULL);
 		if (r == 1) {
 			(void)close(bpf_fd);
 			return (DHCP_ACQUIRE_OK);
@@ -1223,7 +1393,7 @@ single_exchange(const char *ifname, uint8_t msgtype, uint8_t want,
 		    xid, try, DHCP_RETRY_COUNT + 1);
 		deadline_after(&deadline, wait_secs);
 		r = recv_dhcp_reply(bpf_fd, xid, want, &deadline, out, saved,
-		    stop, mac);
+		    stop, NULL, mac);
 		if (r != 0) {
 			rc = r == 1 ? DHCP_ACQUIRE_OK : DHCP_ACQUIRE_ERROR;
 			break;
@@ -1333,7 +1503,7 @@ dhcp_renew(const char *ifname, const struct dhcp_lease *existing,
 
 		deadline_in(&deadline, retry_seconds[try]);
 		r = recv_dhcp_reply(bpf_fd, xid, DHCP_MTYPE_ACK,
-		    &deadline, new_lease, saved, NULL, NULL);
+		    &deadline, new_lease, saved, NULL, NULL, NULL);
 		if (r == 1) {
 			(void)close(bpf_fd);
 			return (0);
