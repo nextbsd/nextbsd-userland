@@ -1246,8 +1246,9 @@ echo "==> adduser built"
 # source an account was resolved from and refuses anything that is not files
 # or NIS, so every directory account is rejected before our code would run.
 # Setuid root, because the plists are 0644 root-owned and there is no
-# opendirectoryd here to hand the write to. ci/assemble-image.sh re-applies
-# the bit after its chown, which strips it.
+# opendirectoryd here to hand the write to. The unprivileged install drops the
+# bit; it is restored from the METALOG at the end of this script (#635), and
+# nextbsd-ci's assemble-image.sh re-applies it after its chown, which strips it.
 comp "passwd"
 mkdir -p "$DESTDIR/usr/bin"
 run_buildenv "make -C $SRC/accounts/passwd DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
@@ -1268,7 +1269,7 @@ echo "==> rmuser built"
 # One binary behind six names. Unlike other BSDs the names are not synonyms:
 # chfn edits the real name, chsh the shell, and neither touches the other. The
 # yp* links exist only to say NIS is unsupported. Setuid root for the same
-# reason passwd is; ci/assemble-image.sh re-applies the bit.
+# reason passwd is; the bit is restored from the METALOG like passwd's.
 comp "chpass"
 mkdir -p "$DESTDIR/usr/bin"
 run_buildenv "make -C $SRC/accounts/chpass DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
@@ -1883,6 +1884,54 @@ comp "kext_tools test (test_kextd_mach)"
 $TCC -o "$TESTDIR/test_kextd_mach" "$SRC/mach_kmod/tests/test_kextd_mach.c" -lsystem_kernel
 
 echo "==> on-image test suite cross-built ($(ls "$TESTDIR" | wc -l | tr -d ' ') binaries in $TESTDIR)"
+
+# ---- setuid/setgid modes from the METALOG (nextbsd/nextbsd-userland#635) ----
+# make.py's buildenv installs unprivileged: `install -U -M $DESTDIR/METALOG`.
+# Under -U, install(1) writes the file with the special bits masked off and
+# records the mode it was asked for (BINMODE) only in the METALOG, which the
+# packing step then deletes. So the staged tree, the userland tarball and the
+# NextBSD-userland package all carried passwd and chpass as 0555, and only the
+# CI image was right, because nextbsd-ci's assemble-image.sh chmods them.
+# Apply every setuid, setgid or sticky mode the METALOG recorded, so the tree
+# matches the Makefiles and anything packed from it keeps the bits.
+comp "setuid/setgid modes recorded in the METALOG"
+if [ -f "$DESTDIR/METALOG" ]; then
+    # Later entries win: a file installed twice keeps its last mode.
+    awk '
+        $2 == "type=file" {
+            mode = ""
+            for (i = 3; i <= NF; i++)
+                if ($i ~ /^mode=/) mode = substr($i, 6)
+            if (mode != "") last[$1] = mode
+        }
+        END {
+            # install(1) writes the mode with %#o ("04555"); after dropping
+            # the leading zeros, four digits means a special bit is set.
+            for (p in last) {
+                m = last[p]
+                sub(/^0+/, "", m)
+                if (length(m) == 4)
+                    print m, p
+            }
+        }' "$DESTDIR/METALOG" | sort -k2 | while read -r mode path; do
+        f="$DESTDIR/${path#./}"
+        [ -f "$f" ] || { echo "FAIL: METALOG lists $path (mode $mode) but $f is missing"; exit 1; }
+        chmod "$mode" "$f"
+        note "$mode ${path#.}"
+    done
+else
+    echo "FAIL: $DESTDIR/METALOG missing; cannot restore setuid/setgid modes"
+    exit 1
+fi
+# The two this repo installs setuid today. Asserted so a regression fails the
+# build instead of shipping a passwd that cannot write the directory.
+for f in usr/bin/passwd usr/bin/chpass; do
+    [ -u "$DESTDIR/$f" ] || {
+        echo "FAIL: /$f is not setuid in $DESTDIR; its METALOG entries:"
+        grep -F "./$f " "$DESTDIR/METALOG" || true
+        exit 1
+    }
+done
 
 tier "DONE : system layer (Tiers 0-2) + on-image tests staged into $DESTDIR for $T/$TA"
 echo "==> nextbsd-userland cross build complete"

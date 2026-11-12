@@ -5,7 +5,8 @@
 # opendirectoryd over IPC, ours has no daemon to hand it to: the plists are
 # 0644 owned by root, so a user can read their own hash and cannot rewrite
 # the file. Every authorisation decision uses the real uid; the effective uid
-# matters only for the write.
+# matters only for the write. The unprivileged cross-install records BINMODE
+# only in the METALOG; build-userland.sh applies it to the stage (#635).
 #
 # Build:   make SYSROOT=/path/to/base
 # Install: make DESTDIR=/path/to/stage install
