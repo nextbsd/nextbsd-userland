@@ -27,10 +27,11 @@
  *
  * THE ONE GATE
  *
- * It prints unless Gershwin's login window is installed. Where that exists,
- * something else asks who you are, and a console that has already greeted
- * you answered first. Same check autologin-user makes, so "Gershwin is
- * installed" has one definition.
+ * It prints unless a graphical login window is installed: Gershwin's, or
+ * NextBSD's own (org.nextbsd.loginwindow). Where one exists, something else
+ * asks who you are, and a console that has already greeted you answered
+ * first. Same check autologin-user makes, so "a login window is installed"
+ * has one definition.
  *
  * Whether the machine is live media is NOT a gate on the banner -- an
  * installed machine wants the version, the memory and the uptime just as
@@ -63,6 +64,10 @@
 #ifndef BANNER_LOGINWINDOW
 #define BANNER_LOGINWINDOW \
 	"/System/Library/LaunchDaemons/io.github.gershwin-desktop.loginwindow.plist"
+#endif
+#ifndef BANNER_NEXTBSD_LOGINWINDOW
+#define BANNER_NEXTBSD_LOGINWINDOW \
+	"/System/Library/LaunchDaemons/org.nextbsd.loginwindow.plist"
 #endif
 #ifndef BANNER_OS_RELEASE
 #define BANNER_OS_RELEASE	"/etc/os-release"
@@ -500,7 +505,8 @@ main(int argc, char *argv[])
 	 * shell: anything printed here on a desktop machine is noise before
 	 * a login window appears.
 	 */
-	if (!force && access(BANNER_LOGINWINDOW, F_OK) == 0)
+	if (!force && (access(BANNER_LOGINWINDOW, F_OK) == 0 ||
+	    access(BANNER_NEXTBSD_LOGINWINDOW, F_OK) == 0))
 		return (0);
 
 	/*

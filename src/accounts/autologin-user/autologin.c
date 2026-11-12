@@ -58,11 +58,12 @@
  * is not mounted at all -- either way the client would look standalone and
  * log its local admin in.
  *
- * Nor does a machine with Gershwin's login window installed. Installing it
- * means something else now asks who you are, and a console that has already
- * logged somebody in has answered the question first. It counts for the same
- * reason a second account or a password does, and is checked the same way:
- * a fact on disk, read once, failing toward the prompt.
+ * Nor does a machine with a graphical login window installed, Gershwin's or
+ * NextBSD's own. Installing one means something else now asks who you are,
+ * and a console that has already logged somebody in has answered the
+ * question first. It counts for the same reason a second account or a
+ * password does, and is checked the same way: a fact on disk, read once,
+ * failing toward the prompt.
  *
  * ONCE PER BOOT
  *
@@ -127,13 +128,19 @@
 #define AUTOLOGIN_USER	"admin"
 
 /*
- * Gershwin's login window, which asks for a user and a password on the
- * display. Where it is installed it owns logging in, so the console must not
- * have already done it. Overridable only so the tests can point elsewhere.
+ * The graphical login windows, which ask for a user and a password on the
+ * display: Gershwin's and NextBSD's own (nextbsd/apps-loginwindow, a
+ * WindowServer client). Where either is installed it owns logging in, so the
+ * console must not have already done it. Overridable only so the tests can
+ * point elsewhere.
  */
 #ifndef LOGINWINDOW_PLIST
 #define LOGINWINDOW_PLIST \
 	"/System/Library/LaunchDaemons/io.github.gershwin-desktop.loginwindow.plist"
+#endif
+#ifndef NEXTBSD_LOGINWINDOW_PLIST
+#define NEXTBSD_LOGINWINDOW_PLIST \
+	"/System/Library/LaunchDaemons/org.nextbsd.loginwindow.plist"
 #endif
 
 /* A plist bigger than this is not a fresh single-user database. */
@@ -316,7 +323,8 @@ main(int argc, char *argv[])
 	 * decides once, at boot, and there is nothing to ask launchd that
 	 * would be true yet this early anyway.
 	 */
-	if (!for_loginwindow && access(LOGINWINDOW_PLIST, F_OK) == 0)
+	if (!for_loginwindow && (access(LOGINWINDOW_PLIST, F_OK) == 0 ||
+	    access(NEXTBSD_LOGINWINDOW_PLIST, F_OK) == 0))
 		return (0);
 
 	buf = slurp(LOCAL_USERS, &len);
