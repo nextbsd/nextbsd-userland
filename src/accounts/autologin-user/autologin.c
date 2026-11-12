@@ -88,7 +88,9 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#ifndef __linux__
 #include <sys/sysctl.h>
+#endif
 #include <sys/time.h>
 
 #include <fcntl.h>
@@ -209,12 +211,28 @@ static const char *
 this_boot(void)
 {
 	static char text[32];
+	long long sec = -1;
+#ifdef __linux__
+	/* Only so the host tests run on a Linux CI runner. */
+	char line[128];
+	FILE *fp = fopen("/proc/stat", "r");
+
+	if (fp == NULL)
+		return (NULL);
+	while (fgets(line, sizeof(line), fp) != NULL)
+		if (sscanf(line, "btime %lld", &sec) == 1)
+			break;
+	fclose(fp);
+#else
 	struct timeval tv;
 	size_t len = sizeof(tv);
 
-	if (sysctlbyname("kern.boottime", &tv, &len, NULL, 0) != 0)
+	if (sysctlbyname("kern.boottime", &tv, &len, NULL, 0) == 0)
+		sec = tv.tv_sec;
+#endif
+	if (sec < 0)
 		return (NULL);
-	snprintf(text, sizeof(text), "%lld\n", (long long)tv.tv_sec);
+	snprintf(text, sizeof(text), "%lld\n", sec);
 	return (text);
 }
 
