@@ -515,6 +515,22 @@ DAIdleCallback(void)
 	queue_all(_kDAIdleCallback, NULL, NULL);
 }
 
+void
+DADiskListCompleteCallback(void)
+{
+	struct da_session *session, *next;
+
+	TAILQ_FOREACH_SAFE(session, &gDASessionList, link, next) {
+		if ((session->state & kDASessionStateListPending) == 0)
+			continue;
+		session->state &= ~kDASessionStateListPending;
+		DAQueueCallbacks(session, _kDADiskListCompleteCallback, NULL,
+		    NULL);
+		DALog("DA-SESSION: " DA_SESSION_FMT " list complete at the "
+		    "first idle", DA_SESSION_ARGS(session));
+	}
+}
+
 /* --- description changes -------------------------------------------------- */
 
 static void

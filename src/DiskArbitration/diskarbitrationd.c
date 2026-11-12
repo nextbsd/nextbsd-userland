@@ -182,11 +182,17 @@ main(int argc, char **argv)
 	(void)da_iokit_subscribe_start();
 
 	/*
-	 * Walk once at startup even if the registry channel is missing; with
-	 * it, the initial-match drain above has already asked for this walk
-	 * and the two coalesce.
+	 * Walk once now, before serving clients, even if the registry channel
+	 * is missing (Apple's DAMain.c runs its initial media iterator here
+	 * too). The walk runs on the DA queue and this waits for it, so the
+	 * boot disks are in the model and staging before the first session
+	 * can ask for them. It used to be one more settle-delay request
+	 * (DAGeomStorageChanged); on the 1-CPU arm64 CI guest those timers
+	 * sometimes never fired and the daemon sat with no disks for minutes
+	 * (#536). The arrival drain above still schedules its settle re-walks,
+	 * which catch disks GEOM finishes tasting a little later.
 	 */
-	DAGeomStorageChanged();
+	DAGeomWalkInitial();
 
 	/*
 	 * Tell keep-alive sessions of an earlier daemon to come back (Apple's

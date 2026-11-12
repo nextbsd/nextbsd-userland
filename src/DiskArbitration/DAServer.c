@@ -496,7 +496,7 @@ _DAServerSessionRegisterCallback(mach_port_t _session,
 	struct da_disk *disk, *next;
 	CFDictionaryRef match = NULL;
 	CFTypeRef watch = NULL;
-	int replayed = 0;
+	int replayed = 0, staging = 0;
 
 	session = DASessionListGetSession(_session);
 	if (session == NULL || _kind > _kDADiskLastKind)
@@ -528,18 +528,35 @@ _DAServerSessionRegisterCallback(mach_port_t _session,
 			if (disk->state & kDADiskStateStagedAppear) {
 				DAQueueCallback(callback, disk, NULL);
 				replayed++;
+			} else
+				staging++;
+		}
+		if (!gDAStartupIdle) {
+			/*
+			 * The boot disks are still staging (#536): an empty
+			 * or partial list must not be called complete. The
+			 * rest go out as they appear, and DiskListComplete
+			 * follows at the first idle (DAStage.c).
+			 */
+			session->state |= kDASessionStateListPending;
+			DALog("DA-SESSION: " DA_SESSION_FMT " registered for "
+			    "disk appearances: %d disk%s replayed, %d still "
+			    "staging; list complete at the first idle",
+			    DA_SESSION_ARGS(session), replayed,
+			    replayed == 1 ? "" : "s", staging);
+		} else {
+			DAQueueCallbacks(session, _kDADiskListCompleteCallback,
+			    NULL, NULL);
+			if (gDAIdle) {
+				DAQueueCallbacks(session, _kDAIdleCallback,
+				    NULL, NULL);
+				session->state |= kDASessionStateIdle;
 			}
+			DALog("DA-SESSION: " DA_SESSION_FMT " registered for "
+			    "disk appearances: %d disk%s replayed, list "
+			    "complete%s", DA_SESSION_ARGS(session), replayed,
+			    replayed == 1 ? "" : "s", gDAIdle ? ", idle" : "");
 		}
-		DAQueueCallbacks(session, _kDADiskListCompleteCallback, NULL,
-		    NULL);
-		if (gDAIdle) {
-			DAQueueCallbacks(session, _kDAIdleCallback, NULL, NULL);
-			session->state |= kDASessionStateIdle;
-		}
-		DALog("DA-SESSION: " DA_SESSION_FMT " registered for disk "
-		    "appearances: %d disk%s replayed, list complete%s",
-		    DA_SESSION_ARGS(session), replayed, replayed == 1 ? "" : "s",
-		    gDAIdle ? ", idle" : "");
 	} else if (_kind == _kDAIdleCallback) {
 		if (gDAIdle) {
 			DAQueueCallback(callback, NULL, NULL);
