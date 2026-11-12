@@ -44,7 +44,7 @@ on:
       harness_ref:
         description: 'nextbsd/nextbsd-ci ref this lane checks out (T4): the shared image assembly (scripts/assemble-image.sh) AND the boot harness. Pinned to the release tag the 4-repo lockstep lands on, so neither drifts with nextbsd-ci main.'
         required: false
-        default: 'v0.3.7'
+        default: 'v0.3.9'
         type: string
       fbsd_sha:
         description: 'pinned FreeBSD SHA for the toolchain image tag (blank = latest)'
@@ -268,13 +268,16 @@ jobs:
         with:
           name: nextbsd-ci-image-${{ inputs.arch }}
           path: .
+      # mtools: the harness writes the loader contract to the image's ESP
+      # (/efi/freebsd/loader.env) instead of typing it at the loader prompt,
+      # where the emulated UART drops keystrokes (nextbsd-ci v0.3.9).
       - name: Install qemu + expect + UEFI firmware (expect provides tclsh)
         run: |
           sudo apt-get update
           if [ "${{ inputs.arch }}" = arm64 ]; then
-            sudo apt-get install -y --no-install-recommends qemu-system-arm qemu-efi-aarch64 expect
+            sudo apt-get install -y --no-install-recommends qemu-system-arm qemu-efi-aarch64 expect mtools
           else
-            sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf expect
+            sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf expect mtools
           fi
       # The shared harness boots the native-assembled image, applies the loader
       # contract, logs in, runs the on-image suite(s) from NB_SUITE, and gates
@@ -296,6 +299,10 @@ jobs:
           NB_SUITE: /usr/tests/freebsd-launchd-mach/run.sh
           NB_OVERLAY: nextbsd-ci/manifest/overlay-nextbsd-userland.tsv
           NB_DEBUG: '1'
+          # One CPU, as this lane has always booted (v0.3.7). nextbsd-ci v0.3.8+
+          # defaults to -smp 2, under which amd64 ACCT-LIFECYCLE fails (#631).
+          # Drop this once #631 is fixed.
+          NB_SMP: '1'
         run: |
           set +e
           sh nextbsd-ci/harness/boot-test.sh disk.img
