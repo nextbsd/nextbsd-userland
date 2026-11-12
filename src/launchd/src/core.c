@@ -2223,7 +2223,10 @@ job_new(jobmgr_t jm, const char *label, const char *prog, const char *const *arg
 	}
 
 	// Sssshhh... don't tell anyone.
-	if (strcmp(j->label, "com.apple.WindowServer") == 0) {
+	// NextBSD's WindowServer is org.nextbsd.WindowServer; the Apple label
+	// is kept for compatibility.
+	if (strcmp(j->label, "com.apple.WindowServer") == 0 ||
+	    strcmp(j->label, "org.nextbsd.WindowServer") == 0) {
 		j->has_console = true;
 	}
 
