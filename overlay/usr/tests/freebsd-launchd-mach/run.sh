@@ -2879,22 +2879,45 @@ fi
 # SCDS Set fires set-hostname.c's pattern subscription;
 # copy_dhcp_hostname (in the freebsd-shim) reads Option_12 and
 # returns it.
+#
+# --hold keeps the fixture in place: ipconfigd republishes /DHCP from
+# the lease on every renewal (every ~5 s under the CI lease cap), which
+# would otherwise drop Option_12 and let the engine legitimately fall to
+# the reverse-DNS tier before hostnametest looks (#621). A real server
+# that assigns a name sends it in every ACK; the hold models that.
 echo "==> hostnamed ROUND 3 (DHCP path)"
 HOSTNAMED_DHCP_FIXTURE="hostnamed-iter3a-fixture"
 if [ -x /usr/tests/freebsd-launchd-mach/hostnameprefset ]; then
     /usr/tests/freebsd-launchd-mach/hostnameprefset --clear || true
 fi
 if [ -x /usr/tests/freebsd-launchd-mach/hostnamedhcpset ]; then
-    /usr/tests/freebsd-launchd-mach/hostnamedhcpset "$HOSTNAMED_DHCP_FIXTURE"
-    rc=$?
-    if [ "$rc" -ne 0 ]; then
-        echo "HOSTNAMED-DHCP-FAIL: hostnamedhcpset exit=$rc"
+    /usr/tests/freebsd-launchd-mach/hostnamedhcpset --hold \
+        "$HOSTNAMED_DHCP_FIXTURE" > /var/log/hostnamedhcpset.stdout \
+        2> /var/log/hostnamedhcpset.stderr &
+    HOSTNAMED_DHCPSET_PID=$!
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        if grep -q "DHCPSET-HOLDING" /var/log/hostnamedhcpset.stdout \
+            2>/dev/null; then
+            break
+        fi
+        if ! kill -0 "$HOSTNAMED_DHCPSET_PID" 2>/dev/null; then
+            break
+        fi
+        sleep 1
+    done
+    cat /var/log/hostnamedhcpset.stdout /var/log/hostnamedhcpset.stderr \
+        2>/dev/null
+    if ! grep -q "DHCPSET-HOLDING" /var/log/hostnamedhcpset.stdout \
+        2>/dev/null; then
+        echo "HOSTNAMED-DHCP-FAIL: hostnamedhcpset --hold never reached HOLDING"
     else
         hostnamed_wait_settle
         hostnamed_dump_log "ROUND 3"
         echo "    kernel hostname = '$(hostname 2>/dev/null)'"
         /usr/tests/freebsd-launchd-mach/hostnametest "$HOSTNAMED_DHCP_FIXTURE" DHCP
     fi
+    kill "$HOSTNAMED_DHCPSET_PID" 2>/dev/null || true
+    wait "$HOSTNAMED_DHCPSET_PID" 2>/dev/null || true
 else
     echo "HOSTNAMED-DHCP-FAIL: hostnamedhcpset binary not installed"
 fi
