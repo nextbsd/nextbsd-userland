@@ -72,8 +72,15 @@
  * records the boot it did so in AUTOLOGIN_MARKER, and for the rest of that
  * boot it prints nothing: getty, restarted by launchd after a logout, then
  * shows a login prompt, and a graphical login window shows its panel. The
- * marker holds kern.boottime, so a marker left from an earlier boot counts
- * for nothing even where /var/run survives a reboot.
+ * marker holds kern.boot_id, the random identifier the kernel picks at each
+ * boot, so a marker left from an earlier boot counts for nothing even where
+ * /var/run survives a reboot.
+ *
+ * Not kern.boottime: that is the wall-clock time the system started, worked
+ * out backwards from the current time, so it moves whenever the clock is
+ * stepped, and ntpd -g steps it about a minute after boot. A marker holding
+ * it stops matching then, and the next ask -- a logout, or loginwindow
+ * restarting -- would log in again (nextbsd-userland#632).
  *
  * FOR A LOGIN WINDOW (-g)
  *
@@ -92,7 +99,6 @@
 #ifndef __linux__
 #include <sys/sysctl.h>
 #endif
-#include <sys/time.h>
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -213,33 +219,42 @@ slurp(const char *path, size_t *lenp)
 	return (buf);
 }
 
-/* This boot, as text: kern.boottime's seconds. NULL if it can't be read. */
+/* This boot, as text: kern.boot_id in hex. NULL if it can't be read. */
 static const char *
 this_boot(void)
 {
-	static char text[32];
-	long long sec = -1;
+	static char text[2 * 64 + 2];
 #ifdef __linux__
 	/* Only so the host tests run on a Linux CI runner. */
-	char line[128];
-	FILE *fp = fopen("/proc/stat", "r");
+	FILE *fp = fopen("/proc/sys/kernel/random/boot_id", "r");
+	int ok;
 
 	if (fp == NULL)
 		return (NULL);
-	while (fgets(line, sizeof(line), fp) != NULL)
-		if (sscanf(line, "btime %lld", &sec) == 1)
-			break;
+	ok = fgets(text, sizeof(text), fp) != NULL && text[0] != '\n' &&
+	    strchr(text, '\n') != NULL;
 	fclose(fp);
-#else
-	struct timeval tv;
-	size_t len = sizeof(tv);
-
-	if (sysctlbyname("kern.boottime", &tv, &len, NULL, 0) == 0)
-		sec = tv.tv_sec;
-#endif
-	if (sec < 0)
+	if (!ok)
 		return (NULL);
-	snprintf(text, sizeof(text), "%lld\n", sec);
+#elif defined(__APPLE__)
+	/* Only so the host tests run on a Mac: Darwin's per-boot UUID. */
+	size_t len = sizeof(text) - 1;
+
+	if (sysctlbyname("kern.bootsessionuuid", text, &len, NULL, 0) != 0 ||
+	    len <= 1)
+		return (NULL);
+	strlcat(text, "\n", sizeof(text));
+#else
+	unsigned char id[64];
+	size_t len = sizeof(id), i;
+
+	if (sysctlbyname("kern.boot_id", id, &len, NULL, 0) != 0 || len == 0)
+		return (NULL);
+	for (i = 0; i < len; i++)
+		snprintf(text + 2 * i, 3, "%02x", id[i]);
+	text[2 * len] = '\n';
+	text[2 * len + 1] = '\0';
+#endif
 	return (text);
 }
 
