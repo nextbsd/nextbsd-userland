@@ -869,7 +869,7 @@ dhcp_run_on_interface(const char *ifname, uint32_t lease_cap_secs,
 		int r;
 		time_t until;
 
-		r = dhcp_lease_acquire(ifname, &lease, &saved, stop,
+		r = dhcp_lease_acquire(ifname, &lease, &saved, stop, renew,
 		    dhcp_on_try, &f);
 
 		/*
@@ -952,9 +952,15 @@ dhcp_run_on_interface(const char *ifname, uint32_t lease_cap_secs,
 		    (long)(until - monotonic_secs()));
 		while (monotonic_secs() < until && !got_term &&
 		    !(stop != NULL && *stop)) {
-			/* dhcp.c's renew case on an unbound service: INIT now. */
+			/*
+			 * dhcp.c's renew case on an unbound service: INIT now.
+			 * A link-up sets the same flag (on_link_event, #628),
+			 * so a link that comes back cuts this wait short.
+			 */
 			if (renew != NULL && *renew) {
 				*renew = 0;
+				xlog("%s: link up or renew — running INIT now",
+				    ifname);
 				break;
 			}
 			fallback_step(&f);
@@ -1980,6 +1986,35 @@ set_check_ifname(const char *ifname)
 }
 
 /*
+ * Link up on an interface whose DHCP worker has no lease (#628): dhcp.c's
+ * link_status_changed case, which sends an unbound client back to INIT
+ * rather than letting it finish its backoff. The worker's renew flag is
+ * that request; SELECTING and the minute-long INIT wait both act on it
+ * within a second. A held link-local fallback is not a lease. True if a
+ * worker was asked.
+ */
+static bool
+dhcp_worker_link_up(const char *ifname)
+{
+	struct dhcp_worker *w;
+	bool unbound, kicked = false;
+
+	unbound = !bound_state_is_bound(ifname) ||
+	    bound_state_is_linklocal(ifname);
+	if (!unbound)
+		return (false);
+	pthread_mutex_lock(&g_workers_lock);
+	w = worker_find_locked(ifname);
+	if (w != NULL && !w->stop &&
+	    w->method.method == ipconfig_method_dhcp_e) {
+		w->renew = 1;
+		kicked = true;
+	}
+	pthread_mutex_unlock(&g_workers_lock);
+	return (kicked);
+}
+
+/*
  * link-watch callback — invoked on a libdispatch worker thread for every
  * change to an interface's Link entity (State:/Network/Interface/<if>/Link),
  * published by KernelEventMonitor from PF_ROUTE. `active` reflects the current
@@ -2164,6 +2199,17 @@ on_link_event(const char *ifname, int active, uint32_t lease_cap_secs)
 		method_lookup(ifname, &method);
 		xlog("link-active(%s) — started %s worker", ifname,
 		    ipconfig_method_string(method.method));
+		return;
+	}
+
+	/*
+	 * A worker is already running. If it has no lease yet, the link may
+	 * have just come back from under it (a driver re-init, a cable): tell
+	 * it to start INIT now instead of waiting out its backoff (#628).
+	 */
+	if (dhcp_worker_link_up(ifname)) {
+		xlog("link-active(%s) — DHCP has no lease; restarting INIT",
+		    ifname);
 		return;
 	}
 
