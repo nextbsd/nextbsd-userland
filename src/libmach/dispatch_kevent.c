@@ -934,6 +934,35 @@ kevent_qos(int kq, const struct kevent_qos_s *changelist, int nchanges,
 	}
 
 	int ev_budget = nevents - filled;
+
+	/*
+	 * A KEVENT_FLAG_ERROR_EVENTS call must not dequeue anything: ask the
+	 * kernel for one EV_RECEIPT per submitted change and size the
+	 * eventlist to exactly those receipts, so kqueue_scan() never runs
+	 * (kern_kevent: with nevents spent on receipts there is no scan).
+	 * This is libdispatch's own non-QOS emulation of the flag
+	 * (_dispatch_kq_poll), which is compiled out here because
+	 * DISPATCH_USE_KEVENT_QOS is 1.
+	 *
+	 * Skipping non-error entries in Phase 3 below is not enough on its
+	 * own. It keeps them from the caller, but the syscall has already
+	 * dequeued them, and an edge-triggered event is gone for good: an
+	 * EV_CLEAR EVFILT_USER, or an EV_ONESHOT EVFILT_TIMER. Those are
+	 * exactly the dispatch manager's wake-up (NOTE_TRIGGER from
+	 * _dispatch_event_loop_poke) and its timer fires. Any thread that
+	 * registered or re-armed a source while one was pending ate it, so the
+	 * manager slept on with the timer heap unprogrammed and every later
+	 * dispatch_after in the process never ran. diskarbitrationd sat with
+	 * no disks for minutes on the arm64 CI guest because of it
+	 * (nextbsd-userland#536). Mach events are level-triggered here (see
+	 * Phase 3) and survived the skip, so this mostly bit timers and pokes.
+	 */
+	if ((flags & KEVENT_FLAG_ERROR_EVENTS) && nsubmit > 0 &&
+	    nevents >= nsubmit) {
+		for (i = 0; i < nsubmit; i++)
+			scratch_ch[i].flags |= EV_RECEIPT;
+		ev_budget = nsubmit;
+	}
 	if (ev_budget > KEVENT_STACK_SLOTS) {
 		scratch_ev = calloc((size_t)ev_budget, sizeof(*scratch_ev));
 		if (scratch_ev == NULL) {
@@ -1034,6 +1063,24 @@ kevent_qos(int kq, const struct kevent_qos_s *changelist, int nchanges,
 		 */
 		if ((flags & KEVENT_FLAG_ERROR_EVENTS) &&
 		    !(scratch_ev[i].flags & EV_ERROR))
+			continue;
+		/*
+		 * A successful EV_RECEIPT (EV_ERROR with data 0, see above) is
+		 * not an event; libdispatch ignores it.
+		 *
+		 * No receipt for a native EVFILT_MACHPORT change may reach the
+		 * backlog drain below either, failed or not. The drain takes
+		 * messages off the port, and on this call libdispatch discards
+		 * everything without EV_ERROR, so they would be destroyed. A
+		 * native failure has no caller udata to report against (the
+		 * knote's udata is our registration), and the expected one, the
+		 * ENOENT from an EV_DELETE on a pset that reg_destroy() already
+		 * released, is harmless. These were already dropped when the
+		 * registration lookup failed.
+		 */
+		if ((flags & KEVENT_FLAG_ERROR_EVENTS) &&
+		    (scratch_ev[i].data == 0 ||
+		    scratch_ev[i].filter == EVFILT_MACHPORT_NATIVE))
 			continue;
 
 		/*
