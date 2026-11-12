@@ -47,6 +47,13 @@
     the class in nextbsd-overlays, so an image may have one without the
     other, and the fallback is always the ordinary login prompt.
 
+    It happens once per boot. The helper records the boot it logged in
+    (kern.boottime, in /var/run/autologin-used) and says nothing for the
+    rest of it, so when the shell exits and launchd restarts this job,
+    getty shows the login prompt rather than logging admin straight back
+    in. A graphical login window asks the same helper with -g and shares
+    the same once.
+
     The home is built here, synchronously, before getty is exec'd. Automatic
     login happens the instant getty starts, so a one-shot job racing it would
     lose about as often as not, and login would report "No home directory.

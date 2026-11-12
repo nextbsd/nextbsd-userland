@@ -64,13 +64,34 @@
  * reason a second account or a password does, and is checked the same way:
  * a fact on disk, read once, failing toward the prompt.
  *
+ * ONCE PER BOOT
+ *
+ * Automatic login answers "who is at the machine when it starts", not "who
+ * is at it after they logged out". So the first time this prints a name it
+ * records the boot it did so in AUTOLOGIN_MARKER, and for the rest of that
+ * boot it prints nothing: getty, restarted by launchd after a logout, then
+ * shows a login prompt, and a graphical login window shows its panel. The
+ * marker holds kern.boottime, so a marker left from an earlier boot counts
+ * for nothing even where /var/run survives a reboot.
+ *
+ * FOR A LOGIN WINDOW (-g)
+ *
+ * A graphical login window runs this with -g. The same rule decides, and
+ * the same once-per-boot marker applies, but the "a login window is
+ * installed" clause is skipped: the login window is the one asking.
+ *
  * Darwin instead stores an explicit autoLoginUser in a loginwindow
  * preference and keeps an obfuscated password in /etc/kcpassword, and ships
  * it off by default because Setup Assistant always sets a password. This
  * reaches the same place without storing a credential anywhere.
  */
 
+#include <sys/types.h>
 #include <sys/stat.h>
+#ifndef __linux__
+#include <sys/sysctl.h>
+#endif
+#include <sys/time.h>
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -95,6 +116,11 @@
 #endif
 #ifndef FSTAB
 #define FSTAB		"/etc/fstab"
+#endif
+
+/* Records the boot whose automatic login has happened; see ONCE PER BOOT. */
+#ifndef AUTOLOGIN_MARKER
+#define AUTOLOGIN_MARKER	"/var/run/autologin-used"
 #endif
 
 /* The one account this will ever authorise; see the comment above. */
@@ -180,15 +206,97 @@ slurp(const char *path, size_t *lenp)
 	return (buf);
 }
 
+/* This boot, as text: kern.boottime's seconds. NULL if it can't be read. */
+static const char *
+this_boot(void)
+{
+	static char text[32];
+	long long sec = -1;
+#ifdef __linux__
+	/* Only so the host tests run on a Linux CI runner. */
+	char line[128];
+	FILE *fp = fopen("/proc/stat", "r");
+
+	if (fp == NULL)
+		return (NULL);
+	while (fgets(line, sizeof(line), fp) != NULL)
+		if (sscanf(line, "btime %lld", &sec) == 1)
+			break;
+	fclose(fp);
+#else
+	struct timeval tv;
+	size_t len = sizeof(tv);
+
+	if (sysctlbyname("kern.boottime", &tv, &len, NULL, 0) == 0)
+		sec = tv.tv_sec;
+#endif
+	if (sec < 0)
+		return (NULL);
+	snprintf(text, sizeof(text), "%lld\n", sec);
+	return (text);
+}
+
+/* Automatic login already happened during this boot. */
+static int
+used_this_boot(void)
+{
+	const char *boot = this_boot();
+	char *buf;
+	size_t len;
+	int used;
+
+	if (boot == NULL)
+		return (1);	/* can't tell: fail toward the prompt */
+	buf = slurp(AUTOLOGIN_MARKER, &len);
+	if (buf == NULL)
+		return (0);
+	used = len == strlen(boot) && memcmp(buf, boot, len) == 0;
+	free(buf);
+	return (used);
+}
+
+/* Record that automatic login happened during this boot. */
+static int
+mark_used(void)
+{
+	const char *boot = this_boot();
+	int fd;
+	ssize_t n;
+
+	if (boot == NULL)
+		return (-1);
+	fd = open(AUTOLOGIN_MARKER, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
+	    0644);
+	if (fd < 0)
+		return (-1);
+	n = write(fd, boot, strlen(boot));
+	close(fd);
+	return (n == (ssize_t)strlen(boot) ? 0 : -1);
+}
+
 int
-main(void)
+main(int argc, char *argv[])
 {
 	struct pl_node *root;
 	const struct pl_node *rec;
 	const char *name;
 	char *buf;
 	size_t len;
-	int nopass = 0;
+	int ch, for_loginwindow = 0, nopass = 0;
+
+	while ((ch = getopt(argc, argv, "g")) != -1) {
+		switch (ch) {
+		case 'g':
+			for_loginwindow = 1;
+			break;
+		default:
+			return (0);	/* unknown option: no automatic login */
+		}
+	}
+
+	/* It already happened this boot; see ONCE PER BOOT. */
+	if (used_this_boot())
+		return (0);
 
 	/*
 	 * A joined client takes its accounts from the server, so it does not
@@ -208,7 +316,7 @@ main(void)
 	 * decides once, at boot, and there is nothing to ask launchd that
 	 * would be true yet this early anyway.
 	 */
-	if (access(LOGINWINDOW_PLIST, F_OK) == 0)
+	if (!for_loginwindow && access(LOGINWINDOW_PLIST, F_OK) == 0)
 		return (0);
 
 	buf = slurp(LOCAL_USERS, &len);
@@ -237,7 +345,13 @@ main(void)
 	if (pl_dict_bool(rec, "noPassword", &nopass) != 0 || !nopass)
 		goto done;
 
-	puts(AUTOLOGIN_USER);
+	/*
+	 * Only print the name once the marker is written: if it can't be,
+	 * this would log in again after every logout, so fail toward the
+	 * prompt instead.
+	 */
+	if (mark_used() == 0)
+		puts(AUTOLOGIN_USER);
 done:
 	pl_free(root);
 	return (0);
