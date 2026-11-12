@@ -374,6 +374,39 @@ reg_destroy(struct mach_kev_reg *r)
 }
 
 /*
+ * Flags for the native EVFILT_MACHPORT knote behind a registration.
+ *
+ * Level-triggered (no EV_CLEAR), always: see the EV_CLEAR note at the
+ * Phase 3 skip in kevent_qos().
+ *
+ * A notify-mode registration (no MACH_RCV_MSG: a DISPATCH_SOURCE_TYPE_
+ * MACH_RECV source, whose handler receives the message itself) also
+ * carries the caller's EV_DISPATCH onto the native knote, and re-enables
+ * it on every re-arm. libdispatch arms these with EV_DISPATCH and treats
+ * one delivered event as "disarmed until I EV_ENABLE again", as on
+ * Darwin. Without it the knote stayed armed: while the handler had not
+ * received yet, every manager poll saw the port readable again and
+ * delivered a second event to the disarmed unote, so the handler ran a
+ * second time on an empty port (nextbsd-userland#420, MACH_RCV_TIMED_OUT
+ * in LIBDISPATCH-MACH; a probe on a 6-CPU arm64 VM double-fired in about
+ * a third of runs), and the manager kept waking for as long as the
+ * message sat there. With EV_DISPATCH the kernel disables the knote on
+ * delivery, and the EV_ENABLE re-arm re-evaluates it, so a message still
+ * queued at re-arm fires again.
+ *
+ * Message mode (MACH_RCV_MSG) keeps the knote armed: Phase 3 drains every
+ * queued message into the backlog on each fire.
+ */
+static unsigned short
+native_knote_flags(const struct kevent_qos_s *src)
+{
+	if ((src->fflags & MACH_RCV_MSG) || !(src->flags & EV_DISPATCH))
+		return (EV_ADD);
+	return (EV_ADD | EV_DISPATCH |
+	    ((src->flags & EV_DISABLE) ? EV_DISABLE : EV_ENABLE));
+}
+
+/*
  * Translate one user-supplied MACHPORT changelist entry into the
  * EVFILT_READ entry we submit to __sys_kevent. EV_ADD allocates a
  * registration (or updates an existing one); EV_DELETE looks one up
@@ -429,10 +462,9 @@ machport_change_translate(int kq, const struct kevent_qos_s *src,
 		/* Native EVFILT_MACHPORT on the wrap pset, notify mode
 		 * (fflags = 0, no MACH_RCV_MSG): filt_machport signals
 		 * readiness without consuming; we drain via mach_msg on fire. */
-		/* LEVEL-triggered, deliberately: see the EV_CLEAR note at
-		 * the Phase 3 skip in mach_kevent_qos(). */
+		/* See native_knote_flags(). */
 		EV_SET(out, (uintptr_t)r->wrap_pset, EVFILT_MACHPORT_NATIVE,
-		    EV_ADD, 0, 0, r);
+		    native_knote_flags(src), 0, 0, r);
 		pthread_mutex_unlock(&g_reg_mtx);
 		return (0);
 	}
@@ -446,10 +478,9 @@ machport_change_translate(int kq, const struct kevent_qos_s *src,
 	pthread_mutex_lock(&g_reg_mtx);
 	reg_insert_locked(r);
 	pthread_mutex_unlock(&g_reg_mtx);
-	/* LEVEL-triggered: see the EV_CLEAR note at the Phase 3 skip. */
+	/* See native_knote_flags(). */
 	EV_SET(out, (uintptr_t)r->wrap_pset, EVFILT_MACHPORT_NATIVE,
-	    EV_ADD,
-	    0, 0, r);
+	    native_knote_flags(src), 0, 0, r);
 	return (0);
 }
 
@@ -933,13 +964,31 @@ kevent_qos(int kq, const struct kevent_qos_s *changelist, int nchanges,
 		return (filled);
 	}
 
+	/*
+	 * A KEVENT_FLAG_ERROR_EVENTS call with nothing to submit has nothing
+	 * to report, and must not fall through to a scan (see below).
+	 */
+	if ((flags & KEVENT_FLAG_ERROR_EVENTS) && nsubmit == 0) {
+		filled = emit_failed_changes(eventlist, nevents, filled,
+		    failed_ch, failed_err, nfailed);
+		if (nchanges > KEVENT_STACK_SLOTS)
+			free(scratch_ch);
+		if (saved_errno != 0)
+			errno = saved_errno;
+		return (filled);
+	}
+
 	int ev_budget = nevents - filled;
 
 	/*
 	 * A KEVENT_FLAG_ERROR_EVENTS call must not dequeue anything: ask the
 	 * kernel for one EV_RECEIPT per submitted change and size the
 	 * eventlist to exactly those receipts, so kqueue_scan() never runs
-	 * (kern_kevent: with nevents spent on receipts there is no scan).
+	 * (kern_kevent: once any change produced a receipt there is no scan).
+	 * The receipts land in scratch_ev, so this holds even when the
+	 * caller's eventlist is smaller than its changelist; receipts that do
+	 * not fit the caller's list are dropped in Phase 3, the same as
+	 * emit_failed_changes() does.
 	 * This is libdispatch's own non-QOS emulation of the flag
 	 * (_dispatch_kq_poll), which is compiled out here because
 	 * DISPATCH_USE_KEVENT_QOS is 1.
@@ -957,8 +1006,7 @@ kevent_qos(int kq, const struct kevent_qos_s *changelist, int nchanges,
 	 * (nextbsd-userland#536). Mach events are level-triggered here (see
 	 * Phase 3) and survived the skip, so this mostly bit timers and pokes.
 	 */
-	if ((flags & KEVENT_FLAG_ERROR_EVENTS) && nsubmit > 0 &&
-	    nevents >= nsubmit) {
+	if (flags & KEVENT_FLAG_ERROR_EVENTS) {
 		for (i = 0; i < nsubmit; i++)
 			scratch_ch[i].flags |= EV_RECEIPT;
 		ev_budget = nsubmit;
@@ -993,12 +1041,27 @@ kevent_qos(int kq, const struct kevent_qos_s *changelist, int nchanges,
 	}
 
 	/*
-	 * Phase 3: process returned events. For tracked pipes, drain
-	 * the pset into the backlog and pop as many as fit.
+	 * Phase 3: process returned events, in two passes.
+	 *
+	 * The first pass copies out everything except native EVFILT_MACHPORT
+	 * readiness. Each of those takes exactly one slot, and the kernel
+	 * returned at most ev_budget of them, so on an ordinary call they
+	 * always fit.
+	 *
+	 * The second pass drains native readiness into the registrations'
+	 * backlogs and pops as many as fit. It runs for every native event
+	 * even when the caller's list is full: what does not fit stays in the
+	 * backlog for Phase 1 of the next call. Doing both in one loop that
+	 * stopped at a full list threw away the events after the stop, which
+	 * the kernel had already dequeued. That was lossy for edge-triggered
+	 * filters, and for a notify-mode knote, which the kernel now disables
+	 * on delivery (EV_DISPATCH, see native_knote_flags()), it would leave
+	 * the source disarmed with nobody to re-arm it. A message-mode drain
+	 * can pop several messages for one event, which is how the list
+	 * filled early.
 	 */
 	n = rc;
 	for (i = 0; i < n && filled < nevents; i++) {
-		struct mach_kev_reg *r = NULL;
 
 		/*
 		 * On a KEVENT_FLAG_ERROR_EVENTS call, emit receipts ONLY --
@@ -1083,6 +1146,16 @@ kevent_qos(int kq, const struct kevent_qos_s *changelist, int nchanges,
 		    scratch_ev[i].filter == EVFILT_MACHPORT_NATIVE))
 			continue;
 
+		/* Native readiness: second pass. */
+		if (scratch_ev[i].filter == EVFILT_MACHPORT_NATIVE)
+			continue;
+		kev_to_qos(&scratch_ev[i], &eventlist[filled]);
+		filled++;
+	}
+
+	for (i = 0; i < n && !(flags & KEVENT_FLAG_ERROR_EVENTS); i++) {
+		struct mach_kev_reg *r = NULL;
+
 		/*
 		 * A native EVFILT_MACHPORT event is OURS. Its udata is the
 		 * struct mach_kev_reg * we registered the knote with (see the
@@ -1127,10 +1200,7 @@ kevent_qos(int kq, const struct kevent_qos_s *changelist, int nchanges,
 				}
 			}
 			pthread_mutex_unlock(&g_reg_mtx);
-			continue;
 		}
-		kev_to_qos(&scratch_ev[i], &eventlist[filled]);
-		filled++;
 	}
 
 	if (ev_budget > KEVENT_STACK_SLOTS)
