@@ -24,6 +24,7 @@ ${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes -Wpointer-arith \
     -DLOCAL_DOMAIN="\"$fix/Local-Domain.plist\"" \
     -DNETWORK_DOMAIN="\"$fix/Network-Domain.plist\"" \
     -DLOGINWINDOW_PLIST="\"$fix/loginwindow.plist\"" \
+    -DNEXTBSD_LOGINWINDOW_PLIST="\"$fix/nextbsd-loginwindow-absent.plist\"" \
     -DFSTAB="\"$fix/fstab\"" \
     -DAUTOLOGIN_MARKER="\"$fix/autologin-used\"" \
     -I"$top/src/nss_directory_services" \

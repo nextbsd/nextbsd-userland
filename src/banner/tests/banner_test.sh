@@ -33,6 +33,7 @@ build() {   # build <binary> <loginwindow path> [filesystem type that is live]
 	${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes \
 	    -Wmissing-prototypes \
 	    -DBANNER_LOGINWINDOW="\"$2\"" \
+	    -DBANNER_NEXTBSD_LOGINWINDOW="\"$fix/lw/nextbsd-absent.plist\"" \
 	    -DBANNER_OS_RELEASE="\"$fix/os-release\"" \
 	    ${3:+-DBANNER_LIVE_FSTYPE="\"$3\""} \
 	    -I"$top/src/banner" -o "$1" "$top/src/banner/banner.c" || exit 2
@@ -120,6 +121,7 @@ cknot "no escapes off a terminal"       "$out" "$(printf '\033')"
 # ---- a missing os-release is not fatal
 ${CC:-cc} -O1 -Wall -DBANNER_OS_RELEASE="\"$fix/nope\"" \
     -DBANNER_LOGINWINDOW="\"$fix/lw/absent.plist\"" \
+    -DBANNER_NEXTBSD_LOGINWINDOW="\"$fix/lw/nextbsd-absent.plist\"" \
     -I"$top/src/banner" -o "$fix/fetch-n" "$top/src/banner/banner.c" || exit 2
 out6=$("$fix/fetch-n" -f 2>&1)
 ckhas "a missing os-release still prints" "$out6" "Welcome to NextBSD!"

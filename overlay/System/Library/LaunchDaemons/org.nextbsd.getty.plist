@@ -10,7 +10,7 @@
          -> getty on /dev/console, which the kernel bound to the UART.
             This is CI, and any serial-console server.
     2. Otherwise, if there is a screen (/dev/ttyv0 exists)
-         -> getty on ttyv0, unless Gershwin's loginwindow job is loaded
+         -> getty on ttyv0, unless a graphical loginwindow job is loaded
             (see below).
     3. Otherwise (headless, no framebuffer)
          -> getty on /dev/console.
@@ -72,8 +72,10 @@
     launchd starts; the DRM kext loaded later only replaces the driver
     ("VT: Replacing driver ... with new drmfb"), not the terminal.
 
-  Gershwin loginwindow (nextbsd/nextbsd#540):
-    When io.github.gershwin-desktop.loginwindow is loaded in PID 1, the
+  Graphical loginwindow (nextbsd/nextbsd#540):
+    When io.github.gershwin-desktop.loginwindow (Gershwin's) or
+    org.nextbsd.loginwindow (NextBSD's own, a WindowServer client from
+    nextbsd/apps-loginwindow) is loaded in PID 1, the
     graphical login owns the screen and there is no text getty on the video
     console at all, as on OS X 10.9, where the console getty is off in
     /etc/ttys and launchd starts loginwindow. "Loaded" is the Darwin
@@ -103,7 +105,7 @@
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>cls=3wire.9600; u=$(/usr/libexec/nextbsd/autologin-user 2>/dev/null) &amp;&amp; [ -n "$u" ] &amp;&amp; grep -q '^nextbsd-autologin' /etc/gettytab 2>/dev/null &amp;&amp; { /usr/sbin/createhomedir -u "$u" &gt;/dev/null 2&gt;&amp;1; cls=nextbsd-autologin; }; case "$(kenv -q console)" in *comconsole*) exec /usr/libexec/getty "$cls" console ;; esac; case "$(kenv -q boot_serial)" in [Yy][Ee][Ss]) exec /usr/libexec/getty "$cls" console ;; esac; if test -c /dev/ttyv0; then while /bin/launchctl list io.github.gershwin-desktop.loginwindow &gt;/dev/null 2&gt;&amp;1; do sleep 60; done; exec /usr/libexec/getty "$cls" ttyv0; fi; exec /usr/libexec/getty "$cls" console</string>
+        <string>cls=3wire.9600; u=$(/usr/libexec/nextbsd/autologin-user 2>/dev/null) &amp;&amp; [ -n "$u" ] &amp;&amp; grep -q '^nextbsd-autologin' /etc/gettytab 2>/dev/null &amp;&amp; { /usr/sbin/createhomedir -u "$u" &gt;/dev/null 2&gt;&amp;1; cls=nextbsd-autologin; }; case "$(kenv -q console)" in *comconsole*) exec /usr/libexec/getty "$cls" console ;; esac; case "$(kenv -q boot_serial)" in [Yy][Ee][Ss]) exec /usr/libexec/getty "$cls" console ;; esac; if test -c /dev/ttyv0; then while /bin/launchctl list io.github.gershwin-desktop.loginwindow &gt;/dev/null 2&gt;&amp;1 || /bin/launchctl list org.nextbsd.loginwindow &gt;/dev/null 2&gt;&amp;1; do sleep 60; done; exec /usr/libexec/getty "$cls" ttyv0; fi; exec /usr/libexec/getty "$cls" console</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
