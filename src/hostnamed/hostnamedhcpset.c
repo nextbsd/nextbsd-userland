@@ -2,6 +2,7 @@
  * hostnamedhcpset — CI fixture helper for hostnamed iter 3a / 3b.
  *
  * Usage:  hostnamedhcpset <option-12-value>
+ *         hostnamedhcpset --hold <option-12-value>
  *         hostnamedhcpset --clear
  *
  * With a value: finds the State:/Network/Service/<UUID>/DHCP dict that
@@ -9,6 +10,14 @@
  * it, and writes the augmented dict back to SCDynamicStore. The next
  * hostnamed run will read that value via its DHCP tier (try_dhcp) and
  * use it, proving Tier-3a fires.
+ *
+ * With --hold: writes the value the same way, then stays running and
+ * puts it back whenever ipconfigd republishes the dict without it, until
+ * killed. ipconfigd rewrites /DHCP from the lease on every renewal, and
+ * CI caps the lease at 10 s, so a one-shot write is gone within about
+ * 5 s. A real DHCP server that assigns a name sends it in every ACK;
+ * holding the fixture models that. Prints DHCPSET-HOLDING once the first
+ * write is in (nextbsd-userland#621).
  *
  * With --clear: enumerates all matching /DHCP dicts and removes
  * Option_12 from each, so a previously-injected fixture does not
@@ -30,6 +39,9 @@
 #include <SystemConfiguration/SCDynamicStore.h>
 #include <CoreFoundation/CoreFoundation.h>
 
+#include <dispatch/dispatch.h>
+
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -89,6 +101,91 @@ clear_all_option12(SCDynamicStoreRef store, CFStringRef pattern,
 	return (0);
 }
 
+/* --hold state: the key and value to keep in place. */
+static CFStringRef	g_hold_key;
+static CFStringRef	g_hold_value;
+static CFStringRef	g_hold_opt12;
+
+static void
+hold_changed(SCDynamicStoreRef store, CFArrayRef changed, void *info)
+{
+	CFPropertyListRef plist;
+	CFMutableDictionaryRef dict;
+	CFTypeRef cur;
+
+	(void)changed;
+	(void)info;
+	plist = SCDynamicStoreCopyValue(store, g_hold_key);
+	if (plist == NULL)
+		return;	/* key removed (interface down): nothing to hold */
+	if (CFGetTypeID(plist) != CFDictionaryGetTypeID()) {
+		CFRelease(plist);
+		return;
+	}
+	cur = CFDictionaryGetValue((CFDictionaryRef)plist, g_hold_opt12);
+	if (cur != NULL && CFEqual(cur, g_hold_value)) {
+		CFRelease(plist);
+		return;	/* still in place (or our own write echoing back) */
+	}
+	dict = CFDictionaryCreateMutableCopy(NULL, 0, (CFDictionaryRef)plist);
+	CFRelease(plist);
+	if (dict == NULL)
+		return;
+	CFDictionarySetValue(dict, g_hold_opt12, g_hold_value);
+	if (SCDynamicStoreSetValue(store, g_hold_key, dict))
+		(void)printf("hostnamedhcpset: re-applied Option_12 after a "
+		    "/DHCP republish\n");
+	else
+		(void)fprintf(stderr, "hostnamedhcpset: re-apply failed: %s\n",
+		    SCErrorString(SCError()));
+	(void)fflush(stdout);
+	CFRelease(dict);
+}
+
+static void
+hold_check_now(void *ctx)
+{
+	hold_changed((SCDynamicStoreRef)ctx, NULL, NULL);
+}
+
+/* Keep Option_12 in g_hold_key until killed. Does not return on success. */
+static int
+hold_option12(CFStringRef key, CFStringRef value, CFStringRef k_opt12)
+{
+	SCDynamicStoreRef store;
+	CFArrayRef keys;
+	dispatch_queue_t q;
+
+	g_hold_key = CFRetain(key);
+	g_hold_value = CFRetain(value);
+	g_hold_opt12 = CFRetain(k_opt12);
+	store = SCDynamicStoreCreate(NULL, CFSTR("hostnamedhcpset-hold"),
+	    hold_changed, NULL);
+	if (store == NULL) {
+		(void)fprintf(stderr, "hold: SCDynamicStoreCreate failed: %s\n",
+		    SCErrorString(SCError()));
+		return (1);
+	}
+	keys = CFArrayCreate(NULL, (const void **)&g_hold_key, 1,
+	    &kCFTypeArrayCallBacks);
+	q = dispatch_queue_create("hostnamedhcpset.hold", NULL);
+	if (keys == NULL || q == NULL ||
+	    !SCDynamicStoreSetNotificationKeys(store, keys, NULL) ||
+	    !SCDynamicStoreSetDispatchQueue(store, q)) {
+		(void)fprintf(stderr, "hold: cannot watch the /DHCP key: %s\n",
+		    SCErrorString(SCError()));
+		return (1);
+	}
+	CFRelease(keys);
+	/* A republish between the first write and the watch going live
+	 * would otherwise go unnoticed. */
+	dispatch_sync_f(q, (void *)(uintptr_t)store, hold_check_now);
+	(void)printf("DHCPSET-HOLDING\n");
+	(void)fflush(stdout);
+	dispatch_main();
+	/* NOTREACHED */
+}
+
 int
 main(int argc, char **argv)
 {
@@ -99,16 +196,27 @@ main(int argc, char **argv)
 	CFPropertyListRef plist = NULL;
 	CFMutableDictionaryRef dict = NULL;
 	CFIndex n;
+	const char *arg;
 	int clear_mode = 0;
+	int hold_mode = 0;
 	int rc = 1;
 
-	if (argc != 2 || argv[1][0] == '\0') {
+	if (argc == 3 && strcmp(argv[1], "--hold") == 0) {
+		hold_mode = 1;
+		arg = argv[2];
+	} else if (argc == 2) {
+		arg = argv[1];
+	} else {
+		arg = "";
+	}
+	if (arg[0] == '\0' || (hold_mode && strcmp(arg, "--clear") == 0)) {
 		(void)fprintf(stderr,
 		    "usage: %s <option-12-value>\n"
-		    "       %s --clear\n", argv[0], argv[0]);
+		    "       %s --hold <option-12-value>\n"
+		    "       %s --clear\n", argv[0], argv[0], argv[0]);
 		return (2);
 	}
-	if (strcmp(argv[1], "--clear") == 0)
+	if (strcmp(arg, "--clear") == 0)
 		clear_mode = 1;
 
 	session = CFStringCreateWithCString(NULL, "hostnamedhcpset",
@@ -118,7 +226,7 @@ main(int argc, char **argv)
 	k_opt12 = CFStringCreateWithCString(NULL, "Option_12",
 	    kCFStringEncodingUTF8);
 	if (!clear_mode)
-		value = CFStringCreateWithCString(NULL, argv[1],
+		value = CFStringCreateWithCString(NULL, arg,
 		    kCFStringEncodingUTF8);
 	if (session == NULL || pattern == NULL || k_opt12 == NULL ||
 	    (!clear_mode && value == NULL)) {
@@ -185,13 +293,16 @@ main(int argc, char **argv)
 		if (CFStringGetCString(key, keybuf, sizeof(keybuf),
 		    kCFStringEncodingUTF8)) {
 			(void)printf("hostnamedhcpset: wrote Option_12='%s' "
-			    "into %s\n", argv[1], keybuf);
+			    "into %s\n", arg, keybuf);
 		} else {
 			(void)printf("hostnamedhcpset: wrote Option_12='%s'\n",
-			    argv[1]);
+			    arg);
 		}
 	}
+	(void)fflush(stdout);
 	rc = 0;
+	if (hold_mode)
+		rc = hold_option12(key, value, k_opt12);
 out:
 	if (dict != NULL) CFRelease(dict);
 	if (plist != NULL) CFRelease(plist);

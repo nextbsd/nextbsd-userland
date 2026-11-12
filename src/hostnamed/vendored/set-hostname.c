@@ -302,6 +302,33 @@ hostname_match_first_label(CFArrayRef hosts, CFIndex count, CFStringRef nameToMa
 }
 
 
+static void		update_hostname(SCDynamicStoreRef store, CFArrayRef changedKeys, void *info);
+
+/* NextBSD carry: report whether a name that outranks the reverse-DNS tier
+ * (the HostName preference, or a DHCP-provided name for the primary
+ * service) is in the store right now. */
+static Boolean
+higher_precedence_name_present(void)
+{
+	CFStringRef	name;
+	CFStringRef	serviceID;
+
+	name = copy_prefs_hostname(store);
+	if (name == NULL) {
+		serviceID = copy_primary_service(store);
+		if (serviceID != NULL) {
+			name = copy_dhcp_hostname(serviceID);
+			CFRelease(serviceID);
+		}
+	}
+	if (name == NULL) {
+		return FALSE;
+	}
+	CFRelease(name);
+	return TRUE;
+}
+
+
 static void
 ptr_query_callback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void *info)
 {
@@ -312,6 +339,24 @@ ptr_query_callback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags f
 
 	(void) gettimeofday(&ptrQueryComplete, NULL);
 	timersub(&ptrQueryComplete, &ptrQueryStart, &ptrQueryElapsed);
+
+	/* NextBSD carry: the reverse-DNS answer (and the multicast DNS and
+	 * synthesized names below it) must never replace a HostName
+	 * preference or a DHCP-provided name. update_hostname() only starts
+	 * this query when neither exists, but one can land in the store
+	 * while the query is in flight, and its store callback can be queued
+	 * behind this one on S_queue. Re-check here and rerun the chain
+	 * instead, which applies the higher name and cancels the query
+	 * (nextbsd-userland#621). */
+	if (higher_precedence_name_present()) {
+		my_log(LOG_INFO, "hostname: ptr query result ignored, a "
+		       "preferences or DHCP name is set (query time = %ld.%3.3d)",
+		       ptrQueryElapsed.tv_sec,
+		       ptrQueryElapsed.tv_usec / 1000);
+		ptr_query_stop();
+		update_hostname(store, NULL, NULL);
+		return;
+	}
 
 	// use reverse DNS name, if available
 
