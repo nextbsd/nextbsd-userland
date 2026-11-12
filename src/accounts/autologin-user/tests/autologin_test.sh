@@ -25,6 +25,7 @@ ${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes -Wpointer-arith \
     -DNETWORK_DOMAIN="\"$fix/Network-Domain.plist\"" \
     -DLOGINWINDOW_PLIST="\"$fix/loginwindow.plist\"" \
     -DFSTAB="\"$fix/fstab\"" \
+    -DAUTOLOGIN_MARKER="\"$fix/autologin-used\"" \
     -I"$top/src/nss_directory_services" \
     -o "$fix/autologin-user" \
     "$top/src/accounts/autologin-user/autologin.c" \
@@ -33,10 +34,11 @@ ${CC:-cc} -O1 -g -Wall -Wextra -Wshadow -Wstrict-prototypes -Wpointer-arith \
 pass=0; fail=0
 
 # The one state that permits automatic login: a single user, named admin,
-# with noPassword, no network node, no login window.
+# with noPassword, no network node, no login window, not yet used this boot.
 seed() {
 	rm -f "$fix/Network-Users.plist" "$fix/loginwindow.plist" \
-	      "$fix/Local-Domain.plist" "$fix/Network-Domain.plist"
+	      "$fix/Local-Domain.plist" "$fix/Network-Domain.plist" \
+	      "$fix/autologin-used"
 	cat > "$fix/Users.plist" <<'P'
 <?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
@@ -52,9 +54,9 @@ seed() {
 P
 }
 
-cksays() {	# cksays <label> <expected stdout>
-	_lbl=$1; _want=$2
-	_got=$("$fix/autologin-user" 2>/dev/null </dev/null)
+cksays() {	# cksays <label> <expected stdout> [option...]
+	_lbl=$1; _want=$2; shift 2
+	_got=$("$fix/autologin-user" "$@" 2>/dev/null </dev/null)
 	if [ "$_got" = "$_want" ]; then
 		pass=$((pass + 1))
 	else
@@ -78,6 +80,57 @@ cksays "and removing the login window restores it" "admin"
 seed
 echo '<plist version="1.0"><dict/></plist>' > "$fix/loginwindow.plist"
 cksays "the login window's contents do not matter" ""
+
+# ---- once per boot
+# A logout restarts getty, which asks again; by then the answer is no.
+seed
+cksays "the first ask this boot logs in" "admin"
+cksays "a second ask the same boot does not" ""
+cksays "nor does a third" ""
+
+# A marker from an earlier boot counts for nothing.
+seed
+echo 1 > "$fix/autologin-used"
+cksays "a marker from another boot is ignored" "admin"
+cksays "and is replaced by this boot's" ""
+
+# An ask that says no doesn't use it up.
+seed
+: > "$fix/loginwindow.plist"
+cksays "a suppressed ask" ""
+rm -f "$fix/loginwindow.plist"
+cksays "leaves it for the next one" "admin"
+
+# If the marker can't be written, fail toward the prompt: otherwise every
+# logout would log straight back in.
+seed
+mkdir "$fix/autologin-used"
+cksays "an unwritable marker suppresses it" ""
+rmdir "$fix/autologin-used"
+
+# ---- -g: asked by the login window itself
+seed
+: > "$fix/loginwindow.plist"
+cksays "the login window may log in automatically" "admin" -g
+cksays "once per boot" "" -g
+cksays "and getty doesn't log in after it" ""
+
+seed
+cksays "getty's login uses up the login window's" "admin"
+cksays "so the login window doesn't log in after it" "" -g
+
+# Every other clause still applies.
+seed
+: > "$fix/Network-Domain.plist"
+cksays "a joined client suppresses -g too" "" -g
+
+seed
+sed -e 's#<key>noPassword</key><true/>##' \
+    "$fix/Users.plist" > "$fix/Users.plist.new" && mv "$fix/Users.plist.new" "$fix/Users.plist"
+cksays "a password suppresses -g too" "" -g
+
+seed
+cksays "an unknown option suppresses it" "" -x
 
 # ---- clause: a joined directory client
 # The domain marker under /Network is the test, and it is asked only after the
