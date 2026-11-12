@@ -299,10 +299,6 @@ jobs:
           NB_SUITE: /usr/tests/freebsd-launchd-mach/run.sh
           NB_OVERLAY: nextbsd-ci/manifest/overlay-nextbsd-userland.tsv
           NB_DEBUG: '1'
-          # One CPU, as this lane has always booted (v0.3.7). nextbsd-ci v0.3.8+
-          # defaults to -smp 2, under which amd64 ACCT-LIFECYCLE fails (#631).
-          # Drop this once #631 is fixed.
-          NB_SMP: '1'
         run: |
           set +e
           sh nextbsd-ci/harness/boot-test.sh disk.img

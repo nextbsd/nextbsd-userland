@@ -20,10 +20,22 @@
  *
  *   pty_run [-t secs] -i line [-i line ...] -- command [args ...]
  *
- * Every -i line is sent in order, each with a newline, with a short pause
- * between so the child has read one prompt before the next arrives. The
+ * Every -i line is sent in order, each with a newline, and each only once
+ * the child is at a prompt: it has printed output since the last line that
+ * does not end in a newline, and the terminal has echo turned off. The
  * child's output goes to stdout so the caller can grep it, and the exit
  * status is the child's.
+ *
+ * Why wait for the prompt rather than for a pause. readpassphrase(3), and
+ * getpass(3) on top of it, switches echo off with TCSAFLUSH before it prints
+ * the prompt, and that discards anything already typed. A line written
+ * before that point is thrown away, the next line answers the wrong
+ * question, and the last prompt waits until -t runs out. The first version
+ * of this tool sent a line 200ms after any output at all, which includes
+ * passwd's "Changing local password for ..." banner, so whether the answer
+ * survived depended on scheduling. On one CPU the child usually reached the
+ * flush first. With two it often did not, and amd64 ACCT-LIFECYCLE failed
+ * (nextbsd-userland#631).
  *
  * A test-only tool. It is installed with the on-image suite, not in a
  * shipped path.
@@ -47,6 +59,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 #define MAX_LINES 16
@@ -72,6 +85,9 @@ main(int argc, char *argv[])
 	ssize_t n;
 	int sent = 0;
 	bool child_gone = false;
+	bool partial = false;	/* output since the last line, no newline yet */
+	struct termios t;
+	time_t deadline;
 
 	while ((ch = getopt(argc, argv, "i:t:")) != -1) {
 		switch (ch) {
@@ -102,16 +118,21 @@ main(int argc, char *argv[])
 	}
 
 	/*
-	 * Read whatever the child says and answer in order. The pause before
-	 * each line is what makes this reliable: writing everything at once
-	 * can land before the child has switched the terminal to no-echo, and
-	 * the secret would then be echoed back into the output we print.
+	 * Read whatever the child says and answer each prompt in order. A
+	 * prompt is output that stops mid-line while the terminal does not
+	 * echo: readpassphrase(3) prints its prompt only after it has turned
+	 * echo off and flushed the input, so a line written then is the one it
+	 * reads. Banners end in a newline and do not count, and neither does
+	 * the newline readpassphrase prints after an answer, so one prompt gets
+	 * one line. If the terminal's modes cannot be read, the mid-line test
+	 * alone decides.
 	 */
+	deadline = time(NULL) + timeout;
 	for (;;) {
 		FD_ZERO(&rfds);
 		FD_SET(master, &rfds);
-		tv.tv_sec = 1;
-		tv.tv_usec = 0;
+		tv.tv_sec = 0;
+		tv.tv_usec = 100000;
 		if (select(master + 1, &rfds, NULL, NULL, &tv) > 0) {
 			n = read(master, buf, sizeof(buf));
 			if (n <= 0) {
@@ -119,18 +140,21 @@ main(int argc, char *argv[])
 			} else {
 				(void)fwrite(buf, 1, (size_t)n, stdout);
 				(void)fflush(stdout);
+				partial = buf[n - 1] != '\n' &&
+				    buf[n - 1] != '\r';
 			}
-		}
-		if (!child_gone && sent < nlines) {
-			usleep(200000);
-			(void)write(master, lines[sent], strlen(lines[sent]));
-			(void)write(master, "\n", 1);
-			sent++;
-			continue;
 		}
 		if (child_gone)
 			break;
-		if (--timeout <= 0) {
+		if (sent < nlines && partial &&
+		    (tcgetattr(master, &t) == -1 || (t.c_lflag & ECHO) == 0)) {
+			(void)write(master, lines[sent], strlen(lines[sent]));
+			(void)write(master, "\n", 1);
+			sent++;
+			partial = false;
+			continue;
+		}
+		if (time(NULL) >= deadline) {
 			(void)fprintf(stderr, "pty_run: timed out\n");
 			(void)kill(pid, SIGKILL);
 			break;
