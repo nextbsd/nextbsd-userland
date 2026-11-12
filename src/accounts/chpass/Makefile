@@ -4,7 +4,8 @@
 # Setuid root for the same reason passwd is: the plists are 0644 owned by
 # root, so a user can read their own record and cannot rewrite it, and there
 # is no daemon here to hand the write to. Authorisation is decided from the
-# real uid. ci/assemble-image.sh re-applies the bit after its chown.
+# real uid. The unprivileged cross-install records BINMODE only in the
+# METALOG; build-userland.sh applies it to the stage (#635).
 #
 # The yp* names exist only to say NIS is unsupported, rather than leaving the
 # shell to report a missing command that exists on every other BSD.
