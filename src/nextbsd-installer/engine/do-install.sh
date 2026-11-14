@@ -371,24 +371,37 @@ if [ "$PAYLOAD" = firmware ]; then
 	# or a board nobody has thought of yet, works with no changes here.
 	status "Copying the boot setup from ${BOOTSRC:-<dryrun>}"
 	if [ -n "$BOOTSRC" ]; then
-		run mkdir -p "$SRCBOOT"
-		run mount -o ro -t msdosfs "$BOOTSRC" "$SRCBOOT"
+		# diskarbitrationd has usually mounted the medium's boot partition
+		# under /Volumes already, and msdosfs refuses a second mount of the
+		# same device ("Device busy"). umount_disk_partitions only clears the
+		# TARGET, so read the files through the existing mount instead of
+		# unmounting a volume the live system owns.
+		SRCDIR=$(mount | while read -r line; do
+			[ "$(echo "$line" | cut -d' ' -f1)" = "$BOOTSRC" ] || continue
+			echo "$line" | sed 's/^[^ ]* on \(.*\) (.*)/\1/'
+			break
+		done)
+		if [ -z "$SRCDIR" ]; then
+			SRCDIR=$SRCBOOT
+			run mkdir -p "$SRCBOOT"
+			run mount -o ro -t msdosfs "$BOOTSRC" "$SRCBOOT"
+		fi
 		if [ "${NEXTBSD_DRYRUN:-0}" != 1 ]; then
-			for f in "$SRCBOOT"/*; do
+			for f in "$SRCDIR"/*; do
 				[ -e "$f" ] || continue
 				case "$(basename "$f")" in
 				.Spotlight-V100|.fseventsd|.Trashes) continue ;;
 				esac
 				cp -R "$f" "$BOOTMNT/"
 			done
-			DTB=$(sed -n 's/^[[:space:]]*device_tree=[[:space:]]*//p' "$SRCBOOT/config.txt" 2>/dev/null | tail -1)
-			KERN=$(sed -n 's/^[[:space:]]*kernel=[[:space:]]*//p' "$SRCBOOT/config.txt" 2>/dev/null | tail -1)
+			DTB=$(sed -n 's/^[[:space:]]*device_tree=[[:space:]]*//p' "$SRCDIR/config.txt" 2>/dev/null | tail -1)
+			KERN=$(sed -n 's/^[[:space:]]*kernel=[[:space:]]*//p' "$SRCDIR/config.txt" 2>/dev/null | tail -1)
 				status "Boot setup: kernel=${KERN:-<firmware default>} device_tree=${DTB:-<firmware default>}"
 
-			umount "$SRCBOOT" || true
+			[ "$SRCDIR" = "$SRCBOOT" ] && umount "$SRCBOOT" || true
 		else
-			echo "DRYRUN: cp -R $SRCBOOT/* $BOOTMNT/"
-			echo "DRYRUN: umount $SRCBOOT"
+			echo "DRYRUN: cp -R $SRCDIR/* $BOOTMNT/"
+			[ "$SRCDIR" = "$SRCBOOT" ] && echo "DRYRUN: umount $SRCBOOT" || true
 		fi
 	# Point the installed system at ITS OWN root.
 	#
