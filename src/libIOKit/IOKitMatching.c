@@ -2,8 +2,8 @@
  * IOKitMatching.c — libIOKit iter 2: properties + matching.
  *
  * Translates the kernel /dev/ioregistry nvlist-shaped property bag
- * (IOREGIOCPROPS, carrying NV_TYPE_STRING and NV_TYPE_NUMBER) into a
- * CFDictionary, and Apple-style IOService matching dictionaries into the
+ * (IOREGIOCPROPS, carrying NV_TYPE_STRING, NV_TYPE_NUMBER and NV_TYPE_BOOL)
+ * into a CFDictionary, and Apple-style IOService matching dictionaries into the
  * flat kernel `struct ioreg_criteria` used by IOREGIOC{LOOKUP,WATCH}. The
  * understood matching keys are IOProviderClass / IOClass (→ `classname`)
  * and IONameMatch (→ `name`); other Apple keys (IOPropertyMatch, IOBSDName,
@@ -84,6 +84,13 @@ nvlist_to_cfdict(const nvlist_t *nv, CFAllocatorRef allocator)
 			}
 			break;
 		}
+		case NV_TYPE_BOOL:
+			/* IOPMPowerSource's BatteryInstalled, IsCharging,
+			 * ExternalConnected...: pmconfigd drops a battery
+			 * without BatteryInstalled. */
+			CFDictionarySetValue(d, ck, nvlist_get_bool(nv, key) ?
+			    kCFBooleanTrue : kCFBooleanFalse);
+			break;
 		default:
 			/* unknown type — skip */
 			break;
