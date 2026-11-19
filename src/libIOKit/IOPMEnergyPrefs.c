@@ -1170,6 +1170,19 @@ CFTypeRef IOPMCopyFromPrefs(CFStringRef prefsPath, CFStringRef key)
         return NULL;
     }
 
+#ifdef __FreeBSD__
+    /*
+     * On macOS cfprefsd gives every process the current value. NextBSD's
+     * CFPreferences reads the file into a per-process cache once and only
+     * reads it again after CFPreferencesSynchronize, so a long-running
+     * reader (powerd, the settings apps) kept the settings it first saw,
+     * whatever pmset or IOPMSetPMPreferences wrote afterwards.
+     * Synchronizing first drops the cache (and writes any change this
+     * process still holds), so this read sees the file.
+     */
+    CFPreferencesSynchronize(prefsPath, kCFPreferencesAnyUser,
+                             kCFPreferencesCurrentHost);
+#endif
     value  = CFPreferencesCopyValue(key,
                                     prefsPath,
                                     kCFPreferencesAnyUser,
