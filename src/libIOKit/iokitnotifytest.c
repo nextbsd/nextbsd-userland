@@ -117,6 +117,27 @@ main(void)
 	}
 	IOObjectRelease(it);
 
+	/* Departure notification on a class that is present: nothing has
+	 * terminated yet, so it arms empty too, as on Darwin (a daemon that
+	 * drains it at start must not take live services as gone, #641). */
+	matching = IOServiceMatching("PCIDevice");
+	if (IOServiceAddMatchingNotification(notify,
+	    kIOTerminatedNotification, matching, arrival_callback, NULL,
+	    &it) != KERN_SUCCESS || it == IO_OBJECT_NULL) {
+		printf("IOKIT-NOTIFY-FAIL: AddMatchingNotification(terminated, "
+		    "PCIDevice)\n");
+		IONotificationPortDestroy(notify);
+		return (1);
+	}
+	if (IOIteratorNext(it) != IO_OBJECT_NULL) {
+		printf("IOKIT-NOTIFY-FAIL: terminated arming yielded a live "
+		    "PCIDevice\n");
+		IOObjectRelease(it);
+		IONotificationPortDestroy(notify);
+		return (1);
+	}
+	IOObjectRelease(it);
+
 	IONotificationPortDestroy(notify);
 	printf("IOKIT-NOTIFY-OK: IONotificationPort + AddMatching"
 	    "Notification wire up (%d PCIDevice initial match%s)\n",
