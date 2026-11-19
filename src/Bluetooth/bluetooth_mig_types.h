@@ -140,6 +140,17 @@ typedef enum {
 	bt_firmware_failed_e		= 5
 } bt_firmware_state_t;
 
+/* Where a device's battery level came from, as bt_device_battery reports it. */
+#define	BT_BATTERY_NONE		0
+#define	BT_BATTERY_HFP		1	/* AT+IPHONEACCEV over hands-free */
+#define	BT_BATTERY_GATT		2	/* LE Battery Service, Battery Level */
+
+/*
+ * How long a client waits for a routine bracketed with `waittime` in
+ * bluetooth.defs: an older bluetoothd never answers one it does not know.
+ */
+#define	BT_RPC_WAIT_MS		2000
+
 /* Controller capability bits, as bt_adapter_flags reports them. */
 #define	BT_ADAPTER_FEAT_SSP	0x1	/* Secure Simple Pairing */
 #define	BT_ADAPTER_FEAT_LE	0x2	/* Low Energy */

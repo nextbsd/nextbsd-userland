@@ -132,7 +132,7 @@ without one, the first controller is meant.
 Print the daemon's state, the persisted policy (power, discoverable,
 auto-connect), the number of paired devices, the firmware loader's work,
 each connected device with the profiles running over its link (HID, HID
-over GATT, audio), and each controller with its transport, USB vendor and
+over GATT, audio) and its battery where it reports one, and each controller with its transport, USB vendor and
 product, state, address and name.
 .It Cm power Cm on | off Op Ar node
 Power a controller on or off.
@@ -223,8 +223,9 @@ Forget a paired device: its keys, its entry in the pairing store, and its
 link if it is connected.
 .It Cm device Ar device
 Print one device's name, class, whether it is paired, its link state, the
-controller it is connected through, its signal and the profiles running
-over the link.
+controller it is connected through, its signal, the profiles running
+over the link and, while connected, its battery: a headset's over the
+hands-free channel, an LE mouse or keyboard's from its Battery Service.
 .It Cm autoconnect Ar device Cm on | off
 Whether a paired device is reconnected when a controller powers up
 (on by default).

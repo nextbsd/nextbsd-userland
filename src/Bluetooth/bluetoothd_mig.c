@@ -381,6 +381,36 @@ _bt_device_autoconnect(mach_port_t server, BTAddressString address_in, int on,
 	return (KERN_SUCCESS);
 }
 
+kern_return_t
+_bt_device_battery(mach_port_t server, BTAddressString address_in,
+    int *percent, int *source, bt_status_t *status)
+{
+	BTAddressString address;
+	struct conn_status cs;
+	struct bt_addr a;
+	bool linked;
+
+	(void)server;
+	WIRE_STR(address, address_in);
+	*percent = -1;
+	*source = BT_BATTERY_NONE;
+	if (!bt_addr_aton(address, &a)) {
+		*status = bt_status_invalid_parameter_e;
+		return (KERN_SUCCESS);
+	}
+	bluetoothd_lock();
+	linked = conn_status_locked(&a, &cs);
+	bluetoothd_unlock();
+	if (!linked || cs.state != bt_device_connected_e) {
+		*status = bt_status_not_connected_e;
+		return (KERN_SUCCESS);
+	}
+	*percent = cs.battery;
+	*source = cs.battery >= 0 ? cs.battery_source : BT_BATTERY_NONE;
+	*status = bt_status_success_e;
+	return (KERN_SUCCESS);
+}
+
 /* ---- 31020-31029: discovery --------------------------------------------- */
 
 kern_return_t

@@ -26,12 +26,17 @@
  *
  *   - never reorder, rename the wire shape of, or remove a routine;
  *   - a retired routine becomes `skip`;
- *   - a block that fills up continues in the open range at the end (31100+).
+ *   - a block that fills up continues in the open range at the end (31100+);
+ *   - a routine added after the apps shipped is bracketed with `waittime
+ *     BT_RPC_WAIT_MS;` ... `nowaittime;`: a bluetoothd from before it
+ *     dropped ids it did not know without a reply, so a client of the new
+ *     routine would wait for ever on an old daemon. With the wait it gets
+ *     MACH_RCV_TIMED_OUT instead (bt_device_battery is the first).
  *
  *   31000-31009  daemon and controllers   status, adapter list; power,
  *                                         discoverable, name (#207)
  *   31010-31019  paired devices           list; unpair (#209), device status,
- *                                         auto-connect (#213)
+ *                                         auto-connect (#213), battery
  *   31020-31029  discovery                scan, scan_count, scan_entry (#208)
  *   31030-31039  pairing                  pair, pair_status, pair_confirm
  *                                         (#209; LE SMP #205 uses the same)
@@ -239,7 +244,24 @@ routine bt_device_autoconnect(
 	out status	: bt_status_code
 );
 
-skip;	/* 31015 */
+/*
+ * 31015 bt_device_battery — a connected device's battery, in percent (-1
+ * while it has not said), and where it came from: BT_BATTERY_HFP (a headset,
+ * over the hands-free channel) or BT_BATTERY_GATT (an LE device's Battery
+ * Service). not_connected when it has no link. Each change posts
+ * org.nextbsd.bluetooth.battery.
+ */
+ConsumeOnSendError Timeout;
+waittime BT_RPC_WAIT_MS;
+routine bt_device_battery(
+	server		: mach_port_t;
+	address		: bt_address;
+	out percent	: int;
+	out source	: int;
+	out status	: bt_status_code
+);
+nowaittime;
+
 skip;	/* 31016 */
 skip;	/* 31017 */
 skip;	/* 31018 */

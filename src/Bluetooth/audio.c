@@ -884,7 +884,14 @@ hfp_ev(void *arg)
 			report(d, BT_PROFILE_HFP, e->slc);
 		d->hfp = e->slc;
 		d->hfp_audio = e->slc && e->sco;
-		d->battery = e->slc ? e->battery : -1;
+		if (d->battery != (e->slc ? e->battery : -1)) {
+			d->battery = e->slc ? e->battery : -1;
+			/* The device's own row has it too (connections.h). */
+			bluetoothd_lock();
+			conn_battery_locked(&d->peer, BT_BATTERY_HFP,
+			    d->battery);
+			bluetoothd_unlock();
+		}
 		snap_update(d);
 		if (!e->slc)
 			dev_gc(d);

@@ -37,6 +37,8 @@ struct conn {
 	uint32_t		cod;
 	uint32_t		profiles;	/* running over the link */
 	uint64_t		deadline;	/* "connecting" ends by then */
+	int			battery;	/* percent; -1 unknown */
+	int			battery_source;	/* BT_BATTERY_* */
 };
 
 struct autoq {
@@ -61,6 +63,7 @@ static struct conn	g_conns[CONN_MAX];
 static struct autoq	g_autoq[AUTOQ_MAX];
 static struct fresh	g_fresh[FRESH_MAX];
 static struct dirty	g_dirty[DIRTY_MAX];
+static bool		g_battery_changed;	/* post BT_NOTIFY_BATTERY */
 
 static void
 xlog(const char *fmt, ...)
@@ -122,6 +125,7 @@ add(const struct bt_addr *peer, const char *node)
 		c->transport = BT_TRANSPORT_BREDR;
 		c->handle = -1;
 		c->rssi = 127;
+		c->battery = -1;
 		c->state = bt_device_disconnected_e;
 	}
 	if (node != NULL)
@@ -152,6 +156,8 @@ forget(struct conn *c)
 {
 	struct bt_addr peer = c->peer;
 
+	if (c->battery >= 0)
+		g_battery_changed = true;
 	(void)memset(c, 0, sizeof(*c));
 	conn_device_changed_locked(&peer);
 }
@@ -307,6 +313,10 @@ le_event(struct bt_adapter *a, const struct bt_event *ev)
 		if (c != NULL)
 			forget(c);
 		break;
+	case BT_EV_BATTERY:
+		conn_battery_locked(&ev->peer, BT_BATTERY_GATT,
+		    ev->u.battery);
+		break;
 	default:
 		break;
 	}
@@ -431,6 +441,31 @@ conn_profile_locked(const struct bt_addr *peer, uint32_t profile, bool up)
 			return;
 		}
 	}
+	conn_device_changed_locked(peer);
+}
+
+void
+conn_battery_locked(const struct bt_addr *peer, int source, int percent)
+{
+	struct conn *c = find(peer);
+
+	if (c == NULL || c->state != bt_device_connected_e)
+		return;
+	if (percent < 0) {
+		/* Only the source that went away takes its level with it. */
+		if (c->battery_source != source || c->battery < 0)
+			return;
+		c->battery = -1;
+		c->battery_source = BT_BATTERY_NONE;
+	} else {
+		if (percent > 100)
+			percent = 100;
+		if (c->battery == percent && c->battery_source == source)
+			return;
+		c->battery = percent;
+		c->battery_source = source;
+	}
+	g_battery_changed = true;
 	conn_device_changed_locked(peer);
 }
 
@@ -562,6 +597,7 @@ conn_status_locked(const struct bt_addr *peer, struct conn_status *out)
 	(void)memset(out, 0, sizeof(*out));
 	out->state = bt_device_disconnected_e;
 	out->rssi = 127;
+	out->battery = -1;
 	if (pairing_active_locked(peer))
 		out->state = bt_device_pairing_e;
 	if (c == NULL)
@@ -573,6 +609,8 @@ conn_status_locked(const struct bt_addr *peer, struct conn_status *out)
 	out->profiles = c->profiles;
 	out->class_of_device = c->cod;
 	out->encrypted = c->encrypted;
+	out->battery = c->battery;
+	out->battery_source = c->battery_source;
 	return (true);
 }
 
@@ -815,6 +853,7 @@ conn_publish(void)
 	struct bt_device_summary sum;
 	struct bt_bond *b;
 	char key[BT_ADDR_STRLEN], path[128], node[32];
+	bool battery;
 	int i, n = 0;
 
 	work = calloc(DIRTY_MAX, sizeof(*work));
@@ -844,6 +883,8 @@ conn_publish(void)
 		}
 		n++;
 	}
+	battery = g_battery_changed;
+	g_battery_changed = false;
 	bluetoothd_unlock();
 
 	for (i = 0; i < n; i++) {
@@ -874,10 +915,13 @@ conn_publish(void)
 		    work[i].c.state == bt_device_connecting_e;
 		sum.profiles = sum.connected ? work[i].c.profiles : 0;
 		sum.rssi = sum.connected ? work[i].c.rssi : 127;
+		sum.battery = sum.connected ? work[i].c.battery : -1;
 		(void)bt_state_publish_device(path, &sum);
 	}
 	free(b);
 	free(work);
 	if (n > 0)
 		bt_state_notify(BT_NOTIFY_DEVICE);
+	if (battery)
+		bt_state_notify(BT_NOTIFY_BATTERY);
 }

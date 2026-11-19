@@ -516,7 +516,10 @@ One paired or connected device:
 .Ql HID )
 and
 .Ql RSSI
-while connected.
+while connected, and
+.Ql Battery
+(percent) while connected and the device reports it: a headset over
+hands-free, an LE device from its Battery Service.
 A device that is neither paired nor connected has no key.
 .It Ql State:/Bluetooth/Pairing/<addr>
 A pairing prompt waiting for the user.
@@ -553,9 +556,11 @@ on
 .Ql .scan ,
 .Ql .pairing ,
 .Ql .device ,
-.Ql .firmware
+.Ql .firmware ,
+.Ql .audio
 or
-.Ql .audio .
+.Ql .battery
+(a connected device's battery level changed).
 .Pp
 Lists do not go in the store; they are served over the Mach service.
 .Xr scutil 8

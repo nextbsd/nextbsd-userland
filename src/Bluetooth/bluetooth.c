@@ -626,6 +626,24 @@ nap(int ms)
 	(void)nanosleep(&ts, NULL);
 }
 
+/*
+ * A connected device's battery in percent, -1 when it has not said (or the
+ * daemon predates bt_device_battery). `source` gets BT_BATTERY_*.
+ */
+static int
+battery_of(mach_port_t svc, BTAddressString addr, int *source)
+{
+	bt_status_t st;
+	int pct, src;
+
+	if (bt_device_battery(svc, addr, &pct, &src, &st) != KERN_SUCCESS ||
+	    st != bt_status_success_e)
+		pct = -1;
+	if (source != NULL)
+		*source = pct >= 0 ? src : BT_BATTERY_NONE;
+	return (pct);
+}
+
 static int
 cmd_status(mach_port_t svc, int argc, char **argv)
 {
@@ -671,15 +689,18 @@ cmd_status(mach_port_t svc, int argc, char **argv)
 		BTProfileList profiles;
 		bt_device_state_t dst;
 		bt_status_t st;
-		int cod, transports, ac;
+		int cod, transports, ac, batt;
 
 		if (bt_paired_entry(svc, i, address, name, &cod, &transports,
 		    profiles, &ac, &dst, &st) != KERN_SUCCESS ||
 		    st != bt_status_success_e || dst != bt_device_connected_e)
 			continue;
-		(void)printf("connected:     %s %s (%s)\n",
+		(void)printf("connected:     %s %s (%s)",
 		    name[0] != '\0' ? name : "-", address,
 		    profiles[0] != '\0' ? profiles : transports_str(transports));
+		if ((batt = battery_of(svc, address, NULL)) >= 0)
+			(void)printf(", battery %d%%", batt);
+		(void)printf("\n");
 	}
 
 	if (nadapters == 0) {
@@ -1263,7 +1284,7 @@ cmd_device(mach_port_t svc, int argc, char **argv)
 	BTProfileList profiles;
 	bt_device_state_t state;
 	bt_status_t st;
-	int cod, rssi, paired, rc;
+	int cod, rssi, paired, rc, batt, src;
 
 	if (argc != 2)
 		return (-1);
@@ -1289,6 +1310,10 @@ cmd_device(mach_port_t svc, int argc, char **argv)
 		    rssi);
 	if (profiles[0] != '\0')
 		(void)printf("  profiles:    %s\n", profiles);
+	if (state == bt_device_connected_e &&
+	    (batt = battery_of(svc, addr, &src)) >= 0)
+		(void)printf("  battery:     %d%% (%s)\n", batt,
+		    src == BT_BATTERY_HFP ? "hands-free" : "Battery Service");
 	return (EXIT_OK);
 }
 
