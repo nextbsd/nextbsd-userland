@@ -1,0 +1,79 @@
+.\" SettingsHelper(8) — the settings apps' privileged helper.
+.\"
+.\" Copyright (c) 2026, Joseph Maloney
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.Dd November 18, 2026
+.Dt SETTINGSHELPER 8
+.Os NextBSD
+.Sh NAME
+.Nm SettingsHelper
+.Nd make root-only settings changes for the settings apps
+.Sh SYNOPSIS
+.Nm /usr/libexec/SettingsHelper
+.Sh DESCRIPTION
+.Nm
+makes the settings changes that need root, such as the Energy Saver
+settings, for NextBSD's settings apps.
+It is started by
+.Xr launchd 8
+on demand as
+.Ql org.nextbsd.SettingsHelper ,
+serves the Mach service of that name, and exits once it has been idle for
+30 seconds and holds no unexpired credential.
+It is not meant to be run by hand.
+.Pp
+Each operation is a typed Mach call (no shell commands and no file paths)
+and needs a right named
+.Ql org.nextbsd.settings. Ns Ar area .
+.Nm
+answers only root and processes in the console user's session, as
+.Xr loginwindow 8
+records it in
+.Pa /var/run/loginwindow .
+.Ss Rights
+The rules have the shape of Darwin's authorization database.
+Each right names a rule, or is one:
+.Bl -tag -width "authenticate-session-owner"
+.It Cm allow
+anyone in the console session
+.It Cm is-admin
+the console user is in group
+.Ql admin
+.It Cm authenticate-admin
+an administrator's name and password
+.It Cm authenticate-session-owner
+the console user's own password
+.El
+.Pp
+A rule's
+.Cm timeout
+(default 300 seconds) says how long a successful authentication lasts for
+the session; 0 makes it good for one change.
+Passwords are checked with the PAM service
+.Ql authorization
+and are never stored.
+An administrator whose account has no password authenticates with an
+empty one, which the settings apps present as
+.Dq Allow changes?
+without a password field.
+.Sh FILES
+.Bl -tag -width "/Local/Library/Security/SettingsRights.plist" -compact
+.It Pa /System/Library/Security/SettingsRights.plist
+the rights and rules
+.It Pa /Local/Library/Security/SettingsRights.plist
+a site's rights and rules, which win over the system's
+.It Pa /etc/pam.d/authorization
+the PAM service passwords are checked with
+.It Pa /System/Library/LaunchDaemons/org.nextbsd.SettingsHelper.plist
+the launchd job
+.It Pa /var/log/SettingsHelper.log
+its log: who was allowed what, and refusals
+.El
+.Sh SEE ALSO
+.Xr launchd 8 ,
+.Xr pam 8 ,
+.Xr pmset 1
+.Sh HISTORY
+.Nm
+first appeared in NextBSD 27.0.

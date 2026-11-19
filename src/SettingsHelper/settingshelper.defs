@@ -1,0 +1,116 @@
+/*
+ * Copyright (c) 2026, Joseph Maloney
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * settingshelper.defs — Mach RPC interface to SettingsHelper, the settings
+ * apps' privileged helper (nextbsd/nextbsd#628, the Settings apps design's
+ * "privileged helper" section).
+ *
+ * SettingsHelper runs as root under launchd as org.nextbsd.SettingsHelper.
+ * It makes the root-only settings changes, and only through TYPED
+ * operations: never a shell command, never a path to write, never a
+ * free-form property list.
+ *
+ * Every routine carries the sender's audit token (ServerAuditToken). The
+ * helper answers only root and processes in the console user's session
+ * (loginwindow's session record, /var/run/loginwindow/<uid>.session).
+ *
+ * The routines come in two kinds:
+ *
+ *   rights      sh_right_info, sh_authorize, sh_deauthorize: what a right's
+ *               rule asks for, proving it (PAM service "authorization"),
+ *               and dropping the session's credentials (the lock closed).
+ *   operations  one per change, each needing a right
+ *               "org.nextbsd.settings.<area>" (SettingsRights.plist).
+ *               Each takes an SHAuthForm, all zeroes for now; see
+ *               settingshelper_types.h.
+ *
+ * ADDING AN OPERATION: append the routine at the END. A routine's Mach
+ * message id is its position in the subsystem, so existing ids never
+ * move and an older client keeps working with a newer helper. The
+ * operations the settings apps will need, in the order they are expected:
+ * SetTimeZone, SetDate, SetNetworkTime, CommitNetworkPreferences,
+ * SetComputerName, SetSoundOutput, CreateUser, DeleteUser, SetPassword,
+ * SetAdmin, SetAutoLogin, SetLoginWindowOptions,
+ * SetWindowServerSystemSettings, CUPSAdmin. Each one's app ticket adds it.
+ *
+ * Subsystem base 32000: configd and ipconfigd use 20000, wland 30000,
+ * bluetoothd 31000.
+ */
+
+#include <mach/std_types.defs>
+#include <mach/mach_types.defs>
+
+subsystem settingshelper 32000;
+serverprefix _;
+
+import "settingshelper_types.h";
+
+type sh_right		= array[128] of char ctype: SHRightName;
+type sh_user		= array[256] of char ctype: SHUserName;
+type sh_password	= array[256] of char ctype: SHPassword;
+type sh_auth_form	= array[32] of char ctype: SHAuthForm;
+type sh_pm_values	= array[16] of int ctype: SHPMValues;
+
+/*
+ * 32000 sh_right_info — what `right` asks of this caller.
+ *   rule               an SH_RULE_* value
+ *   timeout            how long a credential lasts, in seconds
+ *   authorized         the caller's session may use the right now
+ *   seconds_left       how long that lasts (0 when not authorized)
+ *   console_user       the console user's name, for the panel's name field
+ *   user_is_admin      the console user is an administrator
+ *   user_has_password  the console user's account has a password; an
+ *                      admin without one is asked "Allow changes?" only
+ */
+routine sh_right_info(
+	server			: mach_port_t;
+	right			: sh_right;
+	out rule		: int;
+	out timeout		: int;
+	out authorized		: boolean_t;
+	out seconds_left	: int;
+	out console_user	: sh_user;
+	out user_is_admin	: boolean_t;
+	out user_has_password	: boolean_t;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32001 sh_authorize — prove `right` with a user's name and password,
+ * checked by PAM (service "authorization") and never kept. On success
+ * the caller's session holds a credential for the rule's timeout, so one
+ * unlock covers several changes, and seconds_left says for how long.
+ */
+routine sh_authorize(
+	server			: mach_port_t;
+	right			: sh_right;
+	user			: sh_user;
+	password		: sh_password;
+	out seconds_left	: int;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/* 32002 sh_deauthorize — forget the caller's session's credentials. */
+routine sh_deauthorize(
+	server			: mach_port_t;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32003 sh_set_pm_preferences — set one power source's Energy Saver
+ * settings (IOPMSetPMPreferences, which needs root); powerd follows
+ * kIOPMPrefsChangeNotify. Right: org.nextbsd.settings.energy.
+ * `source` is an SH_PM_SOURCE_*, `values` is indexed by SH_PM_*.
+ */
+routine sh_set_pm_preferences(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	source			: int;
+	values			: sh_pm_values;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
