@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  SettingsRights.plist — the rights SettingsHelper grants the settings
+  apps (nextbsd/nextbsd#628, src/SettingsHelper/sh_rights.c).
+
+  The shape is Darwin's authorization database
+  (/System/Library/Security/authorization.plist on macOS): "rights" maps a
+  right to a rule, "rules" defines the rules. A site changes any of them
+  by putting the same entries in /Local/Library/Security/
+  SettingsRights.plist, whose entries win; don't edit this file.
+
+  Rules:
+    allow                        anyone in the console session
+    deny                         nobody (but root)
+    is-admin                     the console user is in group admin
+    authenticate-admin           an admin's name and password
+    authenticate-session-owner   the console user's own password
+
+  class "user" keys: group, session-owner, authenticate-user (default
+  true) and timeout (seconds a successful authentication lasts for the
+  session, default 300 as on macOS; 0 means one change).
+
+  Each settings app ticket adds the rights its operations use.
+-->
+<plist version="1.0">
+<dict>
+    <key>rights</key>
+    <dict>
+        <key>org.nextbsd.settings.energy</key>
+        <dict>
+            <key>class</key>
+            <string>rule</string>
+            <key>rule</key>
+            <string>authenticate-admin</string>
+            <key>comment</key>
+            <string>Energy.app: sleep timers and wake settings (SetPMPreferences).</string>
+        </dict>
+    </dict>
+    <key>rules</key>
+    <dict>
+        <key>allow</key>
+        <dict>
+            <key>class</key>
+            <string>allow</string>
+        </dict>
+        <key>deny</key>
+        <dict>
+            <key>class</key>
+            <string>deny</string>
+        </dict>
+        <key>is-admin</key>
+        <dict>
+            <key>class</key>
+            <string>user</string>
+            <key>group</key>
+            <string>admin</string>
+            <key>authenticate-user</key>
+            <false/>
+        </dict>
+        <key>authenticate-admin</key>
+        <dict>
+            <key>class</key>
+            <string>user</string>
+            <key>group</key>
+            <string>admin</string>
+            <key>timeout</key>
+            <integer>300</integer>
+        </dict>
+        <key>authenticate-session-owner</key>
+        <dict>
+            <key>class</key>
+            <string>user</string>
+            <key>session-owner</key>
+            <true/>
+            <key>timeout</key>
+            <integer>300</integer>
+        </dict>
+    </dict>
+</dict>
+</plist>

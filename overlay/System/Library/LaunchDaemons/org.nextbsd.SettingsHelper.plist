@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  org.nextbsd.SettingsHelper.plist
+
+  The settings apps' privileged helper (nextbsd/nextbsd#628,
+  src/SettingsHelper). It makes the root-only settings changes through
+  typed Mach calls (settingshelper.defs), after checking the caller is in
+  the console session and holds the change's right
+  (/System/Library/Security/SettingsRights.plist).
+
+  ON DEMAND: no RunAtLoad and no KeepAlive. launchd holds the
+  org.nextbsd.SettingsHelper port from boot and starts the helper at the
+  first message; the helper exits after 30 seconds without a message once
+  no unlock is still in effect, and the next message starts it again.
+
+  The label and the service are NextBSD's own: Apple has no equivalent
+  daemon (its settings use authd and per-app SMJobBless helpers).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.nextbsd.SettingsHelper</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/libexec/SettingsHelper</string>
+    </array>
+    <key>MachServices</key>
+    <dict>
+        <key>org.nextbsd.SettingsHelper</key>
+        <true/>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/var/log/SettingsHelper.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/SettingsHelper.log</string>
+</dict>
+</plist>

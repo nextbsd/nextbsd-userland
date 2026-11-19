@@ -1025,6 +1025,31 @@ test -x "$DESTDIR/usr/bin/pmset" || { echo "FAIL: /usr/bin/pmset not installed";
 needed_check "$DESTDIR/usr/bin/pmset" "libIOKit"
 echo "==> pmset built"
 
+# ---- SettingsHelper (nextbsd/nextbsd#628) ------------------------------------
+# The settings apps' privileged helper: root-only settings changes as typed
+# MIG operations (settingshelper.defs), each behind a right from
+# overlay/System/Library/Security/SettingsRights.plist, with passwords
+# checked by PAM service "authorization" (nextbsd-overlays). Same shape as
+# wland: host mig for the server stub, bsd.prog.mk with MIGOUT. Built after
+# pmset because SetPMPreferences calls libIOKit's IOPMSetPMPreferences.
+# launchd starts it on demand (org.nextbsd.SettingsHelper.plist). The
+# apps' client stubs are generated in apps-settings, not here.
+comp "SettingsHelper"
+SH_MIG="$MIGROOT/settingshelper"
+rm -rf "$SH_MIG"; mkdir -p "$SH_MIG"
+run_mig "$SH_MIG" -I"$SRC/libmach/include" -I"$SRC/SettingsHelper" \
+    -header settingshelper.h -user /dev/null \
+    -server settingshelperServer.c -sheader settingshelperServer.h \
+    "$SRC/SettingsHelper/settingshelper.defs" \
+    || { echo "FAIL: mig could not process settingshelper.defs"; exit 1; }
+test -s "$SH_MIG/settingshelperServer.c" || { echo "FAIL: mig produced no settingshelperServer.c"; exit 1; }
+mkdir -p "$DESTDIR/usr/libexec"
+run_buildenv "make -C $SRC/SettingsHelper DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$SH_MIG all install"
+test -x "$DESTDIR/usr/libexec/SettingsHelper" || { echo "FAIL: /usr/libexec/SettingsHelper not installed"; exit 1; }
+needed_check "$DESTDIR/usr/libexec/SettingsHelper" "libIOKit"
+needed_check "$DESTDIR/usr/libexec/SettingsHelper" "libpam"
+echo "==> SettingsHelper built"
+
 # ---- mDNSResponder + libdns_sd ----------------------------------------------
 # build.sh ~2400-2461. mDNSResponder daemon (bsd.prog.mk) then libdns_sd
 # (bsd.lib.mk). No MIG surface in these blocks.
