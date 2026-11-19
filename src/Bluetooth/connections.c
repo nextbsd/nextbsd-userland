@@ -11,6 +11,7 @@
 #include "hci.h"
 #include "hid_host.h"
 #include "pairing.h"
+#include "sdp_client.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -317,6 +318,7 @@ conn_event_locked(struct bt_adapter *a, const struct bt_event *ev)
 	const struct bt_engine_ops *ops;
 	struct bt_engine *e;
 	struct conn *c;
+	struct bt_bond *b;
 	char addr[BT_ADDR_STRLEN];
 	int i;
 
@@ -357,6 +359,19 @@ conn_event_locked(struct bt_adapter *a, const struct bt_event *ev)
 		conn_device_changed_locked(&ev->peer);
 		/* An A2DP sink gets its mixer, whoever paged whom. */
 		audio_link_up_locked(&ev->peer, a->node);
+		/*
+		 * A bonded device whose services were never read (the query
+		 * after pairing failed) has none, so nothing would use the
+		 * link: read them now. Audio and HID follow when they're in
+		 * (conn_bond_refreshed_locked).
+		 */
+		b = bond_copy(&ev->peer);
+		if (b != NULL && b->profiles == 0) {
+			xlog("%s: no services known for %s; reading them",
+			    a->node, ntoa(&ev->peer, addr));
+			(void)sdp_client_refresh_bond(&ev->peer);
+		}
+		free(b);
 		break;
 
 	case BT_EV_DISCONNECTED:

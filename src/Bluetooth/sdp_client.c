@@ -350,6 +350,24 @@ done:
  * Run one SSA on a fresh session. The answer must parse as a DES; `outer` is
  * then that DES, pointing into `ans`.
  */
+/* The same, on an open session: further queries can follow on it. */
+static int
+query_on(struct sdp_session *s, const uint16_t *uuids, int nuuids,
+    const struct sdp_qrange *ranges, int nranges, struct sdp_wbuf *ans,
+    struct sdp_de *outer)
+{
+	int err;
+
+	err = session_ssa(s, uuids, nuuids, ranges, nranges, ans);
+	if (err != 0)
+		return (err);
+	if (ans->len == 0 ||
+	    sdp_de_get(ans->b, ans->b + ans->len, outer) != ans->len ||
+	    outer->type != SDP_DE_SEQ)
+		return (EPROTO);
+	return (0);
+}
+
 static int
 query(const struct bt_addr *peer, const uint16_t *uuids, int nuuids,
     const struct sdp_qrange *ranges, int nranges, struct sdp_wbuf *ans,
@@ -362,15 +380,9 @@ query(const struct bt_addr *peer, const uint16_t *uuids, int nuuids,
 		return (EINVAL);		/* SDP is BR/EDR only */
 	if ((err = session_open(peer, &s)) != 0)
 		return (err);
-	err = session_ssa(s, uuids, nuuids, ranges, nranges, ans);
+	err = query_on(s, uuids, nuuids, ranges, nranges, ans, outer);
 	session_close(s);
-	if (err != 0)
-		return (err);
-	if (ans->len == 0 ||
-	    sdp_de_get(ans->b, ans->b + ans->len, outer) != ans->len ||
-	    outer->type != SDP_DE_SEQ)
-		return (EPROTO);
-	return (0);
+	return (err);
 }
 
 /* ------------------------------------------------------------------ */
@@ -594,6 +606,7 @@ sdp_client_query(const struct bt_addr *peer, struct sdp_device_info *out)
 	static const struct sdp_qrange every[] = { { 0x0000, 0xffff } };
 	static const uint16_t hid[] = { SDP_UUID_HID };
 	static const uint16_t pnp[] = { SDP_UUID_PNP_INFORMATION };
+	struct sdp_session *s = NULL;
 	struct sdp_wbuf ans;
 	struct sdp_de outer;
 	char disp[BT_ADDR_STRLEN];
@@ -603,7 +616,19 @@ sdp_client_query(const struct bt_addr *peer, struct sdp_device_info *out)
 	(void)memset(&ans, 0, sizeof(ans));
 	(void)bt_addr_ntoa(peer, BT_ADDR_FMT_DISPLAY, disp, sizeof(disp));
 
-	err = query(peer, all, 1, want, 4, &ans, &outer);
+	/*
+	 * Every query below on one channel: one channel set-up instead of
+	 * three, and with a kernel that answers the L2CAP extended
+	 * features request "not supported" (fixed in nextbsd-kernel
+	 * patch 0104), Apple's stack never finishes configuring a second.
+	 */
+	if (peer->type != BT_ADDR_PUBLIC) {
+		err = EINVAL;		/* SDP is BR/EDR only */
+		goto done;
+	}
+	if ((err = session_open(peer, &s)) != 0)
+		goto done;
+	err = query_on(s, all, 1, want, 4, &ans, &outer);
 	if (err == 0) {
 		read_records(&outer, out);
 		goto done;
@@ -612,26 +637,45 @@ sdp_client_query(const struct bt_addr *peer, struct sdp_device_info *out)
 		goto done;
 
 	/*
-	 * The peer's server choked on the combined query. Ask for the two
-	 * records bluetoothd caches by class, as bthidcontrol did; Profiles
-	 * then only knows HID.
+	 * The peer's server choked on the combined query. Some can't do a
+	 * list of attribute ranges (Beats Studio Pro answer it with a
+	 * 3-byte list and no continuation) but answer every attribute of
+	 * every record, as `bluetooth sdp` asks: try that.
 	 */
-	xlog("%s: combined SDP query failed; asking for HID and PnP alone",
+	xlog("%s: combined SDP query failed; asking for every attribute",
 	    disp);
 	ans.len = 0;
 	ans.err = false;
-	err = query(peer, hid, 1, every, 1, &ans, &outer);
+	err = query_on(s, all, 1, every, 1, &ans, &outer);
+	if (err == 0) {
+		read_records(&outer, out);
+		goto done;
+	}
+	if (err != EPROTO)
+		goto done;
+
+	/*
+	 * Still not: ask for the two records bluetoothd caches by class, as
+	 * bthidcontrol did; Profiles then only knows HID.
+	 */
+	xlog("%s: SDP query for every attribute failed; asking for HID and "
+	    "PnP alone", disp);
+	ans.len = 0;
+	ans.err = false;
+	err = query_on(s, hid, 1, every, 1, &ans, &outer);
 	if (err == 0)
 		read_records(&outer, out);
 	else if (err != EPROTO)
 		goto done;
 	ans.len = 0;
 	ans.err = false;
-	if (query(peer, pnp, 1, every, 1, &ans, &outer) == 0)
+	if (query_on(s, pnp, 1, every, 1, &ans, &outer) == 0)
 		read_records(&outer, out);
 	err = (out->nrecords > 0) ? 0 : EPROTO;
 
 done:
+	if (s != NULL)
+		session_close(s);
 	sdp_wbuf_free(&ans);
 	if (err != 0) {
 		xlog("%s: SDP query failed: %s", disp, strerror(err));
@@ -808,6 +852,47 @@ sdp_client_update_bond(const struct bt_addr *peer, struct bt_bond *b)
 	return (err);
 }
 
+/*
+ * A query right after pairing can fail, and a device whose query failed
+ * has no services, so nothing ever uses it: try again a few times (and
+ * connections.c asks again when such a device connects). One refresh
+ * per device at a time.
+ */
+#define	SDP_REFRESH_TRIES	3
+#define	SDP_REFRESH_MAX		8
+
+static pthread_mutex_t	g_refresh_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct bt_addr	g_refreshing[SDP_REFRESH_MAX];
+static bool		g_refreshing_used[SDP_REFRESH_MAX];
+
+/* Claim (or with done, give back) peer's refresh; false if one runs. */
+static bool
+refresh_claim(const struct bt_addr *peer, bool done)
+{
+	bool ok = false;
+	int i, free_slot = -1;
+
+	(void)pthread_mutex_lock(&g_refresh_lock);
+	for (i = 0; i < SDP_REFRESH_MAX; i++) {
+		if (g_refreshing_used[i] && memcmp(g_refreshing[i].b, peer->b,
+		    sizeof(peer->b)) == 0) {
+			if (done)
+				g_refreshing_used[i] = false;
+			goto out;
+		}
+		if (!g_refreshing_used[i] && free_slot < 0)
+			free_slot = i;
+	}
+	if (!done && free_slot >= 0) {
+		g_refreshing[free_slot] = *peer;
+		g_refreshing_used[free_slot] = true;
+		ok = true;
+	}
+out:
+	(void)pthread_mutex_unlock(&g_refresh_lock);
+	return (ok);
+}
+
 static void *
 refresh_thread(void *arg)
 {
@@ -815,14 +900,22 @@ refresh_thread(void *arg)
 	struct sdp_device_info *info;
 	struct bt_bond *b;
 	char disp[BT_ADDR_STRLEN];
+	int try;
 
 	(void)bt_addr_ntoa(peer, BT_ADDR_FMT_DISPLAY, disp, sizeof(disp));
 	info = malloc(sizeof(*info));
 	b = malloc(sizeof(*b));
 	if (info == NULL || b == NULL)
 		goto out;
-	if (sdp_client_query(peer, info) != 0)
-		goto out;
+	for (try = 1;; try++) {
+		if (sdp_client_query(peer, info) == 0)
+			break;
+		if (try == SDP_REFRESH_TRIES)
+			goto out;
+		xlog("%s: trying the SDP query again (%d of %d)", disp,
+		    try + 1, SDP_REFRESH_TRIES);
+		sleep((unsigned)(2 * try));
+	}
 
 	/* Serialised with the main loop, which saves bonds under the lock. */
 	bluetoothd_lock();
@@ -840,6 +933,7 @@ out:
 		(void)memset(b, 0, sizeof(*b));	/* it held keys */
 	free(b);
 	free(info);
+	(void)refresh_claim(peer, true);
 	free(peer);
 	return (NULL);
 }
@@ -852,15 +946,21 @@ sdp_client_refresh_bond(const struct bt_addr *peer)
 	struct bt_addr *copy;
 	int rc;
 
-	if ((copy = malloc(sizeof(*copy))) == NULL)
+	if (!refresh_claim(peer, false))
+		return (0);	/* one is under way */
+	if ((copy = malloc(sizeof(*copy))) == NULL) {
+		(void)refresh_claim(peer, true);
 		return (ENOMEM);
+	}
 	*copy = *peer;
 	(void)pthread_attr_init(&attr);
 	(void)pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 	rc = pthread_create(&t, &attr, refresh_thread, copy);
 	(void)pthread_attr_destroy(&attr);
-	if (rc != 0)
+	if (rc != 0) {
+		(void)refresh_claim(peer, true);
 		free(copy);
+	}
 	return (rc);
 }
 

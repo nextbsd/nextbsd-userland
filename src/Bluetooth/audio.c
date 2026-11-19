@@ -18,6 +18,7 @@
 
 #include <sys/types.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <sys/user.h>
 
@@ -491,11 +492,54 @@ tick_dev(struct tick *t)
 	return (d);
 }
 
+/*
+ * virtual_oss takes device names of at most 26 characters (VMAX_STRING
+ * is 27), and "/dev/bluetooth/" and an address is 32: it refused every
+ * headset ("Device name too long"). Its Bluetooth backend looks a name
+ * that isn't an address up in /etc/bluetooth/hosts (bt_gethostbyname),
+ * so each slot gets a short one there, "nbbt0", for its headset.
+ */
+#define	BT_HOSTS		"/etc/bluetooth/hosts"
+#define	BT_HOSTS_DIR		"/etc/bluetooth"
+
+static int
+hosts_alias(const char *alias, const char *addr)
+{
+	char line[256], name[64], tmp[sizeof(BT_HOSTS) + 8];
+	FILE *in, *out;
+	int fd;
+
+	(void)mkdir(BT_HOSTS_DIR, 0755);
+	(void)snprintf(tmp, sizeof(tmp), "%s.XXXX", BT_HOSTS);
+	if ((fd = mkstemp(tmp)) < 0 || (out = fdopen(fd, "w")) == NULL) {
+		if (fd >= 0)
+			(void)close(fd);
+		return (errno);
+	}
+	/* every line but the alias's own */
+	if ((in = fopen(BT_HOSTS, "r")) != NULL) {
+		while (fgets(line, sizeof(line), in) != NULL) {
+			if (sscanf(line, "%*s %63s", name) == 1 &&
+			    strcmp(name, alias) == 0)
+				continue;
+			(void)fputs(line, out);
+		}
+		(void)fclose(in);
+	}
+	(void)fprintf(out, "%s %s\n", addr, alias);
+	(void)fchmod(fd, 0644);
+	if (fclose(out) != 0 || rename(tmp, BT_HOSTS) != 0) {
+		(void)unlink(tmp);
+		return (errno);
+	}
+	return (0);
+}
+
 static void
 mixer_start(struct adev *d)
 {
 	struct bt_prefs prefs;
-	char dsp[32], ctl[40], bt[64];
+	char dsp[32], ctl[40], bt[64], alias[16];
 	char *argv[32];
 	int i, n = 0;
 
@@ -511,7 +555,14 @@ mixer_start(struct adev *d)
 	d->slot = i;
 	(void)snprintf(dsp, sizeof(dsp), "dsp.bt%d", d->slot);
 	(void)snprintf(ctl, sizeof(ctl), "dsp.bt%d.ctl", d->slot);
-	(void)snprintf(bt, sizeof(bt), "/dev/bluetooth/%s", d->addr);
+	(void)snprintf(alias, sizeof(alias), "nbbt%d", d->slot);
+	if (hosts_alias(alias, d->addr) == 0)
+		(void)snprintf(bt, sizeof(bt), "/dev/bluetooth/%s", alias);
+	else {
+		xlog("%s: can't name it in %s: %s", d->addr, BT_HOSTS,
+		    strerror(errno));
+		(void)snprintf(bt, sizeof(bt), "/dev/bluetooth/%s", d->addr);
+	}
 
 	bluetoothd_lock();
 	bluetoothd_prefs_locked(&prefs);
