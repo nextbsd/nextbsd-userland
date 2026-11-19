@@ -213,6 +213,8 @@ bt_state_publish_device(const char *key, const struct bt_device_summary *s)
 	}
 	if (s->connected && s->rssi != 127)
 		btcf_set_int(d, CFSTR("RSSI"), s->rssi);
+	if (s->connected && s->battery >= 0)
+		btcf_set_int(d, CFSTR("Battery"), s->battery);
 	return (set_value(key, d));
 }
 

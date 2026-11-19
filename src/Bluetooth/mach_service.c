@@ -96,10 +96,13 @@ mach_service_thread(void *arg)
 		}
 
 		(void)memset(&rep, 0, sizeof(rep));
-		if (!bluetooth_server(&req.hdr, &rep.hdr)) {
-			xlog("ignoring message id=%d", req.hdr.msgh_id);
-			continue;
-		}
+		/*
+		 * An id we do not know (a client built against a newer
+		 * bluetooth.defs) still gets its reply: the demux filled in
+		 * MIG_BAD_ID, so the client fails at once instead of waiting.
+		 */
+		if (!bluetooth_server(&req.hdr, &rep.hdr))
+			xlog("unknown message id=%d", req.hdr.msgh_id);
 		if (rep.hdr.msgh_remote_port != MACH_PORT_NULL) {
 			mr = mach_msg(&rep.hdr,
 			    MACH_SEND_MSG | MACH_SEND_TIMEOUT,

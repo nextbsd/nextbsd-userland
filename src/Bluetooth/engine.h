@@ -288,7 +288,8 @@ typedef enum {
 	BT_EV_BOND_UPDATED	= 7,	/* u.bond: new keys (e.g. a link key change) */
 	BT_EV_POWER_CHANGED	= 8,	/* u.powered */
 	BT_EV_DISCOVERY		= 9,	/* u.scanning: discovery started/ended */
-	BT_EV_LINK_CHANGED	= 10	/* u.link: encryption, role or RSSI */
+	BT_EV_LINK_CHANGED	= 10,	/* u.link: encryption, role or RSSI */
+	BT_EV_BATTERY		= 11	/* u.battery: percent, from the device */
 } bt_event_kind_t;
 
 #define	BT_EIR_MAX	240	/* what the kernel neighbor cache keeps */
@@ -336,6 +337,7 @@ struct bt_event {
 		bool			powered;
 		bool			scanning;
 		struct bt_link		link;
+		int			battery;
 	} u;
 };
 
