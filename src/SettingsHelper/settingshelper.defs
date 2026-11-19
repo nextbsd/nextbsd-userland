@@ -51,6 +51,8 @@ type sh_user		= array[256] of char ctype: SHUserName;
 type sh_password	= array[256] of char ctype: SHPassword;
 type sh_auth_form	= array[32] of char ctype: SHAuthForm;
 type sh_pm_values	= array[16] of int ctype: SHPMValues;
+type sh_zone		= array[128] of char ctype: SHZoneName;
+type sh_ntp_server	= array[256] of char ctype: SHNTPServer;
 
 /*
  * 32000 sh_right_info — what `right` asks of this caller.
@@ -111,6 +113,53 @@ routine sh_set_pm_preferences(
 	auth			: sh_auth_form;
 	source			: int;
 	values			: sh_pm_values;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32004 sh_set_time_zone — the system time zone, as tzsetup sets it:
+ * /usr/share/zoneinfo/<zone> copied to /etc/localtime and the name
+ * recorded in /var/db/zoneinfo. Then posts com.apple.system.timezone,
+ * on which processes reset their zone. Right: org.nextbsd.settings.datetime.
+ * `zone` is a name such as "America/Chicago".
+ */
+routine sh_set_time_zone(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	zone			: sh_zone;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32005 sh_set_date — set the clock (settimeofday, which also sets the
+ * hardware clock), then post com.apple.system.clock_set. Right:
+ * org.nextbsd.settings.datetime. `seconds` and `microseconds` are since
+ * the epoch, UTC.
+ */
+routine sh_set_date(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	seconds			: int64_t;
+	microseconds		: int;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32006 sh_set_network_time — keep the clock set from a time server:
+ * org.nextbsd.ntpd enabled and loaded (launchctl load -w) or unloaded
+ * and disabled (unload -w), as tzsetup does it. A non-empty `ntp_server`
+ * (a host name or address) replaces the servers in /etc/ntp.conf first,
+ * and a running ntpd is restarted to use it. Right:
+ * org.nextbsd.settings.datetime.
+ */
+routine sh_set_network_time(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	enabled			: boolean_t;
+	ntp_server		: sh_ntp_server;
 	out status		: int;
 	ServerAuditToken audit	: audit_token_t
 );

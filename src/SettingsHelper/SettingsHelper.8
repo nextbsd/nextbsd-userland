@@ -14,7 +14,8 @@
 .Sh DESCRIPTION
 .Nm
 makes the settings changes that need root, such as the Energy Saver
-settings, for NextBSD's settings apps.
+settings, the time zone, the date and time, and network time, for
+NextBSD's settings apps.
 It is started by
 .Xr launchd 8
 on demand as
@@ -31,6 +32,40 @@ answers only root and processes in the console user's session, as
 .Xr loginwindow 8
 records it in
 .Pa /var/run/loginwindow .
+.Ss Operations
+.Bl -tag -width "SetNetworkTime"
+.It Cm SetPMPreferences
+one power source's Energy Saver settings
+.Pq right Ql org.nextbsd.settings.energy .
+.It Cm SetTimeZone
+copies a zone from
+.Pa /usr/share/zoneinfo
+to
+.Pa /etc/localtime ,
+records its name in
+.Pa /var/db/zoneinfo ,
+as
+.Xr tzsetup 8
+does, and posts
+.Ql com.apple.system.timezone
+.Pq right Ql org.nextbsd.settings.datetime .
+.It Cm SetDate
+sets the clock with
+.Xr settimeofday 2
+and posts
+.Ql com.apple.system.clock_set
+.Pq right Ql org.nextbsd.settings.datetime .
+.It Cm SetNetworkTime
+turns
+.Ql org.nextbsd.ntpd
+on or off with
+.Ql launchctl load -w
+or
+.Ql unload -w ,
+and can replace the server and pool lines of
+.Pa /etc/ntp.conf
+.Pq right Ql org.nextbsd.settings.datetime .
+.El
 .Ss Rights
 The rules have the shape of Darwin's authorization database.
 Each right names a rule, or is one:
@@ -67,13 +102,20 @@ a site's rights and rules, which win over the system's
 the PAM service passwords are checked with
 .It Pa /System/Library/LaunchDaemons/org.nextbsd.SettingsHelper.plist
 the launchd job
+.It Pa /etc/localtime , /var/db/zoneinfo
+the time zone, as SetTimeZone writes it
+.It Pa /etc/ntp.conf
+the time server, as SetNetworkTime writes it
 .It Pa /var/log/SettingsHelper.log
 its log: who was allowed what, and refusals
 .El
 .Sh SEE ALSO
+.Xr pmset 1 ,
+.Xr settimeofday 2 ,
 .Xr launchd 8 ,
+.Xr ntpd 8 ,
 .Xr pam 8 ,
-.Xr pmset 1
+.Xr tzsetup 8
 .Sh HISTORY
 .Nm
 first appeared in NextBSD 27.0.
