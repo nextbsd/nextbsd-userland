@@ -1065,10 +1065,22 @@ IOServiceAddMatchingNotification(IONotificationPortRef port,
 	port->nwatches++;
 	pthread_mutex_unlock(&port->lock);
 
-	/* Initial arming: hand the caller an iterator over the
-	 * currently-matching services. IOServiceGetMatchingServices
-	 * consumes the matching ref (the contract this routine
-	 * also owes the caller). */
+	/*
+	 * Initial arming. A terminated watch arms empty, as on Darwin: nothing
+	 * has terminated yet. Handing back the services that match now made a
+	 * daemon that drains it at start (bluetoothd, as Darwin's code does)
+	 * take each one as gone the moment it saw it arrive, so a restarted
+	 * bluetoothd tore down a live controller (nextbsd-userland#641).
+	 * Arrival watches get an iterator over what matches now.
+	 * IOServiceGetMatchingServices consumes the matching ref (the contract
+	 * this routine also owes the caller); the terminated path releases it.
+	 */
+	if (mask == IOREG_EVENT_DEPART) {
+		CFRelease(matching);
+		*out_iterator = __io_alloc_iterator(NULL, 0);
+		return (*out_iterator != IO_OBJECT_NULL ? KERN_SUCCESS :
+		    KERN_RESOURCE_SHORTAGE);
+	}
 	return (IOServiceGetMatchingServices(kIOMainPortDefault,
 	    matching, out_iterator));
 }
