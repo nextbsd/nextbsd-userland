@@ -26,11 +26,16 @@
  *                (HIDReconnectInitiate), the host only listens (hid_host.c)
  *   first        a new bond's SDP query (sdp_client_refresh_bond) finishing
  *                connects a HID device for its first session
+ *   battery      what a connected device says of its battery: a headset
+ *                over hands-free (hfp.c, through audio.c), an LE device's
+ *                Battery Service (hogp.c, as BT_EV_BATTERY). It lives on
+ *                the link's row and goes with it
  *   publish      State:/Bluetooth/Device/<addr> =
  *                  { Address, Name, ClassOfDevice, Adapter, Paired,
- *                    Connected, Profiles, RSSI }
+ *                    Connected, Profiles, RSSI, Battery }
  *                for every paired or connected device, rewritten on every
- *                change, then notify_post("org.nextbsd.bluetooth.device").
+ *                change, then notify_post("org.nextbsd.bluetooth.device");
+ *                "org.nextbsd.bluetooth.battery" too when a level changed.
  *                A device that is neither has no key.
  *
  * Every *_locked call expects bluetoothd_lock() held.
@@ -57,6 +62,8 @@ struct conn_status {
 	uint32_t		profiles;	/* BT_PROFILE_* running now */
 	uint32_t		class_of_device; /* from the link, if known */
 	bool			encrypted;
+	int			battery;	/* percent; -1 unknown */
+	int			battery_source;	/* BT_BATTERY_* */
 };
 
 /* A link event from controller `a`'s engine. */
@@ -85,6 +92,14 @@ void		conn_adapter_down_locked(struct bt_adapter *a);
  */
 void		conn_profile_locked(const struct bt_addr *peer,
 		    uint32_t profile, bool up);
+
+/*
+ * `peer` reported its battery over `source` (BT_BATTERY_HFP, _GATT): percent,
+ * or -1 when that source has gone (the hands-free channel closed). Ignored
+ * without a link.
+ */
+void		conn_battery_locked(const struct bt_addr *peer, int source,
+		    int percent);
 
 /* A device was paired (its SDP query has been started). */
 void		conn_paired_locked(const struct bt_addr *peer);

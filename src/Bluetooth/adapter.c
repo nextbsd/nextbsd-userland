@@ -860,6 +860,7 @@ host_event(void *ctx, const struct bt_engine *e, const struct bt_event *ev)
 	case BT_EV_CONNECTED:
 	case BT_EV_DISCONNECTED:
 	case BT_EV_LINK_CHANGED:
+	case BT_EV_BATTERY:
 		conn_event_locked(a, ev);
 		break;
 	case BT_EV_PAIR_FAILED:

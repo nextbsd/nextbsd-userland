@@ -18,7 +18,9 @@
  *                                     #213); <addr> is BT_ADDR_FMT_KEY
  *       Address, Name, ClassOfDevice, Adapter, Paired, Connected,
  *       Connecting, Profiles (array: what runs over the link now, "HID"),
- *       RSSI (dBm, while connected and known)
+ *       RSSI (dBm, while connected and known), Battery (percent, while
+ *       connected and the device reports it: a headset over hands-free, an
+ *       LE device's Battery Service)
  *   State:/Bluetooth/Device/<addr>/Audio   its audio, while it has any
  *                                     (#218, #219, #220, #525)
  *       Role ("Source": we play to it; "Sink": it plays to us), Route
@@ -67,6 +69,7 @@
 #define	BT_NOTIFY_DEVICE	"org.nextbsd.bluetooth.device"
 #define	BT_NOTIFY_FIRMWARE	"org.nextbsd.bluetooth.firmware"
 #define	BT_NOTIFY_AUDIO		"org.nextbsd.bluetooth.audio"
+#define	BT_NOTIFY_BATTERY	"org.nextbsd.bluetooth.battery"
 
 struct bt_daemon_summary {
 	bt_daemon_state_t	state;
@@ -111,6 +114,7 @@ struct bt_device_summary {
 	bool			connecting;
 	uint32_t		profiles;	/* BT_PROFILE_* running */
 	int			rssi;		/* 127: unknown */
+	int			battery;	/* percent; -1 unknown */
 };
 
 /* A device, at full key `key` (BT_STATE_DEVICE_PREFIX + addr). */

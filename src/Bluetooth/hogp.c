@@ -544,6 +544,34 @@ sub_done(struct le_conn *c, void *arg, uint8_t err, const uint8_t *pdu,
 	step(h);
 }
 
+/*
+ * The Battery Level read or notified: log it under the device's name and
+ * tell bluetoothd, which keeps it on the link's row (connections.c).
+ */
+static void
+battery_changed(struct le_conn *c, int percent)
+{
+	struct hogp *h = c->hogp;
+	struct bt_event ev;
+	char addr[BT_ADDR_STRLEN];
+
+	if (percent > 100)
+		return;		/* 0-100; the rest is reserved */
+	c->battery = percent;
+	(void)bt_addr_ntoa(&c->identity, BT_ADDR_FMT_DISPLAY, addr,
+	    sizeof(addr));
+	if (h != NULL && h->name[0] != '\0')
+		le_log(c->e, "%s (%s): battery %d%%", h->name, addr, percent);
+	else
+		le_log(c->e, "%s: battery %d%%", addr, percent);
+	(void)memset(&ev, 0, sizeof(ev));
+	ev.kind = BT_EV_BATTERY;
+	ev.peer = c->identity;
+	ev.transport = BT_TRANSPORT_LE;
+	ev.u.battery = percent;
+	le_raise(c->e, &ev);
+}
+
 static void
 battery_done(struct le_conn *c, void *arg, uint8_t err, const uint8_t *pdu,
     size_t len)
@@ -552,10 +580,8 @@ battery_done(struct le_conn *c, void *arg, uint8_t err, const uint8_t *pdu,
 
 	if (h == NULL)
 		return;
-	if (err == 0 && len >= 2) {
-		c->battery = pdu[1];
-		le_log(c->e, "battery %d%%", c->battery);
-	}
+	if (err == 0 && len >= 2)
+		battery_changed(c, pdu[1]);
 	h->step = S_BATTERY_SUB;
 	step(h);
 }
@@ -814,10 +840,8 @@ hogp_notify(struct le_conn *c, uint16_t handle, const uint8_t *v, size_t len)
 	int i;
 
 	if (handle != 0 && handle == c->battery_handle) {
-		if (len >= 1 && c->battery != v[0]) {
-			c->battery = v[0];
-			le_log(c->e, "battery %d%%", c->battery);
-		}
+		if (len >= 1 && c->battery != v[0])
+			battery_changed(c, v[0]);
 		return;
 	}
 	if (h == NULL || len > GATT_VALUE_MAX)
