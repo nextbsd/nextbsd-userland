@@ -36,6 +36,15 @@
             <key>comment</key>
             <string>Energy.app: sleep timers and wake settings (SetPMPreferences).</string>
         </dict>
+        <key>org.nextbsd.settings.datetime</key>
+        <dict>
+            <key>class</key>
+            <string>rule</string>
+            <key>rule</key>
+            <string>authenticate-admin</string>
+            <key>comment</key>
+            <string>Date &amp; Time.app: the time zone, the date and time, and network time (SetTimeZone, SetDate, SetNetworkTime). The clock's format needs no right.</string>
+        </dict>
     </dict>
     <key>rules</key>
     <dict>

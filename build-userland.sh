@@ -1031,7 +1031,8 @@ echo "==> pmset built"
 # overlay/System/Library/Security/SettingsRights.plist, with passwords
 # checked by PAM service "authorization" (nextbsd-overlays). Same shape as
 # wland: host mig for the server stub, bsd.prog.mk with MIGOUT. Built after
-# pmset because SetPMPreferences calls libIOKit's IOPMSetPMPreferences.
+# pmset because SetPMPreferences calls libIOKit's IOPMSetPMPreferences, and
+# after libnotify, which SetTimeZone and SetDate post through.
 # launchd starts it on demand (org.nextbsd.SettingsHelper.plist). The
 # apps' client stubs are generated in apps-settings, not here.
 comp "SettingsHelper"
@@ -1048,6 +1049,7 @@ run_buildenv "make -C $SRC/SettingsHelper DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGO
 test -x "$DESTDIR/usr/libexec/SettingsHelper" || { echo "FAIL: /usr/libexec/SettingsHelper not installed"; exit 1; }
 needed_check "$DESTDIR/usr/libexec/SettingsHelper" "libIOKit"
 needed_check "$DESTDIR/usr/libexec/SettingsHelper" "libpam"
+needed_check "$DESTDIR/usr/libexec/SettingsHelper" "libnotify"
 echo "==> SettingsHelper built"
 
 # ---- mDNSResponder + libdns_sd ----------------------------------------------

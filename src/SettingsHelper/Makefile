@@ -20,6 +20,7 @@
 PROG=		SettingsHelper
 MAN=		SettingsHelper.8
 SRCS=		SettingsHelper.c sh_session.c sh_auth.c sh_rights.c sh_pm.c
+SRCS+=		sh_time.c
 SRCS+=		sh_mig.c
 BINDIR=		/usr/libexec
 
@@ -51,6 +52,9 @@ CFLAGS+=	-Wmissing-prototypes -Wpointer-arith
 CFLAGS+=	-I${.CURDIR}/../libIOKit
 CFLAGS+=	-I${.CURDIR}/../launchd/liblaunch
 CFLAGS+=	-I${.CURDIR}/../launchd/freebsd-shims
+# <notify.h> (sh_time.c) includes os/base.h from the libnotify shims, as
+# bluetoothd's and ipconfigd's do.
+CFLAGS+=	-I${.CURDIR}/../Libnotify/freebsd-shims
 
 SYSROOT?=
 .if !empty(SYSROOT)
@@ -65,7 +69,8 @@ LDFLAGS+=	-Wl,--allow-shlib-undefined
 #   -llaunch                   bootstrap_check_in
 #   -lsystem_kernel            mach_msg
 #   -lsystem_dispatch, blocks  pulled in by libIOKit and CF
-LDADD+=		-lIOKit -lCoreFoundation -llaunch -lsystem_kernel
+#   -lnotify                   com.apple.system.timezone and clock_set
+LDADD+=		-lIOKit -lCoreFoundation -llaunch -lsystem_kernel -lnotify
 LDADD+=		-lsystem_dispatch -l:libsystem_blocks.so
 LIBADD+=	pam
 

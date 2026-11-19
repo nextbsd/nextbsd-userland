@@ -100,4 +100,18 @@ enum {
 	SH_PM_SOURCE_UPS = 2		/* "UPS Power" */
 };
 
+/*
+ * sh_set_time_zone's zone: a name under /usr/share/zoneinfo
+ * ("America/Chicago"), NUL-terminated.
+ */
+#define	SH_ZONE_MAX		127
+typedef char	SHZoneName[SH_ZONE_MAX + 1];
+
+/*
+ * sh_set_network_time's time server: a host name or an address,
+ * NUL-terminated; empty to leave /etc/ntp.conf's servers as they are.
+ */
+#define	SH_NTP_SERVER_MAX	255
+typedef char	SHNTPServer[SH_NTP_SERVER_MAX + 1];
+
 #endif /* _SETTINGSHELPER_TYPES_H */

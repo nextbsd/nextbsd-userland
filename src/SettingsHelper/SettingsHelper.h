@@ -109,4 +109,9 @@ bool	sh_rights_live(void);
 /* sh_pm.c: one power source's Energy Saver settings. */
 int	sh_pm_set(int source, const int32_t values[SH_PM_VALUES]);
 
+/* sh_time.c: the time zone, the clock, and network time. */
+int	sh_tz_set(const char *zone);
+int	sh_date_set(int64_t seconds, int32_t microseconds);
+int	sh_ntp_set(bool on, const char *server);
+
 #endif /* _SETTINGSHELPER_H */

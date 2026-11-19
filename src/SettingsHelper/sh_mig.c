@@ -15,6 +15,7 @@
 #include "settingshelperServer.h"	/* MIG: the routines' prototypes */
 
 #define	RIGHT_ENERGY	"org.nextbsd.settings.energy"
+#define	RIGHT_DATETIME	"org.nextbsd.settings.datetime"
 
 /* Darwin's audit token layout, as audit_token_to_au32 reads it. */
 #define	CALLER(tok, c)							\
@@ -127,5 +128,71 @@ _sh_set_pm_preferences(mach_port_t server, SHAuthForm auth, int source,
 	*status = sh_pm_set(source, values);
 	sh_log("pid %d: SetPMPreferences source %d: %d", (int)caller.pid,
 	    source, *status);
+	return (KERN_SUCCESS);
+}
+
+/* The Date & Time operations' common start: may this caller change it? */
+static bool
+datetime_allowed(audit_token_t audit, const char *op, struct sh_caller *caller,
+    int *status)
+{
+	CALLER(audit, caller);
+	*status = sh_rights_check(caller, RIGHT_DATETIME, true, NULL);
+	if (*status != SH_OK) {
+		sh_log("pid %d: %s refused (%d)", (int)caller->pid, op, *status);
+		return (false);
+	}
+	return (true);
+}
+
+kern_return_t
+_sh_set_time_zone(mach_port_t server, SHAuthForm auth, SHZoneName zone_in,
+    int *status, audit_token_t audit)
+{
+	struct sh_caller caller;
+	SHZoneName zone;
+
+	(void)server;
+	(void)auth;
+	WIRE_STR(zone, zone_in);
+	if (!datetime_allowed(audit, "SetTimeZone", &caller, status))
+		return (KERN_SUCCESS);
+	*status = sh_tz_set(zone);
+	sh_log("pid %d: SetTimeZone \"%s\": %d", (int)caller.pid, zone,
+	    *status);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_sh_set_date(mach_port_t server, SHAuthForm auth, int64_t seconds,
+    int microseconds, int *status, audit_token_t audit)
+{
+	struct sh_caller caller;
+
+	(void)server;
+	(void)auth;
+	if (!datetime_allowed(audit, "SetDate", &caller, status))
+		return (KERN_SUCCESS);
+	*status = sh_date_set(seconds, microseconds);
+	sh_log("pid %d: SetDate %lld: %d", (int)caller.pid, (long long)seconds,
+	    *status);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_sh_set_network_time(mach_port_t server, SHAuthForm auth, boolean_t enabled,
+    SHNTPServer server_in, int *status, audit_token_t audit)
+{
+	struct sh_caller caller;
+	SHNTPServer ntp_server;
+
+	(void)server;
+	(void)auth;
+	WIRE_STR(ntp_server, server_in);
+	if (!datetime_allowed(audit, "SetNetworkTime", &caller, status))
+		return (KERN_SUCCESS);
+	*status = sh_ntp_set(enabled != FALSE, ntp_server);
+	sh_log("pid %d: SetNetworkTime %s \"%s\": %d", (int)caller.pid,
+	    enabled ? "on" : "off", ntp_server, *status);
 	return (KERN_SUCCESS);
 }
