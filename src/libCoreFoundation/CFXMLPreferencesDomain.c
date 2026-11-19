@@ -107,6 +107,13 @@ static Boolean _createDirectory(CFURLRef dirURL, Boolean worldReadable) {
 
 #if TARGET_OS_OSX || TARGET_OS_LINUX
     mode = worldReadable ? S_IRWXU|S_IRWXG|S_IROTH|S_IXOTH : S_IRWXU;
+#elif TARGET_OS_BSD
+    /* NextBSD: the 0666 below made directories nobody could search, so
+     * only root could read AnyUser preferences (IOPMCopyPMPreferences as
+     * a user saw the defaults). Not group-writable either: an AnyUser
+     * directory is root:wheel, and what root saves there (the Energy
+     * Saver settings) must not be rewritable by wheel. */
+    mode = worldReadable ? S_IRWXU|S_IRGRP|S_IXGRP|S_IROTH|S_IXOTH : S_IRWXU;
 #else
     mode = 0666;
 #endif
@@ -308,7 +315,8 @@ static Boolean _writeXMLFile(CFURLRef url, CFMutableDictionaryRef dict, Boolean 
         CFDataRef data = CFPropertyListCreateData(alloc, dict, desiredFormat, 0, NULL);
         if (data) {
             SInt32 mode;
-#if TARGET_OS_OSX || TARGET_OS_LINUX
+#if TARGET_OS_OSX || TARGET_OS_LINUX || TARGET_OS_BSD
+            /* NextBSD: TARGET_OS_BSD too; 0666 let anyone rewrite them. */
             mode = isWorldReadable ? S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH : S_IRUSR|S_IWUSR;
 #else
 	    mode = 0666;
