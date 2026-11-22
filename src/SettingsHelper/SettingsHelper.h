@@ -104,6 +104,19 @@ void	sh_rights_forget(const struct sh_caller *caller);
 /* Drop expired credentials; true if any are left. */
 bool	sh_rights_live(void);
 
+/* ---- files and programs (sh_file.c) ------------------------------------ */
+
+/* Run argv[0] (a full path) with argv, stdin and stdout on /dev/null;
+ * true if it exited 0. */
+bool	sh_run(const char *const argv[]);
+
+/* Read a whole (small, regular) file. *len gets its size; NULL on
+ * failure. The caller frees it. */
+char	*sh_read_file(const char *path, size_t *len);
+
+/* Replace `path` with `len` bytes, mode 0644, through a temporary. */
+bool	sh_write_file(const char *path, const char *data, size_t len);
+
 /* ---- operations -------------------------------------------------------- */
 
 /* sh_pm.c: one power source's Energy Saver settings. */
@@ -148,5 +161,8 @@ struct sh_net_service {
 
 int	sh_net_commit(const struct sh_net_service *service);
 int	sh_computer_name_set(const char *computer, const char *local);
+
+/* sh_locale.c: the system's language, login.conf's default class. */
+int	sh_locale_set(const char *locale);
 
 #endif /* _SETTINGSHELPER_H */

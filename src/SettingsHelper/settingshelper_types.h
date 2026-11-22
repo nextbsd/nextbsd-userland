@@ -183,4 +183,11 @@ typedef char	SHComputerName[SH_COMPUTER_NAME_MAX + 1];
 #define	SH_LOCAL_NAME_MAX	63
 typedef char	SHLocalHostName[SH_LOCAL_NAME_MAX + 1];
 
+/*
+ * sh_set_system_locale's locale: a name under /usr/share/locale
+ * ("de_DE.UTF-8"), or "C" or "POSIX", NUL-terminated.
+ */
+#define	SH_LOCALE_MAX		63
+typedef char	SHLocaleName[SH_LOCALE_MAX + 1];
+
 #endif /* _SETTINGSHELPER_TYPES_H */

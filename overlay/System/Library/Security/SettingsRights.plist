@@ -83,6 +83,15 @@
             <key>comment</key>
             <string>Network.app: a service's TCP/IP and DNS settings, and the computer's name (CommitNetworkPreferences, SetComputerName). Joining a Wi-Fi network needs no right: wland lets any local user.</string>
         </dict>
+        <key>org.nextbsd.settings.locale</key>
+        <dict>
+            <key>class</key>
+            <string>rule</string>
+            <key>rule</key>
+            <string>is-admin</string>
+            <key>comment</key>
+            <string>Language &amp; Region.app: the system's language, for every account that hasn't chosen its own, new ones included (SetSystemLocale). A user's own languages and formats need no right.</string>
+        </dict>
     </dict>
     <key>rules</key>
     <dict>

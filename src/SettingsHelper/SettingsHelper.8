@@ -120,6 +120,17 @@ does;
 .Xr hostnamed 8
 follows
 .Pq right Ql org.nextbsd.settings.network .
+.It Cm SetSystemLocale
+sets the system's language, the
+.Cm lang
+and
+.Cm charset
+of
+.Pa /etc/login.conf Ns 's
+.Ql default
+class, and runs
+.Xr cap_mkdb 1
+.Pq right Ql org.nextbsd.settings.locale .
 .El
 .Pp
 The account operations refuse on a machine joined to a directory server,
@@ -183,10 +194,13 @@ the login settings, as SetAutoLogin and SetLoginWindowOptions write them
 .It Pa /Local/Library/Preferences/SystemConfiguration/preferences.plist
 the network services and the computer's name, as CommitNetworkPreferences
 and SetComputerName write them
+.It Pa /etc/login.conf , /etc/login.conf.db
+the system's language, as SetSystemLocale writes it
 .It Pa /var/log/SettingsHelper.log
 its log: who was allowed what, and refusals
 .El
 .Sh SEE ALSO
+.Xr cap_mkdb 1 ,
 .Xr pmset 1 ,
 .Xr passwd 1 ,
 .Xr settimeofday 2 ,
@@ -195,6 +209,7 @@ its log: who was allowed what, and refusals
 .Xr cupsd 8 ,
 .Xr hostnamed 8 ,
 .Xr ipconfigd 8 ,
+.Xr login.conf 5 ,
 .Xr launchd 8 ,
 .Xr lpadmin 8 ,
 .Xr ntpd 8 ,

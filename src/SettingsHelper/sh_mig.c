@@ -20,6 +20,7 @@
 #define	RIGHT_OWN_PASSWORD "org.nextbsd.settings.users.own-password"
 #define	RIGHT_PRINTERS	"org.nextbsd.settings.printers"
 #define	RIGHT_NETWORK	"org.nextbsd.settings.network"
+#define	RIGHT_LOCALE	"org.nextbsd.settings.locale"
 
 /* Darwin's audit token layout, as audit_token_to_au32 reads it. */
 #define	CALLER(tok, c)							\
@@ -447,5 +448,28 @@ _sh_set_computer_name(mach_port_t server, SHAuthForm auth,
 	*status = sh_computer_name_set(computer, local);
 	sh_log("pid %d: SetComputerName \"%s\" \"%s\": %d", (int)caller.pid,
 	    computer, local, *status);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_sh_set_system_locale(mach_port_t server, SHAuthForm auth,
+    SHLocaleName locale_in, int *status, audit_token_t audit)
+{
+	struct sh_caller caller;
+	SHLocaleName locale;
+
+	(void)server;
+	(void)auth;
+	WIRE_STR(locale, locale_in);
+	CALLER(audit, &caller);
+	*status = sh_rights_check(&caller, RIGHT_LOCALE, true, NULL);
+	if (*status != SH_OK) {
+		sh_log("pid %d: SetSystemLocale refused (%d)", (int)caller.pid,
+		    *status);
+		return (KERN_SUCCESS);
+	}
+	*status = sh_locale_set(locale);
+	sh_log("pid %d: SetSystemLocale \"%s\": %d", (int)caller.pid, locale,
+	    *status);
 	return (KERN_SUCCESS);
 }
