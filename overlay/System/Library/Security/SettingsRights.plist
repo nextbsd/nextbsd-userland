@@ -92,6 +92,24 @@
             <key>comment</key>
             <string>Language &amp; Region.app: the system's language, for every account that hasn't chosen its own, new ones included (SetSystemLocale). A user's own languages and formats need no right.</string>
         </dict>
+        <key>org.nextbsd.settings.update</key>
+        <dict>
+            <key>class</key>
+            <string>rule</string>
+            <key>rule</key>
+            <string>authenticate-admin</string>
+            <key>comment</key>
+            <string>Update.app: installing a NextBSD update over the running system (UpdateInstall).</string>
+        </dict>
+        <key>org.nextbsd.settings.update.check</key>
+        <dict>
+            <key>class</key>
+            <string>rule</string>
+            <key>rule</key>
+            <string>allow</string>
+            <key>comment</key>
+            <string>Update.app: checking for a NextBSD update, downloading it into pkg's cache, following and stopping those, and the restart an installed update waits for (UpdateStatus, UpdateCheck, UpdateDownload, UpdateCancel, UpdateRestart). Nothing is installed with it.</string>
+        </dict>
     </dict>
     <key>rules</key>
     <dict>

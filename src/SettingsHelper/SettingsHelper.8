@@ -131,7 +131,48 @@ of
 class, and runs
 .Xr cap_mkdb 1
 .Pq right Ql org.nextbsd.settings.locale .
+.It Cm UpdateCheck
+refreshes the catalogue with
+.Ql pkg update
+and asks
+.Ql pkg upgrade -n
+whether there is an update and how much to download; the update's
+version, shown only, is the repository's
+.Ql NextBSD-desktop ,
+.Ql NextBSD-server
+or
+.Ql NextBSD-everything
+.Pq right Ql org.nextbsd.settings.update.check .
+.It Cm UpdateDownload
+fetches the update into pkg's cache with
+.Ql pkg upgrade -F ,
+installing nothing
+.Pq right Ql org.nextbsd.settings.update.check .
+.It Cm UpdateInstall
+installs it over the running system with
+.Ql pkg upgrade
+.Pq right Ql org.nextbsd.settings.update .
+.It Cm UpdateCancel
+stops a check or a download
+.Pq right Ql org.nextbsd.settings.update.check .
+.It Cm UpdateStatus
+reports the running update job, or the last one, with its progress
+.Pq right Ql org.nextbsd.settings.update.check .
+.It Cm UpdateRestart
+restarts the computer with
+.Ql shutdown -r now ,
+only while an installed update waits for it
+.Pq right Ql org.nextbsd.settings.update.check .
 .El
+.Pp
+The update operations run
+.Xr pkg 8
+without a shell, with arguments that are all the helper's own and no
+package names: NextBSD is updated as a whole.
+Check, download and install start a job in a child process and return;
+.Nm
+reads pkg's progress from its event pipe and stays running while a job
+does.
 .Pp
 The account operations refuse on a machine joined to a directory server,
 whose accounts are the server's.
@@ -196,6 +237,9 @@ the network services and the computer's name, as CommitNetworkPreferences
 and SetComputerName write them
 .It Pa /etc/login.conf , /etc/login.conf.db
 the system's language, as SetSystemLocale writes it
+.It Pa /var/db/SettingsHelper/UpdateRestart
+the boot an update was installed in, and its version: a restart waits
+until the next boot
 .It Pa /var/log/SettingsHelper.log
 its log: who was allowed what, and refusals
 .El
@@ -214,8 +258,10 @@ its log: who was allowed what, and refusals
 .Xr lpadmin 8 ,
 .Xr ntpd 8 ,
 .Xr pam 8 ,
+.Xr pkg 8 ,
 .Xr rmuser 8 ,
 .Xr scutil 8 ,
+.Xr shutdown 8 ,
 .Xr tzsetup 8
 .Sh HISTORY
 .Nm
