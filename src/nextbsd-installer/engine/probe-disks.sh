@@ -67,10 +67,14 @@ fi
 printf 'SYSTEM\t%s\n' "$system"
 
 # The smallest usable disk. A copy of an installed system also has to hold
-# what's on it now, with a tenth to spare.
+# what's on it now, with a tenth to spare -- less what a copy leaves out
+# (do-install.sh -c), which may be most of it: a file-backed disk in /tmp.
 need=$MIN_BYTES
 if [ "$system" = installed ]; then
 	used_k="$(df -k / 2>/dev/null | awk 'NR==2{print $3}')"
+	skip_k="$(du -skx /private/tmp /private/var/tmp /private/var/vm 2>/dev/null |
+	    awk '{s += $1} END {print s + 0}')"
+	used_k=$((${used_k:-0} - skip_k))
 	need="$(printf '%s %s' "${used_k:-0}" "$MIN_BYTES" | awk '{
 		n = $1 * 1024 * 1.1 + 1073741824
 		if (n < $2) n = $2

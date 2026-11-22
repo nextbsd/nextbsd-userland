@@ -56,8 +56,17 @@ cleanup() {
 	rmdir "$SNAPMNT" 2>/dev/null || true
 	# A UFS snapshot left behind keeps its blocks forever.
 	[ -n "$SNAPFILE" ] && rm -f "$SNAPFILE" 2>/dev/null || true
+	# A run that stopped part way leaves the target mounted; a finished
+	# one has unmounted it already.
+	for m in "${EFIMNT:-}" "${BOOTMNT:-}" "${MNT:-}"; do
+		[ -n "$m" ] && umount "$m" 2>/dev/null || true
+	done
 }
-trap cleanup EXIT INT TERM
+# Stopped (INT, TERM): clean up and stop, rather than carry on where the
+# signal found the script. Installer.app's helper signals the engine's
+# whole process group, cpdup included.
+trap cleanup EXIT
+trap 'exit 1' INT TERM
 
 DISK="" UPGRADE=0 COPY=0
 MNT=/tmp/nbi-mnt
@@ -366,6 +375,13 @@ fi
 # Room for it all? Better to say so now than to stop at 90%.
 if [ "${NEXTBSD_DRYRUN:-0}" != 1 ]; then
 	src_k="$(df -k "$SRC" 2>/dev/null | awk 'NR==2{print $3}')"
+	if [ "$COPY" = 1 ]; then
+		# Less what's left out (see EXCLUDE).
+		S=${SRC%/}
+		skip_k="$(du -skx "$S/private/tmp" "$S/private/var/tmp" \
+		    "$S/private/var/vm" 2>/dev/null | awk '{s += $1} END {print s + 0}')"
+		src_k=$((src_k - skip_k))
+	fi
 	tgt_k="$(df -k "$MNT" 2>/dev/null | awk 'NR==2{print $4}')"
 	if [ "$COPY" = 1 ] && [ "$src_k" -gt "$tgt_k" ]; then
 		echo "do-install.sh: $DISK is too small: $src_k KB to copy, $tgt_k KB free" >&2
