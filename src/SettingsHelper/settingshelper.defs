@@ -53,6 +53,7 @@ type sh_auth_form	= array[32] of char ctype: SHAuthForm;
 type sh_pm_values	= array[16] of int ctype: SHPMValues;
 type sh_zone		= array[128] of char ctype: SHZoneName;
 type sh_ntp_server	= array[256] of char ctype: SHNTPServer;
+type sh_full_name	= array[256] of char ctype: SHFullName;
 
 /*
  * 32000 sh_right_info — what `right` asks of this caller.
@@ -160,6 +161,108 @@ routine sh_set_network_time(
 	auth			: sh_auth_form;
 	enabled			: boolean_t;
 	ntp_server		: sh_ntp_server;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * The Users & Login operations (nextbsd/nextbsd#639). Each works on the
+ * local directory, /Local/Library/DirectoryServices (libds), as
+ * adduser(8), rmuser(8) and passwd(1) do, and refuses on a machine
+ * joined to a directory server (SH_ERR_UNSUPPORTED): its accounts are
+ * the server's. Right: org.nextbsd.settings.users, except where said.
+ */
+
+/*
+ * 32007 sh_create_user — a new account, as adduser(8) makes one: the
+ * next free uid from 5001, a private group of the same name and id,
+ * the default shell, and its home in /Local/Users by createhomedir(8).
+ * `user` is the short name, `full_name` the realName. An empty
+ * `password` makes an account without one (noPassword). `admin` adds it
+ * to group admin. SH_ERR_EXISTS when the name or its group is taken.
+ */
+routine sh_create_user(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	user			: sh_user;
+	full_name		: sh_full_name;
+	password		: sh_password;
+	admin			: boolean_t;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32008 sh_delete_user — remove an account as rmuser(8) does: its
+ * processes, crontab and at jobs, its group memberships, its private
+ * group, the record, and unless `keep_home` its home. Refuses the
+ * console user (SH_ERR_LOGGED_IN) and the last administrator
+ * (SH_ERR_LAST_ADMIN). Automatic login of the account is turned off.
+ */
+routine sh_delete_user(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	user			: sh_user;
+	keep_home		: boolean_t;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32009 sh_set_password — set an account's password, hashed as
+ * passwd(1) hashes it; empty for none (noPassword). The console user
+ * may set their own with org.nextbsd.settings.users.own-password
+ * instead (authenticate-session-owner, good for one change): prove it
+ * with sh_authorize and the old password first.
+ */
+routine sh_set_password(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	user			: sh_user;
+	password		: sh_password;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32010 sh_set_admin — add an account to group admin, or take it out.
+ * Taking out the last administrator is refused (SH_ERR_LAST_ADMIN).
+ */
+routine sh_set_admin(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	user			: sh_user;
+	admin			: boolean_t;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32011 sh_set_auto_login — the account logged in automatically at
+ * startup: autoLoginUser in /Local/Library/Preferences/
+ * org.nextbsd.loginwindow.plist. An empty `user` turns automatic login
+ * off. Only an account without a password can be chosen, since
+ * automatic login never stands in for a password (autologin-user).
+ */
+routine sh_set_auto_login(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	user			: sh_user;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32012 sh_set_login_window_options — how the login window asks, in the
+ * same file: name and password fields, or a list of users (SHOWFULLNAME),
+ * and whether it shows Restart and Shut Down (RestartDisabled,
+ * ShutDownDisabled). They apply at the next login window.
+ */
+routine sh_set_login_window_options(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	show_name_fields	: boolean_t;
+	show_power_buttons	: boolean_t;
 	out status		: int;
 	ServerAuditToken audit	: audit_token_t
 );

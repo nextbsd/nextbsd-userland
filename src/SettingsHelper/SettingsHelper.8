@@ -3,7 +3,7 @@
 .\" Copyright (c) 2026, Joseph Maloney
 .\" SPDX-License-Identifier: BSD-2-Clause
 .\"
-.Dd November 18, 2026
+.Dd November 21, 2026
 .Dt SETTINGSHELPER 8
 .Os NextBSD
 .Sh NAME
@@ -14,7 +14,8 @@
 .Sh DESCRIPTION
 .Nm
 makes the settings changes that need root, such as the Energy Saver
-settings, the time zone, the date and time, and network time, for
+settings, the time zone, the date and time, network time, the accounts
+and the login window's settings, for
 NextBSD's settings apps.
 It is started by
 .Xr launchd 8
@@ -33,7 +34,7 @@ answers only root and processes in the console user's session, as
 records it in
 .Pa /var/run/loginwindow .
 .Ss Operations
-.Bl -tag -width "SetNetworkTime"
+.Bl -tag -width "SetLoginWindowOptions"
 .It Cm SetPMPreferences
 one power source's Energy Saver settings
 .Pq right Ql org.nextbsd.settings.energy .
@@ -65,7 +66,55 @@ or
 and can replace the server and pool lines of
 .Pa /etc/ntp.conf
 .Pq right Ql org.nextbsd.settings.datetime .
+.It Cm CreateUser
+adds an account to the local directory, as
+.Xr adduser 8
+does: the next free uid, a private group, a password or none, and
+optionally group
+.Ql admin ;
+then builds its home with
+.Xr createhomedir 8
+.Pq right Ql org.nextbsd.settings.users .
+.It Cm DeleteUser
+removes an account as
+.Xr rmuser 8
+does, keeping its home if asked; never the console user or the last
+administrator
+.Pq right Ql org.nextbsd.settings.users .
+.It Cm SetPassword
+sets an account's password, or removes it
+.Pq right Ql org.nextbsd.settings.users ,
+or the console user's own
+.Pq right Ql org.nextbsd.settings.users.own-password .
+.It Cm SetAdmin
+adds an account to group
+.Ql admin
+or takes it out, never the last one
+.Pq right Ql org.nextbsd.settings.users .
+.It Cm SetAutoLogin
+names the account, one without a password, logged in at startup, or
+turns automatic login off
+.Pq right Ql org.nextbsd.settings.users .
+.It Cm SetLoginWindowOptions
+whether the login window asks for a name and password or lists the
+users, and whether it shows Restart and Shut Down
+.Pq right Ql org.nextbsd.settings.users .
 .El
+.Pp
+The account operations refuse on a machine joined to a directory server,
+whose accounts are the server's.
+The login settings are Darwin's
+.Ql com.apple.loginwindow
+keys:
+.Ql autoLoginUser
+(absent: the only account,
+.Ql admin ,
+if it has no password; empty: off),
+.Ql SHOWFULLNAME ,
+.Ql RestartDisabled
+and
+.Ql ShutDownDisabled .
+They apply at the next login window.
 .Ss Rights
 The rules have the shape of Darwin's authorization database.
 Each right names a rule, or is one:
@@ -106,15 +155,23 @@ the launchd job
 the time zone, as SetTimeZone writes it
 .It Pa /etc/ntp.conf
 the time server, as SetNetworkTime writes it
+.It Pa /Local/Library/DirectoryServices
+the local accounts, as the account operations write them
+.It Pa /Local/Library/Preferences/org.nextbsd.loginwindow.plist
+the login settings, as SetAutoLogin and SetLoginWindowOptions write them
 .It Pa /var/log/SettingsHelper.log
 its log: who was allowed what, and refusals
 .El
 .Sh SEE ALSO
 .Xr pmset 1 ,
+.Xr passwd 1 ,
 .Xr settimeofday 2 ,
+.Xr adduser 8 ,
+.Xr createhomedir 8 ,
 .Xr launchd 8 ,
 .Xr ntpd 8 ,
 .Xr pam 8 ,
+.Xr rmuser 8 ,
 .Xr tzsetup 8
 .Sh HISTORY
 .Nm

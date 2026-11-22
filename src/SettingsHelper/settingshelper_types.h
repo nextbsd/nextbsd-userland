@@ -54,7 +54,10 @@ enum {
 	SH_ERR_UNKNOWN_RIGHT = 6,
 	SH_ERR_INVALID = 7,	/* an argument out of range */
 	SH_ERR_UNSUPPORTED = 8,	/* not on this machine */
-	SH_ERR_FAILED = 9	/* the change itself failed */
+	SH_ERR_FAILED = 9,	/* the change itself failed */
+	SH_ERR_EXISTS = 10,	/* an account or group of that name exists */
+	SH_ERR_LAST_ADMIN = 11,	/* it would leave no administrator */
+	SH_ERR_LOGGED_IN = 12	/* the account is the console user's */
 };
 
 /*
@@ -113,5 +116,12 @@ typedef char	SHZoneName[SH_ZONE_MAX + 1];
  */
 #define	SH_NTP_SERVER_MAX	255
 typedef char	SHNTPServer[SH_NTP_SERVER_MAX + 1];
+
+/*
+ * The Users & Login operations' full name (an account's realName),
+ * NUL-terminated UTF-8. The short name is an SHUserName.
+ */
+#define	SH_FULL_NAME_MAX	255
+typedef char	SHFullName[SH_FULL_NAME_MAX + 1];
 
 #endif /* _SETTINGSHELPER_TYPES_H */

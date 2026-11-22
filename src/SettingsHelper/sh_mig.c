@@ -16,6 +16,8 @@
 
 #define	RIGHT_ENERGY	"org.nextbsd.settings.energy"
 #define	RIGHT_DATETIME	"org.nextbsd.settings.datetime"
+#define	RIGHT_USERS	"org.nextbsd.settings.users"
+#define	RIGHT_OWN_PASSWORD "org.nextbsd.settings.users.own-password"
 
 /* Darwin's audit token layout, as audit_token_to_au32 reads it. */
 #define	CALLER(tok, c)							\
@@ -194,5 +196,155 @@ _sh_set_network_time(mach_port_t server, SHAuthForm auth, boolean_t enabled,
 	*status = sh_ntp_set(enabled != FALSE, ntp_server);
 	sh_log("pid %d: SetNetworkTime %s \"%s\": %d", (int)caller.pid,
 	    enabled ? "on" : "off", ntp_server, *status);
+	return (KERN_SUCCESS);
+}
+
+/* The Users & Login operations' common start, as datetime_allowed. */
+static bool
+users_allowed(audit_token_t audit, const char *op, struct sh_caller *caller,
+    int *status)
+{
+	CALLER(audit, caller);
+	*status = sh_rights_check(caller, RIGHT_USERS, true, NULL);
+	if (*status != SH_OK) {
+		sh_log("pid %d: %s refused (%d)", (int)caller->pid, op, *status);
+		return (false);
+	}
+	return (true);
+}
+
+kern_return_t
+_sh_create_user(mach_port_t server, SHAuthForm auth, SHUserName user_in,
+    SHFullName full_name_in, SHPassword password_in, boolean_t admin,
+    int *status, audit_token_t audit)
+{
+	struct sh_caller caller;
+	SHUserName user;
+	SHFullName full_name;
+	SHPassword password;
+
+	(void)server;
+	(void)auth;
+	WIRE_STR(user, user_in);
+	WIRE_STR(full_name, full_name_in);
+	WIRE_STR(password, password_in);
+	explicit_bzero(password_in, sizeof(SHPassword));
+	if (users_allowed(audit, "CreateUser", &caller, status)) {
+		*status = sh_user_create(user, full_name, password,
+		    admin != FALSE);
+		sh_log("pid %d: CreateUser \"%s\"%s: %d", (int)caller.pid,
+		    user, admin ? " (admin)" : "", *status);
+	}
+	explicit_bzero(password, sizeof(password));
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_sh_delete_user(mach_port_t server, SHAuthForm auth, SHUserName user_in,
+    boolean_t keep_home, int *status, audit_token_t audit)
+{
+	struct sh_caller caller;
+	SHUserName user;
+
+	(void)server;
+	(void)auth;
+	WIRE_STR(user, user_in);
+	if (!users_allowed(audit, "DeleteUser", &caller, status))
+		return (KERN_SUCCESS);
+	*status = sh_user_delete(user, keep_home != FALSE);
+	sh_log("pid %d: DeleteUser \"%s\"%s: %d", (int)caller.pid, user,
+	    keep_home ? " (home kept)" : "", *status);
+	return (KERN_SUCCESS);
+}
+
+/*
+ * The users right, or the console user setting their own password with
+ * the own-password right (authenticate-session-owner: they gave their
+ * old password to sh_authorize).
+ */
+kern_return_t
+_sh_set_password(mach_port_t server, SHAuthForm auth, SHUserName user_in,
+    SHPassword password_in, int *status, audit_token_t audit)
+{
+	struct sh_caller caller;
+	SHUserName user;
+	SHPassword password;
+
+	(void)server;
+	(void)auth;
+	WIRE_STR(user, user_in);
+	WIRE_STR(password, password_in);
+	explicit_bzero(password_in, sizeof(SHPassword));
+	CALLER(audit, &caller);
+	*status = sh_rights_check(&caller, RIGHT_USERS, true, NULL);
+	if (*status != SH_OK && caller.in_console &&
+	    strcmp(user, caller.console.user) == 0)
+		*status = sh_rights_check(&caller, RIGHT_OWN_PASSWORD, true,
+		    NULL);
+	if (*status != SH_OK)
+		sh_log("pid %d: SetPassword refused (%d)", (int)caller.pid,
+		    *status);
+	else {
+		*status = sh_user_set_password(user, password);
+		sh_log("pid %d: SetPassword \"%s\": %d", (int)caller.pid,
+		    user, *status);
+	}
+	explicit_bzero(password, sizeof(password));
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_sh_set_admin(mach_port_t server, SHAuthForm auth, SHUserName user_in,
+    boolean_t admin, int *status, audit_token_t audit)
+{
+	struct sh_caller caller;
+	SHUserName user;
+
+	(void)server;
+	(void)auth;
+	WIRE_STR(user, user_in);
+	if (!users_allowed(audit, "SetAdmin", &caller, status))
+		return (KERN_SUCCESS);
+	*status = sh_user_set_admin(user, admin != FALSE);
+	sh_log("pid %d: SetAdmin \"%s\" %s: %d", (int)caller.pid, user,
+	    admin ? "on" : "off", *status);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_sh_set_auto_login(mach_port_t server, SHAuthForm auth, SHUserName user_in,
+    int *status, audit_token_t audit)
+{
+	struct sh_caller caller;
+	SHUserName user;
+
+	(void)server;
+	(void)auth;
+	WIRE_STR(user, user_in);
+	if (!users_allowed(audit, "SetAutoLogin", &caller, status))
+		return (KERN_SUCCESS);
+	*status = sh_login_set_auto_login(user);
+	sh_log("pid %d: SetAutoLogin \"%s\": %d", (int)caller.pid, user,
+	    *status);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_sh_set_login_window_options(mach_port_t server, SHAuthForm auth,
+    boolean_t show_name_fields, boolean_t show_power_buttons, int *status,
+    audit_token_t audit)
+{
+	struct sh_caller caller;
+
+	(void)server;
+	(void)auth;
+	if (!users_allowed(audit, "SetLoginWindowOptions", &caller, status))
+		return (KERN_SUCCESS);
+	*status = sh_login_set_options(show_name_fields != FALSE,
+	    show_power_buttons != FALSE);
+	sh_log("pid %d: SetLoginWindowOptions %s, %s: %d", (int)caller.pid,
+	    show_name_fields ? "name and password" : "list of users",
+	    show_power_buttons ? "power buttons" : "no power buttons",
+	    *status);
 	return (KERN_SUCCESS);
 }
