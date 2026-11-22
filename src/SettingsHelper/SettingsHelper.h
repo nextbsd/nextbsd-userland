@@ -114,4 +114,22 @@ int	sh_tz_set(const char *zone);
 int	sh_date_set(int64_t seconds, int32_t microseconds);
 int	sh_ntp_set(bool on, const char *server);
 
+/* sh_net.c: a network service's settings, and the computer's name. */
+struct sh_net_service {
+	SHNetServiceID	service_id;
+	int		ipv4_method;	/* SH_NET_V4_* */
+	SHNetAddress	ipv4_address;
+	SHNetAddress	ipv4_mask;
+	SHNetAddress	ipv4_router;
+	int		ipv6_method;	/* SH_NET_V6_* */
+	SHNetAddress	ipv6_address;
+	int		ipv6_prefix;
+	SHNetAddress	ipv6_router;
+	SHNetList	dns_servers;	/* one per line */
+	SHNetList	search_domains;
+};
+
+int	sh_net_commit(const struct sh_net_service *service);
+int	sh_computer_name_set(const char *computer, const char *local);
+
 #endif /* _SETTINGSHELPER_H */

@@ -20,7 +20,7 @@
 PROG=		SettingsHelper
 MAN=		SettingsHelper.8
 SRCS=		SettingsHelper.c sh_session.c sh_auth.c sh_rights.c sh_pm.c
-SRCS+=		sh_time.c
+SRCS+=		sh_time.c sh_net.c
 SRCS+=		sh_mig.c
 BINDIR=		/usr/libexec
 
@@ -70,7 +70,10 @@ LDFLAGS+=	-Wl,--allow-shlib-undefined
 #   -lsystem_kernel            mach_msg
 #   -lsystem_dispatch, blocks  pulled in by libIOKit and CF
 #   -lnotify                   com.apple.system.timezone and clock_set
+#   -lSystemConfiguration      SCPreferences, for the network settings and
+#                              the computer name
 LDADD+=		-lIOKit -lCoreFoundation -llaunch -lsystem_kernel -lnotify
+LDADD+=		-lSystemConfiguration
 LDADD+=		-lsystem_dispatch -l:libsystem_blocks.so
 LIBADD+=	pam
 

@@ -16,6 +16,7 @@
 
 #define	RIGHT_ENERGY	"org.nextbsd.settings.energy"
 #define	RIGHT_DATETIME	"org.nextbsd.settings.datetime"
+#define	RIGHT_NETWORK	"org.nextbsd.settings.network"
 
 /* Darwin's audit token layout, as audit_token_to_au32 reads it. */
 #define	CALLER(tok, c)							\
@@ -194,5 +195,74 @@ _sh_set_network_time(mach_port_t server, SHAuthForm auth, boolean_t enabled,
 	*status = sh_ntp_set(enabled != FALSE, ntp_server);
 	sh_log("pid %d: SetNetworkTime %s \"%s\": %d", (int)caller.pid,
 	    enabled ? "on" : "off", ntp_server, *status);
+	return (KERN_SUCCESS);
+}
+
+/* Network.app's operations' common start. */
+static bool
+network_allowed(audit_token_t audit, const char *op, struct sh_caller *caller,
+    int *status)
+{
+	CALLER(audit, caller);
+	*status = sh_rights_check(caller, RIGHT_NETWORK, true, NULL);
+	if (*status != SH_OK) {
+		sh_log("pid %d: %s refused (%d)", (int)caller->pid, op, *status);
+		return (false);
+	}
+	return (true);
+}
+
+kern_return_t
+_sh_commit_network_preferences(mach_port_t server, SHAuthForm auth,
+    SHNetServiceID service_id, int ipv4_method, SHNetAddress ipv4_address,
+    SHNetAddress ipv4_mask, SHNetAddress ipv4_router, int ipv6_method,
+    SHNetAddress ipv6_address, int ipv6_prefix, SHNetAddress ipv6_router,
+    SHNetList dns_servers, SHNetList search_domains, int *status,
+    audit_token_t audit)
+{
+	struct sh_caller caller;
+	struct sh_net_service s;
+
+	(void)server;
+	(void)auth;
+	(void)memset(&s, 0, sizeof(s));
+	WIRE_STR(s.service_id, service_id);
+	s.ipv4_method = ipv4_method;
+	WIRE_STR(s.ipv4_address, ipv4_address);
+	WIRE_STR(s.ipv4_mask, ipv4_mask);
+	WIRE_STR(s.ipv4_router, ipv4_router);
+	s.ipv6_method = ipv6_method;
+	WIRE_STR(s.ipv6_address, ipv6_address);
+	s.ipv6_prefix = ipv6_prefix;
+	WIRE_STR(s.ipv6_router, ipv6_router);
+	WIRE_STR(s.dns_servers, dns_servers);
+	WIRE_STR(s.search_domains, search_domains);
+	if (!network_allowed(audit, "CommitNetworkPreferences", &caller,
+	    status))
+		return (KERN_SUCCESS);
+	*status = sh_net_commit(&s);
+	sh_log("pid %d: CommitNetworkPreferences %s IPv4 %d IPv6 %d: %d",
+	    (int)caller.pid, s.service_id, ipv4_method, ipv6_method, *status);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_sh_set_computer_name(mach_port_t server, SHAuthForm auth,
+    SHComputerName computer_in, SHLocalHostName local_in, int *status,
+    audit_token_t audit)
+{
+	struct sh_caller caller;
+	SHComputerName computer;
+	SHLocalHostName local;
+
+	(void)server;
+	(void)auth;
+	WIRE_STR(computer, computer_in);
+	WIRE_STR(local, local_in);
+	if (!network_allowed(audit, "SetComputerName", &caller, status))
+		return (KERN_SUCCESS);
+	*status = sh_computer_name_set(computer, local);
+	sh_log("pid %d: SetComputerName \"%s\" \"%s\": %d", (int)caller.pid,
+	    computer, local, *status);
 	return (KERN_SUCCESS);
 }
