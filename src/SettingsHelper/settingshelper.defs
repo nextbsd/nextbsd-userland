@@ -170,7 +170,20 @@ routine sh_set_network_time(
 );
 
 /*
- * 32007 sh_commit_network_preferences — one network service's TCP/IP and
+ * 32007-32013: the Users & Login (nextbsd-userland#647) and Printers
+ * (nextbsd-userland#648) operations, still in review. Each skip holds
+ * one's id until it merges, so the ids after it never move.
+ */
+skip;	/* 32007 sh_create_user */
+skip;	/* 32008 sh_delete_user */
+skip;	/* 32009 sh_set_password */
+skip;	/* 32010 sh_set_admin */
+skip;	/* 32011 sh_set_auto_login */
+skip;	/* 32012 sh_set_login_window_options */
+skip;	/* 32013 sh_cups_admin */
+
+/*
+ * 32014 sh_commit_network_preferences — one network service's TCP/IP and
  * DNS settings, written to SCPreferences (the service's IPv4, IPv6 and
  * DNS entities), committed and applied as root, so that
  * PreferencesMonitor flattens them into Setup: and ipconfigd configures
@@ -207,7 +220,7 @@ routine sh_commit_network_preferences(
 );
 
 /*
- * 32008 sh_set_computer_name — the computer's name, as scutil --set
+ * 32015 sh_set_computer_name — the computer's name, as scutil --set
  * ComputerName and LocalHostName set them (SCPreferencesSetComputerName
  * and SCPreferencesSetLocalHostName), committed and applied; hostnamed
  * follows. Right: org.nextbsd.settings.network.
