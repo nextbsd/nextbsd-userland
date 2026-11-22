@@ -45,6 +45,15 @@
             <key>comment</key>
             <string>Date &amp; Time.app: the time zone, the date and time, and network time (SetTimeZone, SetDate, SetNetworkTime). The clock's format needs no right.</string>
         </dict>
+        <key>org.nextbsd.settings.locale</key>
+        <dict>
+            <key>class</key>
+            <string>rule</string>
+            <key>rule</key>
+            <string>is-admin</string>
+            <key>comment</key>
+            <string>Language &amp; Region.app: the system's language, for every account that hasn't chosen its own, new ones included (SetSystemLocale). A user's own languages and formats need no right.</string>
+        </dict>
     </dict>
     <key>rules</key>
     <dict>

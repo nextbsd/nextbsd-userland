@@ -16,6 +16,7 @@
 
 #define	RIGHT_ENERGY	"org.nextbsd.settings.energy"
 #define	RIGHT_DATETIME	"org.nextbsd.settings.datetime"
+#define	RIGHT_LOCALE	"org.nextbsd.settings.locale"
 
 /* Darwin's audit token layout, as audit_token_to_au32 reads it. */
 #define	CALLER(tok, c)							\
@@ -194,5 +195,28 @@ _sh_set_network_time(mach_port_t server, SHAuthForm auth, boolean_t enabled,
 	*status = sh_ntp_set(enabled != FALSE, ntp_server);
 	sh_log("pid %d: SetNetworkTime %s \"%s\": %d", (int)caller.pid,
 	    enabled ? "on" : "off", ntp_server, *status);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_sh_set_system_locale(mach_port_t server, SHAuthForm auth,
+    SHLocaleName locale_in, int *status, audit_token_t audit)
+{
+	struct sh_caller caller;
+	SHLocaleName locale;
+
+	(void)server;
+	(void)auth;
+	WIRE_STR(locale, locale_in);
+	CALLER(audit, &caller);
+	*status = sh_rights_check(&caller, RIGHT_LOCALE, true, NULL);
+	if (*status != SH_OK) {
+		sh_log("pid %d: SetSystemLocale refused (%d)", (int)caller.pid,
+		    *status);
+		return (KERN_SUCCESS);
+	}
+	*status = sh_locale_set(locale);
+	sh_log("pid %d: SetSystemLocale \"%s\": %d", (int)caller.pid, locale,
+	    *status);
 	return (KERN_SUCCESS);
 }

@@ -21,25 +21,21 @@
  *                    replaces the server and pool lines of /etc/ntp.conf,
  *                    and a running ntpd is restarted to use it.
  *
- * Every file is replaced by writing a temporary next to it and renaming
- * it over, so a reader never sees half a file. launchctl is run with
- * fork and exec, never a shell; its arguments are ours.
+ * Files are read and replaced, and launchctl is run, with sh_file.c's
+ * helpers.
  */
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/time.h>
-#include <sys/wait.h>
 
 #include <ctype.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <limits.h>
 #include <notify.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
 
 #include "SettingsHelper.h"
 
@@ -51,8 +47,6 @@
 #define	NTPD_LABEL	"org.nextbsd.ntpd"
 #define	NTPD_PLIST	"/System/Library/LaunchDaemons/org.nextbsd.ntpd.plist"
 
-#define	MAX_FILE	(1024 * 1024)	/* a zone file is a few KB */
-
 /* SetDate's range: 2001 (Darwin's reference date) to 2100. */
 #define	DATE_MIN	978307200LL
 #define	DATE_MAX	4102444800LL
@@ -62,104 +56,8 @@ static bool
 launchctl(const char *a1, const char *a2, const char *a3)
 {
 	const char *argv[] = { LAUNCHCTL, a1, a2, a3, NULL };
-	pid_t pid;
-	int st;
 
-	pid = fork();
-	if (pid == -1)
-		return (false);
-	if (pid == 0) {
-		int fd = open("/dev/null", O_RDWR);
-
-		if (fd != -1) {
-			(void)dup2(fd, STDIN_FILENO);
-			(void)dup2(fd, STDOUT_FILENO);
-			if (fd > STDERR_FILENO)
-				(void)close(fd);
-		}
-		execv(LAUNCHCTL, (char *const *)argv);
-		_exit(127);
-	}
-	while (waitpid(pid, &st, 0) == -1)
-		if (errno != EINTR)
-			return (false);
-	return (WIFEXITED(st) && WEXITSTATUS(st) == 0);
-}
-
-/* Read a whole (small) file. *len gets its size; NULL on failure. */
-static char *
-read_file(const char *path, size_t *len)
-{
-	struct stat st;
-	char *buf;
-	ssize_t n;
-	size_t got = 0;
-	int fd;
-
-	fd = open(path, O_RDONLY | O_CLOEXEC);
-	if (fd == -1)
-		return (NULL);
-	if (fstat(fd, &st) == -1 || !S_ISREG(st.st_mode) ||
-	    st.st_size > MAX_FILE) {
-		(void)close(fd);
-		return (NULL);
-	}
-	buf = malloc((size_t)st.st_size + 1);
-	if (buf == NULL) {
-		(void)close(fd);
-		return (NULL);
-	}
-	while (got < (size_t)st.st_size) {
-		n = read(fd, buf + got, (size_t)st.st_size - got);
-		if (n == -1 && errno == EINTR)
-			continue;
-		if (n <= 0)
-			break;
-		got += (size_t)n;
-	}
-	(void)close(fd);
-	buf[got] = '\0';
-	*len = got;
-	return (buf);
-}
-
-/* Replace `path` with `len` bytes, mode 0644, through a temporary. */
-static bool
-write_file(const char *path, const char *data, size_t len)
-{
-	char tmp[PATH_MAX];
-	ssize_t n;
-	size_t done = 0;
-	int fd;
-
-	(void)snprintf(tmp, sizeof(tmp), "%s.SettingsHelper", path);
-	(void)unlink(tmp);
-	fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
-	if (fd == -1) {
-		sh_log("%s: %s", tmp, strerror(errno));
-		return (false);
-	}
-	while (done < len) {
-		n = write(fd, data + done, len - done);
-		if (n == -1 && errno == EINTR)
-			continue;
-		if (n <= 0)
-			break;
-		done += (size_t)n;
-	}
-	if (done != len || fchmod(fd, 0644) == -1 || fsync(fd) == -1) {
-		sh_log("%s: %s", tmp, strerror(errno));
-		(void)close(fd);
-		(void)unlink(tmp);
-		return (false);
-	}
-	(void)close(fd);
-	if (rename(tmp, path) == -1) {
-		sh_log("%s: %s", path, strerror(errno));
-		(void)unlink(tmp);
-		return (false);
-	}
-	return (true);
+	return (sh_run(argv));
 }
 
 /*
@@ -202,7 +100,7 @@ sh_tz_set(const char *zone)
 	if (!zone_name_ok(zone))
 		return (SH_ERR_INVALID);
 	(void)snprintf(path, sizeof(path), "%s/%s", ZONEINFO, zone);
-	data = read_file(path, &len);
+	data = sh_read_file(path, &len);
 	if (data == NULL)
 		return (SH_ERR_INVALID);	/* no such zone */
 	/* A compiled zone (tzfile(5)), not zone.tab or a stray file. */
@@ -210,13 +108,13 @@ sh_tz_set(const char *zone)
 		free(data);
 		return (SH_ERR_INVALID);
 	}
-	if (!write_file(LOCALTIME, data, len)) {
+	if (!sh_write_file(LOCALTIME, data, len)) {
 		free(data);
 		return (SH_ERR_FAILED);
 	}
 	free(data);
 	(void)snprintf(line, sizeof(line), "%s\n", zone);
-	if (!write_file(ZONE_DB, line, strlen(line)))
+	if (!sh_write_file(ZONE_DB, line, strlen(line)))
 		return (SH_ERR_FAILED);
 	(void)notify_post("com.apple.system.timezone");
 	return (SH_OK);
@@ -293,7 +191,7 @@ ntp_conf_set(const char *server, bool *changed)
 	(void)snprintf(entry, sizeof(entry), "%s %s iburst\n",
 	    strstr(server, "pool.ntp.org") != NULL ? "pool" : "server",
 	    server);
-	old = read_file(NTP_CONF, &len);
+	old = sh_read_file(NTP_CONF, &len);
 	if (old == NULL) {
 		old = strdup("");
 		len = 0;
@@ -327,7 +225,7 @@ ntp_conf_set(const char *server, bool *changed)
 		used += strlen(entry);
 	}
 	if (used != len || memcmp(new, old, len) != 0) {
-		if (write_file(NTP_CONF, new, used))
+		if (sh_write_file(NTP_CONF, new, used))
 			*changed = true;
 		else
 			rc = SH_ERR_FAILED;

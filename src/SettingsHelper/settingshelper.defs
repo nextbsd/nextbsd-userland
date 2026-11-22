@@ -29,9 +29,9 @@
  * message id is its position in the subsystem, so existing ids never
  * move and an older client keeps working with a newer helper. The
  * operations the settings apps will need, in the order they are expected:
- * SetTimeZone, SetDate, SetNetworkTime, CommitNetworkPreferences,
- * SetComputerName, SetSoundOutput, CreateUser, DeleteUser, SetPassword,
- * SetAdmin, SetAutoLogin, SetLoginWindowOptions,
+ * SetTimeZone, SetDate, SetNetworkTime, SetSystemLocale,
+ * CommitNetworkPreferences, SetComputerName, SetSoundOutput, CreateUser,
+ * DeleteUser, SetPassword, SetAdmin, SetAutoLogin, SetLoginWindowOptions,
  * SetWindowServerSystemSettings, CUPSAdmin. Each one's app ticket adds it.
  *
  * Subsystem base 32000: configd and ipconfigd use 20000, wland 30000,
@@ -53,6 +53,7 @@ type sh_auth_form	= array[32] of char ctype: SHAuthForm;
 type sh_pm_values	= array[16] of int ctype: SHPMValues;
 type sh_zone		= array[128] of char ctype: SHZoneName;
 type sh_ntp_server	= array[256] of char ctype: SHNTPServer;
+type sh_locale		= array[64] of char ctype: SHLocaleName;
 
 /*
  * 32000 sh_right_info — what `right` asks of this caller.
@@ -160,6 +161,21 @@ routine sh_set_network_time(
 	auth			: sh_auth_form;
 	enabled			: boolean_t;
 	ntp_server		: sh_ntp_server;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32007 sh_set_system_locale — the system's language: `lang` (and
+ * `charset`, the locale's codeset) of /etc/login.conf's default class,
+ * then cap_mkdb. Accounts without a language of their own get it at
+ * their next login. Right: org.nextbsd.settings.locale. `locale` is a
+ * name from /usr/share/locale ("de_DE.UTF-8"), or "C" or "POSIX".
+ */
+routine sh_set_system_locale(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	locale			: sh_locale;
 	out status		: int;
 	ServerAuditToken audit	: audit_token_t
 );

@@ -65,6 +65,17 @@ or
 and can replace the server and pool lines of
 .Pa /etc/ntp.conf
 .Pq right Ql org.nextbsd.settings.datetime .
+.It Cm SetSystemLocale
+sets the system's language, the
+.Cm lang
+and
+.Cm charset
+of
+.Pa /etc/login.conf Ns 's
+.Ql default
+class, and runs
+.Xr cap_mkdb 1
+.Pq right Ql org.nextbsd.settings.locale .
 .El
 .Ss Rights
 The rules have the shape of Darwin's authorization database.
@@ -106,12 +117,16 @@ the launchd job
 the time zone, as SetTimeZone writes it
 .It Pa /etc/ntp.conf
 the time server, as SetNetworkTime writes it
+.It Pa /etc/login.conf , /etc/login.conf.db
+the system's language, as SetSystemLocale writes it
 .It Pa /var/log/SettingsHelper.log
 its log: who was allowed what, and refusals
 .El
 .Sh SEE ALSO
+.Xr cap_mkdb 1 ,
 .Xr pmset 1 ,
 .Xr settimeofday 2 ,
+.Xr login.conf 5 ,
 .Xr launchd 8 ,
 .Xr ntpd 8 ,
 .Xr pam 8 ,
