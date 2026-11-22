@@ -166,7 +166,23 @@ routine sh_set_network_time(
 );
 
 /*
- * 32007 sh_set_system_locale — the system's language: `lang` (and
+ * 32007-32015: the Users & Login (nextbsd-userland#647), Printers
+ * (nextbsd-userland#648) and Network (nextbsd-userland#649) operations,
+ * still in review. Each skip holds one's id until it merges, so the ids
+ * after it never move.
+ */
+skip;	/* 32007 sh_create_user */
+skip;	/* 32008 sh_delete_user */
+skip;	/* 32009 sh_set_password */
+skip;	/* 32010 sh_set_admin */
+skip;	/* 32011 sh_set_auto_login */
+skip;	/* 32012 sh_set_login_window_options */
+skip;	/* 32013 sh_cups_admin */
+skip;	/* 32014 sh_commit_network_preferences */
+skip;	/* 32015 sh_set_computer_name */
+
+/*
+ * 32016 sh_set_system_locale — the system's language: `lang` (and
  * `charset`, the locale's codeset) of /etc/login.conf's default class,
  * then cap_mkdb. Accounts without a language of their own get it at
  * their next login. Right: org.nextbsd.settings.locale. `locale` is a
