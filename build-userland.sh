@@ -1032,7 +1032,9 @@ echo "==> pmset built"
 # checked by PAM service "authorization" (nextbsd-overlays). Same shape as
 # wland: host mig for the server stub, bsd.prog.mk with MIGOUT. Built after
 # pmset because SetPMPreferences calls libIOKit's IOPMSetPMPreferences, and
-# after libnotify, which SetTimeZone and SetDate post through.
+# after libnotify, which SetTimeZone and SetDate post through. The account
+# operations compile in libds.c and accounts/common/acct.c, as adduser does,
+# so nothing of libds' needs building first.
 # launchd starts it on demand (org.nextbsd.SettingsHelper.plist). The
 # apps' client stubs are generated in apps-settings, not here.
 comp "SettingsHelper"

@@ -16,6 +16,8 @@
     is-admin                     the console user is in group admin
     authenticate-admin           an admin's name and password
     authenticate-session-owner   the console user's own password
+    authenticate-session-owner-once
+                                 the same, good for one change
 
   class "user" keys: group, session-owner, authenticate-user (default
   true) and timeout (seconds a successful authentication lasts for the
@@ -44,6 +46,24 @@
             <string>authenticate-admin</string>
             <key>comment</key>
             <string>Date &amp; Time.app: the time zone, the date and time, and network time (SetTimeZone, SetDate, SetNetworkTime). The clock's format needs no right.</string>
+        </dict>
+        <key>org.nextbsd.settings.users</key>
+        <dict>
+            <key>class</key>
+            <string>rule</string>
+            <key>rule</key>
+            <string>authenticate-admin</string>
+            <key>comment</key>
+            <string>Users &amp; Login.app: adding and deleting accounts, passwords, administrators, automatic login and the login window's options (CreateUser, DeleteUser, SetPassword, SetAdmin, SetAutoLogin, SetLoginWindowOptions).</string>
+        </dict>
+        <key>org.nextbsd.settings.users.own-password</key>
+        <dict>
+            <key>class</key>
+            <string>rule</string>
+            <key>rule</key>
+            <string>authenticate-session-owner-once</string>
+            <key>comment</key>
+            <string>Users &amp; Login.app: the console user changing their own password (SetPassword), with their old one. Good for one change.</string>
         </dict>
         <key>org.nextbsd.settings.printers</key>
         <dict>
@@ -93,6 +113,15 @@
             <true/>
             <key>timeout</key>
             <integer>300</integer>
+        </dict>
+        <key>authenticate-session-owner-once</key>
+        <dict>
+            <key>class</key>
+            <string>user</string>
+            <key>session-owner</key>
+            <true/>
+            <key>timeout</key>
+            <integer>0</integer>
         </dict>
     </dict>
 </dict>

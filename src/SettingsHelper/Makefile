@@ -20,7 +20,7 @@
 PROG=		SettingsHelper
 MAN=		SettingsHelper.8
 SRCS=		SettingsHelper.c sh_session.c sh_auth.c sh_rights.c sh_pm.c
-SRCS+=		sh_time.c sh_cups.c
+SRCS+=		sh_time.c sh_users.c sh_login.c sh_cups.c
 SRCS+=		sh_mig.c
 BINDIR=		/usr/libexec
 
@@ -38,6 +38,16 @@ CFLAGS+=			-I${MIGOUT}
 CFLAGS+=			-I${.CURDIR}	# the stubs #include "settingshelper_types.h"
 CFLAGS.settingshelperServer.c+=	-w
 CFLAGS+=			-Wno-macro-redefined
+
+# The Users & Login operations write the local directory through libds
+# and follow the account tools' rules in acct.c, compiled in as adduser
+# and rmuser compile them: libds is internal, with nothing installed to
+# link against.
+LIBDSDIR=	${.CURDIR}/../libds
+ACCTDIR=	${.CURDIR}/../accounts/common
+.PATH:		${LIBDSDIR} ${ACCTDIR}
+SRCS+=		libds.c acct.c
+CFLAGS+=	-I${LIBDSDIR} -I${ACCTDIR}
 
 # WARNS=0: sh_rights.c and sh_pm.c pull the CoreFoundation and IOKit
 # header trees, whose warnings -Wsystem-headers -Werror would make fatal
@@ -70,8 +80,10 @@ LDFLAGS+=	-Wl,--allow-shlib-undefined
 #   -lsystem_kernel            mach_msg
 #   -lsystem_dispatch, blocks  pulled in by libIOKit and CF
 #   -lnotify                   com.apple.system.timezone and clock_set
+#   util, crypt                acct.c: login.conf's passwd_format, and
+#                              crypt(3) to hash a new password
 LDADD+=		-lIOKit -lCoreFoundation -llaunch -lsystem_kernel -lnotify
 LDADD+=		-lsystem_dispatch -l:libsystem_blocks.so
-LIBADD+=	pam
+LIBADD+=	pam util crypt
 
 .include <bsd.prog.mk>
