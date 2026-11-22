@@ -110,7 +110,8 @@ void probe(AppState& st) {
     }
     // MEDIA/DMI records from probe-disks.sh are ignored: the booted medium is
     // flagged per-disk via is_media, and the installer no longer suggests a
-    // hostname, so neither is needed here.
+    // hostname, so neither is needed here. Nor are SYSTEM and NEED, or
+    // DISK's sixth field (bytes): Installer.app's.
   }
 }
 
@@ -177,6 +178,8 @@ bool run_install(AppState& st,
     } else if (fld.size() >= 2 && fld[0] == "STATUS") {
       status = fld[1];
       progress(pct, status);
+    } else if (fld.size() >= 2 && fld[0] == "PHASE") {
+      // prepare/copy/setup/finish, for Installer.app; STATUS says more.
     } else if (!line.empty() && line != "DONE") {
       // Anything else (2>&1 stderr from gpart/newfs/mount/cpdup/pw) — keep the
       // latest so a failure reports WHY, not just which stage it died in.

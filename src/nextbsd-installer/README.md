@@ -16,6 +16,27 @@ labeling the target UFS `NEXTBSD` (not the medium's `ROOTFS`). Root is found by
 never by an fstab line, so the install is disk-path agnostic (ada0/nvd0/vtbd0 all
 just work). No `/etc/fstab` is shipped (nextbsd-overlays#5).
 
+## Shared with Installer.app
+
+Installer.app (nextbsd/apps-installer) drives the same two scripts, through
+SettingsHelper's `InstallStart` (`src/SettingsHelper/sh_install.c`), which
+runs them as root without a shell:
+
+- `probe-disks.sh` also prints `SYSTEM` (`image` when running from the install
+  image, `installed` otherwise), `NEED` (the smallest usable disk, in bytes:
+  30 GB, or more for a copy of a fuller system) and each disk's size in bytes
+  (DISK's sixth field). It reads GEOM's configuration, so it works without
+  root. Memory disks are listed only while `/var/run/nextbsd-installer.test-disks`
+  exists (root creates it; it's gone after a reboot), for trying an install on
+  a file-backed `md` disk.
+- `do-install.sh -c` copies the running system instead of installing the
+  image: from a UFS snapshot of `/`, leaving out `/tmp`, `/var/tmp`, `/var/run`,
+  `/var/vm` and `/Volumes`' contents, and giving the copy its own root label
+  (`NEXTBSD-xxxx`), new SSH host keys at first boot and no host ID, random seed
+  or DHCP identity of this machine's. It doesn't add an NVRAM boot entry (nor
+  for an `md` disk, ever). `PHASE` lines (`prepare`, `copy`, `setup`,
+  `finish`) mark the stages, and `PROGRESS` climbs through the copy.
+
 ## Build & test locally (no hardware, no root)
 
 ```sh
