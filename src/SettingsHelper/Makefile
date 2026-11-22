@@ -21,7 +21,7 @@ PROG=		SettingsHelper
 MAN=		SettingsHelper.8
 SRCS=		SettingsHelper.c sh_session.c sh_auth.c sh_rights.c sh_pm.c
 SRCS+=		sh_time.c sh_users.c sh_login.c sh_cups.c sh_net.c
-SRCS+=		sh_locale.c sh_file.c sh_install.c
+SRCS+=		sh_locale.c sh_update.c sh_file.c sh_install.c
 SRCS+=		sh_mig.c
 BINDIR=		/usr/libexec
 
@@ -66,6 +66,13 @@ CFLAGS+=	-I${.CURDIR}/../launchd/freebsd-shims
 # <notify.h> (sh_time.c) includes os/base.h from the libnotify shims, as
 # bluetoothd's and ipconfigd's do.
 CFLAGS+=	-I${.CURDIR}/../Libnotify/freebsd-shims
+
+# make UPDATE_TEST=/dir: a test build whose update jobs use a throwaway
+# pkg database, cache and repository under /dir, and whose restart only
+# logs (sh_update.c). Never install it.
+.if defined(UPDATE_TEST) && !empty(UPDATE_TEST)
+CFLAGS.sh_update.c+=	-DSH_UPDATE_TEST=\"${UPDATE_TEST}\"
+.endif
 
 SYSROOT?=
 .if !empty(SYSROOT)

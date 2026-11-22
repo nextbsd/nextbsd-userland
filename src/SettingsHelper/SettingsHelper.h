@@ -165,6 +165,32 @@ int	sh_computer_name_set(const char *computer, const char *local);
 /* sh_locale.c: the system's language, login.conf's default class. */
 int	sh_locale_set(const char *locale);
 
+/* sh_update.c: Update.app's jobs, SH_UPDATE_JOB_*. */
+struct sh_update_status {
+	int		job;
+	int		state;
+	bool		pending;	/* pkg upgrade has something to do */
+	SHUpdateVersion	available;
+	int64_t		size;
+	int64_t		done;
+	int64_t		total;
+	SHUpdateText	line;
+	bool		changed;
+	int		restart;
+	SHUpdateVersion	restart_version;	/* the update installed */
+};
+
+int	sh_update_start(int job);
+int	sh_update_cancel(void);
+void	sh_update_status(struct sh_update_status *status);
+int	sh_update_restart(void);
+/* Collect a finished job; is one still running? */
+void	sh_update_reap(void);
+bool	sh_update_busy(void);
+/* A job runs, or this process installed an update that waits for its
+ * restart: don't exit idle. */
+bool	sh_update_live(void);
+
 /* sh_install.c: Installer.app's install, run in the background. */
 int	sh_install_start(const struct sh_caller *caller, const char *disk,
 	    int mode);

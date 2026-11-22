@@ -58,7 +58,7 @@ enum {
 	SH_ERR_EXISTS = 10,	/* an account or group of that name exists */
 	SH_ERR_LAST_ADMIN = 11,	/* it would leave no administrator */
 	SH_ERR_LOGGED_IN = 12,	/* the account is the console user's */
-	SH_ERR_BUSY = 13	/* a job (an install) is already running */
+	SH_ERR_BUSY = 13	/* another update job or install is running */
 };
 
 /*
@@ -190,6 +190,40 @@ typedef char	SHLocalHostName[SH_LOCAL_NAME_MAX + 1];
  */
 #define	SH_LOCALE_MAX		63
 typedef char	SHLocaleName[SH_LOCALE_MAX + 1];
+
+/*
+ * The Update operations (Update.app, nextbsd/nextbsd#661). A version is
+ * a package version ("27.0.0.181"); the text is a short status line.
+ * Both NUL-terminated.
+ */
+#define	SH_UPDATE_VERSION_MAX	63
+typedef char	SHUpdateVersion[SH_UPDATE_VERSION_MAX + 1];
+#define	SH_UPDATE_TEXT_MAX	127
+typedef char	SHUpdateText[SH_UPDATE_TEXT_MAX + 1];
+
+/* sh_update_status' job: the one running, or the last one. */
+enum {
+	SH_UPDATE_JOB_NONE = 0,
+	SH_UPDATE_JOB_CHECK = 1,
+	SH_UPDATE_JOB_DOWNLOAD = 2,
+	SH_UPDATE_JOB_INSTALL = 3
+};
+
+/* And how it went. */
+enum {
+	SH_UPDATE_IDLE = 0,		/* no job since the helper started */
+	SH_UPDATE_RUNNING = 1,
+	SH_UPDATE_DONE = 2,
+	SH_UPDATE_FAILED = 3,
+	SH_UPDATE_CANCELLED = 4
+};
+
+/* sh_update_status' restart: is an installed update waiting for one? */
+enum {
+	SH_UPDATE_RESTART_NONE = 0,
+	SH_UPDATE_RESTART_PENDING = 1,	/* installed since this boot */
+	SH_UPDATE_RESTART_DONE = 2	/* installed, and restarted since */
+};
 
 /*
  * Installer.app's operations. The target disk is a GEOM disk name
