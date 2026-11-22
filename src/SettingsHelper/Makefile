@@ -21,7 +21,7 @@ PROG=		SettingsHelper
 MAN=		SettingsHelper.8
 SRCS=		SettingsHelper.c sh_session.c sh_auth.c sh_rights.c sh_pm.c
 SRCS+=		sh_time.c sh_users.c sh_login.c sh_cups.c sh_net.c
-SRCS+=		sh_locale.c sh_update.c sh_file.c
+SRCS+=		sh_locale.c sh_update.c sh_file.c sh_install.c
 SRCS+=		sh_mig.c
 BINDIR=		/usr/libexec
 

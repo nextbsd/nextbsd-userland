@@ -15,6 +15,7 @@
     deny                         nobody (but root)
     is-admin                     the console user is in group admin
     authenticate-admin           an admin's name and password
+    authenticate-admin-once      the same, good for one change
     authenticate-session-owner   the console user's own password
     authenticate-session-owner-once
                                  the same, good for one change
@@ -23,7 +24,8 @@
   true) and timeout (seconds a successful authentication lasts for the
   session, default 300 as on macOS; 0 means one change).
 
-  Each settings app ticket adds the rights its operations use.
+  Each settings app ticket adds the rights its operations use;
+  org.nextbsd.installer is Installer.app's.
 -->
 <plist version="1.0">
 <dict>
@@ -110,6 +112,15 @@
             <key>comment</key>
             <string>Update.app: checking for a NextBSD update, downloading it into pkg's cache, and stopping those (UpdateCheck, UpdateDownload, UpdateCancel). Nothing is installed with it.</string>
         </dict>
+        <key>org.nextbsd.installer</key>
+        <dict>
+            <key>class</key>
+            <string>rule</string>
+            <key>rule</key>
+            <string>authenticate-admin-once</string>
+            <key>comment</key>
+            <string>Installer.app: erasing a disk and installing NextBSD on it, from the install image or as a copy of the running system (InstallStart). An administrator, asked every time; an administrator without a password is asked "Allow changes?". Following the install and restarting afterwards need nothing more.</string>
+        </dict>
     </dict>
     <key>rules</key>
     <dict>
@@ -140,6 +151,15 @@
             <string>admin</string>
             <key>timeout</key>
             <integer>300</integer>
+        </dict>
+        <key>authenticate-admin-once</key>
+        <dict>
+            <key>class</key>
+            <string>user</string>
+            <key>group</key>
+            <string>admin</string>
+            <key>timeout</key>
+            <integer>0</integer>
         </dict>
         <key>authenticate-session-owner</key>
         <dict>

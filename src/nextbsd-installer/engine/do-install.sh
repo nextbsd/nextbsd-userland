@@ -18,8 +18,19 @@
 #   * Clone with cpdup from the live / (union ISO or plain image alike), then
 #     SCRUB the volatile dirs — NextBSD has no rc.d cleanvar/cleartmp, so the
 #     installer must hand off a boot-clean /var and /tmp itself.
+#   * -c (COPY MODE, Installer.app on an installed system): the source is the
+#     running system itself, read from a UFS snapshot of / so the copy is
+#     consistent while the system keeps running. Temporary and per-boot files
+#     and swap are left out, accounts, apps and settings are kept, and the
+#     copy gets its own identity -- see steps 4 and 5.
 #
-# Usage: do-install.sh -d <disk> [-U]
+# Usage: do-install.sh -d <disk> [-U] [-c]
+#
+# Besides PROGRESS and STATUS (free text, for the text installer) the engine
+# prints PHASE<TAB>prepare|copy|setup|finish as it enters each stage, so a
+# front end can say what's happening in its own words without parsing STATUS.
+# PROGRESS climbs steadily through the copy, measured by what has reached the
+# target so far.
 #
 # The installer does NOT create a user or set a hostname: the installed system
 # boots with a passwordless root (from the base image) and hostnamed's
@@ -31,15 +42,38 @@ set -eu
 # dry run, a failure, or an interrupt. The installer inspects media it does
 # not own; it should leave the machine exactly as it found it.
 SRCBOOT=/tmp/nbi-srcboot
+# Copy mode's snapshot of /, the md(4) unit holding it and where it's mounted
+# (step 4), and the copy's progress reporter: all undone here too.
+SNAPFILE="" SNAPMD="" SNAPMNT=/tmp/nbi-snapshot MONITOR=""
 cleanup() {
 	umount "$SRCBOOT" 2>/dev/null || true
 	rmdir "$SRCBOOT" 2>/dev/null || true
+	[ -n "$MONITOR" ] && kill "$MONITOR" 2>/dev/null || true
+	if [ -n "$SNAPMD" ]; then
+		umount "$SNAPMNT" 2>/dev/null || true
+		mdconfig -d -u "$SNAPMD" 2>/dev/null || true
+	fi
+	rmdir "$SNAPMNT" 2>/dev/null || true
+	# A UFS snapshot left behind keeps its blocks forever.
+	[ -n "$SNAPFILE" ] && rm -f "$SNAPFILE" 2>/dev/null || true
+	# A run that stopped part way leaves the target mounted; a finished
+	# one has unmounted it already.
+	for m in "${EFIMNT:-}" "${BOOTMNT:-}" "${MNT:-}"; do
+		[ -n "$m" ] && umount "$m" 2>/dev/null || true
+	done
 }
-trap cleanup EXIT INT TERM
+# Stopped (INT, TERM): clean up and stop, rather than carry on where the
+# signal found the script. Installer.app's helper signals the engine's
+# whole process group, cpdup included.
+trap cleanup EXIT
+trap 'exit 1' INT TERM
 
-DISK="" UPGRADE=0
+DISK="" UPGRADE=0 COPY=0
 MNT=/tmp/nbi-mnt
-SRC=/
+# What gets installed: the running system's root. NEXTBSD_SOURCE names another
+# (a release image's root, mounted read-only) to try an install from the image
+# on a machine that isn't running it; copy mode ignores it.
+SRC=${NEXTBSD_SOURCE:-/}
 # Root label for the INSTALLED system — deliberately NOT "ROOTFS" (the live
 # install medium's label). A shared label makes a leftover/failed install a
 # boot-hijacker: two ufs/ROOTFS providers and the kernel mounts the wrong one.
@@ -149,14 +183,25 @@ find_boot_source() {
 }
 BOOTSRC=""
 
-while getopts "d:U" o; do
+while getopts "d:Uc" o; do
 	case "$o" in
 		d) DISK=$OPTARG ;;
 		U) UPGRADE=1 ;;
-		*) echo "usage: do-install.sh -d disk [-U]" >&2; exit 2 ;;
+		c) COPY=1 ;;
+		*) echo "usage: do-install.sh -d disk [-U] [-c]" >&2; exit 2 ;;
 	esac
 done
 [ -n "$DISK" ] || { echo "do-install.sh: missing -d <disk>" >&2; exit 2; }
+[ "$COPY" = 1 ] && [ "$UPGRADE" = 1 ] && { echo "do-install.sh: -c and -U don't go together" >&2; exit 2; }
+
+# A copy is a second NextBSD that may well stay attached to this machine, so
+# it can't share the running system's root label (two ufs/NEXTBSD providers,
+# and the kernel mounts whichever it finds first). It gets a label of its own,
+# which its loader.conf names (step 5b).
+if [ "$COPY" = 1 ]; then
+	LABEL="NEXTBSD-$(od -An -N2 -tx2 /dev/random | tr -d ' ')"
+	SRC=/
+fi
 
 # Detect AFTER $DISK is known: find_boot_source has to skip the install target,
 # and with $DISK empty it would happily inspect the very disk we are about to
@@ -174,6 +219,7 @@ esac
 
 progress() { printf 'PROGRESS\t%s\n' "$1"; }
 status()   { printf 'STATUS\t%s\n'   "$1"; }
+phase()    { printf 'PHASE\t%s\n'    "$1"; }
 run() {
 	if [ "${NEXTBSD_DRYRUN:-0}" = 1 ]; then echo "DRYRUN: $*"; else "$@"; fi
 }
@@ -199,6 +245,7 @@ umount_disk_partitions() {
 	done
 }
 
+phase prepare
 umount_disk_partitions
 
 # --- 1. Partition (skipped on upgrade — keep the existing layout) ------------
@@ -283,8 +330,86 @@ progress 16
 # Works the same on the union ISO and a plain image: cpdup reads / through the
 # VFS and (don't-cross-mounts) skips /dev and $MNT automatically. cpdup vendored
 # alongside this engine.
+phase copy
+EXCLUDE=""
+if [ "$COPY" = 1 ]; then
+	# Copy mode reads a snapshot of /, not / itself: a live system keeps
+	# writing, and a copy taken file by file while it does is a copy of no
+	# moment in particular. mksnap_ffs freezes the filesystem for an
+	# instant; the snapshot is mounted read-only through md(4), as
+	# mount(8) describes, and removed again by cleanup(). Should a
+	# snapshot not be possible (not UFS, no room), / is read live.
+	status "Taking a snapshot of the running system"
+	run mkdir -p /.snap
+	SNAPFILE="/.snap/nextbsd-installer.$$"
+	if run mksnap_ffs "$SNAPFILE"; then
+		if [ "${NEXTBSD_DRYRUN:-0}" = 1 ]; then
+			echo "DRYRUN: mdconfig -a -t vnode -o readonly -f $SNAPFILE; mount -o ro /dev/mdN $SNAPMNT"
+			SRC=$SNAPMNT
+		else
+			SNAPMD="$(mdconfig -a -t vnode -o readonly -f "$SNAPFILE")"
+			mkdir -p "$SNAPMNT"
+			mount -o ro "/dev/$SNAPMD" "$SNAPMNT"
+			SRC=$SNAPMNT
+		fi
+	else
+		status "No snapshot possible; copying the running system as it is"
+		SNAPFILE=""
+	fi
+
+	# Left out, by path in the source: what only means something while
+	# this system runs (temporary files, per-boot state, swap and the
+	# sleep image), the snapshot itself, and the mount points' contents
+	# (/Volumes; a snapshot holds none, the live fallback might). The
+	# directories themselves are copied, empty, with their modes. cpdup
+	# matches each path as it spells it, which from / starts "//".
+	EXCLUDE="$(mktemp /tmp/nbi-exclude.XXXXXX)"
+	S=${SRC%/}
+	for p in private/tmp private/var/tmp private/var/run private/var/vm \
+	    .snap Volumes; do
+		printf '%s/%s/*\n' "$S" "$p"
+		if [ -z "$S" ]; then printf '//%s/*\n' "$p"; fi
+	done > "$EXCLUDE"
+fi
+
+# Room for it all? Better to say so now than to stop at 90%.
+if [ "${NEXTBSD_DRYRUN:-0}" != 1 ]; then
+	src_k="$(df -k "$SRC" 2>/dev/null | awk 'NR==2{print $3}')"
+	if [ "$COPY" = 1 ]; then
+		# Less what's left out (see EXCLUDE).
+		S=${SRC%/}
+		skip_k="$(du -skx "$S/private/tmp" "$S/private/var/tmp" \
+		    "$S/private/var/vm" 2>/dev/null | awk '{s += $1} END {print s + 0}')"
+		src_k=$((src_k - skip_k))
+	fi
+	tgt_k="$(df -k "$MNT" 2>/dev/null | awk 'NR==2{print $4}')"
+	if [ "$COPY" = 1 ] && [ "$src_k" -gt "$tgt_k" ]; then
+		echo "do-install.sh: $DISK is too small: $src_k KB to copy, $tgt_k KB free" >&2
+		exit 1
+	fi
+
+	# Progress through the copy, by what has reached the target: from 16
+	# to 85 as the target's used space approaches the source's. In the
+	# background, killed once cpdup is done (or by cleanup()).
+	base_k="$(df -k "$MNT" 2>/dev/null | awk 'NR==2{print $3}')"
+	(
+		last=16
+		while sleep 2; do
+			now_k="$(df -k "$MNT" 2>/dev/null | awk 'NR==2{print $3}')"
+			p="$(awk -v s="$src_k" -v b="$base_k" -v n="$now_k" 'BEGIN{
+				p = s > 0 ? 16 + int(70 * (n - b) / s) : 16
+				if (p > 85) p = 85
+				print p }')"
+			if [ "$p" -gt "$last" ] 2>/dev/null; then progress "$p"; last=$p; fi
+		done
+	) &
+	MONITOR=$!
+fi
+
 status "Cloning base with cpdup"
-if [ "$UPGRADE" = 1 ]; then
+if [ "$COPY" = 1 ]; then
+	run cpdup -i0 -X "$EXCLUDE" "$SRC" "$MNT"
+elif [ "$UPGRADE" = 1 ]; then
 	# Upgrade: replace base, KEEP data. -o = don't delete extras in the
 	# preserved trees; we clone over the top but spare /etc /var /home /Users.
 	for keep in etc var home Users usr/local; do
@@ -294,13 +419,35 @@ if [ "$UPGRADE" = 1 ]; then
 else
 	run cpdup -i0 "$SRC" "$MNT"
 fi
+if [ -n "$MONITOR" ]; then kill "$MONITOR" 2>/dev/null || true; MONITOR=""; fi
+if [ -n "$EXCLUDE" ]; then rm -f "$EXCLUDE"; fi
 progress 86
+phase setup
 
 # --- 5. Boot-clean the volatile dirs (no rc.d cleanvar/cleartmp on NextBSD) --
 status "Scrubbing volatile state"
 for d in tmp var/run var/tmp var/log; do
 	[ -d "$MNT/$d" ] && run find "$MNT/$d" -mindepth 1 -delete 2>/dev/null || true
 done
+
+# --- 5, copy mode: a machine of its own ---------------------------------------
+# Copy mode keeps the accounts, apps and settings -- that's the point -- but
+# not what identifies this particular machine, which two systems must not
+# share: the SSH host keys (sshd-keygen-wrapper makes new ones at the copy's
+# first boot), a recorded host ID or machine ID, the random seed, and the DHCP
+# client's identifier and leases. The computer's name is a setting and stays.
+if [ "$COPY" = 1 ]; then
+	status "Giving the copy its own identity"
+	for f in "$MNT"/private/etc/ssh/ssh_host_*key "$MNT"/private/etc/ssh/ssh_host_*key.pub \
+	    "$MNT/private/etc/hostid" "$MNT/private/etc/machine-id" \
+	    "$MNT/private/var/db/hostid" "$MNT/boot/entropy" \
+	    "$MNT/private/var/db/dhcpclient/DUID_IA.plist"; do
+		if [ -e "$f" ]; then run rm -f "$f"; fi
+	done
+	for d in private/var/db/entropy private/var/db/dhcpclient/leases; do
+		[ -d "$MNT/$d" ] && run find "$MNT/$d" -mindepth 1 -delete 2>/dev/null || true
+	done
+fi
 progress 88
 
 # --- 5a. Swap lives in files, not a partition --------------------------------
@@ -334,10 +481,15 @@ run install -d -o root -g wheel -m 0755 "$MNT/private/var/vm"
 # chase the medium's label.
 status "Setting root label + boot config ($LABEL)"
 [ -f "$MNT/etc/fstab" ] && run sed -i '' -e "s#/dev/ufs/ROOTFS#/dev/ufs/$LABEL#g" "$MNT/etc/fstab"
+# A copied system's fstab, if it has one, names the running system's label.
+[ "$COPY" = 1 ] && [ -f "$MNT/etc/fstab" ] && run sed -i '' -e "s#/dev/ufs/NEXTBSD[^[:space:]]*#/dev/ufs/$LABEL#g" "$MNT/etc/fstab"
 # loader.conf only means something where there IS a loader. A Pi has none --
 # the firmware enters the kernel directly -- so step 6 puts the same
 # vfs.root.mountfrom on the cmdline.txt line instead.
 if [ "$PAYLOAD" = efi ]; then
+	# One root line: a copied loader.conf already has the running
+	# system's.
+	[ -f "$MNT/boot/loader.conf" ] && run sed -i '' -e '/^vfs\.root\.mountfrom=/d' "$MNT/boot/loader.conf"
 	run sh -c "echo 'vfs.root.mountfrom=\"ufs:/dev/ufs/$LABEL\"' >> '$MNT/boot/loader.conf'"
 fi
 progress 90
@@ -467,8 +619,12 @@ else
 	run mkdir -p "$EFIMNT/EFI/BOOT"
 	run cp "$MNT/boot/loader.efi" "$EFIMNT/EFI/BOOT/$EFIFILE"
 	# Best-effort named UEFI boot entry (non-fatal: the removable path above
-	# already boots if the firmware ignores or loses NVRAM entries).
-	if [ "${NEXTBSD_DRYRUN:-0}" != 1 ] && command -v efibootmgr >/dev/null 2>&1; then
+	# already boots if the firmware ignores or loses NVRAM entries). Not for
+	# a copy, which goes on a second disk: this machine should go on
+	# starting the system it runs now. And never for a test disk (md),
+	# which isn't a disk the firmware could start at all.
+	case "$DISK" in md*) NVRAM=0 ;; *) NVRAM=$((1 - COPY)) ;; esac
+	if [ "$NVRAM" = 1 ] && [ "${NEXTBSD_DRYRUN:-0}" != 1 ] && command -v efibootmgr >/dev/null 2>&1; then
 		efibootmgr 2>/dev/null \
 			| sed -n 's/^[[:space:]+-]*Boot\([0-9A-Fa-f]\{4\}\)\*\{0,1\}[[:space:]]\{1,\}NextBSD$/\1/p' \
 			| while read -r bootnum; do
@@ -490,6 +646,7 @@ fi
 progress 98
 
 # --- 8. Done ----------------------------------------------------------------
+phase finish
 status "Finalizing"
 run umount "$MNT" || true
 progress 100
