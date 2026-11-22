@@ -54,6 +54,9 @@ type sh_pm_values	= array[16] of int ctype: SHPMValues;
 type sh_zone		= array[128] of char ctype: SHZoneName;
 type sh_ntp_server	= array[256] of char ctype: SHNTPServer;
 type sh_full_name	= array[256] of char ctype: SHFullName;
+type sh_printer		= array[128] of char ctype: SHPrinterName;
+type sh_device_uri	= array[1024] of char ctype: SHDeviceURI;
+type sh_printer_text	= array[256] of char ctype: SHPrinterText;
 
 /*
  * 32000 sh_right_info — what `right` asks of this caller.
@@ -263,6 +266,30 @@ routine sh_set_login_window_options(
 	auth			: sh_auth_form;
 	show_name_fields	: boolean_t;
 	show_power_buttons	: boolean_t;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32013 sh_cups_admin — CUPSAdmin: add or remove a printer, a CUPS queue
+ * on the local cupsd (org.nextbsd.cupsd), with lpadmin(8) as root.
+ * Right: org.nextbsd.settings.printers.
+ *   SH_CUPS_ADD      a driverless (IPP Everywhere) queue named `printer`
+ *                    for `device_uri` (ipp, ipps or dnssd), described by
+ *                    `info` and `location`, enabled, accepting jobs and
+ *                    not shared
+ *   SH_CUPS_DELETE   the queue `printer`; the other arguments are empty
+ * The default printer isn't here: it's each user's own (lpoptions), and
+ * the app sets it without the helper.
+ */
+routine sh_cups_admin(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	op			: int;
+	printer			: sh_printer;
+	device_uri		: sh_device_uri;
+	info			: sh_printer_text;
+	location		: sh_printer_text;
 	out status		: int;
 	ServerAuditToken audit	: audit_token_t
 );

@@ -65,6 +65,15 @@
             <key>comment</key>
             <string>Users &amp; Login.app: the console user changing their own password (SetPassword), with their old one. Good for one change.</string>
         </dict>
+        <key>org.nextbsd.settings.printers</key>
+        <dict>
+            <key>class</key>
+            <string>rule</string>
+            <key>rule</key>
+            <string>is-admin</string>
+            <key>comment</key>
+            <string>Printers.app: adding and removing printers (CUPSAdmin). An administrator needs no password, as CUPS's own rule is the admin and _lpadmin groups. The default printer and its options are each user's own and need no right.</string>
+        </dict>
     </dict>
     <key>rules</key>
     <dict>

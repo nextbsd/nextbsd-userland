@@ -127,4 +127,8 @@ int	sh_login_set_auto_login(const char *user);
 int	sh_login_forget_user(const char *user);
 int	sh_login_set_options(bool show_name_fields, bool show_power_buttons);
 
+/* sh_cups.c: CUPSAdmin, a printer added (SH_CUPS_ADD) or removed. */
+int	sh_printer_admin(int op, const char *printer, const char *uri,
+	    const char *info, const char *location);
+
 #endif /* _SETTINGSHELPER_H */
