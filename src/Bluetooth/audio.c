@@ -21,6 +21,7 @@
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <sys/user.h>
+#include <fs/devfs/devfs.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -682,12 +683,60 @@ mixer_exited(void *ctx, struct child *c, int status)
 	dev_gc(d);
 }
 
+/*
+ * Hide the mixer's device nodes before it is stopped (nextbsd/nextbsd#667).
+ * While a cuse server exits, its devices stay in /dev until every client
+ * has closed them, and on a kernel without FreeBSD d83e42234f76 each open
+ * of one in that window leaks a reference the exiting server waits for
+ * forever: virtual_oss stays in "DE" and keeps /dev/dsp until a reboot.
+ * Apps retry /dev/dsp (GSSpeechServer, Sound.app), so the window gets
+ * hit. A hidden node fails the open in devfs, before cuse sees it; the
+ * mixer's next devices are new nodes and are not hidden.
+ */
+static void
+node_hide(int fd, const char *name)
+{
+	struct devfs_rule r;
+
+	(void)memset(&r, 0, sizeof(r));
+	r.dr_magic = DEVFS_MAGIC;
+	r.dr_icond = DRC_PATHPTRN;
+	(void)strlcpy(r.dr_pathptrn, name, sizeof(r.dr_pathptrn));
+	r.dr_iacts = DRA_BACTS;
+	r.dr_bacts = DRB_HIDE;
+	if (ioctl(fd, DEVFSIO_RAPPLY, &r) != 0)
+		xlog("can't hide /dev/%s: %s", name, strerror(errno));
+}
+
+static void
+mixer_hide(const struct adev *d)
+{
+	char name[40];
+	int fd;
+
+	if (d->slot < 0)
+		return;
+	fd = open("/dev", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (fd < 0) {
+		xlog("can't open /dev: %s", strerror(errno));
+		return;
+	}
+	(void)snprintf(name, sizeof(name), "dsp.bt%d", d->slot);
+	node_hide(fd, name);
+	(void)snprintf(name, sizeof(name), "dsp.bt%d.ctl", d->slot);
+	node_hide(fd, name);
+	if (d->default_out)
+		node_hide(fd, "dsp");
+	(void)close(fd);
+}
+
 static void
 mixer_stop(struct adev *d, const char *why)
 {
 	if (d->mixer == NULL)
 		return;
 	xlog("%s: stopping the mixer: %s", d->addr, why);
+	mixer_hide(d);
 	child_stop(d->mixer, AUDIO_STOP_GRACE_MS);
 }
 
@@ -1112,8 +1161,10 @@ shutdown_q(void *arg)
 	(void)arg;
 	g_shutdown = true;
 	for (i = 0; i < DEV_MAX; i++) {
-		if (g_devs[i].used && g_devs[i].mixer != NULL)
+		if (g_devs[i].used && g_devs[i].mixer != NULL) {
+			mixer_hide(&g_devs[i]);
 			(void)kill(child_pid(g_devs[i].mixer), SIGTERM);
+		}
 		if (g_devs[i].used)
 			avrcp_disconnect(&g_devs[i].peer);
 	}
