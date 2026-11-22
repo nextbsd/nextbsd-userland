@@ -65,6 +65,13 @@ or
 and can replace the server and pool lines of
 .Pa /etc/ntp.conf
 .Pq right Ql org.nextbsd.settings.datetime .
+.It Cm CUPSAdmin
+adds a driverless (IPP Everywhere) printer to the local
+.Xr cupsd 8 ,
+or removes one, with
+.Xr lpadmin 8
+.Pq right Ql org.nextbsd.settings.printers .
+It needs the optional printing package.
 .El
 .Ss Rights
 The rules have the shape of Darwin's authorization database.
@@ -112,7 +119,9 @@ its log: who was allowed what, and refusals
 .Sh SEE ALSO
 .Xr pmset 1 ,
 .Xr settimeofday 2 ,
+.Xr cupsd 8 ,
 .Xr launchd 8 ,
+.Xr lpadmin 8 ,
 .Xr ntpd 8 ,
 .Xr pam 8 ,
 .Xr tzsetup 8

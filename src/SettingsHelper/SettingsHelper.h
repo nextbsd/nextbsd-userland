@@ -114,4 +114,8 @@ int	sh_tz_set(const char *zone);
 int	sh_date_set(int64_t seconds, int32_t microseconds);
 int	sh_ntp_set(bool on, const char *server);
 
+/* sh_cups.c: CUPSAdmin, a printer added (SH_CUPS_ADD) or removed. */
+int	sh_printer_admin(int op, const char *printer, const char *uri,
+	    const char *info, const char *location);
+
 #endif /* _SETTINGSHELPER_H */

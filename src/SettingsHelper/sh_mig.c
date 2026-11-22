@@ -16,6 +16,7 @@
 
 #define	RIGHT_ENERGY	"org.nextbsd.settings.energy"
 #define	RIGHT_DATETIME	"org.nextbsd.settings.datetime"
+#define	RIGHT_PRINTERS	"org.nextbsd.settings.printers"
 
 /* Darwin's audit token layout, as audit_token_to_au32 reads it. */
 #define	CALLER(tok, c)							\
@@ -194,5 +195,35 @@ _sh_set_network_time(mach_port_t server, SHAuthForm auth, boolean_t enabled,
 	*status = sh_ntp_set(enabled != FALSE, ntp_server);
 	sh_log("pid %d: SetNetworkTime %s \"%s\": %d", (int)caller.pid,
 	    enabled ? "on" : "off", ntp_server, *status);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_sh_cups_admin(mach_port_t server, SHAuthForm auth, int op,
+    SHPrinterName printer_in, SHDeviceURI uri_in, SHPrinterText info_in,
+    SHPrinterText location_in, int *status, audit_token_t audit)
+{
+	struct sh_caller caller;
+	SHPrinterName printer;
+	SHDeviceURI uri;
+	SHPrinterText info, location;
+
+	(void)server;
+	(void)auth;
+	WIRE_STR(printer, printer_in);
+	WIRE_STR(uri, uri_in);
+	WIRE_STR(info, info_in);
+	WIRE_STR(location, location_in);
+	CALLER(audit, &caller);
+	*status = sh_rights_check(&caller, RIGHT_PRINTERS, true, NULL);
+	if (*status != SH_OK) {
+		sh_log("pid %d: CUPSAdmin refused (%d)", (int)caller.pid,
+		    *status);
+		return (KERN_SUCCESS);
+	}
+	*status = sh_printer_admin(op, printer, uri, info, location);
+	sh_log("pid %d: CUPSAdmin %s \"%s\" %s: %d", (int)caller.pid,
+	    op == SH_CUPS_ADD ? "add" : op == SH_CUPS_DELETE ? "delete" : "?",
+	    printer, op == SH_CUPS_ADD ? uri : "", *status);
 	return (KERN_SUCCESS);
 }
