@@ -114,6 +114,23 @@ int	sh_tz_set(const char *zone);
 int	sh_date_set(int64_t seconds, int32_t microseconds);
 int	sh_ntp_set(bool on, const char *server);
 
+/* sh_users.c: accounts in the local directory (libds). */
+int	sh_user_create(const char *name, const char *full_name,
+	    const char *password, bool admin);
+int	sh_user_delete(const char *name, bool keep_home);
+int	sh_user_set_password(const char *name, const char *password);
+int	sh_user_set_admin(const char *name, bool admin);
+bool	sh_user_is_passwordless(const char *name);
+
+/* sh_login.c: the login window's settings. */
+int	sh_login_set_auto_login(const char *user);
+int	sh_login_forget_user(const char *user);
+int	sh_login_set_options(bool show_name_fields, bool show_power_buttons);
+
+/* sh_cups.c: CUPSAdmin, a printer added (SH_CUPS_ADD) or removed. */
+int	sh_printer_admin(int op, const char *printer, const char *uri,
+	    const char *info, const char *location);
+
 /* sh_net.c: a network service's settings, and the computer's name. */
 struct sh_net_service {
 	SHNetServiceID	service_id;

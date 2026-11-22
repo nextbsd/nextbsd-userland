@@ -1034,7 +1034,9 @@ echo "==> pmset built"
 # pmset because SetPMPreferences calls libIOKit's IOPMSetPMPreferences, and
 # after libnotify, which SetTimeZone and SetDate post through, and after
 # libSystemConfiguration, whose SCPreferences CommitNetworkPreferences and
-# SetComputerName write.
+# SetComputerName write. The account operations compile in libds.c and
+# accounts/common/acct.c, as adduser does, so nothing of libds' needs
+# building first.
 # launchd starts it on demand (org.nextbsd.SettingsHelper.plist). The
 # apps' client stubs are generated in apps-settings, not here.
 comp "SettingsHelper"
