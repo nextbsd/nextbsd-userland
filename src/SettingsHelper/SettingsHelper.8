@@ -34,7 +34,7 @@ answers only root and processes in the console user's session, as
 records it in
 .Pa /var/run/loginwindow .
 .Ss Operations
-.Bl -tag -width "SetLoginWindowOptions"
+.Bl -tag -width "CommitNetworkPreferences"
 .It Cm SetPMPreferences
 one power source's Energy Saver settings
 .Pq right Ql org.nextbsd.settings.energy .
@@ -106,6 +106,20 @@ or removes one, with
 .Xr lpadmin 8
 .Pq right Ql org.nextbsd.settings.printers .
 It needs the optional printing package.
+.It Cm CommitNetworkPreferences
+sets one network service's IPv4, IPv6 and DNS settings in
+.Pa preferences.plist
+through SCPreferences, then commits and applies them, so that
+.Xr ipconfigd 8
+configures the service again
+.Pq right Ql org.nextbsd.settings.network .
+.It Cm SetComputerName
+sets the ComputerName and LocalHostName, as
+.Ql scutil --set
+does;
+.Xr hostnamed 8
+follows
+.Pq right Ql org.nextbsd.settings.network .
 .El
 .Pp
 The account operations refuse on a machine joined to a directory server,
@@ -166,6 +180,9 @@ the time server, as SetNetworkTime writes it
 the local accounts, as the account operations write them
 .It Pa /Local/Library/Preferences/org.nextbsd.loginwindow.plist
 the login settings, as SetAutoLogin and SetLoginWindowOptions write them
+.It Pa /Local/Library/Preferences/SystemConfiguration/preferences.plist
+the network services and the computer's name, as CommitNetworkPreferences
+and SetComputerName write them
 .It Pa /var/log/SettingsHelper.log
 its log: who was allowed what, and refusals
 .El
@@ -176,11 +193,14 @@ its log: who was allowed what, and refusals
 .Xr adduser 8 ,
 .Xr createhomedir 8 ,
 .Xr cupsd 8 ,
+.Xr hostnamed 8 ,
+.Xr ipconfigd 8 ,
 .Xr launchd 8 ,
 .Xr lpadmin 8 ,
 .Xr ntpd 8 ,
 .Xr pam 8 ,
 .Xr rmuser 8 ,
+.Xr scutil 8 ,
 .Xr tzsetup 8
 .Sh HISTORY
 .Nm

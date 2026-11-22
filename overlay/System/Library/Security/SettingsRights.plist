@@ -74,6 +74,15 @@
             <key>comment</key>
             <string>Printers.app: adding and removing printers (CUPSAdmin). An administrator needs no password, as CUPS's own rule is the admin and _lpadmin groups. The default printer and its options are each user's own and need no right.</string>
         </dict>
+        <key>org.nextbsd.settings.network</key>
+        <dict>
+            <key>class</key>
+            <string>rule</string>
+            <key>rule</key>
+            <string>authenticate-admin</string>
+            <key>comment</key>
+            <string>Network.app: a service's TCP/IP and DNS settings, and the computer's name (CommitNetworkPreferences, SetComputerName). Joining a Wi-Fi network needs no right: wland lets any local user.</string>
+        </dict>
     </dict>
     <key>rules</key>
     <dict>

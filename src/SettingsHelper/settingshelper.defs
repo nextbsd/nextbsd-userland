@@ -57,6 +57,11 @@ type sh_full_name	= array[256] of char ctype: SHFullName;
 type sh_printer		= array[128] of char ctype: SHPrinterName;
 type sh_device_uri	= array[1024] of char ctype: SHDeviceURI;
 type sh_printer_text	= array[256] of char ctype: SHPrinterText;
+type sh_net_service	= array[64] of char ctype: SHNetServiceID;
+type sh_net_address	= array[64] of char ctype: SHNetAddress;
+type sh_net_list	= array[1024] of char ctype: SHNetList;
+type sh_computer_name	= array[256] of char ctype: SHComputerName;
+type sh_local_name	= array[64] of char ctype: SHLocalHostName;
 
 /*
  * 32000 sh_right_info — what `right` asks of this caller.
@@ -290,6 +295,61 @@ routine sh_cups_admin(
 	device_uri		: sh_device_uri;
 	info			: sh_printer_text;
 	location		: sh_printer_text;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32014 sh_commit_network_preferences — one network service's TCP/IP and
+ * DNS settings, written to SCPreferences (the service's IPv4, IPv6 and
+ * DNS entities), committed and applied as root, so that
+ * PreferencesMonitor flattens them into Setup: and ipconfigd configures
+ * the service again. Right: org.nextbsd.settings.network.
+ *
+ * Not a property list but the settings themselves, so the helper never
+ * writes anything but these keys of an existing service:
+ *   service_id       the service's ID in SCPreferences (a UUID)
+ *   ipv4_method      an SH_NET_V4_*; the address, mask and router are
+ *                    used by MANUAL (address and mask required) and the
+ *                    address by DHCP_MANUAL (INFORM); else empty
+ *   ipv6_method      an SH_NET_V6_*; the address (not link-local),
+ *                    prefix length and router are used by MANUAL
+ *   dns_servers      addresses, one per line (SH_NET_LIST_ENTRIES at
+ *                    most); empty: those DHCP gives
+ *   search_domains   domain names, one per line; empty: DHCP's
+ */
+routine sh_commit_network_preferences(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	service_id		: sh_net_service;
+	ipv4_method		: int;
+	ipv4_address		: sh_net_address;
+	ipv4_mask		: sh_net_address;
+	ipv4_router		: sh_net_address;
+	ipv6_method		: int;
+	ipv6_address		: sh_net_address;
+	ipv6_prefix		: int;
+	ipv6_router		: sh_net_address;
+	dns_servers		: sh_net_list;
+	search_domains		: sh_net_list;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32015 sh_set_computer_name — the computer's name, as scutil --set
+ * ComputerName and LocalHostName set them (SCPreferencesSetComputerName
+ * and SCPreferencesSetLocalHostName), committed and applied; hostnamed
+ * follows. Right: org.nextbsd.settings.network.
+ *   computer_name     what people see, UTF-8, no control characters
+ *   local_host_name   the Bonjour name before ".local": letters, digits
+ *                     and hyphens, at most 63
+ */
+routine sh_set_computer_name(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	computer_name		: sh_computer_name;
+	local_host_name		: sh_local_name;
 	out status		: int;
 	ServerAuditToken audit	: audit_token_t
 );

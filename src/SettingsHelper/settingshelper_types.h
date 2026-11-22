@@ -142,4 +142,45 @@ typedef char	SHDeviceURI[SH_DEVICE_URI_MAX + 1];
 #define	SH_PRINTER_TEXT_MAX	255
 typedef char	SHPrinterText[SH_PRINTER_TEXT_MAX + 1];
 
+/*
+ * sh_commit_network_preferences: a service's ID, an IPv4 or IPv6 address
+ * as text, and a list of addresses or domain names, one per line, each
+ * NUL-terminated.
+ */
+#define	SH_NET_SERVICE_MAX	63
+typedef char	SHNetServiceID[SH_NET_SERVICE_MAX + 1];
+
+#define	SH_NET_ADDRESS_MAX	63
+typedef char	SHNetAddress[SH_NET_ADDRESS_MAX + 1];
+
+#define	SH_NET_LIST_MAX		1023
+#define	SH_NET_LIST_ENTRIES	8
+typedef char	SHNetList[SH_NET_LIST_MAX + 1];
+
+/* How a service gets its IPv4 address: Darwin's ConfigMethods. */
+enum {
+	SH_NET_V4_DHCP = 0,		/* "DHCP" */
+	SH_NET_V4_DHCP_MANUAL = 1,	/* "INFORM": DHCP with a manual address */
+	SH_NET_V4_MANUAL = 2,		/* "Manual" */
+	SH_NET_V4_OFF = 3		/* the IPv4 entity inactive */
+};
+
+/* And its IPv6 address. */
+enum {
+	SH_NET_V6_AUTOMATIC = 0,	/* "Automatic" */
+	SH_NET_V6_MANUAL = 1,		/* "Manual" */
+	SH_NET_V6_LINK_LOCAL = 2,	/* "LinkLocal" */
+	SH_NET_V6_OFF = 3		/* the IPv6 entity inactive */
+};
+
+/*
+ * sh_set_computer_name: the ComputerName (UTF-8) and the LocalHostName
+ * (a DNS label), NUL-terminated.
+ */
+#define	SH_COMPUTER_NAME_MAX	255
+typedef char	SHComputerName[SH_COMPUTER_NAME_MAX + 1];
+
+#define	SH_LOCAL_NAME_MAX	63
+typedef char	SHLocalHostName[SH_LOCAL_NAME_MAX + 1];
+
 #endif /* _SETTINGSHELPER_TYPES_H */
