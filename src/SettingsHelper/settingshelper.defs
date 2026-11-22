@@ -33,6 +33,8 @@
  * CommitNetworkPreferences, SetComputerName, SetSoundOutput, CreateUser,
  * DeleteUser, SetPassword, SetAdmin, SetAutoLogin, SetLoginWindowOptions,
  * SetWindowServerSystemSettings, CUPSAdmin. Each one's app ticket adds it.
+ * Update.app's operations (32017-32022) start jobs that outlast the
+ * call; see their section at the end.
  *
  * Subsystem base 32000: configd and ipconfigd use 20000, wland 30000,
  * bluetoothd 31000.
@@ -63,6 +65,8 @@ type sh_net_list	= array[1024] of char ctype: SHNetList;
 type sh_computer_name	= array[256] of char ctype: SHComputerName;
 type sh_local_name	= array[64] of char ctype: SHLocalHostName;
 type sh_locale		= array[64] of char ctype: SHLocaleName;
+type sh_update_version	= array[64] of char ctype: SHUpdateVersion;
+type sh_update_text	= array[128] of char ctype: SHUpdateText;
 
 /*
  * 32000 sh_right_info — what `right` asks of this caller.
@@ -366,6 +370,118 @@ routine sh_set_system_locale(
 	server			: mach_port_t;
 	auth			: sh_auth_form;
 	locale			: sh_locale;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * The Update operations (Update.app, nextbsd/nextbsd#661): NextBSD
+ * updated as a whole with plain pkg update and pkg upgrade, which name
+ * no package: there is an update when pkg upgrade has something to do.
+ * None takes anything but the authorization: every pkg argument is the
+ * helper's own.
+ *
+ * Checking, downloading and installing take minutes, so each starts a
+ * job and returns at once (SH_ERR_BUSY while another runs); the app
+ * follows it with sh_update_status. One job runs at a time.
+ *
+ * Rights: org.nextbsd.settings.update (authenticate-admin) to install,
+ * org.nextbsd.settings.update.check (allow) to check, download and
+ * cancel. Status and the restart need only the console session: the
+ * install may replace SettingsRights.plist, and its approval covers the
+ * restart that finishes it.
+ */
+
+/*
+ * 32017 sh_update_status — the running job, or the last one.
+ *   job, state     an SH_UPDATE_JOB_* and an SH_UPDATE_* value
+ *   pending        a check found an update (pkg upgrade -n has
+ *                  something to do)
+ *   available      its version, for the title, from the repository's
+ *                  meta-package (NextBSD-desktop, NextBSD-server or
+ *                  NextBSD-everything); "" if none is found
+ *   size           a check's or download's bytes still to download
+ *   done, total    the job's progress: bytes while downloading, a
+ *                  thousand a package while installing
+ *   line           what the job is doing, for the progress bar
+ *   changed        a failed install had begun replacing packages
+ *   restart        an SH_UPDATE_RESTART_* value
+ *   restart_version  the version that update installed ("" if not
+ *                  known)
+ */
+routine sh_update_status(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	out job			: int;
+	out state		: int;
+	out pending		: boolean_t;
+	out available		: sh_update_version;
+	out size		: int64_t;
+	out done		: int64_t;
+	out total		: int64_t;
+	out line		: sh_update_text;
+	out changed		: boolean_t;
+	out restart		: int;
+	out restart_version	: sh_update_version;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32018 sh_update_check — refresh the catalogue (pkg update), then ask
+ * pkg upgrade -n whether there is anything to do and how much to
+ * download. Right: org.nextbsd.settings.update.check.
+ */
+routine sh_update_check(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32019 sh_update_download — fetch the update into pkg's cache (pkg
+ * upgrade -F), from the catalogue the check read. Nothing is installed.
+ * Right: org.nextbsd.settings.update.check.
+ */
+routine sh_update_download(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32020 sh_update_install — install the update over the running system
+ * (pkg upgrade), from the cache. Right: org.nextbsd.settings.update.
+ */
+routine sh_update_install(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32021 sh_update_cancel — stop a check or a download. An install can't
+ * be stopped. Right: org.nextbsd.settings.update.check.
+ */
+routine sh_update_cancel(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32022 sh_update_restart — restart the computer (shutdown -r now), only
+ * while an installed update waits for it (sh_update_status' restart is
+ * SH_UPDATE_RESTART_PENDING). No right: the install's approval covers
+ * it.
+ */
+routine sh_update_restart(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
 	out status		: int;
 	ServerAuditToken audit	: audit_token_t
 );

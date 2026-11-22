@@ -21,6 +21,8 @@
 #define	RIGHT_PRINTERS	"org.nextbsd.settings.printers"
 #define	RIGHT_NETWORK	"org.nextbsd.settings.network"
 #define	RIGHT_LOCALE	"org.nextbsd.settings.locale"
+#define	RIGHT_UPDATE	"org.nextbsd.settings.update"
+#define	RIGHT_UPDATE_CHECK "org.nextbsd.settings.update.check"
 
 /* Darwin's audit token layout, as audit_token_to_au32 reads it. */
 #define	CALLER(tok, c)							\
@@ -471,5 +473,141 @@ _sh_set_system_locale(mach_port_t server, SHAuthForm auth,
 	*status = sh_locale_set(locale);
 	sh_log("pid %d: SetSystemLocale \"%s\": %d", (int)caller.pid, locale,
 	    *status);
+	return (KERN_SUCCESS);
+}
+
+/* The Update operations' common start: may this caller use `right`? */
+static bool
+update_allowed(audit_token_t audit, const char *right, const char *what,
+    struct sh_caller *caller, int *status)
+{
+	CALLER(audit, caller);
+	*status = sh_rights_check(caller, right, true, NULL);
+	if (*status != SH_OK) {
+		sh_log("pid %d: %s refused (%d)", (int)caller->pid, what,
+		    *status);
+		return (false);
+	}
+	return (true);
+}
+
+kern_return_t
+_sh_update_status(mach_port_t server, SHAuthForm auth, int *job,
+    int *state, boolean_t *pending, SHUpdateVersion available,
+    int64_t *size, int64_t *done, int64_t *total, SHUpdateText line,
+    boolean_t *changed, int *restart, SHUpdateVersion restart_version,
+    int *status, audit_token_t audit)
+{
+	struct sh_caller caller;
+	struct sh_update_status st;
+
+	(void)server;
+	(void)auth;
+	memset(&st, 0, sizeof(st));
+	/* Only reading: the console session is enough, and no rights file
+	 * an update may have replaced is consulted. */
+	CALLER(audit, &caller);
+	*status = caller.root || caller.in_console ? SH_OK : SH_ERR_NOT_CONSOLE;
+	if (*status == SH_OK)
+		sh_update_status(&st);
+	*job = st.job;
+	*state = st.state;
+	*pending = st.pending ? TRUE : FALSE;
+	(void)memcpy(available, st.available, sizeof(SHUpdateVersion));
+	*size = st.size;
+	*done = st.done;
+	*total = st.total;
+	(void)memcpy(line, st.line, sizeof(SHUpdateText));
+	*changed = st.changed ? TRUE : FALSE;
+	*restart = st.restart;
+	(void)memcpy(restart_version, st.restart_version,
+	    sizeof(SHUpdateVersion));
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_sh_update_check(mach_port_t server, SHAuthForm auth, int *status,
+    audit_token_t audit)
+{
+	struct sh_caller caller;
+
+	(void)server;
+	(void)auth;
+	if (!update_allowed(audit, RIGHT_UPDATE_CHECK, "UpdateCheck", &caller,
+	    status))
+		return (KERN_SUCCESS);
+	*status = sh_update_start(SH_UPDATE_JOB_CHECK);
+	sh_log("pid %d: UpdateCheck: %d", (int)caller.pid, *status);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_sh_update_download(mach_port_t server, SHAuthForm auth, int *status,
+    audit_token_t audit)
+{
+	struct sh_caller caller;
+
+	(void)server;
+	(void)auth;
+	if (!update_allowed(audit, RIGHT_UPDATE_CHECK, "UpdateDownload",
+	    &caller, status))
+		return (KERN_SUCCESS);
+	*status = sh_update_start(SH_UPDATE_JOB_DOWNLOAD);
+	sh_log("pid %d: UpdateDownload: %d", (int)caller.pid, *status);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_sh_update_install(mach_port_t server, SHAuthForm auth, int *status,
+    audit_token_t audit)
+{
+	struct sh_caller caller;
+
+	(void)server;
+	(void)auth;
+	if (!update_allowed(audit, RIGHT_UPDATE, "UpdateInstall", &caller,
+	    status))
+		return (KERN_SUCCESS);
+	*status = sh_update_start(SH_UPDATE_JOB_INSTALL);
+	sh_log("pid %d: UpdateInstall: %d", (int)caller.pid, *status);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_sh_update_cancel(mach_port_t server, SHAuthForm auth, int *status,
+    audit_token_t audit)
+{
+	struct sh_caller caller;
+
+	(void)server;
+	(void)auth;
+	if (!update_allowed(audit, RIGHT_UPDATE_CHECK, "UpdateCancel", &caller,
+	    status))
+		return (KERN_SUCCESS);
+	*status = sh_update_cancel();
+	sh_log("pid %d: UpdateCancel: %d", (int)caller.pid, *status);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_sh_update_restart(mach_port_t server, SHAuthForm auth, int *status,
+    audit_token_t audit)
+{
+	struct sh_caller caller;
+
+	(void)server;
+	(void)auth;
+	/* The administrator who approved the install approved its restart:
+	 * no rights check, so a SettingsRights.plist the install replaced
+	 * can't stop it. The caller must still be at the screen. */
+	CALLER(audit, &caller);
+	if (!caller.root && !caller.in_console) {
+		*status = SH_ERR_NOT_CONSOLE;
+		sh_log("pid %d: UpdateRestart refused (%d)", (int)caller.pid,
+		    *status);
+		return (KERN_SUCCESS);
+	}
+	*status = sh_update_restart();
+	sh_log("pid %d: UpdateRestart: %d", (int)caller.pid, *status);
 	return (KERN_SUCCESS);
 }

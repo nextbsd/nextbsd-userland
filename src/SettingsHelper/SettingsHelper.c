@@ -9,7 +9,9 @@
  * up org.nextbsd.SettingsHelper (org.nextbsd.SettingsHelper.plist has
  * MachServices and no RunAtLoad). It checks in, answers settingshelper.defs
  * messages one at a time, and exits once it has been idle for IDLE_SECONDS
- * and holds no live credential, so an unlock lasts its full timeout.
+ * and holds no live credential, so an unlock lasts its full timeout,
+ * and no update job is running or installed update waiting for its
+ * restart (sh_update.c).
  * launchd keeps the service port meanwhile and starts it again at the
  * next message.
  *
@@ -113,7 +115,8 @@ main(void)
 		mr = mach_msg(&req.hdr, MACH_RCV_MSG | MACH_RCV_TIMEOUT |
 		    RCV_TRAILER, 0, sizeof(req), sp, 1000, MACH_PORT_NULL);
 		if (mr == MACH_RCV_TIMED_OUT) {
-			if (sh_now() - last >= IDLE_SECONDS && !sh_rights_live())
+			if (sh_now() - last >= IDLE_SECONDS &&
+			    !sh_rights_live() && !sh_update_live())
 				break;
 			continue;
 		}
