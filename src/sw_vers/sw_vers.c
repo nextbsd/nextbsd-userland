@@ -46,8 +46,10 @@
  *   - A missing or unreadable plist, or a missing key, is reported on
  *     stderr with exit status 1 instead of a silent exit (or, for a missing
  *     key, a CFRetain(NULL) crash). nextbsd-pkg writes the plist into
- *     NextBSD-everything (nextbsd/nextbsd#536); a system installed before
- *     that has none.
+ *     NextBSD-server (nextbsd/nextbsd#536; NextBSD-everything before
+ *     nextbsd/nextbsd#680, and NextBSD-desktop requires NextBSD-server), so
+ *     whichever meta-package is installed, the file is the same; a system
+ *     installed before #536 has none.
  *   - -productVersion no longer consults MacOSXProductVersion, a key only
  *     Darwin's own plist carried.
  */
@@ -85,7 +87,7 @@ copy_system_version_dictionary(void)
 		if (errno == ENOENT)
 			fprintf(stderr, "%s: %s not found; this system has no "
 			    "version information (it predates "
-			    "SystemVersion.plist; upgrade NextBSD-everything)\n",
+			    "SystemVersion.plist; pkg upgrade installs it)\n",
 			    progname, SYSTEM_VERSION_PLIST);
 		else
 			fprintf(stderr, "%s: %s: %s\n", progname,

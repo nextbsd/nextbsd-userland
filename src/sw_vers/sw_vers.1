@@ -2,7 +2,7 @@
 .\"
 .\" Copyright (c) 2026 Joseph Maloney
 .\"
-.Dd November 1, 2026
+.Dd November 22, 2026
 .Dt SW_VERS 1
 .Os NextBSD
 .Sh NAME
@@ -36,16 +36,25 @@ The product name,
 The product version, which matches the kernel's
 .Ql uname -r .
 .It Fl buildVersion
-The build number of the installed
-.Li NextBSD-everything
-package.
+The build number of the installed system.
 .El
 .Pp
 The installed packages are versioned
 .Ar version . Ns Ar build ,
 so
-.Ql pkg info NextBSD-everything
+.Ql pkg info NextBSD-server
 shows the same two values.
+A desktop system has
+.Li NextBSD-desktop ,
+which requires
+.Li NextBSD-server ;
+one installed before
+.Li NextBSD-server
+existed has
+.Li NextBSD-everything ,
+which
+.Ql pkg upgrade
+moves to it.
 .Sh FILES
 .Bl -tag -width indent
 .It Pa /System/Library/CoreServices/SystemVersion.plist
@@ -55,7 +64,7 @@ Where the values come from:
 and
 .Li ProductBuildVersion .
 The
-.Li NextBSD-everything
+.Li NextBSD-server
 package installs it, and
 .Ql pkg upgrade
 replaces it.
