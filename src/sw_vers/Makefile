@@ -4,7 +4,8 @@
 # Ported from Apple's DarwinTools-1 (sw_vers.c, BSD-3-Clause, Finlay Dobbie),
 # the sw_vers Darwin shipped through OS X 10.9; sw_vers.c lists the changes.
 # It reads /System/Library/CoreServices/SystemVersion.plist, which nextbsd-pkg
-# writes into NextBSD-everything. DarwinTools carries no man page, so
+# writes into NextBSD-server (nextbsd/nextbsd#680; NextBSD-everything before
+# it). DarwinTools carries no man page, so
 # sw_vers.1 is NextBSD's.
 #
 # Builds /usr/bin/sw_vers. Links libCoreFoundation only.

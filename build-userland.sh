@@ -1368,7 +1368,9 @@ echo "==> vm_stat built"
 # ---- sw_vers (nextbsd/nextbsd#536) -----------------------------------------
 # Darwin's sw_vers(1), ported from DarwinTools-1: the product name, version
 # and build from /System/Library/CoreServices/SystemVersion.plist, which
-# nextbsd-pkg writes into NextBSD-everything. Links libCoreFoundation.
+# nextbsd-pkg writes into NextBSD-server (nextbsd/nextbsd#680; it was
+# NextBSD-everything, and NextBSD-desktop requires NextBSD-server), so it
+# names no package. Links libCoreFoundation.
 comp "sw_vers(1)"
 mkdir -p "$DESTDIR/usr/bin"
 run_buildenv "make -C $SRC/sw_vers DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
