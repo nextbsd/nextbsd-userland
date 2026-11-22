@@ -127,6 +127,41 @@ int	sh_tz_set(const char *zone);
 int	sh_date_set(int64_t seconds, int32_t microseconds);
 int	sh_ntp_set(bool on, const char *server);
 
+/* sh_users.c: accounts in the local directory (libds). */
+int	sh_user_create(const char *name, const char *full_name,
+	    const char *password, bool admin);
+int	sh_user_delete(const char *name, bool keep_home);
+int	sh_user_set_password(const char *name, const char *password);
+int	sh_user_set_admin(const char *name, bool admin);
+bool	sh_user_is_passwordless(const char *name);
+
+/* sh_login.c: the login window's settings. */
+int	sh_login_set_auto_login(const char *user);
+int	sh_login_forget_user(const char *user);
+int	sh_login_set_options(bool show_name_fields, bool show_power_buttons);
+
+/* sh_cups.c: CUPSAdmin, a printer added (SH_CUPS_ADD) or removed. */
+int	sh_printer_admin(int op, const char *printer, const char *uri,
+	    const char *info, const char *location);
+
+/* sh_net.c: a network service's settings, and the computer's name. */
+struct sh_net_service {
+	SHNetServiceID	service_id;
+	int		ipv4_method;	/* SH_NET_V4_* */
+	SHNetAddress	ipv4_address;
+	SHNetAddress	ipv4_mask;
+	SHNetAddress	ipv4_router;
+	int		ipv6_method;	/* SH_NET_V6_* */
+	SHNetAddress	ipv6_address;
+	int		ipv6_prefix;
+	SHNetAddress	ipv6_router;
+	SHNetList	dns_servers;	/* one per line */
+	SHNetList	search_domains;
+};
+
+int	sh_net_commit(const struct sh_net_service *service);
+int	sh_computer_name_set(const char *computer, const char *local);
+
 /* sh_locale.c: the system's language, login.conf's default class. */
 int	sh_locale_set(const char *locale);
 

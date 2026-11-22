@@ -54,7 +54,10 @@ enum {
 	SH_ERR_UNKNOWN_RIGHT = 6,
 	SH_ERR_INVALID = 7,	/* an argument out of range */
 	SH_ERR_UNSUPPORTED = 8,	/* not on this machine */
-	SH_ERR_FAILED = 9	/* the change itself failed */
+	SH_ERR_FAILED = 9,	/* the change itself failed */
+	SH_ERR_EXISTS = 10,	/* an account or group of that name exists */
+	SH_ERR_LAST_ADMIN = 11,	/* it would leave no administrator */
+	SH_ERR_LOGGED_IN = 12	/* the account is the console user's */
 };
 
 /*
@@ -113,6 +116,72 @@ typedef char	SHZoneName[SH_ZONE_MAX + 1];
  */
 #define	SH_NTP_SERVER_MAX	255
 typedef char	SHNTPServer[SH_NTP_SERVER_MAX + 1];
+
+/*
+ * The Users & Login operations' full name (an account's realName),
+ * NUL-terminated UTF-8. The short name is an SHUserName.
+ */
+#define	SH_FULL_NAME_MAX	255
+typedef char	SHFullName[SH_FULL_NAME_MAX + 1];
+
+/*
+ * sh_cups_admin: what to do, and its strings, NUL-terminated. A printer
+ * is a CUPS queue name (127 bytes at most, CUPS's own limit); the
+ * device URI is ipp://, ipps:// or dnssd://; info and location are
+ * free text without control characters, and may be empty.
+ */
+enum {
+	SH_CUPS_ADD = 0,
+	SH_CUPS_DELETE = 1
+};
+
+#define	SH_PRINTER_MAX		127
+typedef char	SHPrinterName[SH_PRINTER_MAX + 1];
+#define	SH_DEVICE_URI_MAX	1023
+typedef char	SHDeviceURI[SH_DEVICE_URI_MAX + 1];
+#define	SH_PRINTER_TEXT_MAX	255
+typedef char	SHPrinterText[SH_PRINTER_TEXT_MAX + 1];
+
+/*
+ * sh_commit_network_preferences: a service's ID, an IPv4 or IPv6 address
+ * as text, and a list of addresses or domain names, one per line, each
+ * NUL-terminated.
+ */
+#define	SH_NET_SERVICE_MAX	63
+typedef char	SHNetServiceID[SH_NET_SERVICE_MAX + 1];
+
+#define	SH_NET_ADDRESS_MAX	63
+typedef char	SHNetAddress[SH_NET_ADDRESS_MAX + 1];
+
+#define	SH_NET_LIST_MAX		1023
+#define	SH_NET_LIST_ENTRIES	8
+typedef char	SHNetList[SH_NET_LIST_MAX + 1];
+
+/* How a service gets its IPv4 address: Darwin's ConfigMethods. */
+enum {
+	SH_NET_V4_DHCP = 0,		/* "DHCP" */
+	SH_NET_V4_DHCP_MANUAL = 1,	/* "INFORM": DHCP with a manual address */
+	SH_NET_V4_MANUAL = 2,		/* "Manual" */
+	SH_NET_V4_OFF = 3		/* the IPv4 entity inactive */
+};
+
+/* And its IPv6 address. */
+enum {
+	SH_NET_V6_AUTOMATIC = 0,	/* "Automatic" */
+	SH_NET_V6_MANUAL = 1,		/* "Manual" */
+	SH_NET_V6_LINK_LOCAL = 2,	/* "LinkLocal" */
+	SH_NET_V6_OFF = 3		/* the IPv6 entity inactive */
+};
+
+/*
+ * sh_set_computer_name: the ComputerName (UTF-8) and the LocalHostName
+ * (a DNS label), NUL-terminated.
+ */
+#define	SH_COMPUTER_NAME_MAX	255
+typedef char	SHComputerName[SH_COMPUTER_NAME_MAX + 1];
+
+#define	SH_LOCAL_NAME_MAX	63
+typedef char	SHLocalHostName[SH_LOCAL_NAME_MAX + 1];
 
 /*
  * sh_set_system_locale's locale: a name under /usr/share/locale
