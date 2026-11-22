@@ -21,6 +21,7 @@
 #define	RIGHT_PRINTERS	"org.nextbsd.settings.printers"
 #define	RIGHT_NETWORK	"org.nextbsd.settings.network"
 #define	RIGHT_LOCALE	"org.nextbsd.settings.locale"
+#define	RIGHT_INSTALLER	"org.nextbsd.installer"
 
 /* Darwin's audit token layout, as audit_token_to_au32 reads it. */
 #define	CALLER(tok, c)							\
@@ -471,5 +472,55 @@ _sh_set_system_locale(mach_port_t server, SHAuthForm auth,
 	*status = sh_locale_set(locale);
 	sh_log("pid %d: SetSystemLocale \"%s\": %d", (int)caller.pid, locale,
 	    *status);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_sh_install_start(mach_port_t server, SHAuthForm auth, SHDiskName disk_in,
+    int mode, int *status, audit_token_t audit)
+{
+	struct sh_caller caller;
+	SHDiskName disk;
+
+	(void)server;
+	(void)auth;
+	WIRE_STR(disk, disk_in);
+	CALLER(audit, &caller);
+	*status = sh_rights_check(&caller, RIGHT_INSTALLER, true, NULL);
+	if (*status != SH_OK) {
+		sh_log("pid %d: InstallStart refused (%d)", (int)caller.pid,
+		    *status);
+		return (KERN_SUCCESS);
+	}
+	*status = sh_install_start(&caller, disk, mode);
+	if (*status != SH_OK)
+		sh_log("pid %d: InstallStart \"%s\" mode %d: %d",
+		    (int)caller.pid, disk, mode, *status);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_sh_install_progress(mach_port_t server, int *state, int *percent,
+    int *phase, int *status, audit_token_t audit)
+{
+	struct sh_caller caller;
+
+	(void)server;
+	CALLER(audit, &caller);
+	*status = sh_install_progress(&caller, state, percent, phase);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_sh_install_restart(mach_port_t server, int *status, audit_token_t audit)
+{
+	struct sh_caller caller;
+
+	(void)server;
+	CALLER(audit, &caller);
+	*status = sh_install_restart(&caller);
+	if (*status != SH_OK)
+		sh_log("pid %d: InstallRestart refused (%d)", (int)caller.pid,
+		    *status);
 	return (KERN_SUCCESS);
 }

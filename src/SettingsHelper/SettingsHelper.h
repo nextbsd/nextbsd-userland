@@ -165,4 +165,15 @@ int	sh_computer_name_set(const char *computer, const char *local);
 /* sh_locale.c: the system's language, login.conf's default class. */
 int	sh_locale_set(const char *locale);
 
+/* sh_install.c: Installer.app's install, run in the background. */
+int	sh_install_start(const struct sh_caller *caller, const char *disk,
+	    int mode);
+int	sh_install_progress(const struct sh_caller *caller, int *state,
+	    int *percent, int *phase);
+int	sh_install_restart(const struct sh_caller *caller);
+/* Follow the running install's output and notice its end. */
+void	sh_install_poll(void);
+/* An install runs, or finished lately: don't exit yet. */
+bool	sh_install_busy(void);
+
 #endif /* _SETTINGSHELPER_H */

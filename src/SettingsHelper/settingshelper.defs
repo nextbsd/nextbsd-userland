@@ -36,6 +36,10 @@
  *
  * Subsystem base 32000: configd and ipconfigd use 20000, wland 30000,
  * bluetoothd 31000.
+ *
+ * Installer.app's operations (nextbsd/nextbsd#670) start at 32030, after
+ * the `skip`s that keep 32017-32029 for Update.app's, so the two can land
+ * in either order.
  */
 
 #include <mach/std_types.defs>
@@ -63,6 +67,7 @@ type sh_net_list	= array[1024] of char ctype: SHNetList;
 type sh_computer_name	= array[256] of char ctype: SHComputerName;
 type sh_local_name	= array[64] of char ctype: SHLocalHostName;
 type sh_locale		= array[64] of char ctype: SHLocaleName;
+type sh_disk		= array[32] of char ctype: SHDiskName;
 
 /*
  * 32000 sh_right_info — what `right` asks of this caller.
@@ -366,6 +371,73 @@ routine sh_set_system_locale(
 	server			: mach_port_t;
 	auth			: sh_auth_form;
 	locale			: sh_locale;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/* 32017-32029: Update.app's operations. */
+skip;	/* 32017 */
+skip;	/* 32018 */
+skip;	/* 32019 */
+skip;	/* 32020 */
+skip;	/* 32021 */
+skip;	/* 32022 */
+skip;	/* 32023 */
+skip;	/* 32024 */
+skip;	/* 32025 */
+skip;	/* 32026 */
+skip;	/* 32027 */
+skip;	/* 32028 */
+skip;	/* 32029 */
+
+/*
+ * Installer.app's operations (nextbsd/nextbsd#670): NextBSD installed on
+ * a disk, which is erased, by the text installer's own engine,
+ * /usr/libexec/nextbsd-installer (probe-disks.sh and do-install.sh), run
+ * as root without a shell.
+ */
+
+/*
+ * 32030 sh_install_start — erase `disk` and install NextBSD on it, in the
+ * background: do-install.sh -d <disk>, with -c for SH_INSTALL_COPY.
+ * Right: org.nextbsd.installer (an administrator, every time). The helper
+ * checks the disk itself with probe-disks.sh first: one of the disks it
+ * lists, not the disk the running system started from, at least NEED
+ * bytes, and the mode the system's (SYSTEM: image or installed), else
+ * SH_ERR_INVALID. One install at a time (SH_ERR_BUSY).
+ */
+routine sh_install_start(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	disk			: sh_disk;
+	mode			: int;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32031 sh_install_progress — how the install started from the caller's
+ * session is going: `state` an SH_INSTALL_* state, `percent` 0 to 100,
+ * `phase` an SH_INSTALL_* phase. No right; only that session (or root)
+ * may ask.
+ */
+routine sh_install_progress(
+	server			: mach_port_t;
+	out state		: int;
+	out percent		: int;
+	out phase		: int;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32032 sh_install_restart — restart the computer (shutdown -r now) once
+ * the caller's session's install is done, so it starts from the new disk
+ * if the firmware prefers it. No right beyond the install's own. After an
+ * install on a test disk (md) it restarts nothing.
+ */
+routine sh_install_restart(
+	server			: mach_port_t;
 	out status		: int;
 	ServerAuditToken audit	: audit_token_t
 );

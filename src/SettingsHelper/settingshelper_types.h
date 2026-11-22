@@ -57,7 +57,8 @@ enum {
 	SH_ERR_FAILED = 9,	/* the change itself failed */
 	SH_ERR_EXISTS = 10,	/* an account or group of that name exists */
 	SH_ERR_LAST_ADMIN = 11,	/* it would leave no administrator */
-	SH_ERR_LOGGED_IN = 12	/* the account is the console user's */
+	SH_ERR_LOGGED_IN = 12,	/* the account is the console user's */
+	SH_ERR_BUSY = 13	/* a job (an install) is already running */
 };
 
 /*
@@ -189,5 +190,35 @@ typedef char	SHLocalHostName[SH_LOCAL_NAME_MAX + 1];
  */
 #define	SH_LOCALE_MAX		63
 typedef char	SHLocaleName[SH_LOCALE_MAX + 1];
+
+/*
+ * Installer.app's operations. The target disk is a GEOM disk name
+ * ("ada1", "da0", "nvd1"), NUL-terminated; sh_install_start's mode says
+ * what the user was promised, installing NextBSD from the install image
+ * or copying the running system, and must match what the system is.
+ */
+#define	SH_DISK_MAX		31
+typedef char	SHDiskName[SH_DISK_MAX + 1];
+
+enum {
+	SH_INSTALL_IMAGE = 0,		/* do-install.sh */
+	SH_INSTALL_COPY = 1		/* do-install.sh -c */
+};
+
+/* sh_install_progress's state. */
+enum {
+	SH_INSTALL_IDLE = 0,		/* none started (or long forgotten) */
+	SH_INSTALL_RUNNING = 1,
+	SH_INSTALL_DONE = 2,
+	SH_INSTALL_FAILED = 3
+};
+
+/* And its phase, do-install.sh's PHASE lines. */
+enum {
+	SH_INSTALL_PREPARE = 0,		/* partitioning, filesystems */
+	SH_INSTALL_COPYING = 1,		/* the system onto the disk */
+	SH_INSTALL_SETUP = 2,		/* boot configuration, boot code */
+	SH_INSTALL_FINISH = 3
+};
 
 #endif /* _SETTINGSHELPER_TYPES_H */

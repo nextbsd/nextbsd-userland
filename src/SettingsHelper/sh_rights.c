@@ -4,6 +4,9 @@
  *
  * sh_rights.c — rights, rules and the per-session credential cache.
  *
+ * The rights are "org.nextbsd.settings.<area>", the settings apps', and
+ * "org.nextbsd.installer", Installer.app's.
+ *
  * The rules are in /System/Library/Security/SettingsRights.plist, and a
  * site overrides any right or rule in /Local/Library/Security/
  * SettingsRights.plist. The shape is Darwin's authorization database
@@ -217,8 +220,8 @@ valid_right_name(const char *right)
 {
 	const char *p;
 
-	if (strncmp(right, "org.nextbsd.settings.", 21) != 0 ||
-	    right[21] == '\0')
+	if ((strncmp(right, "org.nextbsd.settings.", 21) != 0 ||
+	    right[21] == '\0') && strcmp(right, "org.nextbsd.installer") != 0)
 		return (false);
 	for (p = right; *p != '\0'; p++)
 		if (!((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') ||
