@@ -504,8 +504,10 @@ _sh_update_status(mach_port_t server, SHAuthForm auth, int *job,
 	(void)server;
 	(void)auth;
 	memset(&st, 0, sizeof(st));
+	/* Only reading: the console session is enough, and no rights file
+	 * an update may have replaced is consulted. */
 	CALLER(audit, &caller);
-	*status = sh_rights_check(&caller, RIGHT_UPDATE_CHECK, false, NULL);
+	*status = caller.root || caller.in_console ? SH_OK : SH_ERR_NOT_CONSOLE;
 	if (*status == SH_OK)
 		sh_update_status(&st);
 	*job = st.job;
@@ -595,10 +597,17 @@ _sh_update_restart(mach_port_t server, SHAuthForm auth, int *status,
 
 	(void)server;
 	(void)auth;
-	if (!update_allowed(audit, RIGHT_UPDATE_CHECK, "UpdateRestart",
-	    &caller, status))
+	/* The administrator who approved the install approved its restart:
+	 * no rights check, so a SettingsRights.plist the install replaced
+	 * can't stop it. The caller must still be at the screen. */
+	CALLER(audit, &caller);
+	if (!caller.root && !caller.in_console) {
+		*status = SH_ERR_NOT_CONSOLE;
+		sh_log("pid %d: UpdateRestart refused (%d)", (int)caller.pid,
+		    *status);
 		return (KERN_SUCCESS);
-	sh_log("pid %d: UpdateRestart", (int)caller.pid);
+	}
 	*status = sh_update_restart();
+	sh_log("pid %d: UpdateRestart: %d", (int)caller.pid, *status);
 	return (KERN_SUCCESS);
 }

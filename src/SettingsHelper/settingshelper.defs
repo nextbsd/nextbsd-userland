@@ -385,9 +385,11 @@ routine sh_set_system_locale(
  * job and returns at once (SH_ERR_BUSY while another runs); the app
  * follows it with sh_update_status. One job runs at a time.
  *
- * Rights: org.nextbsd.settings.update.check (allow) to follow, check,
- * download, cancel and restart; org.nextbsd.settings.update
- * (authenticate-admin) to install.
+ * Rights: org.nextbsd.settings.update (authenticate-admin) to install,
+ * org.nextbsd.settings.update.check (allow) to check, download and
+ * cancel. Status and the restart need only the console session: the
+ * install may replace SettingsRights.plist, and its approval covers the
+ * restart that finishes it.
  */
 
 /*
@@ -474,7 +476,8 @@ routine sh_update_cancel(
 /*
  * 32022 sh_update_restart — restart the computer (shutdown -r now), only
  * while an installed update waits for it (sh_update_status' restart is
- * SH_UPDATE_RESTART_PENDING). Right: org.nextbsd.settings.update.check.
+ * SH_UPDATE_RESTART_PENDING). No right: the install's approval covers
+ * it.
  */
 routine sh_update_restart(
 	server			: mach_port_t;

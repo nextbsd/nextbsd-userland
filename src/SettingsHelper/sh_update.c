@@ -36,11 +36,17 @@
  * and the number of packages, which pkg doesn't send as events, are read
  * from pkg upgrade -n's summary.
  *
- * An install over the running system needs a restart. Once one
- * succeeds, RESTART_FILE records the boot it happened in and the new
- * version (if known): until the next boot an update waits for a restart, which
- * sh_update_restart then allows, and after it Update says the update
- * succeeded until the next check.
+ * An install over the running system needs a restart, and the install
+ * itself may replace this program and SettingsRights.plist (an update
+ * brings NextBSD's own SettingsHelper). So the administrator's approval
+ * of the install covers the restart, and the restart reads nothing the
+ * install can replace: once an install succeeds, this process remembers
+ * it (restart_approved) and stays running until the restart, and
+ * RESTART_FILE records the boot it happened in, the new version (if
+ * known) and that the restart was approved. Until the next boot an
+ * update waits for a restart, which sh_update_restart allows without a
+ * rights check; after it Update says the update succeeded until the next
+ * check.
  *
  * Built with -DSH_UPDATE_TEST=\"/dir\" (make UPDATE_TEST=/dir), pkg
  * works on a throwaway database, cache and repository under /dir
@@ -97,6 +103,7 @@ struct job {
 static struct job *job;
 static pid_t job_pid = -1;
 static bool in_job;		/* this is the job's child */
+static bool restart_approved;	/* this process installed an update */
 
 /* Event-pipe bookkeeping, in the child. */
 struct progress {
@@ -559,7 +566,8 @@ restart_record(const char *version)
 	char text[128];
 
 	(void)mkdir(STATE_DIR, 0755);
-	(void)snprintf(text, sizeof(text), "boot %lld\nversion %s\n",
+	(void)snprintf(text, sizeof(text),
+	    "boot %lld\nversion %s\napproved restart\n",
 	    (long long)boot_time(), version);
 	(void)sh_write_file(RESTART_FILE, text, strlen(text));
 }
@@ -689,6 +697,12 @@ sh_update_reap(void)
 		job->state = job->cancelled ? SH_UPDATE_CANCELLED :
 		    SH_UPDATE_FAILED;
 	sh_log("update: job %d ended: state %d", job->job, job->state);
+	/* The install's approval covers the restart that finishes it. */
+	if (job->job == SH_UPDATE_JOB_INSTALL &&
+	    job->state == SH_UPDATE_DONE) {
+		restart_approved = true;
+		sh_log("update: installed; staying up for the restart");
+	}
 }
 
 bool
@@ -696,6 +710,30 @@ sh_update_busy(void)
 {
 	sh_update_reap();
 	return (job_pid != -1);
+}
+
+bool
+sh_update_live(void)
+{
+	return (sh_update_busy() || restart_approved);
+}
+
+/* RESTART_FILE says an approved install waits for this boot's restart. */
+static bool
+restart_record_approved(void)
+{
+	char *text;
+	size_t len;
+	bool approved;
+
+	if (restart_state(NULL, 0) != SH_UPDATE_RESTART_PENDING)
+		return (false);
+	text = sh_read_file(RESTART_FILE, &len);
+	if (text == NULL)
+		return (false);
+	approved = strstr(text, "\napproved restart\n") != NULL;
+	free(text);
+	return (approved);
 }
 
 int
@@ -783,7 +821,7 @@ sh_update_restart(void)
 #endif
 
 	if (sh_update_busy() ||
-	    restart_state(NULL, 0) != SH_UPDATE_RESTART_PENDING)
+	    (!restart_approved && !restart_record_approved()))
 		return (SH_ERR_INVALID);
 #ifdef SH_UPDATE_TEST
 	sh_log("update: test build: would run %s -r now", SHUTDOWN);

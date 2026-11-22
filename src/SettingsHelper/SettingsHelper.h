@@ -187,5 +187,8 @@ int	sh_update_restart(void);
 /* Collect a finished job; is one still running? */
 void	sh_update_reap(void);
 bool	sh_update_busy(void);
+/* A job runs, or this process installed an update that waits for its
+ * restart: don't exit idle. */
+bool	sh_update_live(void);
 
 #endif /* _SETTINGSHELPER_H */

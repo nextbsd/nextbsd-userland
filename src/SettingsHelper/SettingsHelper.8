@@ -157,12 +157,16 @@ stops a check or a download
 .Pq right Ql org.nextbsd.settings.update.check .
 .It Cm UpdateStatus
 reports the running update job, or the last one, with its progress
-.Pq right Ql org.nextbsd.settings.update.check .
+(the console session only, no right).
 .It Cm UpdateRestart
 restarts the computer with
 .Ql shutdown -r now ,
-only while an installed update waits for it
-.Pq right Ql org.nextbsd.settings.update.check .
+only while an installed update waits for it.
+The administrator's approval of the install covers it: it needs the
+console session and no right, since the install may replace
+.Nm
+and its rules, and the process that installed the update stays running
+until the restart.
 .El
 .Pp
 The update operations run
@@ -238,8 +242,8 @@ and SetComputerName write them
 .It Pa /etc/login.conf , /etc/login.conf.db
 the system's language, as SetSystemLocale writes it
 .It Pa /var/db/SettingsHelper/UpdateRestart
-the boot an update was installed in, and its version: a restart waits
-until the next boot
+the boot an approved update was installed in, and its version: a restart
+waits until the next boot
 .It Pa /var/log/SettingsHelper.log
 its log: who was allowed what, and refusals
 .El
