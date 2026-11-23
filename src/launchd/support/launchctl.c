@@ -4181,8 +4181,7 @@ linux_mount(const char *fstype, const char *source, const char *path, const char
  *   2. other pools: imported from /etc/zfs/zpool.cache (-N: mounted in 3);
  *   3. `zfs mount -a`: /Local, /root, /private/tmp, /private/var/log and
  *      /private/var/tmp on an install;
- *   4. the ARC's ceiling (zfs_arc_max() below);
- *   5. `zfs share -a`: /etc/zfs/exports from the sharenfs properties, for
+ *   4. `zfs share -a`: /etc/zfs/exports from the sharenfs properties, for
  *      mountd, which starts later from its LaunchDaemon.
  *
  * Only when ZFS is in use: / is ZFS, or a pool cache exists. Otherwise (a UFS
@@ -4280,132 +4279,6 @@ zfs_hostid(void)
 	}
 }
 
-/*
- * The ARC's ceiling (vfs.zfs.arc.max), set at every boot. ZFS's own default
- * is nearly all of memory, which leaves a desktop's applications fighting the
- * cache for it; NextBSD caps it instead, here rather than in loader.conf
- * because a Raspberry Pi boots with no loader.
- *
- *   physical memory   ARC ceiling
- *   up to 4 GiB       512 MiB
- *   more than 4 GiB   a quarter of it (8 GiB: 2 GiB, 16 GiB: 4 GiB, 32: 8)
- *
- * Never below ZFS's arc_c_min (memory/32) or 64 MiB, which ZFS would refuse.
- *
- * An administrator's setting wins: the ArcMax key of
- * /Local/Library/Preferences/org.nextbsd.zfs.plist, read at every boot (in
- * /Local, so it survives a rollback to an older boot environment). An integer
- * is bytes; a string is a size as expand_number(3) reads it ("2G", "1536M");
- * 0 leaves ZFS's own default. Anything else is logged and ignored, and a value
- * under the floor is raised to it.
- */
-#define	ZFS_PREFS	"/Local/Library/Preferences/org.nextbsd.zfs.plist"
-#define	MIB		(1024ULL * 1024ULL)
-#define	GIB		(1024ULL * MIB)
-
-int expand_number(const char *, uint64_t *);	/* libutil */
-
-/* ArcMax from the override plist: 1 and *out when set, 0 when absent or
- * unusable (logged). */
-static int
-zfs_arc_override(uint64_t *out)
-{
-	CFURLRef url;
-	CFPropertyListRef plist;
-	CFTypeRef v;
-	int found = 0;
-
-	if (!path_check(ZFS_PREFS)) {
-		return 0;
-	}
-	url = CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault,
-	    (const UInt8 *)ZFS_PREFS, (CFIndex)strlen(ZFS_PREFS), false);
-	if (url == NULL) {
-		return 0;
-	}
-	plist = CFPropertyListCreateFromFile(url);
-	CFRelease(url);
-	if (plist == NULL || CFGetTypeID(plist) != CFDictionaryGetTypeID()) {
-		launchctl_log(LOG_ERR, "ZFS: %s is not a dictionary; ignored", ZFS_PREFS);
-		if (plist != NULL) {
-			CFRelease(plist);
-		}
-		return 0;
-	}
-	v = CFDictionaryGetValue((CFDictionaryRef)plist, CFSTR("ArcMax"));
-	if (v == NULL) {
-		/* no override */
-	} else if (CFGetTypeID(v) == CFNumberGetTypeID()) {
-		long long n = -1;
-
-		if (CFNumberGetValue((CFNumberRef)v, kCFNumberLongLongType, &n) && n >= 0) {
-			*out = (uint64_t)n;
-			found = 1;
-		} else {
-			launchctl_log(LOG_ERR, "ZFS: ArcMax in %s is negative; ignored", ZFS_PREFS);
-		}
-	} else if (CFGetTypeID(v) == CFStringGetTypeID()) {
-		char buf[64];
-		uint64_t n;
-
-		if (CFStringGetCString((CFStringRef)v, buf, sizeof(buf), kCFStringEncodingUTF8) &&
-		    expand_number(buf, &n) == 0) {
-			*out = n;
-			found = 1;
-		} else {
-			launchctl_log(LOG_ERR, "ZFS: ArcMax in %s is not a size; ignored", ZFS_PREFS);
-		}
-	} else {
-		launchctl_log(LOG_ERR, "ZFS: ArcMax in %s is neither a number nor a size; ignored", ZFS_PREFS);
-	}
-	CFRelease(plist);
-	return found;
-}
-
-static void
-zfs_arc_max(void)
-{
-	unsigned long physmem = 0;
-	uint64_t cmin = 0, lo, want, cur;
-	size_t len;
-	const char *why = "default";
-
-	len = sizeof(physmem);
-	if (sysctlbyname("hw.physmem", &physmem, &len, NULL, 0) == -1 || physmem == 0) {
-		launchctl_log(LOG_ERR, "ZFS: hw.physmem: %s; ARC left alone", strerror(errno));
-		return;
-	}
-	want = (uint64_t)physmem <= 4 * GIB ? 512 * MIB : (uint64_t)physmem / 4;
-	if (zfs_arc_override(&want)) {
-		why = ZFS_PREFS;
-	}
-	if (want == 0) {
-		launchctl_log(LOG_NOTICE, "ZFS: ARC ceiling left at ZFS's default (ArcMax 0 in %s)", ZFS_PREFS);
-		return;
-	}
-	len = sizeof(cmin);
-	if (sysctlbyname("kstat.zfs.misc.arcstats.c_min", &cmin, &len, NULL, 0) == -1) {
-		cmin = (uint64_t)physmem / 32;
-	}
-	lo = cmin > 64 * MIB ? cmin : 64 * MIB;
-	if (want < lo) {
-		launchctl_log(LOG_NOTICE, "ZFS: ARC ceiling %llu raised to the %llu-byte floor",
-		    (unsigned long long)want, (unsigned long long)lo);
-		want = lo;
-	}
-	if (sysctlbyname("vfs.zfs.arc.max", NULL, NULL, &want, sizeof(want)) == -1) {
-		launchctl_log(LOG_ERR, "ZFS: cannot set vfs.zfs.arc.max to %llu: %s",
-		    (unsigned long long)want, strerror(errno));
-		return;
-	}
-	len = sizeof(cur);
-	if (sysctlbyname("vfs.zfs.arc.max", &cur, &len, NULL, 0) == -1) {
-		cur = want;
-	}
-	launchctl_log(LOG_NOTICE, "ZFS: ARC ceiling %llu MiB (%s; %lu MiB of memory)",
-	    (unsigned long long)(cur / MIB), why, physmem / (unsigned long)MIB);
-}
-
 static void
 zfs_boot_pass(void)
 {
@@ -4452,8 +4325,6 @@ zfs_boot_pass(void)
 	if (fwexec(mount_tool, NULL) == -1) {
 		launchctl_log(LOG_ERR, "ZFS: zfs mount -a failed");
 	}
-	/* After the mount: the administrator's setting is in /Local. */
-	zfs_arc_max();
 	if (fwexec(share_tool, NULL) == -1) {
 		launchctl_log(LOG_ERR, "ZFS: zfs share -a failed");
 	}
