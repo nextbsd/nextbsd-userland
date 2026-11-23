@@ -185,8 +185,29 @@ detect_payload() {
 #
 # The label lookup is a fallback for a boot partition on a scheme we did not
 # recognise. Sets BOOTSRC to a device path, or leaves it empty.
+# The disks the running system's root is on, first: the boot partition this
+# system started from is on one of them, and another disk carrying a FAT boot
+# partition (a second install, a stick) must not be taken for it. A UFS root
+# resolves through its label; a ZFS root is on its pool's disks.
+root_disks() {
+	rt="$(mount -p 2>/dev/null | awk '$2=="/"{print $3; exit}')"
+	rp="$(mount -p 2>/dev/null | awk '$2=="/"{print $1; exit}')"
+	rp="${rp#/dev/}"
+	if [ "$rt" = zfs ]; then
+		provs="$(zpool list -vHP "${rp%%/*}" 2>/dev/null | awk -F'\t' '
+			$1 == "" { for (i = 2; i <= NF; i++) if ($i ~ /^ *\/dev\//) {
+				v = $i; sub(/^ *\/dev\//, "", v); print v } }')"
+	else
+		provs="$rp"
+	fi
+	for p in $provs; do
+		d="$(glabel status -s 2>/dev/null | awk -v n="$p" '$1 == n {print $3; exit}')"
+		printf '%s\n' "${d:-$p}" | sed -E 's/[ps][0-9]+[a-h]?$//'
+	done | sort -u
+}
+
 find_boot_source() {
-	for d in $(sysctl -n kern.disks 2>/dev/null); do
+	for d in $(root_disks) $(sysctl -n kern.disks 2>/dev/null); do
 		[ "$d" = "$DISK" ] && continue
 		gpart show -p "$d" 2>/dev/null | grep -q "MBR" || continue
 		part=$(gpart show -p "$d" 2>/dev/null | awk '$4 ~ /^fat32/ {print $3; exit}')
