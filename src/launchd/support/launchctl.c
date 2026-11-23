@@ -4325,6 +4325,13 @@ zfs_boot_pass(void)
 	if (fwexec(mount_tool, NULL) == -1) {
 		launchctl_log(LOG_ERR, "ZFS: zfs mount -a failed");
 	}
+	/* zfs share keeps its lock and /etc/zfs/exports there; NextBSD's
+	 * /etc doesn't ship the directory, and without it every boot printed
+	 * "failed to lock /etc/zfs/exports.lock" (measured on a Pi 500+). */
+	if (mkdir("/etc/zfs", 0755) == -1 && errno != EEXIST) {
+		launchctl_log(LOG_ERR, "ZFS: cannot create /etc/zfs: %s",
+		    strerror(errno));
+	}
 	if (fwexec(share_tool, NULL) == -1) {
 		launchctl_log(LOG_ERR, "ZFS: zfs share -a failed");
 	}
