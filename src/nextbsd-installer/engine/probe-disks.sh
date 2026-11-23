@@ -46,19 +46,38 @@ for d in /dev/iso9660/* /dev/cd0; do
 	break
 done
 # Resolve the disk under / through glabel (e.g. ufs/ROOTFS -> da0p3 -> da0).
+# A ZFS root (NextBSD/ROOT/default) is on every disk of its pool.
+#
+# The pools this system has imported, as "pool<TAB>provider" lines, a label
+# (gpt/zfs0) resolved to its partition: for the root pool here and for the
+# VOL notes below. zpool list reads the kernel's view, no privilege needed.
+pool_provs="$(zpool list -vHP 2>/dev/null | awk -F'\t' '
+	$1 != "" { pool = $1; next }
+	{ for (i = 2; i <= NF; i++) if ($i ~ /^ *\/dev\//) {
+		v = $i; sub(/^ *\/dev\//, "", v); print pool "\t" v } }' |
+while IFS="$(printf '\t')" read -r pool prov; do
+	dev="$(glabel status -s 2>/dev/null | awk -v n="$prov" '$1 == n {print $3; exit}')"
+	printf '%s\t%s\n' "$pool" "${dev:-$prov}"
+done)"
+root_type="$(mount -p 2>/dev/null | awk '$2=="/"{print $3; exit}')"
 root_prov="$(mount -p 2>/dev/null | awk '$2=="/"{print $1; exit}')"
 root_prov="${root_prov#/dev/}"
-boot_disk="$(glabel status 2>/dev/null | awk -v L="$root_prov" '$1==L{print $3; exit}')"
-[ -z "$boot_disk" ] && boot_disk="$root_prov"
-boot_disk="$(printf '%s' "$boot_disk" | sed -E 's/[ps][0-9]+$//')"
-[ -n "$media" ]     && printf 'MEDIA\t%s\n' "$media"
-[ -n "$boot_disk" ] && printf 'MEDIA\t%s\n' "$boot_disk"
+root_pool=""
+if [ "$root_type" = zfs ]; then
+	root_pool="${root_prov%%/*}"
+	root_provs="$(printf '%s\n' "$pool_provs" | awk -F'\t' -v p="$root_pool" '$1 == p {print $2}')"
+else
+	root_provs="$(glabel status 2>/dev/null | awk -v L="$root_prov" '$1==L{print $3; exit}')"
+	[ -z "$root_provs" ] && root_provs="$root_prov"
+fi
+boot_disks="$(printf '%s\n' $root_provs | sed -E 's/[ps][0-9]+[a-h]?$//' | sort -u)"
+[ -n "$media" ] && printf 'MEDIA\t%s\n' "$media"
+for d in $boot_disks; do printf 'MEDIA\t%s\n' "$d"; done
 
 # Running from the install image, or from an installed NextBSD? The live ISO's
 # root is a union over the compressed image; the disk image's root is labelled
 # ROOTFS (build.sh), which do-install.sh deliberately never gives an installed
 # system (it labels NEXTBSD).
-root_type="$(mount -p 2>/dev/null | awk '$2=="/"{print $3; exit}')"
 if [ "$root_type" = unionfs ] || [ "$root_prov" = ufs/ROOTFS ]; then
 	system=image
 else
@@ -71,7 +90,15 @@ printf 'SYSTEM\t%s\n' "$system"
 # (do-install.sh -c), which may be most of it: a file-backed disk in /tmp.
 need=$MIN_BYTES
 if [ "$system" = installed ]; then
-	used_k="$(df -k / 2>/dev/null | awk 'NR==2{print $3}')"
+	if [ -n "$root_pool" ]; then
+		# The whole pool, not only the boot environment: a copy
+		# takes the shared datasets too (logical size, as a copy
+		# onto UFS would need it).
+		used_k="$(zfs get -Hp -o value logicalused "$root_pool" 2>/dev/null |
+		    awk '{printf "%d", $1 / 1024}')"
+	else
+		used_k="$(df -k / 2>/dev/null | awk 'NR==2{print $3}')"
+	fi
 	skip_k="$(du -skx /private/tmp /private/var/tmp /private/var/vm 2>/dev/null |
 	    awk '{s += $1} END {print s + 0}')"
 	used_k=$((${used_k:-0} - skip_k))
@@ -122,13 +149,36 @@ for dev in $disks; do
 		else if (b>=1048576){u="MB";s=1048576}
 		printf "%.0f %s", b/s, u }')"
 	is_media=0
-	{ [ "$dev" = "$media" ] || [ "$dev" = "$boot_disk" ]; } && is_media=1
+	[ "$dev" = "$media" ] && is_media=1
+	for d in $boot_disks; do [ "$dev" = "$d" ] && is_media=1; done
 	printf 'DISK\t%s\t%s\t%s\t%d\t%s\n' "$dev" "${size:-?}" "${model:-disk}" "$is_media" "${bytes:-0}"
 
-	# Volumes: GPT partitions with their labels + fs type.
-	gpart show -l "$dev" 2>/dev/null | awk -v d="$dev" '
-		/freebsd-|efi|ms-basic|fat|linux/ {
-			label=$4; if (label=="-") label="(unlabeled)"
-			print "VOL\t" d "\t" label "\t" $2 "\t" $5 "\t"
-		}' 2>/dev/null || true
+	# Volumes: each partition with its label, size and file system. A
+	# partition holding a ZFS pool says which in the note -- "(zpool:
+	# NextBSD)" is an existing NextBSD install -- from the imported pools,
+	# or from the label on the partition itself when the pool isn't
+	# imported (zdb needs read access to the device: root only).
+	gpart list "$dev" 2>/dev/null | awk '
+		/^Consumers:/ { done = 1 }
+		done { next }
+		/^[0-9]+\. Name: / { if (n != "") print n "|" l "|" z "|" t; n = $3; l = ""; z = ""; t = "" }
+		/^   label: / { l = $2; if (l == "(null)") l = "" }
+		/^   Mediasize: / { z = $3; gsub(/[()]/, "", z) }
+		/^   type: / { t = $2 }
+		END { if (n != "") print n "|" l "|" z "|" t }' |
+	while IFS='|' read -r prov label psize ptype; do
+		fstype="$ptype" note="" pool=""
+		case "$ptype" in
+		freebsd-zfs|freebsd)
+			pool="$(printf '%s\n' "$pool_provs" | awk -F'\t' -v v="$prov" '$2 == v {print $1; exit}')"
+			[ -n "$pool" ] || pool="$(zdb -l "/dev/$prov" 2>/dev/null |
+			    awk -F"'" '/^ *name:/ {print $2; exit}')"
+			if [ -n "$pool" ]; then fstype=zfs; note="(zpool: $pool)"
+			elif [ "$ptype" = freebsd-zfs ]; then fstype=zfs; fi
+			;;
+		freebsd-ufs) fstype=ufs ;;
+		efi|fat32*|fat16|ms-basic-data) fstype=msdosfs ;;
+		esac
+		printf 'VOL\t%s\t%s\t%s\t%s\t%s\n' "$dev" "${label:-(unlabeled)}" "$psize" "$fstype" "$note"
+	done || true
 done

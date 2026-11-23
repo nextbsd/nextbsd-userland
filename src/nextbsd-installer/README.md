@@ -10,11 +10,23 @@ deployments — a **C++ FTXUI front-end** over a **`/bin/sh` engine**.
   `cpdup` clone, bootcode/ESP, account, hostname. The binary forks these and
   parses their `PROGRESS` / `STATUS` lines. cpdup is vendored at `../cpdup`.
 
-The installed root is laid down by cloning the running system with **cpdup** and
-labeling the target UFS `NEXTBSD` (not the medium's `ROOTFS`). Root is found by
-`vfs.root.mountfrom` — in `loader.conf` on EFI, on the `cmdline.txt` line on a Pi —
-never by an fstab line, so the install is disk-path agnostic (ada0/nvd0/vtbd0 all
-just work). No `/etc/fstab` is shipped (nextbsd-overlays#5).
+The installed root is laid down by cloning the running system with **cpdup** onto
+**ZFS** (E31, nextbsd/nextbsd#600; the install media stay UFS): pool `NextBSD`
+(`ashift=12`, `compression=lz4`, `atime=off`, `autotrim=on`), boot environment
+`NextBSD/ROOT/default` (the pool's `bootfs`), and the shared datasets `Local`,
+`root`, `private/tmp`, `private/var/log` and `private/var/tmp`. PCs get GPT with
+`gptzfsboot` (BIOS), the ESP with `loader.efi` and `freebsd-zfs`; the loader boots
+the `bootfs`, so `loader.conf` names no root (a USB target gets
+`vfs.mountroot.timeout`). A Raspberry Pi 5-family board keeps MBR + FAT
+(`config.txt`, DTB, `kernel8.img`) with the pool in the second slice, and
+`cmdline.txt` names `vfs.root.mountfrom=zfs:NextBSD/ROOT/default
+vfs.mountroot.timeout=30`. launchctl's boot pass mounts the datasets
+(nextbsd-userland#200). No swap, no `/etc/fstab` (nextbsd-overlays#5).
+
+Copy mode (`-c`) and install-over (`-U`) still make UFS until
+nextbsd-userland#659: the target UFS is labelled `NEXTBSD` (not the medium's
+`ROOTFS`), found by `vfs.root.mountfrom`. `NEXTBSD_FS=ufs` makes a fresh install
+UFS too (an escape hatch, like `NEXTBSD_LAYOUT`).
 
 ## Shared with Installer.app
 

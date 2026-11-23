@@ -6,15 +6,27 @@
 # command instead of running it) so it's safe to exercise off-target.
 #
 # Design notes baked in:
-#   * Whole-disk GPT: freebsd-boot (BIOS) + EFI (ESP) + freebsd-ufs root.
+#   * The installed system is ZFS (E31, nextbsd/nextbsd#600), whatever the
+#     install medium is (the ISO and the Pi image stay UFS) and whatever
+#     system it carries: pool NextBSD, boot environment NextBSD/ROOT/default,
+#     and the shared datasets Local, root, private/tmp, private/var/log and
+#     private/var/tmp (see create_pool). No swap. ZFS is compiled into the
+#     kernel, so nothing is loaded; launchctl's boot pass mounts the datasets
+#     (nextbsd-userland#200).
+#   * Whole-disk GPT: freebsd-boot (BIOS, gptzfsboot) + EFI (ESP) +
+#     freebsd-zfs. The loader boots the pool's bootfs, so loader.conf names
+#     no root.
 #   * ...EXCEPT on a Raspberry Pi 5-family board, which cannot boot that at
 #     all. There is no UEFI and no loader(8): the EEPROM bootloader reads
 #     config.txt off a FAT partition and enters the kernel directly. That
-#     needs MBR + FAT32 + UFS, selected automatically -- see LAYOUT/PAYLOAD.
-#   * UFS root labeled NEXTBSD (not the medium's ROOTFS; see LABEL below),
-#     found by vfs.root.mountfrom -- loader.conf on EFI, cmdline.txt on a
-#     Pi -- so the install is disk-path agnostic (ada0/nvd0/vtbd0 all just
-#     work). No /etc/fstab is needed for root (nextbsd-overlays#5).
+#     needs MBR + FAT32 + the pool in the second slice, selected
+#     automatically -- see LAYOUT/PAYLOAD. The kernel stays on FAT and
+#     cmdline.txt names the root dataset; the kernel imports the pool itself.
+#   * Copy mode (-c) and install-over (-U) still make UFS (until
+#     nextbsd-userland#659): a UFS root labelled NEXTBSD (not the medium's
+#     ROOTFS; see LABEL below), found by vfs.root.mountfrom -- loader.conf on
+#     EFI, cmdline.txt on a Pi -- so the install is disk-path agnostic. No
+#     /etc/fstab is needed for root (nextbsd-overlays#5).
 #   * Clone with cpdup from the live / (union ISO or plain image alike), then
 #     SCRUB the volatile dirs — NextBSD has no rc.d cleanvar/cleartmp, so the
 #     installer must hand off a boot-clean /var and /tmp itself.
@@ -45,6 +57,7 @@ SRCBOOT=/tmp/nbi-srcboot
 # Copy mode's snapshot of /, the md(4) unit holding it and where it's mounted
 # (step 4), and the copy's progress reporter: all undone here too.
 SNAPFILE="" SNAPMD="" SNAPMNT=/tmp/nbi-snapshot MONITOR=""
+POOLMADE=""
 cleanup() {
 	umount "$SRCBOOT" 2>/dev/null || true
 	rmdir "$SRCBOOT" 2>/dev/null || true
@@ -56,6 +69,9 @@ cleanup() {
 	rmdir "$SNAPMNT" 2>/dev/null || true
 	# A UFS snapshot left behind keeps its blocks forever.
 	[ -n "$SNAPFILE" ] && rm -f "$SNAPFILE" 2>/dev/null || true
+	# A pool made by a run that stopped part way: exported, so it is not
+	# left imported under its temporary name.
+	[ -n "$POOLMADE" ] && zpool export -f "$TPOOL" 2>/dev/null || true
 	# A run that stopped part way leaves the target mounted; a finished
 	# one has unmounted it already.
 	for m in "${EFIMNT:-}" "${BOOTMNT:-}" "${MNT:-}"; do
@@ -80,6 +96,14 @@ SRC=${NEXTBSD_SOURCE:-/}
 # vfs.root.mountfrom in loader.conf (EFI, step 5b) or cmdline.txt (Pi, step 6)
 # points the target here.
 LABEL=NEXTBSD
+
+# The pool, for a ZFS install: NextBSD on disk. While this runs it is known by
+# a temporary in-core name (zpool create -t), so it can never clash with a
+# pool the running system has imported, a ZFS-installed NextBSD's included.
+# The kernel imports a root pool by its on-disk name (cmdline.txt on a Pi,
+# the loader's bootfs elsewhere).
+POOL=NextBSD
+TPOOL="nbi$$"
 
 # --- Which boot layout does this machine need? ------------------------------
 # Detected rather than flagged, so the same live image does the right thing
@@ -161,8 +185,29 @@ detect_payload() {
 #
 # The label lookup is a fallback for a boot partition on a scheme we did not
 # recognise. Sets BOOTSRC to a device path, or leaves it empty.
+# The disks the running system's root is on, first: the boot partition this
+# system started from is on one of them, and another disk carrying a FAT boot
+# partition (a second install, a stick) must not be taken for it. A UFS root
+# resolves through its label; a ZFS root is on its pool's disks.
+root_disks() {
+	rt="$(mount -p 2>/dev/null | awk '$2=="/"{print $3; exit}')"
+	rp="$(mount -p 2>/dev/null | awk '$2=="/"{print $1; exit}')"
+	rp="${rp#/dev/}"
+	if [ "$rt" = zfs ]; then
+		provs="$(zpool list -vHP "${rp%%/*}" 2>/dev/null | awk -F'\t' '
+			$1 == "" { for (i = 2; i <= NF; i++) if ($i ~ /^ *\/dev\//) {
+				v = $i; sub(/^ *\/dev\//, "", v); print v } }')"
+	else
+		provs="$rp"
+	fi
+	for p in $provs; do
+		d="$(glabel status -s 2>/dev/null | awk -v n="$p" '$1 == n {print $3; exit}')"
+		printf '%s\n' "${d:-$p}" | sed -E 's/[ps][0-9]+[a-h]?$//'
+	done | sort -u
+}
+
 find_boot_source() {
-	for d in $(sysctl -n kern.disks 2>/dev/null); do
+	for d in $(root_disks) $(sysctl -n kern.disks 2>/dev/null); do
 		[ "$d" = "$DISK" ] && continue
 		gpart show -p "$d" 2>/dev/null | grep -q "MBR" || continue
 		part=$(gpart show -p "$d" 2>/dev/null | awk '$4 ~ /^fat32/ {print $3; exit}')
@@ -193,6 +238,15 @@ while getopts "d:Uc" o; do
 done
 [ -n "$DISK" ] || { echo "do-install.sh: missing -d <disk>" >&2; exit 2; }
 [ "$COPY" = 1 ] && [ "$UPGRADE" = 1 ] && { echo "do-install.sh: -c and -U don't go together" >&2; exit 2; }
+
+# The installed system's file system: ZFS. Copy mode and install-over keep
+# UFS until nextbsd-userland#659. NEXTBSD_FS=ufs is the escape hatch, like
+# NEXTBSD_LAYOUT below: an install should never be impossible because one
+# path misbehaves on some machine.
+FS=zfs
+if [ "$COPY" = 1 ] || [ "$UPGRADE" = 1 ] || [ "${NEXTBSD_FS:-}" = ufs ]; then
+	FS=ufs
+fi
 
 # A copy is a second NextBSD that may well stay attached to this machine, so
 # it can't share the running system's root label (two ufs/NEXTBSD providers,
@@ -245,8 +299,106 @@ umount_disk_partitions() {
 	done
 }
 
+# A ZFS target: whatever pool the disk holds now goes. One this system has
+# imported is exported first (gpart can't replace a table whose partitions
+# are open), and every old ZFS label is cleared: a pool's last two labels sit
+# at the end of its partition, and when the new layout ends at the same
+# place the kernel would still find the old pool there -- under the same name
+# as the new one, on a reinstall.
+release_target_pools() {
+	command -v zpool >/dev/null 2>&1 || return 0
+	rootpool=""
+	if [ "$(mount -p 2>/dev/null | awk '$2=="/"{print $3; exit}')" = zfs ]; then
+		rootpool="$(mount -p 2>/dev/null | awk '$2=="/"{print $1; exit}')"
+		rootpool="${rootpool%%/*}"
+	fi
+	pools="$(zpool list -vHP 2>/dev/null | awk -F'\t' '
+		$1 != "" { pool = $1; next }
+		{ for (i = 2; i <= NF; i++) if ($i ~ /^ *\/dev\//) {
+			v = $i; sub(/^ *\/dev\//, "", v); print pool "\t" v } }' |
+	while IFS="$(printf '\t')" read -r pool prov; do
+		# A label (gpt/..., diskid/...) names a partition through GEOM.
+		dev="$(glabel status -s 2>/dev/null | awk -v n="$prov" '$1 == n {print $3; exit}')"
+		dev="${dev:-$prov}"
+		case "$dev" in
+		"$DISK"|"${DISK}p"[0-9]*|"${DISK}s"[0-9]*) echo "$pool" ;;
+		esac
+	done | sort -u)"
+	for pool in $pools; do
+		if [ "$pool" = "$rootpool" ]; then
+			echo "do-install.sh: $DISK holds $pool, the pool this system runs from" >&2
+			exit 1
+		fi
+		status "Exporting pool $pool from $DISK"
+		run zpool export -f "$pool"
+	done
+	for p in $(gpart show -p "$DISK" 2>/dev/null | awk -v d="$DISK" 'NR > 1 && index($3, d) == 1 {print $3}') "$DISK"; do
+		[ -e "/dev/$p" ] || continue
+		run zpool labelclear -f "/dev/$p" 2>/dev/null || true
+	done
+}
+
+# Is the target on USB? The kernel may then look for its root before the disk
+# has attached: measured on a Pi 500+ with a USB SSD, the first try ran too
+# early and only vfs.mountroot.timeout made it boot (nextbsd-userland#658).
+is_usb_disk() {
+	camcontrol devlist -v 2>/dev/null | awk -v d="$DISK" '
+		/^scbus/ { usb = ($0 ~ /umass/); next }
+		usb && $0 ~ ("[(,]" d "[,)]") { found = 1 }
+		END { exit !found }'
+}
+
+# The pool and its datasets, mounted under $MNT (the altroot). Everything not
+# listed stays in the boot environment, so a rollback (bectl) takes it back
+# too; what's here survives one:
+#   ROOT             none              the boot environments
+#   ROOT/default     /                 canmount=noauto, as bectl makes BEs
+#   Local            /Local            accounts, network, display
+#                                      arrangement, homes, apps
+#   root             /root
+#   private          none              canmount=off
+#   private/tmp      /private/tmp      setuid=off
+#   private/var      none              canmount=off
+#   private/var/log  /private/var/log  exec=off, setuid=off
+#   private/var/tmp  /private/var/tmp  setuid=off
+# The boot environment is mounted first so the others land inside it.
+create_pool() {
+	status "Creating ZFS pool $POOL on $ZPART"
+	run zpool create -f -t "$TPOOL" -R "$MNT" -m none \
+	    -o ashift=12 -o autotrim=on \
+	    -O compression=lz4 -O atime=off \
+	    "$POOL" "/dev/$ZPART"
+	POOLMADE=1
+	run zfs create -o mountpoint=none "$TPOOL/ROOT"
+	run zfs create -o mountpoint=/ -o canmount=noauto "$TPOOL/ROOT/default"
+	run zfs mount "$TPOOL/ROOT/default"
+	run zfs create -o mountpoint=/Local "$TPOOL/Local"
+	run zfs create -o mountpoint=/root "$TPOOL/root"
+	run zfs create -o mountpoint=none -o canmount=off "$TPOOL/private"
+	run zfs create -o mountpoint=/private/tmp -o setuid=off "$TPOOL/private/tmp"
+	run zfs create -o mountpoint=none -o canmount=off "$TPOOL/private/var"
+	run zfs create -o mountpoint=/private/var/log -o exec=off -o setuid=off "$TPOOL/private/var/log"
+	run zfs create -o mountpoint=/private/var/tmp -o setuid=off "$TPOOL/private/var/tmp"
+	run zpool set bootfs="$TPOOL/ROOT/default" "$TPOOL"
+}
+
+# Space used on the target so far, in KB, for the progress reporter: the
+# whole pool's logical size on ZFS (compression would otherwise make the copy
+# look smaller than its source), the root file system's on UFS.
+target_used_k() {
+	if [ "$FS" = zfs ]; then
+		zfs get -Hp -o value logicalused "$TPOOL" 2>/dev/null |
+		    awk '{printf "%d\n", $1 / 1024}'
+	else
+		df -k "$MNT" 2>/dev/null | awk 'NR==2{print $3}'
+	fi
+}
+
 phase prepare
 umount_disk_partitions
+if [ "$FS" = zfs ]; then
+	release_target_pools
+fi
 
 # --- 1. Partition (skipped on upgrade — keep the existing layout) ------------
 if [ "$UPGRADE" = 0 ]; then
@@ -265,7 +417,8 @@ if [ "$UPGRADE" = 0 ]; then
 		run gpart create -s mbr "$DISK"
 		run gpart add -t fat32lba -s 100m "$DISK"
 		run gpart add -t freebsd "$DISK"
-		# The UFS root lives in a BSD label inside the freebsd slice.
+		# A UFS root lives in a BSD label inside the freebsd slice; a
+		# pool takes the whole slice, with no label.
 		#
 		# Destroy anything GEOM may have tasted there first. Creating a
 		# freebsd slice over a disk that previously held one makes GEOM
@@ -276,12 +429,19 @@ if [ "$UPGRADE" = 0 ]; then
 		# destroy alone leaves the bytes that caused the taste.
 		run gpart destroy -F "/dev/${DISK}s2" 2>/dev/null || true
 		run dd if=/dev/zero of="/dev/${DISK}s2" bs=512 count=34 2>/dev/null || true
-		run gpart create -s bsd "/dev/${DISK}s2"
-		run gpart add -t freebsd-ufs "/dev/${DISK}s2"
+		if [ "$FS" = ufs ]; then
+			run gpart create -s bsd "/dev/${DISK}s2"
+			run gpart add -t freebsd-ufs "/dev/${DISK}s2"
+		fi
 		progress 8
 
-		status "Creating UFS root (label $LABEL)"
-		run newfs -U -L "$LABEL" "/dev/${DISK}s2a"
+		if [ "$FS" = zfs ]; then
+			ZPART="${DISK}s2"
+			create_pool
+		else
+			status "Creating UFS root (label $LABEL)"
+			run newfs -U -L "$LABEL" "/dev/${DISK}s2a"
+		fi
 		# -c 1: one sector per cluster. Without it newfs_msdos picks a
 		# larger cluster and a 100 MB partition yields ~12,700 clusters,
 		# below the 65,525 that *defines* FAT32 -- so it refuses. This is
@@ -290,18 +450,27 @@ if [ "$UPGRADE" = 0 ]; then
 		run newfs_msdos -F 32 -c 1 -L NEXTBSD "/dev/${DISK}s1"
 		progress 14
 	else
-		status "Partitioning $DISK (GPT: freebsd-boot + EFI + freebsd-ufs)"
+		status "Partitioning $DISK (GPT: freebsd-boot + EFI + freebsd-$FS)"
 		progress 4
 		run gpart destroy -F "$DISK" 2>/dev/null || true
 		run gpart create -s gpt "$DISK"
 		run gpart add -a 4k -s 512k -t freebsd-boot -l bootcode "$DISK"
 		run gpart add -a 1m   -s 260m -t efi          -l EFI      "$DISK"
-		run gpart add -a 1m            -t freebsd-ufs  -l ROOTFS   "$DISK"
+		if [ "$FS" = zfs ]; then
+			run gpart add -a 1m        -t freebsd-zfs  -l zfs0     "$DISK"
+		else
+			run gpart add -a 1m        -t freebsd-ufs  -l ROOTFS   "$DISK"
+		fi
 		progress 8
 
 		# --- 2. Filesystems -------------------------------------------
-		status "Creating UFS root (label $LABEL)"
-		run newfs -U -L "$LABEL" "/dev/${DISK}p3"
+		if [ "$FS" = zfs ]; then
+			ZPART="${DISK}p3"
+			create_pool
+		else
+			status "Creating UFS root (label $LABEL)"
+			run newfs -U -L "$LABEL" "/dev/${DISK}p3"
+		fi
 		run newfs_msdos -L EFI "/dev/${DISK}p2"
 		progress 14
 	fi
@@ -321,9 +490,12 @@ fi
 # Mount by DEVICE PATH (${DISK}p3), never by ufs label — unambiguous no matter
 # what else is attached. (This also dodged the old "Device busy" when the live
 # ROOTFS medium shadowed the target's label.)
-status "Mounting target"
-run mkdir -p "$MNT"
-run mount "/dev/$ROOTPART" "$MNT"
+# A pool is mounted already, under its altroot (create_pool).
+if [ "$FS" = ufs ]; then
+	status "Mounting target"
+	run mkdir -p "$MNT"
+	run mount "/dev/$ROOTPART" "$MNT"
+fi
 progress 16
 
 # --- 4. Clone the running system (cpdup) ------------------------------------
@@ -391,11 +563,11 @@ if [ "${NEXTBSD_DRYRUN:-0}" != 1 ]; then
 	# Progress through the copy, by what has reached the target: from 16
 	# to 85 as the target's used space approaches the source's. In the
 	# background, killed once cpdup is done (or by cleanup()).
-	base_k="$(df -k "$MNT" 2>/dev/null | awk 'NR==2{print $3}')"
+	base_k="$(target_used_k)"
 	(
 		last=16
 		while sleep 2; do
-			now_k="$(df -k "$MNT" 2>/dev/null | awk 'NR==2{print $3}')"
+			now_k="$(target_used_k)"
 			p="$(awk -v s="$src_k" -v b="$base_k" -v n="$now_k" 'BEGIN{
 				p = s > 0 ? 16 + int(70 * (n - b) / s) : 16
 				if (p > 85) p = 85
@@ -419,6 +591,20 @@ elif [ "$UPGRADE" = 1 ]; then
 else
 	run cpdup -i0 "$SRC" "$MNT"
 fi
+# cpdup doesn't cross a mount point on the target any more than on the
+# source, so the pass above stopped at each dataset mounted inside the boot
+# environment: copy into each of them in turn. The source's directories
+# are on its root file system, so each of these is a plain copy.
+if [ "$FS" = zfs ]; then
+	for d in Local root private/tmp private/var/log private/var/tmp; do
+		[ -d "$SRC/$d" ] || continue
+		if [ -n "$EXCLUDE" ]; then
+			run cpdup -i0 -X "$EXCLUDE" "$SRC/$d" "$MNT/$d"
+		else
+			run cpdup -i0 "$SRC/$d" "$MNT/$d"
+		fi
+	done
+fi
 if [ -n "$MONITOR" ]; then kill "$MONITOR" 2>/dev/null || true; MONITOR=""; fi
 if [ -n "$EXCLUDE" ]; then rm -f "$EXCLUDE"; fi
 progress 86
@@ -429,6 +615,10 @@ status "Scrubbing volatile state"
 for d in tmp var/run var/tmp var/log; do
 	[ -d "$MNT/$d" ] && run find "$MNT/$d" -mindepth 1 -delete 2>/dev/null || true
 done
+# The temporary datasets' own top directories, as /tmp must be.
+if [ "$FS" = zfs ]; then
+	run chmod 1777 "$MNT/private/tmp" "$MNT/private/var/tmp"
+fi
 
 # --- 5, copy mode: a machine of its own ---------------------------------------
 # Copy mode keeps the accounts, apps and settings -- that's the point -- but
@@ -479,18 +669,28 @@ run install -d -o root -g wheel -m 0755 "$MNT/private/var/vm"
 # nothing to fix. A medium built before that still clones an fstab whose root
 # line names ufs/ROOTFS; repoint it so launchctl's boot-time mount -a doesn't
 # chase the medium's label.
-status "Setting root label + boot config ($LABEL)"
+if [ "$FS" = zfs ]; then status "Setting boot config ($POOL/ROOT/default)"; else status "Setting root label + boot config ($LABEL)"; fi
 [ -f "$MNT/etc/fstab" ] && run sed -i '' -e "s#/dev/ufs/ROOTFS#/dev/ufs/$LABEL#g" "$MNT/etc/fstab"
 # A copied system's fstab, if it has one, names the running system's label.
 [ "$COPY" = 1 ] && [ -f "$MNT/etc/fstab" ] && run sed -i '' -e "s#/dev/ufs/NEXTBSD[^[:space:]]*#/dev/ufs/$LABEL#g" "$MNT/etc/fstab"
 # loader.conf only means something where there IS a loader. A Pi has none --
 # the firmware enters the kernel directly -- so step 6 puts the same
 # vfs.root.mountfrom on the cmdline.txt line instead.
+#
+# On ZFS there is no root line at all: the loader finds the pool on the disk
+# it started from and passes its bootfs (vfs.root.mountfrom=zfs:NextBSD/ROOT/
+# default), which bectl activate changes. A USB target gets a mount-root
+# timeout, as cmdline.txt does on a Pi (is_usb_disk).
 if [ "$PAYLOAD" = efi ]; then
 	# One root line: a copied loader.conf already has the running
 	# system's.
-	[ -f "$MNT/boot/loader.conf" ] && run sed -i '' -e '/^vfs\.root\.mountfrom=/d' "$MNT/boot/loader.conf"
-	run sh -c "echo 'vfs.root.mountfrom=\"ufs:/dev/ufs/$LABEL\"' >> '$MNT/boot/loader.conf'"
+	[ -f "$MNT/boot/loader.conf" ] && run sed -i '' -e '/^vfs\.root\.mountfrom=/d' -e '/^vfs\.mountroot\.timeout=/d' "$MNT/boot/loader.conf"
+	if [ "$FS" = ufs ]; then
+		run sh -c "echo 'vfs.root.mountfrom=\"ufs:/dev/ufs/$LABEL\"' >> '$MNT/boot/loader.conf'"
+	fi
+	if is_usb_disk; then
+		run sh -c "echo 'vfs.mountroot.timeout=\"30\"' >> '$MNT/boot/loader.conf'"
+	fi
 fi
 progress 90
 
@@ -584,27 +784,43 @@ if [ "$PAYLOAD" = firmware ]; then
 	# ufs:/dev/ufs/ROOTFS and tried to mount the install medium.
 	#
 	# So rewrite the single line, carrying over the flags the medium had.
-	status "Pointing cmdline.txt at ufs/$LABEL"
+	#
+	# On ZFS the line names the boot environment, and the kernel imports
+	# the pool itself (spa_import_rootpool scans the disks; no loader, no
+	# zpool.cache). vfs.mountroot.timeout always goes with it: measured on
+	# a Pi 500+, the first mount try runs before a USB disk attaches, and
+	# a ZFS root that isn't found drops to mountroot>. No fallback list:
+	# the line is split on spaces, with no quoting.
+	if [ "$FS" = zfs ]; then
+		ROOTARG="vfs.root.mountfrom=zfs:$POOL/ROOT/default vfs.mountroot.timeout=30"
+	else
+		ROOTARG="vfs.root.mountfrom=ufs:/dev/ufs/$LABEL"
+	fi
+	status "Pointing cmdline.txt at ${ROOTARG%% *}"
 	OLDCMD=""
 	if [ -f "$BOOTMNT/cmdline.txt" ]; then
 		OLDCMD=$(head -1 "$BOOTMNT/cmdline.txt" 2>/dev/null |
-		    sed -e 's/[[:space:]]*vfs\.root\.mountfrom=[^[:space:]]*//g')
+		    sed -e 's/[[:space:]]*vfs\.root\.mountfrom=[^[:space:]]*//g' \
+		        -e 's/[[:space:]]*vfs\.mountroot\.timeout=[^[:space:]]*//g')
 	fi
 	[ -n "$OLDCMD" ] || OLDCMD="FreeBSD: -v"
-	run sh -c "printf '%s vfs.root.mountfrom=ufs:/dev/ufs/%s\\n' '$OLDCMD' '$LABEL' > '$BOOTMNT/cmdline.txt'"
+	run sh -c "printf '%s %s\\n' '$OLDCMD' '$ROOTARG' > '$BOOTMNT/cmdline.txt'"
 	fi
 
 	run umount "$BOOTMNT"
 	progress 94
 else
-	status "Installing bootcode (UEFI loader + BIOS gptboot if present)"
+	# gptzfsboot for a pool, gptboot for UFS.
+	BOOTBLK=gptboot
+	[ "$FS" = zfs ] && BOOTBLK=gptzfsboot
+	status "Installing bootcode (UEFI loader + BIOS $BOOTBLK if present)"
 	# BIOS bootcode only when the boot blocks exist (amd64 legacy). EFI-only
 	# boxes and arm64 ship no pmbr/gptboot -- skip instead of failing; the ESP
 	# loader below is what boots UEFI machines.
-	if [ -f "$MNT/boot/pmbr" ] && [ -f "$MNT/boot/gptboot" ]; then
-		run gpart bootcode -b "$MNT/boot/pmbr" -p "$MNT/boot/gptboot" -i 1 "$DISK"
+	if [ -f "$MNT/boot/pmbr" ] && [ -f "$MNT/boot/$BOOTBLK" ]; then
+		run gpart bootcode -b "$MNT/boot/pmbr" -p "$MNT/boot/$BOOTBLK" -i 1 "$DISK"
 	else
-		status "No BIOS boot blocks present (EFI-only) — skipping gptboot"
+		status "No BIOS boot blocks present (EFI-only) — skipping $BOOTBLK"
 	fi
 	# Populate the ESP with the EFI loader at the firmware removable-media path
 	# (works with no NVRAM entry). arm64 firmware looks for BOOTAA64.EFI, amd64
@@ -648,6 +864,13 @@ progress 98
 # --- 8. Done ----------------------------------------------------------------
 phase finish
 status "Finalizing"
-run umount "$MNT" || true
+if [ "$FS" = zfs ]; then
+	# Exported, so the installed system's kernel (or loader) imports it
+	# fresh under its own name, and this system keeps no record of it.
+	run zpool export "$TPOOL"
+	POOLMADE=""
+else
+	run umount "$MNT" || true
+fi
 progress 100
 echo "DONE"
