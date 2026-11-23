@@ -79,5 +79,5 @@ LDADD+=		-llaunch -lxpc -lsystem_dispatch -lsystem_kernel \
 BINDIR=		/bin
 
 # FreeBSD base libs: releng/15.1 src.libnames.mk requires LIBADD, not LDADD+=-lfoo.
-LIBADD+=	pthread util edit
+LIBADD+=	pthread util edit md
 .include <bsd.prog.mk>
