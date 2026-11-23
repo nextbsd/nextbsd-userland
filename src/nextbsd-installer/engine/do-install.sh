@@ -570,6 +570,20 @@ elif [ "$UPGRADE" = 1 ]; then
 else
 	run cpdup -i0 "$SRC" "$MNT"
 fi
+# cpdup doesn't cross a mount point on the target any more than on the
+# source, so the pass above stopped at each dataset mounted inside the boot
+# environment: copy into each of them in turn. The source's directories
+# are on its root file system, so each of these is a plain copy.
+if [ "$FS" = zfs ]; then
+	for d in Local root private/tmp private/var/log private/var/tmp; do
+		[ -d "$SRC/$d" ] || continue
+		if [ -n "$EXCLUDE" ]; then
+			run cpdup -i0 -X "$EXCLUDE" "$SRC/$d" "$MNT/$d"
+		else
+			run cpdup -i0 "$SRC/$d" "$MNT/$d"
+		fi
+	done
+fi
 if [ -n "$MONITOR" ]; then kill "$MONITOR" 2>/dev/null || true; MONITOR=""; fi
 if [ -n "$EXCLUDE" ]; then rm -f "$EXCLUDE"; fi
 progress 86
