@@ -23,10 +23,19 @@ the `bootfs`, so `loader.conf` names no root (a USB target gets
 vfs.mountroot.timeout=30`. launchctl's boot pass mounts the datasets
 (nextbsd-userland#200). No swap, no `/etc/fstab` (nextbsd-overlays#5).
 
-Copy mode (`-c`) and install-over (`-U`) still make UFS until
-nextbsd-userland#659: the target UFS is labelled `NEXTBSD` (not the medium's
-`ROOTFS`), found by `vfs.root.mountfrom`. `NEXTBSD_FS=ufs` makes a fresh install
-UFS too (an escape hatch, like `NEXTBSD_LAYOUT`).
+Copy mode (`-c`) makes ZFS too, in a pool named `NextBSD-xxxx` so a copy never
+shares the running pool's name: from a ZFS system by `zfs send` of a recursive
+snapshot (the running boot environment and the shared datasets, without
+`/tmp`, `/var/tmp` or the other BEs), from a UFS system by `cpdup` into the new
+datasets (the way an existing UFS install moves to ZFS). The copy gets its own
+identity as before, and also leaves out the display arrangement
+(`/Local/Library/Preferences/org.nextbsd.windowserver.displays.plist`) and
+`zpool.cache`. Install-over (`-U`) on a ZFS disk writes a new boot environment
+(named after the build, e.g. `NextBSD-27.0.0-186`), makes it the `bootfs` (and
+the Pi's `cmdline.txt` root), carries over the host's identity from the old one,
+and leaves `Local`, `root` and the `private` datasets alone; the old BE stays
+bootable. `-U` on a UFS disk works as before. `NEXTBSD_FS=ufs` makes UFS (an
+escape hatch, like `NEXTBSD_LAYOUT`).
 
 ## Shared with Installer.app
 
