@@ -22,11 +22,16 @@
 #     needs MBR + FAT32 + the pool in the second slice, selected
 #     automatically -- see LAYOUT/PAYLOAD. The kernel stays on FAT and
 #     cmdline.txt names the root dataset; the kernel imports the pool itself.
-#   * Copy mode (-c) and install-over (-U) still make UFS (until
-#     nextbsd-userland#659): a UFS root labelled NEXTBSD (not the medium's
-#     ROOTFS; see LABEL below), found by vfs.root.mountfrom -- loader.conf on
-#     EFI, cmdline.txt on a Pi -- so the install is disk-path agnostic. No
-#     /etc/fstab is needed for root (nextbsd-overlays#5).
+#   * Copy mode (-c) makes ZFS too, in a pool of its own (NextBSD-xxxx): from
+#     a ZFS system by zfs send, from a UFS one by cpdup -- the way an
+#     existing UFS install moves to ZFS. Install-over (-U) on a ZFS disk
+#     writes a new boot environment and leaves the shared datasets alone; on
+#     a UFS disk it works as before.
+#   * NEXTBSD_FS=ufs (or -U over a UFS install) makes UFS: a root labelled
+#     NEXTBSD (not the medium's ROOTFS; see LABEL below), found by
+#     vfs.root.mountfrom -- loader.conf on EFI, cmdline.txt on a Pi -- so the
+#     install is disk-path agnostic. No /etc/fstab is needed for root
+#     (nextbsd-overlays#5).
 #   * Clone with cpdup from the live / (union ISO or plain image alike), then
 #     SCRUB the volatile dirs — NextBSD has no rc.d cleanvar/cleartmp, so the
 #     installer must hand off a boot-clean /var and /tmp itself.
@@ -57,7 +62,7 @@ SRCBOOT=/tmp/nbi-srcboot
 # Copy mode's snapshot of /, the md(4) unit holding it and where it's mounted
 # (step 4), and the copy's progress reporter: all undone here too.
 SNAPFILE="" SNAPMD="" SNAPMNT=/tmp/nbi-snapshot MONITOR=""
-POOLMADE=""
+POOLMADE="" ZSNAP="" OLDBEMNT=""
 cleanup() {
 	umount "$SRCBOOT" 2>/dev/null || true
 	rmdir "$SRCBOOT" 2>/dev/null || true
@@ -72,6 +77,9 @@ cleanup() {
 	# A pool made by a run that stopped part way: exported, so it is not
 	# left imported under its temporary name.
 	[ -n "$POOLMADE" ] && zpool export -f "$TPOOL" 2>/dev/null || true
+	# Copy mode's snapshots of the running pool (step 4).
+	[ -n "$ZSNAP" ] && zfs destroy -r "$SRCPOOL@$ZSNAP" 2>/dev/null || true
+	[ -n "$OLDBEMNT" ] && umount "$OLDBEMNT" 2>/dev/null || true
 	# A run that stopped part way leaves the target mounted; a finished
 	# one has unmounted it already.
 	for m in "${EFIMNT:-}" "${BOOTMNT:-}" "${MNT:-}"; do
@@ -239,22 +247,37 @@ done
 [ -n "$DISK" ] || { echo "do-install.sh: missing -d <disk>" >&2; exit 2; }
 [ "$COPY" = 1 ] && [ "$UPGRADE" = 1 ] && { echo "do-install.sh: -c and -U don't go together" >&2; exit 2; }
 
-# The installed system's file system: ZFS. Copy mode and install-over keep
-# UFS until nextbsd-userland#659. NEXTBSD_FS=ufs is the escape hatch, like
-# NEXTBSD_LAYOUT below: an install should never be impossible because one
-# path misbehaves on some machine.
+# The installed system's file system: ZFS. NEXTBSD_FS=ufs is the escape
+# hatch, like NEXTBSD_LAYOUT below: an install should never be impossible
+# because one path misbehaves on some machine. Install-over (-U) follows what
+# the disk holds (step 1).
 FS=zfs
-if [ "$COPY" = 1 ] || [ "$UPGRADE" = 1 ] || [ "${NEXTBSD_FS:-}" = ufs ]; then
-	FS=ufs
-fi
+[ "${NEXTBSD_FS:-}" = ufs ] && FS=ufs
+# The boot environment the new system goes in: default, or a new one beside
+# the old for install-over (step 1), or the running one's name for a copy.
+BE=default
 
 # A copy is a second NextBSD that may well stay attached to this machine, so
-# it can't share the running system's root label (two ufs/NEXTBSD providers,
-# and the kernel mounts whichever it finds first). It gets a label of its own,
-# which its loader.conf names (step 5b).
+# it can't share the running system's pool name or root label: the kernel
+# imports a root pool by name and takes the most recently written of two that
+# match, and with two ufs/NEXTBSD providers it mounts whichever it finds
+# first. It gets a name of its own, which its boot config names (step 5b).
+#
+# The running system is the source. A ZFS one is copied with zfs send from a
+# snapshot of its pool (ZSEND=1, step 4); a UFS one with cpdup into the new
+# datasets, which is how an existing UFS install moves to ZFS.
+ZSEND=0 SRCPOOL=""
 if [ "$COPY" = 1 ]; then
-	LABEL="NEXTBSD-$(od -An -N2 -tx2 /dev/random | tr -d ' ')"
+	SUFFIX="$(od -An -N2 -tx2 /dev/random | tr -d ' ')"
+	LABEL="NEXTBSD-$SUFFIX"
+	POOL="NextBSD-$SUFFIX"
 	SRC=/
+	if [ "$FS" = zfs ] && [ "$(mount -p 2>/dev/null | awk '$2=="/"{print $3; exit}')" = zfs ]; then
+		SRCDS="$(mount -p 2>/dev/null | awk '$2=="/"{print $1; exit}')"
+		SRCPOOL="${SRCDS%%/*}"
+		BE="${SRCDS##*/}"
+		ZSEND=1
+	fi
 fi
 
 # Detect AFTER $DISK is known: find_boot_source has to skip the install target,
@@ -369,6 +392,8 @@ create_pool() {
 	    -O compression=lz4 -O atime=off \
 	    "$POOL" "/dev/$ZPART"
 	POOLMADE=1
+	# A copy of a ZFS system brings its datasets with it (step 4).
+	[ "$ZSEND" = 1 ] && return 0
 	run zfs create -o mountpoint=none "$TPOOL/ROOT"
 	run zfs create -o mountpoint=/ -o canmount=noauto "$TPOOL/ROOT/default"
 	run zfs mount "$TPOOL/ROOT/default"
@@ -384,19 +409,77 @@ create_pool() {
 
 # Space used on the target so far, in KB, for the progress reporter: the
 # whole pool's logical size on ZFS (compression would otherwise make the copy
-# look smaller than its source), the root file system's on UFS.
+# look smaller than its source), the root file system's on UFS. A zfs send
+# compares like with like: compressed on both sides.
 target_used_k() {
 	if [ "$FS" = zfs ]; then
-		zfs get -Hp -o value logicalused "$TPOOL" 2>/dev/null |
+		prop=logicalused
+		[ "$ZSEND" = 1 ] && prop=used
+		zfs get -Hp -o value "$prop" "$TPOOL" 2>/dev/null |
 		    awk '{printf "%d\n", $1 / 1024}'
 	else
 		df -k "$MNT" 2>/dev/null | awk 'NR==2{print $3}'
 	fi
 }
 
+# Install over a ZFS system (-U): the pool on the target's system partition,
+# found by its label (whether or not this system has it imported). Sets
+# POOL (its name) and UGUID; returns 1 when the partition holds no pool.
+find_target_pool() {
+	if [ "$LAYOUT" = mbr-fat ]; then ZPART="${DISK}s2"; else ZPART="${DISK}p3"; fi
+	[ -e "/dev/$ZPART" ] || return 1
+	command -v zdb >/dev/null 2>&1 || return 1
+	lbl="$(zdb -l "/dev/$ZPART" 2>/dev/null)"
+	POOL="$(printf '%s\n' "$lbl" | awk -F"'" '/^ *name:/ {print $2; exit}')"
+	UGUID="$(printf '%s\n' "$lbl" | awk '/^ *pool_guid:/ {print $2; exit}')"
+	[ -n "$POOL" ] && [ -n "$UGUID" ]
+}
+
+# The pool under its temporary name, nothing mounted, and a new boot
+# environment for the new system, mounted at $MNT. The old one stays as it
+# is, and bootable (step 5b makes the new one the default); Local, root and
+# the private datasets aren't touched.
+open_target_pool() {
+	if zpool list -H -o name "$POOL" >/dev/null 2>&1; then
+		if [ "$(zpool get -H -o value guid "$POOL" 2>/dev/null)" = "$UGUID" ]; then
+			if [ "$(mount -p 2>/dev/null | awk '$2=="/"{print $1; exit}' | cut -d/ -f1)" = "$POOL" ]; then
+				echo "do-install.sh: $DISK holds $POOL, the pool this system runs from" >&2
+				exit 1
+			fi
+			status "Exporting pool $POOL"
+			run zpool export "$POOL"
+		fi
+	fi
+	status "Importing pool $POOL from $ZPART"
+	run zpool import -N -R "$MNT" -t "$UGUID" "$TPOOL"
+	POOLMADE=1
+	OLDBE="$(zpool get -H -o value bootfs "$TPOOL" 2>/dev/null || true)"
+	# Named after the system going in (NextBSD-27.0.0-186), which is what
+	# bectl list and the loader's menu show; a clock can't be trusted
+	# here (a Pi has none until the network sets it). -2, -3... when
+	# the same build goes in again.
+	ver="$(sw_vers -productVersion 2>/dev/null || true)"
+	bld="$(sw_vers -buildVersion 2>/dev/null || true)"
+	base="NextBSD${ver:+-$ver}${bld:+-$bld}"
+	[ "$base" = NextBSD ] && base="NextBSD-$(date -u +%Y%m%d)"
+	BE="$base" n=1
+	while zfs list -H -o name "$TPOOL/ROOT/$BE" >/dev/null 2>&1; do
+		n=$((n + 1)); BE="$base-$n"
+	done
+	status "Creating boot environment $BE"
+	run zfs create -o mountpoint=/ -o canmount=noauto "$TPOOL/ROOT/$BE"
+	run zfs mount "$TPOOL/ROOT/$BE"
+}
+
 phase prepare
 umount_disk_partitions
-if [ "$FS" = zfs ]; then
+if [ "$UPGRADE" = 1 ]; then
+	if [ "$FS" = zfs ] && find_target_pool; then
+		open_target_pool
+	else
+		FS=ufs
+	fi
+elif [ "$FS" = zfs ]; then
 	release_target_pools
 fi
 
@@ -504,7 +587,16 @@ progress 16
 # alongside this engine.
 phase copy
 EXCLUDE=""
-if [ "$COPY" = 1 ]; then
+if [ "$ZSEND" = 1 ]; then
+	# A copy of a ZFS system: one recursive snapshot of its pool, an
+	# instant of the whole system. Snapshots are cheap and the streams
+	# are read from them, so the system keeps running as it is copied.
+	# cleanup() removes them from this pool in every case; the copy's are
+	# removed once received.
+	ZSNAP="nbi-copy-$$"
+	status "Taking a snapshot of the running system"
+	run zfs snapshot -r "$SRCPOOL@$ZSNAP"
+elif [ "$COPY" = 1 ]; then
 	# Copy mode reads a snapshot of /, not / itself: a live system keeps
 	# writing, and a copy taken file by file while it does is a copy of no
 	# moment in particular. mksnap_ffs freezes the filesystem for an
@@ -542,19 +634,42 @@ if [ "$COPY" = 1 ]; then
 		printf '%s/%s/*\n' "$S" "$p"
 		if [ -z "$S" ]; then printf '//%s/*\n' "$p"; fi
 	done > "$EXCLUDE"
+elif [ "$UPGRADE" = 1 ] && [ "$FS" = zfs ]; then
+	# Install-over on ZFS: only the boot environment is written. The
+	# shared datasets aren't mounted, and their directories in the new
+	# BE stay empty: the datasets cover them at boot.
+	EXCLUDE="$(mktemp /tmp/nbi-exclude.XXXXXX)"
+	S=${SRC%/}
+	for p in Local root private/tmp private/var/log private/var/tmp; do
+		printf '%s/%s/*\n' "$S" "$p"
+		if [ -z "$S" ]; then printf '//%s/*\n' "$p"; fi
+	done > "$EXCLUDE"
 fi
 
 # Room for it all? Better to say so now than to stop at 90%.
 if [ "${NEXTBSD_DRYRUN:-0}" != 1 ]; then
 	src_k="$(df -k "$SRC" 2>/dev/null | awk 'NR==2{print $3}')"
-	if [ "$COPY" = 1 ]; then
+	if [ "$ZSEND" = 1 ]; then
+		# What the stream carries: the pool, less /tmp and the other
+		# boot environments, compressed as it will be on the copy.
+		src_k="$(zfs get -Hp -o value used "$SRCPOOL" 2>/dev/null | awk '{printf "%d", $1 / 1024}')"
+		for ds in "$SRCPOOL/private/tmp" "$SRCPOOL/private/var/tmp" $(zfs list -H -o name -d 1 "$SRCPOOL/ROOT" 2>/dev/null | sed 1d); do
+			[ "$ds" = "$SRCDS" ] && continue
+			k="$(zfs get -Hp -o value used "$ds" 2>/dev/null | awk '{printf "%d", $1 / 1024}')"
+			src_k=$((src_k - ${k:-0}))
+		done
+	elif [ "$COPY" = 1 ]; then
 		# Less what's left out (see EXCLUDE).
 		S=${SRC%/}
 		skip_k="$(du -skx "$S/private/tmp" "$S/private/var/tmp" \
 		    "$S/private/var/vm" 2>/dev/null | awk '{s += $1} END {print s + 0}')"
 		src_k=$((src_k - skip_k))
 	fi
-	tgt_k="$(df -k "$MNT" 2>/dev/null | awk 'NR==2{print $4}')"
+	if [ "$FS" = zfs ]; then
+		tgt_k="$(zpool get -Hp -o value free "$TPOOL" 2>/dev/null | awk '{printf "%d", $1 / 1024}')"
+	else
+		tgt_k="$(df -k "$MNT" 2>/dev/null | awk 'NR==2{print $4}')"
+	fi
 	if [ "$COPY" = 1 ] && [ "$src_k" -gt "$tgt_k" ]; then
 		echo "do-install.sh: $DISK is too small: $src_k KB to copy, $tgt_k KB free" >&2
 		exit 1
@@ -578,10 +693,60 @@ if [ "${NEXTBSD_DRYRUN:-0}" != 1 ]; then
 	MONITOR=$!
 fi
 
-status "Cloning base with cpdup"
-if [ "$COPY" = 1 ]; then
+if [ "$ZSEND" = 1 ]; then
+	status "Copying the system with zfs send"
+	# What a copy leaves out: the other boot environments, and /tmp and
+	# /var/tmp (as a UFS copy leaves out temporary files). zfs send -R
+	# won't skip a descendant, so the copy is sent a subtree at a time
+	# (each with its properties, children and snapshots) into the
+	# containers, which are made here as create_datasets makes them:
+	# the running BE into ROOT, and every other dataset of the pool,
+	# private's and private/var's children included, except the two.
+	run zfs create -o mountpoint=none "$TPOOL/ROOT"
+	run zfs create -o mountpoint=none -o canmount=off "$TPOOL/private"
+	run zfs create -o mountpoint=none -o canmount=off "$TPOOL/private/var"
+	subtrees="ROOT/$BE"
+	for parent in "" private private/var; do
+		for ds in $(zfs list -H -o name -d 1 "$SRCPOOL${parent:+/$parent}" 2>/dev/null | sed 1d); do
+			rel="${ds#"$SRCPOOL"/}"
+			case "$rel" in
+			ROOT|private|private/var|private/tmp|private/var/tmp) continue ;;
+			esac
+			subtrees="$subtrees $rel"
+		done
+	done
+	for rel in $subtrees; do
+		# -u: nothing mounted until all of it is there.
+		run sh -c "zfs send -R '$SRCPOOL/$rel@$ZSNAP' | zfs receive -u '$TPOOL/$rel'"
+	done
+	for rel in $subtrees; do
+		run zfs destroy -r "$TPOOL/$rel@$ZSNAP"
+	done
+	run zfs destroy -r "$SRCPOOL@$ZSNAP"
+	ZSNAP=""
+	# The boot environment, then the copy's other datasets inside it
+	# (only this pool's: zfs mount -a would mount other pools' too).
+	run zfs mount "$TPOOL/ROOT/$BE"
+	if [ "${NEXTBSD_DRYRUN:-0}" = 1 ]; then
+		echo "DRYRUN: zfs mount each of $TPOOL's canmount=on datasets"
+	fi
+	for ds in $(zfs list -H -o name,canmount,mountpoint -r "$TPOOL" 2>/dev/null |
+	    awk -F'\t' '$2 == "on" && $3 != "none" && $3 != "legacy" {print $1}'); do
+		run zfs mount "$ds" 2>/dev/null || true
+	done
+	# /tmp and /var/tmp start empty: datasets of their own again, under
+	# the private datasets that came across.
+	run zfs create -o mountpoint=/private/tmp -o setuid=off "$TPOOL/private/tmp"
+	run zfs create -o mountpoint=/private/var/tmp -o setuid=off "$TPOOL/private/var/tmp"
+	run zpool set bootfs="$TPOOL/ROOT/$BE" "$TPOOL"
+elif [ "$COPY" = 1 ]; then
+	status "Cloning base with cpdup"
+	run cpdup -i0 -X "$EXCLUDE" "$SRC" "$MNT"
+elif [ "$UPGRADE" = 1 ] && [ "$FS" = zfs ]; then
+	status "Cloning base with cpdup"
 	run cpdup -i0 -X "$EXCLUDE" "$SRC" "$MNT"
 elif [ "$UPGRADE" = 1 ]; then
+	status "Cloning base with cpdup"
 	# Upgrade: replace base, KEEP data. -o = don't delete extras in the
 	# preserved trees; we clone over the top but spare /etc /var /home /Users.
 	for keep in etc var home Users usr/local; do
@@ -589,13 +754,14 @@ elif [ "$UPGRADE" = 1 ]; then
 	done
 	run cpdup -i0 -X /dev/null "$SRC" "$MNT"
 else
+	status "Cloning base with cpdup"
 	run cpdup -i0 "$SRC" "$MNT"
 fi
 # cpdup doesn't cross a mount point on the target any more than on the
 # source, so the pass above stopped at each dataset mounted inside the boot
 # environment: copy into each of them in turn. The source's directories
 # are on its root file system, so each of these is a plain copy.
-if [ "$FS" = zfs ]; then
+if [ "$FS" = zfs ] && [ "$ZSEND" = 0 ] && [ "$UPGRADE" = 0 ]; then
 	for d in Local root private/tmp private/var/log private/var/tmp; do
 		[ -d "$SRC/$d" ] || continue
 		if [ -n "$EXCLUDE" ]; then
@@ -615,9 +781,36 @@ status "Scrubbing volatile state"
 for d in tmp var/run var/tmp var/log; do
 	[ -d "$MNT/$d" ] && run find "$MNT/$d" -mindepth 1 -delete 2>/dev/null || true
 done
-# The temporary datasets' own top directories, as /tmp must be.
-if [ "$FS" = zfs ]; then
+# The temporary datasets' own top directories, as /tmp must be. (Not
+# install-over's: the datasets aren't mounted, and keep what they have.)
+if [ "$FS" = zfs ] && [ "$UPGRADE" = 0 ]; then
 	run chmod 1777 "$MNT/private/tmp" "$MNT/private/var/tmp"
+fi
+
+# --- 5, install-over on ZFS: the same machine ---------------------------------
+# The new boot environment is this machine's system, so it takes over the old
+# one's identity (which lives in the BE, under /private/etc and /private/var):
+# the SSH host keys, the host and machine IDs, the DHCP client's identifier,
+# and the other pools to import at boot. Read from the old BE mounted
+# read-only beside the new.
+if [ "$UPGRADE" = 1 ] && [ "$FS" = zfs ] && [ -n "${OLDBE:-}" ] && [ "$OLDBE" != - ]; then
+	status "Keeping this machine's identity"
+	OLDBEMNT=/tmp/nbi-oldbe
+	run mkdir -p "$OLDBEMNT"
+	if run mount -t zfs -o ro "$TPOOL/${OLDBE#*/}" "$OLDBEMNT"; then
+		for f in private/etc/hostid private/etc/machine-id \
+		    private/etc/zfs/zpool.cache private/var/db/dhcpclient/DUID_IA.plist; do
+			[ -e "$OLDBEMNT/$f" ] || continue
+			run mkdir -p "$(dirname "$MNT/$f")"
+			run cp -p "$OLDBEMNT/$f" "$MNT/$f"
+		done
+		for f in "$OLDBEMNT"/private/etc/ssh/ssh_host_*; do
+			[ -e "$f" ] || continue
+			run cp -p "$f" "$MNT/private/etc/ssh/"
+		done
+		run umount "$OLDBEMNT"
+	fi
+	OLDBEMNT=""
 fi
 
 # --- 5, copy mode: a machine of its own ---------------------------------------
@@ -626,12 +819,16 @@ fi
 # share: the SSH host keys (sshd-keygen-wrapper makes new ones at the copy's
 # first boot), a recorded host ID or machine ID, the random seed, and the DHCP
 # client's identifier and leases. The computer's name is a setting and stays.
+# Nor this machine's display arrangement (nextbsd/nextbsd#685), which
+# describes its monitors, or its list of other pools to import at boot.
 if [ "$COPY" = 1 ]; then
 	status "Giving the copy its own identity"
 	for f in "$MNT"/private/etc/ssh/ssh_host_*key "$MNT"/private/etc/ssh/ssh_host_*key.pub \
 	    "$MNT/private/etc/hostid" "$MNT/private/etc/machine-id" \
 	    "$MNT/private/var/db/hostid" "$MNT/boot/entropy" \
-	    "$MNT/private/var/db/dhcpclient/DUID_IA.plist"; do
+	    "$MNT/private/var/db/dhcpclient/DUID_IA.plist" \
+	    "$MNT/private/etc/zfs/zpool.cache" \
+	    "$MNT/Local/Library/Preferences/org.nextbsd.windowserver.displays.plist"; do
 		if [ -e "$f" ]; then run rm -f "$f"; fi
 	done
 	for d in private/var/db/entropy private/var/db/dhcpclient/leases; do
@@ -648,16 +845,16 @@ progress 88
 # clone so it exists on both a fresh install and an upgrade, under both the
 # mbr-fat and gpt layouts.
 #
-# TODO(ZFS, nextbsd-userland#179): on a ZFS root this becomes datasets created
-# early, while the pool is unfragmented (gang blocks break swapd's extent walk):
-#   zroot/private         mountpoint=/private canmount=off
-#   zroot/private/var     canmount=off
-#   zroot/private/var/vm  checksum=off compression=off dedup=off copies=1
-#                         recordsize=128K com.sun:auto-snapshot=false
-#   zroot/private/var/crash  exec=off setuid=off
-# The installer is UFS-only today, so only the directory is created here.
+# NextBSD runs without swap for now (E31), so on ZFS too this is only a
+# directory in the boot environment.
 status "Creating /private/var/vm"
 run install -d -o root -g wheel -m 0755 "$MNT/private/var/vm"
+
+# Install-over on ZFS: the new boot environment is the one the loader starts
+# (the old stays in its menu and in bectl list).
+if [ "$UPGRADE" = 1 ] && [ "$FS" = zfs ]; then
+	run zpool set bootfs="$TPOOL/ROOT/$BE" "$TPOOL"
+fi
 
 # --- 5b. Point the cloned system at its OWN root label -----------------------
 # Root is found by vfs.root.mountfrom, never by an fstab line: the kernel's
@@ -669,10 +866,10 @@ run install -d -o root -g wheel -m 0755 "$MNT/private/var/vm"
 # nothing to fix. A medium built before that still clones an fstab whose root
 # line names ufs/ROOTFS; repoint it so launchctl's boot-time mount -a doesn't
 # chase the medium's label.
-if [ "$FS" = zfs ]; then status "Setting boot config ($POOL/ROOT/default)"; else status "Setting root label + boot config ($LABEL)"; fi
+if [ "$FS" = zfs ]; then status "Setting boot config ($POOL/ROOT/$BE)"; else status "Setting root label + boot config ($LABEL)"; fi
 [ -f "$MNT/etc/fstab" ] && run sed -i '' -e "s#/dev/ufs/ROOTFS#/dev/ufs/$LABEL#g" "$MNT/etc/fstab"
 # A copied system's fstab, if it has one, names the running system's label.
-[ "$COPY" = 1 ] && [ -f "$MNT/etc/fstab" ] && run sed -i '' -e "s#/dev/ufs/NEXTBSD[^[:space:]]*#/dev/ufs/$LABEL#g" "$MNT/etc/fstab"
+[ "$COPY" = 1 ] && [ "$FS" = ufs ] && [ -f "$MNT/etc/fstab" ] && run sed -i '' -e "s#/dev/ufs/NEXTBSD[^[:space:]]*#/dev/ufs/$LABEL#g" "$MNT/etc/fstab"
 # loader.conf only means something where there IS a loader. A Pi has none --
 # the firmware enters the kernel directly -- so step 6 puts the same
 # vfs.root.mountfrom on the cmdline.txt line instead.
@@ -792,7 +989,7 @@ if [ "$PAYLOAD" = firmware ]; then
 	# a ZFS root that isn't found drops to mountroot>. No fallback list:
 	# the line is split on spaces, with no quoting.
 	if [ "$FS" = zfs ]; then
-		ROOTARG="vfs.root.mountfrom=zfs:$POOL/ROOT/default vfs.mountroot.timeout=30"
+		ROOTARG="vfs.root.mountfrom=zfs:$POOL/ROOT/$BE vfs.mountroot.timeout=30"
 	else
 		ROOTARG="vfs.root.mountfrom=ufs:/dev/ufs/$LABEL"
 	fi
