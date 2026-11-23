@@ -409,9 +409,9 @@ main(int argc, char *const *argv)
  * no /etc/fstab (nextbsd/nextbsd-userland#186).
  *
  * Filesystem-agnostic: statfs() reports the mounted type and fsck(8) /
- * mount(8) dispatch on it. Works for UFS today; a future root on any
- * filesystem supporting the standard MNT_UPDATE read-only -> read-write
- * remount needs no change here.
+ * mount(8) dispatch on it. UFS is checked first; ZFS (a ZFS install's boot
+ * environment) is not, and is only remounted. The rest of a ZFS install's
+ * datasets are mounted by launchctl's boot pass (zfs_boot_pass()).
  */
 static int
 launchd_run_tool(const char *const argv[])
@@ -435,6 +435,14 @@ launchd_run_tool(const char *const argv[])
 	}
 	if (pid == 0) {
 		if (pfd[1] >= 0) { dup2(pfd[1], STDERR_FILENO); close(pfd[0]); close(pfd[1]); }
+		/* There is no /etc/fstab (nextbsd-overlays#5), and libc's
+		 * setfsent() complains on every lookup mount(8) and fsck(8)
+		 * make: "fstab: /etc/fstab:0: No such file or directory" on
+		 * the console. getfstab() honours PATH_FSTAB; an empty file
+		 * says the same thing quietly (nextbsd-userland#200). */
+		if (access("/etc/fstab", F_OK) == -1) {
+			setenv("PATH_FSTAB", "/dev/null", 1);
+		}
 		execv(argv[0], (char *const *)argv);
 		_exit(127);
 	}
@@ -482,11 +490,18 @@ launchd_root_make_writable(void)
 		return;		/* already read-write — nothing to do */
 	}
 
-	/* / is mounted read-only, so running fsck(8) on it is safe. */
-	rc = launchd_run_tool(fsck_argv);
-	if (rc != 0) {
-		launchd_syslog(LOG_WARNING | LOG_CONSOLE,
-		    "root-rw: fsck -p / exited %d", rc);
+	/*
+	 * / is mounted read-only, so running fsck(8) on it is safe. Not on
+	 * ZFS, which has no fsck and is consistent on disk by design: the
+	 * remount below is all a ZFS boot environment needs
+	 * (nextbsd-userland#200).
+	 */
+	if (strcmp(sfs.f_fstypename, "zfs") != 0) {
+		rc = launchd_run_tool(fsck_argv);
+		if (rc != 0) {
+			launchd_syslog(LOG_WARNING | LOG_CONSOLE,
+			    "root-rw: fsck -p / exited %d", rc);
+		}
 	}
 
 	rc = launchd_run_tool(mount_argv);

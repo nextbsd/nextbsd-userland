@@ -83,6 +83,9 @@
 #endif
 #ifdef __FreeBSD__
 #include <nextbsd_verbose_boot.h>
+#include <ctype.h>
+#include <kenv.h>
+#include <md5.h>
 #endif
 
 #if HAVE_LIBAUDITD
@@ -168,6 +171,7 @@ static void loopback_setup_ipv4(void);
 static void loopback_setup_ipv6(void);
 static pid_t fwexec(const char *const *argv, int *wstatus);
 #ifdef __FreeBSD__
+static void zfs_boot_pass(void);
 static void domain_mkdirs(void);
 static void linux_abi_mounts(void);
 static void linux_data_mounts(void);
@@ -2421,6 +2425,13 @@ system_specific_bootstrap(bool sflag)
 		(void)posix_assumes_zero(acct("/var/account/acct"));
 	}
 
+#ifdef __FreeBSD__
+	/* ZFS datasets and other pools, before the fstab pass (whose lines
+	 * may mount under a dataset), the /tmp sweep below and anything that
+	 * reads /Local (nextbsd/nextbsd-userland#200). */
+	zfs_boot_pass();
+#endif
+
 #if !TARGET_OS_EMBEDDED
 	if (path_check("/etc/fstab")) {
 		const char *mount_tool[] = { "mount", "-vat", "nonfs", NULL };
@@ -4149,6 +4160,180 @@ linux_mount(const char *fstype, const char *source, const char *path, const char
 	}
 	if (fwexec(argv, NULL) == -1) {
 		launchctl_log(LOG_ERR, "Linux ABI: mount -t %s %s failed", fstype, path);
+	}
+}
+
+/*
+ * ZFS at boot (nextbsd/nextbsd-userland#200, epic nextbsd/nextbsd#600).
+ *
+ * NextBSD has no rc.d, so this does the jobs of FreeBSD's rc.d/hostid,
+ * rc.d/zpool, rc.d/zfs and the share half of rc.d/mountd. On a ZFS install
+ * the kernel imports the root pool itself (the loader, or a Pi's cmdline.txt,
+ * passes vfs.root.mountfrom=zfs:<pool>/ROOT/<be>) and mounts only the boot
+ * environment; launchd (PID 1) has already made it read-write without fsck
+ * (launchd_root_make_writable(), src/launchd.c). The rest happens here, before
+ * the fstab pass, the /tmp sweep and `load -D all`, so nothing that reads
+ * /Local (loginwindow, getty's autologin, sshd, createhomedir, the
+ * Linux data mounts) can start before the datasets are there:
+ *
+ *   1. the host ID: /etc/hostid made once, kern.hostid set from it every
+ *      boot (pools record the host that last imported them);
+ *   2. other pools: imported from /etc/zfs/zpool.cache (-N: mounted in 3);
+ *   3. `zfs mount -a`: /Local, /root, /private/tmp, /private/var/log and
+ *      /private/var/tmp on an install;
+ *   4. `zfs share -a`: /etc/zfs/exports from the sharenfs properties, for
+ *      mountd, which starts later from its LaunchDaemon.
+ *
+ * Only when ZFS is in use: / is ZFS, or a pool cache exists. Otherwise (a UFS
+ * install, the ISO, the Pi image) this returns before touching anything, so
+ * those boot exactly as before. kern.hostuuid is left alone: the DHCP client
+ * identifier and the synthesized host name are made from it.
+ */
+#define	ZFS_HOSTID_FILE	"/etc/hostid"
+
+static bool
+zfs_uuid_valid(const char *s)
+{
+	size_t i;
+	bool zero = true, ones = true;
+
+	if (strlen(s) != 36) {
+		return false;
+	}
+	for (i = 0; i < 36; i++) {
+		if (i == 8 || i == 13 || i == 18 || i == 23) {
+			if (s[i] != '-') {
+				return false;
+			}
+			continue;
+		}
+		if (!isxdigit((unsigned char)s[i])) {
+			return false;
+		}
+		if (s[i] != '0') {
+			zero = false;
+		}
+		if (s[i] != 'f' && s[i] != 'F') {
+			ones = false;
+		}
+	}
+	/* rc.d/hostid's list of firmware placeholders. */
+	return !zero && !ones &&
+	    strcasecmp(s, "03000200-0400-0500-0006-000700080009") != 0;
+}
+
+static void
+zfs_hostid(void)
+{
+	char uuid[64] = "", digest[33], tmp[] = ZFS_HOSTID_FILE ".XXXXXX";
+	unsigned long hostid;
+	FILE *f;
+	int fd;
+
+	if ((f = fopen(ZFS_HOSTID_FILE, "r")) != NULL) {
+		if (fgets(uuid, sizeof(uuid), f) == NULL) {
+			uuid[0] = '\0';
+		}
+		(void)fclose(f);
+		uuid[strcspn(uuid, " \t\r\n")] = '\0';
+	}
+	if (!zfs_uuid_valid(uuid)) {
+		/* First boot, or a copy whose installer removed it: the
+		 * firmware's UUID when it has a real one, else a random one
+		 * (version 4), as rc.d/hostid does. */
+		if (kenv(KENV_GET, "smbios.system.uuid", uuid, sizeof(uuid)) == -1 ||
+		    !zfs_uuid_valid(uuid)) {
+			uint8_t b[16];
+
+			arc4random_buf(b, sizeof(b));
+			b[6] = (b[6] & 0x0f) | 0x40;
+			b[8] = (b[8] & 0x3f) | 0x80;
+			(void)snprintf(uuid, sizeof(uuid),
+			    "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-"
+			    "%02x%02x%02x%02x%02x%02x",
+			    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+			    b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+		}
+		for (char *p = uuid; *p != '\0'; p++) {
+			*p = (char)tolower((unsigned char)*p);
+		}
+		if ((fd = mkstemp(tmp)) == -1 || fchmod(fd, 0644) == -1 ||
+		    dprintf(fd, "%s\n", uuid) < 0 || fsync(fd) == -1 ||
+		    close(fd) == -1 || rename(tmp, ZFS_HOSTID_FILE) == -1) {
+			launchctl_log(LOG_ERR, "ZFS: cannot write %s: %s",
+			    ZFS_HOSTID_FILE, strerror(errno));
+			(void)unlink(tmp);
+		} else {
+			launchctl_log(LOG_NOTICE, "ZFS: new host ID %s", uuid);
+		}
+	}
+	/* rc.d/hostid: the first 32 bits of the MD5 of the UUID string. */
+	if (MD5Data(uuid, (unsigned int)strlen(uuid), digest) == NULL) {
+		return;
+	}
+	digest[8] = '\0';
+	hostid = strtoul(digest, NULL, 16);
+	if (sysctlbyname("kern.hostid", NULL, NULL, &hostid, sizeof(hostid)) == -1) {
+		launchctl_log(LOG_ERR, "ZFS: cannot set kern.hostid: %s",
+		    strerror(errno));
+	}
+}
+
+static void
+zfs_boot_pass(void)
+{
+	static const char *const caches[] = {
+		"/etc/zfs/zpool.cache", "/boot/zfs/zpool.cache",
+	};
+	const char *mount_tool[] = { "/sbin/zfs", "mount", "-a", NULL };
+	const char *share_tool[] = { "/sbin/zfs", "share", "-a", NULL };
+	const char *cache = NULL;
+	struct statfs sfs;
+	bool rootzfs;
+	size_t i;
+
+	rootzfs = statfs("/", &sfs) == 0 &&
+	    strcmp(sfs.f_fstypename, "zfs") == 0;
+	for (i = 0; i < nitems(caches) && cache == NULL; i++) {
+		if (path_check(caches[i])) {
+			cache = caches[i];
+		}
+	}
+	if (!rootzfs && cache == NULL) {
+		return;		/* no ZFS here: UFS boots as before */
+	}
+	if (!path_check(mount_tool[0])) {
+		launchctl_log(LOG_ERR, "ZFS: %s is missing; datasets not mounted",
+		    mount_tool[0]);
+		return;
+	}
+
+	zfs_hostid();
+
+	if (cache != NULL) {
+		/* The root pool is imported already and is skipped. */
+		const char *import_tool[] = { "/sbin/zpool", "import", "-c",
+		    cache, "-a", "-N", NULL };
+		int status;
+
+		if (fwexec(import_tool, &status) == -1 ||
+		    !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+			launchctl_log(LOG_NOTICE, "ZFS: zpool import -c %s -a "
+			    "did not import every pool", cache);
+		}
+	}
+	if (fwexec(mount_tool, NULL) == -1) {
+		launchctl_log(LOG_ERR, "ZFS: zfs mount -a failed");
+	}
+	/* zfs share keeps its lock and /etc/zfs/exports there; NextBSD's
+	 * /etc doesn't ship the directory, and without it every boot printed
+	 * "failed to lock /etc/zfs/exports.lock" (measured on a Pi 500+). */
+	if (mkdir("/etc/zfs", 0755) == -1 && errno != EEXIST) {
+		launchctl_log(LOG_ERR, "ZFS: cannot create /etc/zfs: %s",
+		    strerror(errno));
+	}
+	if (fwexec(share_tool, NULL) == -1) {
+		launchctl_log(LOG_ERR, "ZFS: zfs share -a failed");
 	}
 }
 
