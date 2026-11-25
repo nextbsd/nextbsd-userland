@@ -11,8 +11,8 @@
  * messages one at a time, and exits once it has been idle for IDLE_SECONDS
  * and holds no live credential, so an unlock lasts its full timeout,
  * no update job is running or installed update waiting for its restart
- * (sh_update.c), and no install is running (sh_install.c), whose engine
- * it follows between messages.
+ * (sh_update.c), and no install is running or waiting for its restart
+ * (sh_install.c), whose engine it follows between messages.
  * launchd keeps the service port meanwhile and starts it again at the
  * next message.
  *
