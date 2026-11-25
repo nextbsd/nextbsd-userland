@@ -17,11 +17,17 @@
 #     freebsd-zfs. The loader boots the pool's bootfs, so loader.conf names
 #     no root.
 #   * ...EXCEPT on a Raspberry Pi 5-family board, which cannot boot that at
-#     all. There is no UEFI and no loader(8): the EEPROM bootloader reads
-#     config.txt off a FAT partition and enters the kernel directly. That
+#     all: the EEPROM bootloader reads config.txt off a FAT partition. That
 #     needs MBR + FAT32 + the pool in the second slice, selected
-#     automatically -- see LAYOUT/PAYLOAD. The kernel stays on FAT and
-#     cmdline.txt names the root dataset; the kernel imports the pool itself.
+#     automatically -- see LAYOUT/PAYLOAD. Two ways on from config.txt:
+#     - Through U-Boot and loader.efi (PAYLOAD=efi, nextbsd/nextbsd#687),
+#       how a NextBSD Pi image boots: config.txt starts u-boot.bin, which
+#       starts EFI/BOOT/BOOTAA64.EFI, and the loader boots
+#       /boot/kernel.RPI5/kernel and the pool's bootfs as on a PC. So
+#       pkg upgrade updates the kernel, and bectl activate works.
+#     - Older media start the kernel straight from the FAT (PAYLOAD=
+#       firmware): cmdline.txt names the root dataset, and the kernel
+#       imports the pool itself.
 #   * Copy mode (-c) makes ZFS too, in a pool of its own (NextBSD-xxxx): from
 #     a ZFS system by zfs send, from a UFS one by cpdup -- the way an
 #     existing UFS install moves to ZFS. Install-over (-U) on a ZFS disk
@@ -176,6 +182,14 @@ detect_layout() {
 }
 
 detect_payload() {
+	# A GPT disk always boots through the loader: step 6 writes the BIOS
+	# bootcode (where the boot blocks exist) and the EFI loader both, and
+	# step 5b the loader.conf root line. A PC started in legacy BIOS mode
+	# has no EFI signal below, and must not be taken for a Pi.
+	if [ "$LAYOUT" = gpt ]; then
+		echo efi
+		return
+	fi
 	if [ -e /dev/efi ] || [ -n "$(kenv -q efi-version 2>/dev/null)" ]; then
 		echo efi
 		return
@@ -245,6 +259,12 @@ while getopts "d:Uc" o; do
 	esac
 done
 [ -n "$DISK" ] || { echo "do-install.sh: missing -d <disk>" >&2; exit 2; }
+# Never an optical drive or an eMMC's boot area (probe-disks.sh doesn't
+# offer them either, #663).
+case "$DISK" in
+cd[0-9]*|acd[0-9]*|mmcsd*boot*|*rpmb*)
+	echo "do-install.sh: $DISK is not a disk NextBSD can be installed on" >&2; exit 2 ;;
+esac
 [ "$COPY" = 1 ] && [ "$UPGRADE" = 1 ] && { echo "do-install.sh: -c and -U don't go together" >&2; exit 2; }
 
 # The installed system's file system: ZFS. NEXTBSD_FS=ufs is the escape
@@ -870,9 +890,10 @@ if [ "$FS" = zfs ]; then status "Setting boot config ($POOL/ROOT/$BE)"; else sta
 [ -f "$MNT/etc/fstab" ] && run sed -i '' -e "s#/dev/ufs/ROOTFS#/dev/ufs/$LABEL#g" "$MNT/etc/fstab"
 # A copied system's fstab, if it has one, names the running system's label.
 [ "$COPY" = 1 ] && [ "$FS" = ufs ] && [ -f "$MNT/etc/fstab" ] && run sed -i '' -e "s#/dev/ufs/NEXTBSD[^[:space:]]*#/dev/ufs/$LABEL#g" "$MNT/etc/fstab"
-# loader.conf only means something where there IS a loader. A Pi has none --
-# the firmware enters the kernel directly -- so step 6 puts the same
-# vfs.root.mountfrom on the cmdline.txt line instead.
+# loader.conf only means something where there IS a loader. A Pi that
+# booted through U-Boot and loader.efi has one (PAYLOAD=efi); one booted
+# firmware-direct has none, so step 6 puts the same vfs.root.mountfrom on the
+# cmdline.txt line instead.
 #
 # On ZFS there is no root line at all: the loader finds the pool on the disk
 # it started from and passes its bootfs (vfs.root.mountfrom=zfs:NextBSD/ROOT/
@@ -892,10 +913,10 @@ fi
 progress 90
 
 # --- 6. Make the disk bootable ----------------------------------------------
-if [ "$PAYLOAD" = firmware ]; then
-	# The firmware boot partition: config.txt, the board DTB, and the kernel
-	# as kernel8.img. No bootcode, no ESP, no loader -- the EEPROM
-	# bootloader reads config.txt and enters the kernel itself.
+if [ "$LAYOUT" = mbr-fat ] || [ "$PAYLOAD" = firmware ]; then
+	# The firmware boot partition: config.txt, the board DTBs and overlays,
+	# and what config.txt starts -- u-boot.bin, which starts the loader in
+	# EFI/BOOT (PAYLOAD=efi), or the kernel as kernel8.img (firmware).
 	status "Installing the Raspberry Pi boot partition"
 	BOOTMNT=/tmp/nbi-boot
 	run mkdir -p "$BOOTMNT"
@@ -940,6 +961,11 @@ if [ "$PAYLOAD" = firmware ]; then
 				[ -e "$f" ] || continue
 				case "$(basename "$f")" in
 				.Spotlight-V100|.fseventsd|.Trashes) continue ;;
+				# One-shot test configs (rpi-tryboot): the firmware
+				# reads tryboot.txt in place of config.txt when the
+				# tryboot flag is set, so a copied one could start
+				# something else on the new disk.
+				tryboot.txt*) continue ;;
 				esac
 				cp -R "$f" "$BOOTMNT/"
 			done
@@ -952,6 +978,38 @@ if [ "$PAYLOAD" = firmware ]; then
 			echo "DRYRUN: cp -R $SRCDIR/* $BOOTMNT/"
 			[ "$SRCDIR" = "$SRCBOOT" ] && echo "DRYRUN: umount $SRCBOOT" || true
 		fi
+	fi
+
+	if [ "$PAYLOAD" = efi ]; then
+	# The loader path: config.txt starts u-boot.bin, U-Boot starts
+	# EFI/BOOT/BOOTAA64.EFI from this partition, and the loader reads
+	# loader.conf (step 5b) from the root it finds on this disk: the pool's
+	# bootfs, or the UFS label. Nothing here names a root. The loader is
+	# the installed system's own, so it matches the system it boots; the
+	# medium's u-boot.bin, config.txt and DTBs are kept as copied.
+	status "Installing the loader (EFI/BOOT/BOOTAA64.EFI)"
+	run mkdir -p "$BOOTMNT/EFI/BOOT"
+	if [ -f "$MNT/boot/loader_lua.efi" ]; then
+		run cp "$MNT/boot/loader_lua.efi" "$BOOTMNT/EFI/BOOT/BOOTAA64.EFI"
+	else
+		run cp "$MNT/boot/loader.efi" "$BOOTMNT/EFI/BOOT/BOOTAA64.EFI"
+	fi
+	# This system came up through the loader, so the new disk boots the
+	# same way: config.txt starts u-boot.bin. A medium whose config.txt
+	# still starts a kernel directly, and reached U-Boot some other way
+	# (a tryboot.txt, left out above), gets that line changed, plus the
+	# PCIe setting U-Boot needs to read an NVMe drive. Without a u-boot.bin
+	# here (some other UEFI firmware), config.txt stays as copied.
+	if [ "${NEXTBSD_DRYRUN:-0}" != 1 ] && [ -f "$BOOTMNT/u-boot.bin" ] &&
+	    ! grep -qE '^[[:space:]]*kernel=[[:space:]]*u-boot\.bin[[:space:]]*$' "$BOOTMNT/config.txt"; then
+		status "Setting config.txt to start u-boot.bin"
+		sed -i '' -E 's/^([[:space:]]*)kernel=.*/\1kernel=u-boot.bin/' "$BOOTMNT/config.txt"
+		grep -qE '^[[:space:]]*kernel=' "$BOOTMNT/config.txt" ||
+			printf 'kernel=u-boot.bin\n' >> "$BOOTMNT/config.txt"
+		grep -qE '^[[:space:]]*dtparam=pciex1' "$BOOTMNT/config.txt" ||
+			printf '\n# U-Boot reads an NVMe drive through PCIe (nextbsd/nextbsd#687).\n[all]\ndtparam=pciex1\n' >> "$BOOTMNT/config.txt"
+	fi
+	else
 	# Point the installed system at ITS OWN root.
 	#
 	# The copied cmdline.txt still names the medium's root, and both

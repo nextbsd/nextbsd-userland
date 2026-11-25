@@ -157,6 +157,7 @@ bool run_install(AppState& st,
   cmd += " -d " + shq(st.disks[st.disk_index].dev);
   cmd += " 2>&1";
 
+  const auto started = std::chrono::steady_clock::now();
   FILE* f = popen(cmd.c_str(), "r");
   if (!f) {
     st.fail_stage = "failed to launch install engine";
@@ -187,6 +188,9 @@ bool run_install(AppState& st,
     }
   }
   int rc = pclose(f);
+  st.elapsed_s = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(
+                                      std::chrono::steady_clock::now() - started)
+                                      .count());
 
   int code = (rc == -1 || !WIFEXITED(rc)) ? -1 : WEXITSTATUS(rc);
   if (code == 0) {
