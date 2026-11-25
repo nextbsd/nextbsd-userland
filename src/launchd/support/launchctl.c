@@ -4182,7 +4182,10 @@ linux_mount(const char *fstype, const char *source, const char *path, const char
  *   3. `zfs mount -a`: /Local, /root, /private/tmp, /private/var/log and
  *      /private/var/tmp on an install;
  *   4. `zfs share -a`: /etc/zfs/exports from the sharenfs properties, for
- *      mountd, which starts later from its LaunchDaemon.
+ *      mountd, which starts later from its LaunchDaemon;
+ *   5. on a machine with 4 GB of memory or less, the ARC (ZFS's cache)
+ *      between 32 MB and 64 MB (zfs_arc_small_memory()). Larger machines
+ *      keep FreeBSD's defaults (nextbsd/nextbsd#691).
  *
  * Only when ZFS is in use: / is ZFS, or a pool cache exists. Otherwise (a UFS
  * install, the ISO, the Pi image) this returns before touching anything, so
@@ -4190,6 +4193,45 @@ linux_mount(const char *fstype, const char *source, const char *path, const char
  * identifier and the synthesized host name are made from it.
  */
 #define	ZFS_HOSTID_FILE	"/etc/hostid"
+
+/*
+ * A 4 GB machine keeps its memory for the desktop: the ARC is held between
+ * 32 MB and 64 MB, the smallest sizes OpenZFS accepts (nextbsd/nextbsd#691).
+ * It still shrinks below that under memory pressure, as it always does.
+ * hw.physmem is the usable memory, a little under 4 GiB on a 4 GB machine;
+ * not hw.realmem, which on a PC includes the hole below 4 GiB. The minimum is
+ * set first: the kernel refuses a maximum at or below the current minimum,
+ * which defaults to a 32nd of memory (128 MB here).
+ */
+#define	ZFS_SMALL_MEMORY	(4ULL << 30)
+#define	ZFS_SMALL_ARC_MIN	(32ULL << 20)
+#define	ZFS_SMALL_ARC_MAX	(64ULL << 20)
+
+static void
+zfs_arc_small_memory(void)
+{
+	uint64_t physmem, amin = ZFS_SMALL_ARC_MIN, amax = ZFS_SMALL_ARC_MAX;
+	unsigned long pm;
+	size_t len = sizeof(pm);
+
+	if (sysctlbyname("hw.physmem", &pm, &len, NULL, 0) == -1) {
+		return;
+	}
+	physmem = pm;
+	if (physmem > ZFS_SMALL_MEMORY) {
+		return;
+	}
+	if (sysctlbyname("vfs.zfs.arc.min", NULL, NULL, &amin, sizeof(amin)) == -1 ||
+	    sysctlbyname("vfs.zfs.arc.max", NULL, NULL, &amax, sizeof(amax)) == -1) {
+		launchctl_log(LOG_ERR, "ZFS: cannot limit the ARC to %llu-%llu MB: %s",
+		    (unsigned long long)(amin >> 20), (unsigned long long)(amax >> 20),
+		    strerror(errno));
+		return;
+	}
+	launchctl_log(LOG_NOTICE, "ZFS: %llu MB of memory: ARC %llu-%llu MB",
+	    (unsigned long long)(physmem >> 20), (unsigned long long)(amin >> 20),
+	    (unsigned long long)(amax >> 20));
+}
 
 static bool
 zfs_uuid_valid(const char *s)
@@ -4309,6 +4351,7 @@ zfs_boot_pass(void)
 	}
 
 	zfs_hostid();
+	zfs_arc_small_memory();
 
 	if (cache != NULL) {
 		/* The root pool is imported already and is skipped. */
