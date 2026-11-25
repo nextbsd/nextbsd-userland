@@ -17,11 +17,22 @@ The installed root is laid down by cloning the running system with **cpdup** ont
 `root`, `private/tmp`, `private/var/log` and `private/var/tmp`. PCs get GPT with
 `gptzfsboot` (BIOS), the ESP with `loader.efi` and `freebsd-zfs`; the loader boots
 the `bootfs`, so `loader.conf` names no root (a USB target gets
-`vfs.mountroot.timeout`). A Raspberry Pi 5-family board keeps MBR + FAT
-(`config.txt`, DTB, `kernel8.img`) with the pool in the second slice, and
+`vfs.mountroot.timeout`). A PC started in legacy BIOS mode gets the same disk.
+
+A Raspberry Pi 5-family board keeps MBR + FAT with the pool in the second
+slice; the FAT is copied from the boot partition the system started from
+(`config.txt`, the DTBs and overlays), leaving out `tryboot.txt` test configs.
+A system that booted through U-Boot and `loader.efi` (nextbsd/nextbsd#687, how a
+NextBSD Pi image boots) gets the installed system's loader as
+`EFI/BOOT/BOOTAA64.EFI` and a `config.txt` that starts `u-boot.bin`, with
+`dtparam=pciex1` so U-Boot reads an NVMe drive. The loader then boots
+`/boot/kernel.RPI5/kernel` and the pool's `bootfs` as on a PC, so `pkg upgrade`
+updates the kernel and `bectl activate` works. The target can be the NVMe
+drive or an SD card; U-Boot can't read USB on a Pi 5, so not a USB disk. A
+system started firmware-direct (older media) keeps `kernel8.img`, and
 `cmdline.txt` names `vfs.root.mountfrom=zfs:NextBSD/ROOT/default
 vfs.mountroot.timeout=30`. launchctl's boot pass mounts the datasets
-(nextbsd-userland#200). No swap, no `/etc/fstab` (nextbsd-overlays#5).
+(nextbsd-userland#200). No swap.
 
 Copy mode (`-c`) makes ZFS too, in a pool named `NextBSD-xxxx` so a copy never
 shares the running pool's name: from a ZFS system by `zfs send` of a recursive
@@ -47,7 +58,9 @@ runs them as root without a shell:
   image, `installed` otherwise), `NEED` (the smallest usable disk, in bytes:
   30 GB, or more for a copy of a fuller system) and each disk's size in bytes
   (DISK's sixth field). It reads GEOM's configuration, so it works without
-  root. Memory disks are listed only while `/var/run/nextbsd-installer.test-disks`
+  root. Optical drives, an eMMC's boot and RPMB areas, and disks with no medium
+  aren't listed (#663), and `do-install.sh` refuses them. Memory disks are
+  listed only while `/var/run/nextbsd-installer.test-disks`
   exists (root creates it; it's gone after a reboot), for trying an install on
   a file-backed `md` disk.
 - `do-install.sh -c` copies the running system instead of installing the

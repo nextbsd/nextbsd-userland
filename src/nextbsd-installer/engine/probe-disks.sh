@@ -129,7 +129,19 @@ if [ -e "$TEST_DISKS" ]; then
 fi
 
 # One DISK line per disk, with size + model, then its volumes.
+#
+# Only disks something can be installed on. kern.disks lists every GEOM disk,
+# which includes what isn't one (#663):
+#   cd*, acd*         optical drives (read-only, and the medium a live ISO
+#                     was burned to is already marked MEDIA above)
+#   mmcsd*boot*,      an eMMC's boot and replay-protected areas, which the
+#   *rpmb*            mmc driver publishes beside the user area
+# and, below, any disk with no medium in it (an empty card reader reports a
+# size of 0).
 for dev in $disks; do
+	case "$dev" in
+	cd[0-9]*|acd[0-9]*|mmcsd*boot*|*rpmb*) continue ;;
+	esac
 	case "$dev" in
 	md*)
 		bytes="$(geom md list "$dev" 2>/dev/null | awk '/Mediasize:/{print $2; exit}')"
@@ -142,6 +154,7 @@ for dev in $disks; do
 		[ -n "$model" ] || model="$(diskinfo -v "$dev" 2>/dev/null | awk -F'#' '/Disk descr/{gsub(/^[ \t]+|[ \t]+$/,"",$1); print $1}')"
 		;;
 	esac
+	[ "${bytes:-0}" -gt 0 ] 2>/dev/null || continue
 	size="$(printf '%s' "${bytes:-0}" | awk '{
 		b=$1; u="B"; s=1
 		if (b>=1099511627776){u="TB";s=1099511627776}

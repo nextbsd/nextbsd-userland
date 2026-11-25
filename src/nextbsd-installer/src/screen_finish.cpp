@@ -20,6 +20,13 @@ Screen run_finish(ScreenInteractive& screen, AppState& st) {
   auto layout = Container::Horizontal({reboot, shut});
 
   const std::string disk = st.disks.empty() ? "?" : st.disks[st.disk_index].dev;
+  // How long the install took (nextbsd#426): "52 s", "4 min 12 s".
+  std::string took;
+  if (st.elapsed_s >= 0) {
+    const int m = st.elapsed_s / 60, s = st.elapsed_s % 60;
+    took = m > 0 ? std::to_string(m) + " min " + std::to_string(s) + " s"
+                 : std::to_string(s) + " s";
+  }
 
   auto renderer = Renderer(layout, [&] {
     Element head =
@@ -35,6 +42,7 @@ Screen run_finish(ScreenInteractive& screen, AppState& st) {
         text(""),
         row("Build", st.build_id),
         row("Disk", disk),
+        row("Time", took.empty() ? "—" : took),
         text(""),
         theme::hint("Remove the install medium before rebooting."),
         theme::hint("Log in as root (no password), then set a password, add"),

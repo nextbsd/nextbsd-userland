@@ -43,6 +43,7 @@ struct AppState {
   // result
   bool success = false;
   std::string fail_stage;
+  int elapsed_s = -1;     // how long the install ran, shown when it ends (nextbsd#426)
 };
 
 } // namespace nbi
