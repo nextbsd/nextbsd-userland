@@ -1,0 +1,22 @@
+name: Rebuild the desktop
+
+# Tells nextbsd/nextbsd-desktop that this repository merged, so it rebuilds
+# and publishes the desktop with the new commit (a component-updated
+# repository_dispatch, sent with DISPATCH_TOKEN).
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  dispatch:
+    if: github.repository_owner == 'nextbsd'
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+        run: |
+          gh api repos/nextbsd/nextbsd-desktop/dispatches \
+            -f event_type=component-updated \
+            -f "client_payload[repository]=$GITHUB_REPOSITORY" \
+            -f "client_payload[sha]=$GITHUB_SHA"
