@@ -22,8 +22,11 @@
  * An install takes minutes and the helper answers one message at a time,
  * so do-install.sh runs in the background: sh_install_poll() reads its
  * output and reaps it, from the main loop and from every InstallProgress.
- * The helper stays up while it runs, and for RESULT_LIFE afterwards so
- * the app can still ask how it went and restart.
+ * The helper stays up while it runs. A finished install keeps it up until
+ * the restart, however long the Installer's Restart waits to be clicked:
+ * the result lives only here, so a helper that exited idle came back with
+ * no job and refused the restart. A failed one is kept for RESULT_LIFE so
+ * the app can still ask how it went.
  */
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -45,7 +48,7 @@
 #define	SHUTDOWN	"/sbin/shutdown"
 
 #define	PROBE_MAX	(64 * 1024)	/* a few lines a disk */
-#define	RESULT_LIFE	600		/* seconds a finished install is kept */
+#define	RESULT_LIFE	600		/* seconds a failed install is kept */
 
 /* The engine's environment: nothing of the helper's own. */
 static char *const engine_env[] = {
@@ -366,7 +369,7 @@ bool
 sh_install_busy(void)
 {
 	sh_install_poll();
-	if (job.state == SH_INSTALL_RUNNING)
+	if (job.state == SH_INSTALL_RUNNING || job.state == SH_INSTALL_DONE)
 		return (true);
 	return (job.state != SH_INSTALL_IDLE &&
 	    sh_now() - job.finished < RESULT_LIFE);
