@@ -193,10 +193,13 @@
  * NFSv4, because on ZFS every home is a dataset of its own and NFSv3 does
  * not cross into them: a v3 client sees each home as an empty directory.
  * Hard, the NFSv4 default: a soft mount can drop the open and lock state
- * that a desktop session's files depend on.
+ * that a desktop session's files depend on. "rw" first: getfsent(3) needs
+ * one of rw, ro, rq, sw or xx, and without it every program that reads
+ * fstab (bectl, mount, swapon) printed "fstab: /etc/fstab:N: Inappropriate
+ * file type or format".
  */
 #define FSTAB_LINE \
-	"%s:" DS_LOCAL "\t" DS_NETWORK "\tnfs\tnfsv4\t0\t0\n"
+	"%s:" DS_LOCAL "\t" DS_NETWORK "\tnfs\trw,nfsv4\t0\t0\n"
 
 /* The jobs each role turns on. Order matters: rpcbind before the rest. */
 static const char *const server_jobs[] = {

@@ -1409,11 +1409,11 @@ else
         echo "$nfs_out" | grep -q 'no network volumes' || nfs_fail="$nfs_fail autofsd did not stand down: [$nfs_out];"
         [ "$nfs_autofs_before" -eq 0 ] && [ -e /dev/autofs ] && nfs_fail="$nfs_fail autofsd loaded AutoFS.kext with nothing to mount;"
         # The line dsjoin writes, at a TEST-NET address that is never mounted.
-        printf '# BEGIN directory server (managed by dsjoin and dsleave; do not edit)\n192.0.2.1:/Local\t/Network\tnfs\tnfsv4\t0\t0\n# END directory server\n' >> /etc/fstab
+        printf '# BEGIN directory server (managed by dsjoin and dsleave; do not edit)\n192.0.2.1:/Local\t/Network\tnfs\trw,nfsv4\t0\t0\n# END directory server\n' >> /etc/fstab
         nfs_keys=$(/etc/autofs/special_static)
         [ "$nfs_keys" = "/Network" ] || nfs_fail="$nfs_fail special_static keys: [$nfs_keys], want /Network;"
         nfs_entry=$(/etc/autofs/special_static /Network/)
-        [ "$nfs_entry" = "-fstype=nfs,nfsv4 192.0.2.1:/Local" ] || nfs_fail="$nfs_fail special_static /Network: [$nfs_entry];"
+        [ "$nfs_entry" = "-fstype=nfs,rw,nfsv4 192.0.2.1:/Local" ] || nfs_fail="$nfs_fail special_static /Network: [$nfs_entry];"
         cp -p /tmp/nfs.fstab.saved /etc/fstab; rm -f /tmp/nfs.fstab.saved
         [ -n "$nfs_fstab_made" ] && rm -f /etc/fstab
     fi

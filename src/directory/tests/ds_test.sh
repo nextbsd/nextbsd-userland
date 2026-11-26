@@ -220,7 +220,7 @@ cknogrep "the pool line is untouched"      "$NTP" "^#pool"
 cksay    "status reports the binding"      "bound to server.local" "$fix/dsstatus"
 cklc     "join loads automountd"           "load -w .*org.nextbsd.automountd"
 cklc     "join loads autofsd"              "load -w .*org.nextbsd.autofsd"
-ckgrep   "join writes the /Network line"   "$FSTAB" "^server.local:$R/Local	$R/Network	nfs	nfsv4	0	0$"
+ckgrep   "join writes the /Network line"   "$FSTAB" "^server.local:$R/Local	$R/Network	nfs	rw,nfsv4	0	0$"
 ckgrep   "inside the managed block"        "$FSTAB" "^# BEGIN directory server"
 
 # ---- join refusals
