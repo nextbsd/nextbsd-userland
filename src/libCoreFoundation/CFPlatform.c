@@ -810,6 +810,22 @@ CF_EXPORT CFMutableStringRef _CFCreateApplicationRepositoryPath(CFAllocatorRef a
 #pragma mark -
 #pragma mark Thread Functions
 
+#if !DEPLOYMENT_RUNTIME_SWIFT
+// NextBSD: CFStream's legacy thread names itself with _CFThreadSetName, which
+// upstream defines below only for Swift Foundation (DEPLOYMENT_RUNTIME_SWIFT,
+// off here). The symbol was left undefined in libCoreFoundation.so: tools
+// linked against CF got by with their own copy, but anything that dlopen()s
+// CF (or DiskArbitration, which needs it) failed with 'Undefined symbol
+// "_CFThreadSetName"'. As on Darwin, only the calling thread can be named.
+CF_CROSS_PLATFORM_EXPORT int _CFThreadSetName(_CFThreadRef thread, const char *_Nonnull name) {
+    if (!pthread_equal(pthread_self(), thread)) {
+        return EINVAL;
+    }
+    pthread_setname_np(thread, name);
+    return 0;
+}
+#endif
+
 #if TARGET_OS_WIN32
 
 CF_EXPORT void _NS_pthread_setname_np(const char *name) {
