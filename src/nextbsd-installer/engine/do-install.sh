@@ -8,7 +8,8 @@
 # Design notes baked in:
 #   * The installed system is ZFS (E31, nextbsd/nextbsd#600), whatever the
 #     install medium is (the ISO and the Pi image stay UFS) and whatever
-#     system it carries: pool NextBSD, boot environment NextBSD/ROOT/default,
+#     system it carries: pool NextBSD, boot environment NextBSD/ROOT/<version>
+#     (27.0.0-192: the system's version and build, see new_be_name),
 #     and the shared datasets Local, root, private/tmp, private/var/log and
 #     private/var/tmp (see create_pool). No swap. ZFS is compiled into the
 #     kernel, so nothing is loaded; launchctl's boot pass mounts the datasets
@@ -273,9 +274,26 @@ esac
 # the disk holds (step 1).
 FS=zfs
 [ "${NEXTBSD_FS:-}" = ufs ] && FS=ufs
-# The boot environment the new system goes in: default, or a new one beside
-# the old for install-over (step 1), or the running one's name for a copy.
-BE=default
+# The boot environment the new system goes in: named after the system going
+# in (new_be_name), beside the old one for install-over (step 1), or the
+# running one's name for a copy of a ZFS system.
+BE=""
+
+# Named after the system going in -- 27.0.0-192, its version and build --
+# which is what bectl list and the loader's menu show. A clock can't be
+# trusted here (a Pi has none until the network sets it), so it is only the
+# fallback. -2, -3... when that name is already in the pool (the same build
+# going in again).
+new_be_name() {
+	ver="$(sw_vers -productVersion 2>/dev/null || true)"
+	bld="$(sw_vers -buildVersion 2>/dev/null || true)"
+	base="$ver${ver:+${bld:+-}}$bld"
+	[ -n "$base" ] || base="$(date -u +%Y%m%d)"
+	BE="$base" n=1
+	while zfs list -H -o name "$TPOOL/ROOT/$BE" >/dev/null 2>&1; do
+		n=$((n + 1)); BE="$base-$n"
+	done
+}
 
 # A copy is a second NextBSD that may well stay attached to this machine, so
 # it can't share the running system's pool name or root label: the kernel
@@ -395,7 +413,7 @@ is_usb_disk() {
 # listed stays in the boot environment, so a rollback (bectl) takes it back
 # too; what's here survives one:
 #   ROOT             none              the boot environments
-#   ROOT/default     /                 canmount=noauto, as bectl makes BEs
+#   ROOT/<version>   /                 canmount=noauto, as bectl makes BEs
 #   Local            /Local            accounts, network, display
 #                                      arrangement, homes, apps
 #   root             /root
@@ -415,8 +433,9 @@ create_pool() {
 	# A copy of a ZFS system brings its datasets with it (step 4).
 	[ "$ZSEND" = 1 ] && return 0
 	run zfs create -o mountpoint=none "$TPOOL/ROOT"
-	run zfs create -o mountpoint=/ -o canmount=noauto "$TPOOL/ROOT/default"
-	run zfs mount "$TPOOL/ROOT/default"
+	new_be_name
+	run zfs create -o mountpoint=/ -o canmount=noauto "$TPOOL/ROOT/$BE"
+	run zfs mount "$TPOOL/ROOT/$BE"
 	run zfs create -o mountpoint=/Local "$TPOOL/Local"
 	run zfs create -o mountpoint=/root "$TPOOL/root"
 	run zfs create -o mountpoint=none -o canmount=off "$TPOOL/private"
@@ -424,7 +443,7 @@ create_pool() {
 	run zfs create -o mountpoint=none -o canmount=off "$TPOOL/private/var"
 	run zfs create -o mountpoint=/private/var/log -o exec=off -o setuid=off "$TPOOL/private/var/log"
 	run zfs create -o mountpoint=/private/var/tmp -o setuid=off "$TPOOL/private/var/tmp"
-	run zpool set bootfs="$TPOOL/ROOT/default" "$TPOOL"
+	run zpool set bootfs="$TPOOL/ROOT/$BE" "$TPOOL"
 }
 
 # Space used on the target so far, in KB, for the progress reporter: the
@@ -474,18 +493,7 @@ open_target_pool() {
 	run zpool import -N -R "$MNT" -t "$UGUID" "$TPOOL"
 	POOLMADE=1
 	OLDBE="$(zpool get -H -o value bootfs "$TPOOL" 2>/dev/null || true)"
-	# Named after the system going in (NextBSD-27.0.0-186), which is what
-	# bectl list and the loader's menu show; a clock can't be trusted
-	# here (a Pi has none until the network sets it). -2, -3... when
-	# the same build goes in again.
-	ver="$(sw_vers -productVersion 2>/dev/null || true)"
-	bld="$(sw_vers -buildVersion 2>/dev/null || true)"
-	base="NextBSD${ver:+-$ver}${bld:+-$bld}"
-	[ "$base" = NextBSD ] && base="NextBSD-$(date -u +%Y%m%d)"
-	BE="$base" n=1
-	while zfs list -H -o name "$TPOOL/ROOT/$BE" >/dev/null 2>&1; do
-		n=$((n + 1)); BE="$base-$n"
-	done
+	new_be_name
 	status "Creating boot environment $BE"
 	run zfs create -o mountpoint=/ -o canmount=noauto "$TPOOL/ROOT/$BE"
 	run zfs mount "$TPOOL/ROOT/$BE"

@@ -12,8 +12,9 @@ deployments — a **C++ FTXUI front-end** over a **`/bin/sh` engine**.
 
 The installed root is laid down by cloning the running system with **cpdup** onto
 **ZFS** (E31, nextbsd/nextbsd#600; the install media stay UFS): pool `NextBSD`
-(`ashift=12`, `compression=lz4`, `atime=off`, `autotrim=on`), boot environment
-`NextBSD/ROOT/default` (the pool's `bootfs`), and the shared datasets `Local`,
+(`ashift=12`, `compression=lz4`, `atime=off`, `autotrim=on`), a boot environment
+named after the system's version and build, such as `NextBSD/ROOT/27.0.0-192`
+(the pool's `bootfs`), and the shared datasets `Local`,
 `root`, `private/tmp`, `private/var/log` and `private/var/tmp`. PCs get GPT with
 `gptzfsboot` (BIOS), the ESP with `loader.efi` and `freebsd-zfs`; the loader boots
 the `bootfs`, so `loader.conf` names no root (a USB target gets
@@ -30,7 +31,7 @@ NextBSD Pi image boots) gets the installed system's loader as
 updates the kernel and `bectl activate` works. The target can be the NVMe
 drive or an SD card; U-Boot can't read USB on a Pi 5, so not a USB disk. A
 system started firmware-direct (older media) keeps `kernel8.img`, and
-`cmdline.txt` names `vfs.root.mountfrom=zfs:NextBSD/ROOT/default
+`cmdline.txt` names `vfs.root.mountfrom=zfs:NextBSD/ROOT/<version>
 vfs.mountroot.timeout=30`. launchctl's boot pass mounts the datasets
 (nextbsd-userland#200). No swap.
 
