@@ -1,0 +1,208 @@
+#!/bin/sh
+# bootenv-update -- install a NextBSD update into a new boot environment
+# (nextbsd/nextbsd#703, E31 phase 2).
+#
+# On a ZFS install every update goes into a copy of the running system, so
+# the running system is never touched and going back is a restart into the
+# earlier boot environment. Update.app (through SettingsHelper) and pkg
+# upgrade both use this, so they behave the same:
+#
+#   bootenv-update check     exit 0 if updates go into boot environments
+#                            here (/ is a ZFS boot environment), 1 if not
+#                            (UFS: update in place, as before)
+#   bootenv-update begin     clone the running system into the boot
+#                            environment "updating", mount it, print where;
+#                            the caller then runs pkg -r <there> upgrade
+#   bootenv-update commit    name the clone after the version now in it
+#                            (27.0.0-193, or -2, -3...), copy its loader to
+#                            the EFI partition, make it start next, remove
+#                            versions beyond the number kept; print the name
+#   bootenv-update abort     unmount and remove the unfinished clone
+#
+# Nothing here asks a question. Every step prints what it does on stderr;
+# stdout carries only the one value begin and commit return.
+#
+# How many versions are kept: KEEP in /Local/Library/Preferences/
+# org.nextbsd.bootenv-update.conf (keep=3 unless it says otherwise, at least
+# 2). Only boot environments named after a build (27.0.0-192, and the older
+# default and NextBSD-27.0.0-187 forms) count and are ever removed; ones a
+# person named (bectl create test) are never touched. The running version
+# and the one that starts next are always kept.
+set -u
+
+TEMP=updating
+MNT=/var/run/bootenv-update
+CONF=/Local/Library/Preferences/org.nextbsd.bootenv-update.conf
+SYSVER=System/Library/CoreServices/SystemVersion.plist
+
+say() { echo "bootenv-update: $*" >&2; }
+die() { say "$*"; exit 1; }
+
+# The running boot environment's dataset (NextBSD/ROOT/27.0.0-192), or
+# nothing when / isn't one.
+root_be() {
+	mount -p | awk '$2 == "/" && $3 == "zfs" { print $1; exit }' |
+	    grep -E '^[^/]+/ROOT/[^/]+$'
+}
+
+be_exists() { bectl list -H 2>/dev/null | awk -v n="$1" '$1 == n { f = 1 } END { exit !f }'; }
+
+# Where a boot environment is mounted, or nothing. bectl reports the real
+# path (/private/var/run/...), which is what the mount table shows.
+be_mountpoint() { bectl list -H 2>/dev/null | awk -v n="$1" '$1 == n && $3 != "-" { print $3; exit }'; }
+
+# The value of <key> in a SystemVersion.plist.
+plist_value() {
+	awk -v k="<key>$2</key>" '
+		found { if (match($0, /<string>[^<]*<\/string>/)) {
+			print substr($0, RSTART + 8, RLENGTH - 17); exit } }
+		index($0, k) { found = 1 }' "$1" 2>/dev/null
+}
+
+# Is this name one of ours: 27.0.0-192 (-2...), default, NextBSD-27.0.0-187?
+managed() {
+	echo "$1" | grep -Eq '^([0-9]+\.[0-9]+\.[0-9]+-[0-9]+(-[0-9]+)?|default|NextBSD-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+(-[0-9]+)?)$'
+}
+
+# A sort key, newest last: version components and build, then the -N
+# suffix; default sorts oldest.
+sort_key() {
+	case "$1" in
+	default) echo "0 0 0 0 0 $1" ;;
+	*) echo "$1" | sed -E 's/^NextBSD-//; s/^([0-9]+)\.([0-9]+)\.([0-9]+)-([0-9]+)(-([0-9]+))?$/\1 \2 \3 \4 \6/' |
+	    awk -v n="$1" '{ printf "%s %s %s %s %s %s\n", $1, $2, $3, $4, ($5 == "" ? 0 : $5), n }' ;;
+	esac
+}
+
+do_check() { [ -n "$(root_be)" ]; }
+
+do_abort() {
+	be_exists "$TEMP" || return 0
+	if [ -n "$(be_mountpoint "$TEMP")" ]; then
+		bectl umount -f "$TEMP" >/dev/null 2>&1 || umount -f "$(be_mountpoint "$TEMP")" 2>/dev/null
+	fi
+	bectl destroy -F -o "$TEMP" && say "removed the unfinished copy"
+}
+
+do_begin() {
+	do_check || die "/ is not a ZFS boot environment; update in place"
+	# A copy left behind by an update that was stopped or crashed.
+	if be_exists "$TEMP"; then
+		say "removing a copy left by an earlier update"
+		do_abort || die "cannot remove the boot environment $TEMP"
+	fi
+	rootds=$(root_be)
+	say "copying the running system (${rootds##*/}) into a new boot environment"
+	# From a snapshot named here, not bectl's own, which is named after the
+	# time to the second: two copies made in the same second (or on a Pi
+	# whose clock says 1970) got snapshots of the same name, and bectl
+	# activate then can't promote one clone over the other.
+	snap="bootenv-update-$(od -An -N6 -tx1 /dev/random | tr -d ' \n')"
+	zfs snapshot "$rootds@$snap" || die "zfs snapshot $rootds@$snap failed"
+	if ! bectl create -e "${rootds##*/}@$snap" "$TEMP"; then
+		zfs destroy "$rootds@$snap" 2>/dev/null
+		die "bectl create $TEMP failed"
+	fi
+	mkdir -p "$MNT" || { do_abort; die "cannot create $MNT"; }
+	bectl mount "$TEMP" "$MNT" >/dev/null || { do_abort; die "bectl mount $TEMP failed"; }
+	be_mountpoint "$TEMP"
+}
+
+# Copy the new version's loader to every EFI partition of the root pool's
+# disks that already carries one (EFI/BOOT/BOOT*.EFI), as the installer
+# put it there. Best effort: the new version also boots with the old loader.
+update_loader() {
+	pool="$1" src="$2"
+	for dev in $(zpool list -vHP "$pool" 2>/dev/null | awk '$1 ~ /^\/dev\// { print $1 }'); do
+		dev="${dev#/dev/}"
+		disk=$(echo "$dev" | sed -E 's/(p|s)[0-9]+$//')
+		efi=$(gpart show -p "$disk" 2>/dev/null | awk '$4 == "efi" || $4 == "fat32lba" { print $3; exit }')
+		[ -n "$efi" ] || continue
+		# Already mounted (msdosfs refuses a second mount): use that.
+		emnt=$(mount -p | awk -v d="/dev/$efi" '$1 == d { print $2; exit }')
+		own=0
+		if [ -z "$emnt" ]; then
+			emnt=$(mktemp -d /var/run/bootenv-efi.XXXXXX) || continue
+			mount -t msdosfs "/dev/$efi" "$emnt" 2>/dev/null || { rmdir "$emnt"; continue; }
+			own=1
+		fi
+		for f in "$emnt"/EFI/BOOT/BOOTX64.EFI "$emnt"/EFI/BOOT/BOOTAA64.EFI; do
+			[ -f "$f" ] || continue
+			new="$src/boot/loader.efi"
+			# A Pi through U-Boot (an MBR FAT slice) uses loader_lua.efi
+			# when there is one, as the installer does.
+			case "$efi" in *s1) [ -f "$src/boot/loader_lua.efi" ] && new="$src/boot/loader_lua.efi" ;; esac
+			[ -f "$new" ] || continue
+			if cmp -s "$new" "$f"; then
+				say "the loader on $efi is already current"
+			elif cp "$new" "$f.new" && mv "$f.new" "$f"; then
+				say "updated the loader on $efi (${f#$emnt/})"
+			else
+				rm -f "$f.new"
+				say "could not update the loader on $efi; the old one still starts this version"
+			fi
+		done
+		[ "$own" = 1 ] && { umount "$emnt"; rmdir "$emnt"; }
+	done
+}
+
+prune() {
+	running="$1" next="$2"
+	keep=3
+	if [ -r "$CONF" ]; then
+		k=$(sed -n 's/^[[:space:]]*keep[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$CONF" | tail -1)
+		[ -n "$k" ] && keep="$k"
+	fi
+	[ "$keep" -ge 2 ] 2>/dev/null || keep=2
+	slots=$keep
+	for b in "$running" "$next"; do
+		managed "$b" && slots=$((slots - 1))
+	done
+	[ "$running" = "$next" ] && managed "$running" && slots=$((slots + 1))
+	bectl list -H | awk '{ print $1 }' | while read -r b; do
+		[ "$b" = "$running" ] || [ "$b" = "$next" ] || [ "$b" = "$TEMP" ] && continue
+		managed "$b" && sort_key "$b"
+	done | sort -k1,1nr -k2,2nr -k3,3nr -k4,4nr -k5,5nr | awk '{ print $6 }' |
+	while read -r b; do
+		if [ "$slots" -gt 0 ]; then
+			slots=$((slots - 1))
+			continue
+		fi
+		if bectl destroy -o "$b" >/dev/null 2>&1; then
+			say "removed $b (keeps the $keep most recent versions)"
+		else
+			say "could not remove $b; it stays installed"
+		fi
+	done
+}
+
+do_commit() {
+	be_exists "$TEMP" || die "there is no update in progress"
+	src=$(be_mountpoint "$TEMP")
+	[ -n "$src" ] || die "$TEMP is not mounted"
+	ver=$(plist_value "$src/$SYSVER" ProductVersion)
+	bld=$(plist_value "$src/$SYSVER" ProductBuildVersion)
+	base="$ver${ver:+${bld:+-}}$bld"
+	[ -n "$base" ] || base="$(date -u +%Y%m%d)"
+	name="$base" n=1
+	while be_exists "$name"; do
+		n=$((n + 1)); name="$base-$n"
+	done
+	rootds=$(root_be)
+	pool="${rootds%%/*}" running="${rootds##*/}"
+	update_loader "$pool" "$src"
+	bectl umount "$TEMP" || die "bectl umount $TEMP failed"
+	bectl rename "$TEMP" "$name" || die "bectl rename $TEMP $name failed"
+	bectl activate "$name" >/dev/null || die "bectl activate $name failed"
+	say "NextBSD $name starts on the next restart; $running stays installed"
+	prune "$running" "$name"
+	echo "$name"
+}
+
+case "${1:-}" in
+check)	do_check ;;
+begin)	do_begin ;;
+commit)	do_commit ;;
+abort)	do_abort ;;
+*)	echo "usage: bootenv-update check | begin | commit | abort" >&2; exit 64 ;;
+esac
