@@ -9,7 +9,7 @@
  *      hostnamed_xlog_cf (the my_log macro target).
  *   2. SCPrivate.h SPI subset — _SC_CFStringIsValidDNSName.
  *   3. freebsd_synthesize_hostname — SMBIOS hostname synthesis
- *      (e.g. "ThinkPad-T460s", "VirtualBox-68f9a871") for the
+ *      (e.g. "ThinkPad-T460s", "Raspberry-Pi-500") for the
  *      "localhost" fallback substitution and prefs_monitor's boot-time
  *      value. The algorithm lives in the header-only
  *      nextbsd_hostname_synth.h, shared with launchd's early-init

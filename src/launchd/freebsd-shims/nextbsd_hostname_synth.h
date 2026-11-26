@@ -10,13 +10,20 @@
  * first login banner caches) identical to the one hostnamed publishes later.
  * The two used to be duplicated and drifted (nextbsd/nextbsd#325).
  *
- * Algorithm:
- *   1. smbios.system.version, if it is "identifying" (contains a letter —
- *      e.g. "ThinkPad T460s", not VirtualBox's bare revision "1.2"), is used
- *      bare: "ThinkPad-T460s".
- *   2. Otherwise smbios.system.product ("VirtualBox"), else "nextbsd". These
- *      are generic, so the first group of smbios.system.uuid is appended
- *      when present and non-zero: "VirtualBox-68f9a871".
+ * Algorithm (no table of vendors or machines; every rule is about the shape
+ * of the value the firmware reports):
+ *   1. Use smbios.system.product, unless it has no plain word in it -- only a
+ *      part number such as Lenovo's "20F9CTO1WW" -- and then use
+ *      smbios.system.version ("ThinkPad T460s").
+ *   2. Split it into words and keep them up to and including the first
+ *      model number (a word with a digit in it), then stop: "Raspberry Pi
+ *      500 Rev 1.0" is "Raspberry-Pi-500". A short bare number followed by a
+ *      longer model number is a size, not the model, so "XPS 13 9320" is
+ *      "XPS-9320". A name with no number keeps at most NBHS_WORDS_MAX words.
+ *   3. The firmware's capitalisation is kept and nothing is appended: two
+ *      machines of one model on a network are told apart by mDNSResponder's
+ *      own conflict renaming, as on macOS.
+ *   4. No usable value at all: "NextBSD".
  */
 #ifndef _NEXTBSD_HOSTNAME_SYNTH_H_
 #define _NEXTBSD_HOSTNAME_SYNTH_H_
@@ -31,125 +38,125 @@
 
 #define NBHS_SLUG_MAX		40
 #define NBHS_NAME_MAX		63	/* DNS label limit, excluding NUL */
-#define NBHS_LAST_RESORT	"nextbsd"
+#define NBHS_WORDS_MAX		3
+#define NBHS_LAST_RESORT	"NextBSD"
 
-/* Collapse runs of non-alphanumerics to one '-', trim edge dashes, and cap
- * at NBHS_SLUG_MAX characters. Returns the resulting length. */
+/* A word: a run of letters and digits. */
+struct nbhs_word {
+	const char	*p;
+	size_t		 len;
+	int		 letters;
+	int		 digits;
+};
+
+#define NBHS_WORDS_SCAN		16
+
 static inline size_t
-nbhs_sanitize_slug(char *s)
+nbhs_split(const char *raw, struct nbhs_word *w, size_t max)
 {
-	size_t i, j;
-	int prev_dash;
-
-	if (s == NULL)
-		return (0);
-	j = 0;
-	prev_dash = 1;
-	for (i = 0; s[i] != '\0' && j < NBHS_SLUG_MAX; i++) {
-		unsigned char c = (unsigned char)s[i];
-		if (isalnum(c)) {
-			s[j++] = (char)c;
-			prev_dash = 0;
-		} else if (!prev_dash) {
-			s[j++] = '-';
-			prev_dash = 1;
-		}
-	}
-	while (j > 0 && s[j - 1] == '-')
-		j--;
-	s[j] = '\0';
-	return (j);
-}
-
-/*
- * An SMBIOS field is "identifying" only if it carries at least one letter.
- * Real OEMs put the model name in smbios.system.version, but synthetic
- * firmware such as VirtualBox stores the bare SMBIOS table revision there
- * ("1.2"), which would sanitize to the useless slug "1-2".
- */
-static inline int
-nbhs_value_is_identifying(const char *raw)
-{
-	size_t i;
+	size_t n = 0, i;
 
 	if (raw == NULL)
 		return (0);
-	for (i = 0; raw[i] != '\0'; i++) {
-		if (isalpha((unsigned char)raw[i]))
-			return (1);
+	while (*raw != '\0' && n < max) {
+		if (!isalnum((unsigned char)*raw)) {
+			raw++;
+			continue;
+		}
+		w[n].p = raw;
+		w[n].letters = w[n].digits = 0;
+		for (i = 0; isalnum((unsigned char)raw[i]); i++) {
+			if (isdigit((unsigned char)raw[i]))
+				w[n].digits++;
+			else
+				w[n].letters++;
+		}
+		w[n].len = i;
+		raw += i;
+		n++;
 	}
+	return (n);
+}
+
+/* Has a plain word (letters only), so it names something. */
+static inline int
+nbhs_has_word(const struct nbhs_word *w, size_t n)
+{
+	size_t i;
+
+	for (i = 0; i < n; i++)
+		if (w[i].letters > 0 && w[i].digits == 0)
+			return (1);
 	return (0);
 }
 
-static inline int
-nbhs_try_slug(const char *raw, char *out, size_t outsz)
-{
-	if (raw == NULL || !nbhs_value_is_identifying(raw))
-		return (0);
-	(void)strncpy(out, raw, outsz - 1);
-	out[outsz - 1] = '\0';
-	(void)nbhs_sanitize_slug(out);
-	return (out[0] != '\0');
-}
-
-/* First UUID group as lowercase hex ("68F9A871-..." -> "68f9a871"); empty
- * when absent or all-zero (some firmware reports 00000000-...). */
+/*
+ * Build the name from one firmware value. Returns its length, 0 when the
+ * value has no letters at all: VirtualBox reports the bare table revision
+ * "1.2" as its version, which names nothing.
+ */
 static inline size_t
-nbhs_uuid_suffix(const char *uuid, char *out, size_t outsz)
+nbhs_name_from(const char *raw, char *out, size_t outsz)
 {
-	size_t i, j;
+	struct nbhs_word w[NBHS_WORDS_SCAN];
+	size_t n, i, len = 0, kept = 0;
 
 	if (outsz == 0)
 		return (0);
 	out[0] = '\0';
-	if (uuid == NULL)
+	n = nbhs_split(raw, w, NBHS_WORDS_SCAN);
+	for (i = 0; i < n && w[i].letters == 0; i++)
+		;
+	if (i == n)
 		return (0);
-	j = 0;
-	for (i = 0; uuid[i] != '\0' && uuid[i] != '-' && j < 8 &&
-	    j < outsz - 1; i++) {
-		unsigned char c = (unsigned char)uuid[i];
-		if (isxdigit(c))
-			out[j++] = (char)tolower(c);
+	for (i = 0; i < n; i++) {
+		int model = w[i].digits > 0;
+
+		/*
+		 * A bare number of one or two digits right before a longer
+		 * model number ("13" in "XPS 13 9320") is a size: skip it.
+		 */
+		if (model && w[i].letters == 0 && w[i].len <= 2 &&
+		    i + 1 < n && w[i + 1].digits > 0 &&
+		    w[i + 1].len > w[i].len)
+			continue;
+		if (len + (len > 0) + w[i].len > NBHS_SLUG_MAX ||
+		    len + (len > 0) + w[i].len >= outsz)
+			break;
+		if (len > 0)
+			out[len++] = '-';
+		(void)memcpy(out + len, w[i].p, w[i].len);
+		len += w[i].len;
+		out[len] = '\0';
+		if (model || ++kept == NBHS_WORDS_MAX)
+			break;
 	}
-	out[j] = '\0';
-	if (j > 0 && strspn(out, "0") == j)
-		out[0] = '\0';
-	return (strlen(out));
+	return (len);
 }
 
 /*
- * Pure synthesis from the three SMBIOS values (any may be NULL). Writes a
+ * Pure synthesis from the SMBIOS values (any may be NULL). Writes a
  * NUL-terminated hostname of at most NBHS_NAME_MAX characters into out.
  * Kept free of kenv so it can be unit-tested off-target
  * (tests/test_hostname_synth.c).
  */
 static inline void
-nbhs_synthesize_from(const char *version, const char *product,
-    const char *uuid, char *out, size_t outsz)
+nbhs_synthesize_from(const char *version, const char *product, char *out,
+    size_t outsz)
 {
-	char slug[NBHS_SLUG_MAX + 1];
+	struct nbhs_word w[NBHS_WORDS_SCAN];
 	char name[NBHS_NAME_MAX + 1];
-	char suffix[16];
-	size_t len;
+	const char *pick = product;
 
 	if (out == NULL || outsz == 0)
 		return;
-	if (nbhs_try_slug(version, slug, sizeof(slug))) {
-		/* Real model name: unique enough to use bare. */
-		(void)snprintf(name, sizeof(name), "%s", slug);
-	} else {
-		/* Generic product or last resort: add a per-machine suffix so
-		 * every guest of one hypervisor doesn't share a hostname. */
-		if (!nbhs_try_slug(product, slug, sizeof(slug)))
-			(void)snprintf(slug, sizeof(slug), "%s",
-			    NBHS_LAST_RESORT);
-		(void)snprintf(name, sizeof(name), "%s", slug);
-		if (nbhs_uuid_suffix(uuid, suffix, sizeof(suffix)) > 0) {
-			len = strlen(name);
-			(void)snprintf(name + len, sizeof(name) - len, "-%s",
-			    suffix);
-		}
-	}
+	if (!nbhs_has_word(w, nbhs_split(product, w, NBHS_WORDS_SCAN)) &&
+	    nbhs_has_word(w, nbhs_split(version, w, NBHS_WORDS_SCAN)))
+		pick = version;
+	if (nbhs_name_from(pick, name, sizeof(name)) == 0 &&
+	    nbhs_name_from(pick == product ? version : product, name,
+	    sizeof(name)) == 0)
+		(void)snprintf(name, sizeof(name), "%s", NBHS_LAST_RESORT);
 	(void)snprintf(out, outsz, "%s", name);
 }
 
@@ -172,12 +179,11 @@ nbhs_read_kenv(const char *key, char *buf, size_t bufsz)
 static inline void
 nbhs_synthesize(char *out, size_t outsz)
 {
-	char version[256], product[256], uuid[256];
+	char version[256], product[256];
 
 	nbhs_synthesize_from(
 	    nbhs_read_kenv("smbios.system.version", version, sizeof(version)),
 	    nbhs_read_kenv("smbios.system.product", product, sizeof(product)),
-	    nbhs_read_kenv("smbios.system.uuid", uuid, sizeof(uuid)),
 	    out, outsz);
 }
 #endif /* __FreeBSD__ */

@@ -71,7 +71,7 @@ launchd_early_sethostname(char *out, size_t outsz)
 	 * (both call nbhs_synthesize) so the kernel hostname set here, the
 	 * name hostnamed publishes to SCDS, the DHCP host-name option
 	 * ipconfigd sends, and mDNSResponder's .local label all agree.
-	 * e.g. "ThinkPad-T460s", or "VirtualBox-68f9a871" for a VM. */
+	 * e.g. "ThinkPad-T460s", "Raspberry-Pi-500" or "XPS-9320". */
 	nbhs_synthesize(name, sizeof(name));
 	if (sethostname(name, (int)strlen(name)) != 0)
 		return (-1);
