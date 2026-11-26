@@ -785,11 +785,39 @@ else
 	status "Cloning base with cpdup"
 	run cpdup -i0 "$SRC" "$MNT"
 fi
+# Each home folder is a dataset of its own on ZFS, <pool>/Local/Users/<name>,
+# as createhomedir(8) makes one (nextbsd-userland#673): it can have a quota
+# and snapshots (Rewind), and a directory server shares each one. The
+# source is UFS (the live CD, or a UFS install being copied), where homes
+# are plain folders, so the datasets are made here, before anything is
+# copied into them: Local/Users as a container (canmount=off), then one per
+# folder in the source's /Local/Users. A name zfs wouldn't take as is stays
+# a folder, as createhomedir leaves it.
+HOMES=""
+home_datasets() {
+	[ -d "$SRC/Local/Users" ] || return 0
+	for h in "$SRC"/Local/Users/*; do
+		[ -d "$h" ] && [ ! -L "$h" ] || continue
+		name=${h##*/}
+		case $name in
+		.*|-*|*[!A-Za-z0-9_.-]*) continue ;;
+		esac
+		if [ -z "$HOMES" ]; then
+			run zfs create -o canmount=off "$TPOOL/Local/Users"
+		fi
+		run zfs create "$TPOOL/Local/Users/$name"
+		HOMES="$HOMES $name"
+	done
+}
+
 # cpdup doesn't cross a mount point on the target any more than on the
 # source, so the pass above stopped at each dataset mounted inside the boot
 # environment: copy into each of them in turn. The source's directories
-# are on its root file system, so each of these is a plain copy.
+# are on its root file system, so each of these is a plain copy. The home
+# datasets are made first, so the copy of /Local stops at each of them in
+# turn too, and each home is then copied into its own dataset.
 if [ "$FS" = zfs ] && [ "$ZSEND" = 0 ] && [ "$UPGRADE" = 0 ]; then
+	home_datasets
 	for d in Local root private/tmp private/var/log private/var/tmp; do
 		[ -d "$SRC/$d" ] || continue
 		if [ -n "$EXCLUDE" ]; then
@@ -797,6 +825,17 @@ if [ "$FS" = zfs ] && [ "$ZSEND" = 0 ] && [ "$UPGRADE" = 0 ]; then
 		else
 			run cpdup -i0 "$SRC/$d" "$MNT/$d"
 		fi
+	done
+	for name in $HOMES; do
+		h="$SRC/Local/Users/$name"
+		if [ -n "$EXCLUDE" ]; then
+			run cpdup -i0 -X "$EXCLUDE" "$h" "$MNT/Local/Users/$name"
+		else
+			run cpdup -i0 "$h" "$MNT/Local/Users/$name"
+		fi
+		# The dataset's top folder is the home: its owner and mode.
+		run chown "$(stat -f %u:%g "$h")" "$MNT/Local/Users/$name"
+		run chmod "$(stat -f %Lp "$h")" "$MNT/Local/Users/$name"
 	done
 fi
 if [ -n "$MONITOR" ]; then kill "$MONITOR" 2>/dev/null || true; MONITOR=""; fi
