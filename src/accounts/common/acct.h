@@ -88,6 +88,9 @@
 #ifndef ACCT_CREATEHOMEDIR
 #define ACCT_CREATEHOMEDIR	"/usr/sbin/createhomedir"
 #endif
+#ifndef ACCT_ZFS
+#define ACCT_ZFS		"/sbin/zfs"
+#endif
 #ifndef ACCT_LOCAL_USERS
 #define ACCT_LOCAL_USERS	"/Local/Users"
 #endif

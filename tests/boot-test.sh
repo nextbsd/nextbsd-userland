@@ -791,7 +791,7 @@ expect {
 # NTP / NFS — the E18 service LaunchDaemons (#251, #252) and the autofs
 # client jobs (nextbsd#537): all six ship Disabled; ntpd runs foreground under
 # launchd and answers ntpq; rpcbind + mountd + nfsd serve /Local (loopback
-# NFSv3 mount); the -static map and autofsd behave with and without an fstab
+# NFSv4 mount); the -static map and autofsd behave with and without an fstab
 # line. The NFS
 # check waits on daemons and a mount, so it gets a longer timeout.
 expect {

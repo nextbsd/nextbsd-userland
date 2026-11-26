@@ -19,7 +19,7 @@
  * the same files. This program only moves a machine between three roles.
  *
  *   standalone   accounts in /Local, nothing exported, nothing mounted
- *   server       serves the accounts and the homes over NFS, advertised
+ *   server       serves the accounts and the homes over NFSv4, advertised
  *                over Bonjour as _nextbsd-ds._tcp
  *   client       mounts the server's /Local on its own /Network, which
  *                brings the accounts and the homes with it
@@ -91,6 +91,7 @@
  */
 
 #include <sys/param.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 
@@ -162,6 +163,9 @@
 #ifndef DS_LAUNCHCTL
 #define DS_LAUNCHCTL	"/bin/launchctl"
 #endif
+#ifndef DS_ZFS
+#define DS_ZFS		"/sbin/zfs"
+#endif
 
 #define DS_SERVICE_FILE	DS_SERVICE_DIR "/org.nextbsd.directory.plist"
 #define DS_SERVICE_TYPE	"_nextbsd-ds._tcp"
@@ -180,9 +184,14 @@
  * The fstab line dsjoin writes: the server's /Local on /Network.
  * org.nextbsd.autofsd mounts it at boot through autofs's -static map and
  * skips it when the server does not answer.
+ *
+ * NFSv4, because on ZFS every home is a dataset of its own and NFSv3 does
+ * not cross into them: a v3 client sees each home as an empty directory.
+ * Hard, the NFSv4 default: a soft mount can drop the open and lock state
+ * that a desktop session's files depend on.
  */
 #define FSTAB_LINE \
-	"%s:" DS_LOCAL "\t" DS_NETWORK "\tnfs\tnfsv3,soft,intr\t0\t0\n"
+	"%s:" DS_LOCAL "\t" DS_NETWORK "\tnfs\tnfsv4\t0\t0\n"
 
 /* The jobs each role turns on. Order matters: rpcbind before the rest. */
 static const char *const server_jobs[] = {
@@ -321,24 +330,77 @@ launchctl_start(const char *label)
 /* ------------------------------------------------------------- the exports */
 
 /*
- * One export, /Local, which a client mounts on its /Network: the accounts and
- * the homes come with it as /Network/Library/DirectoryServices and
- * /Network/Users.
+ * The dataset mounted at /Local, when /Local is one: its name in `ds`.
+ * Every ZFS install has it (the installer makes <pool>/Local).
+ */
+static bool
+local_dataset(char *ds, size_t len)
+{
+	struct statfs sfs;
+
+	if (statfs(DS_LOCAL, &sfs) == -1 ||
+	    strcmp(sfs.f_fstypename, "zfs") != 0 ||
+	    strcmp(sfs.f_mntonname, DS_LOCAL) != 0)
+		return (false);
+	return (strlcpy(ds, sfs.f_mntfromname, len) < len);
+}
+
+/* zfs set sharenfs=on, or zfs inherit sharenfs (off again). */
+static int
+zfs_share(const char *ds, bool on)
+{
+	pid_t pid;
+	int st;
+
+	if ((pid = fork()) == -1) {
+		warn("fork");
+		return (-1);
+	}
+	if (pid == 0) {
+		if (on)
+			(void)execl(DS_ZFS, "zfs", "set", "sharenfs=on", ds,
+			    (char *)NULL);
+		else
+			(void)execl(DS_ZFS, "zfs", "inherit", "sharenfs", ds,
+			    (char *)NULL);
+		_exit(127);
+	}
+	if (waitpid(pid, &st, 0) == -1 || !WIFEXITED(st) ||
+	    WEXITSTATUS(st) != 0) {
+		warnx("could not %s %s", on ? "share" : "stop sharing", ds);
+		return (-1);
+	}
+	say("  %s %s over NFS", on ? "shared" : "stopped sharing", ds);
+	return (0);
+}
+
+/*
+ * /Local, served over NFSv4, which a client mounts on its /Network: the
+ * accounts and the homes come with it as /Network/Library/DirectoryServices
+ * and /Network/Users.
  *
- * No -alldirs. Clients mount /Local itself, which a plain export allows, and
- * mountd rejects -alldirs on a directory that is not a mount point -- the
- * usual layout, /Local on the root filesystem -- dropping the line and
- * exporting nothing.
+ * /etc/exports holds the NFSv4 root line, which nfsd needs before it serves
+ * v4 at all. On ZFS the export itself is the Local dataset's sharenfs
+ * property: every dataset under it inherits it, so each home -- a dataset
+ * of its own -- is exported as createhomedir makes it, OpenZFS writes them
+ * all to /etc/zfs/exports and signals mountd, and an NFSv4 client crosses
+ * into them under its one /Network mount.
  *
- * NFS does not cross filesystems, so the accounts and the homes have to be on
- * /Local's own: on another filesystem they would be empty directories on the
- * client. That is refused here, before anything else is written.
+ * On UFS /Local goes in /etc/exports. No -alldirs: clients mount /Local
+ * itself, which a plain export allows, and mountd rejects -alldirs on a
+ * directory that is not a mount point -- the usual layout, /Local on the
+ * root filesystem -- dropping the line and exporting nothing. There each
+ * exported file system has to be listed, so the accounts and the homes have
+ * to be on /Local's own; on another one they would be empty directories on
+ * the client. That is refused here, before anything else is written.
  */
 static int
 write_exports(void)
 {
 	static const char *const under[] = { DS_LOCAL_DIR, DS_LOCAL_USERS };
+	char ds[MNAMELEN];
 	struct stat l, st;
+	bool zfs = local_dataset(ds, sizeof(ds));
 	FILE *f;
 	size_t i;
 
@@ -346,7 +408,7 @@ write_exports(void)
 		warn("%s", DS_LOCAL);
 		return (-1);
 	}
-	for (i = 0; i < nitems(under); i++) {
+	for (i = 0; !zfs && i < nitems(under); i++) {
 		if (stat(under[i], &st) == -1) {
 			warn("%s", under[i]);
 			return (-1);
@@ -363,13 +425,31 @@ write_exports(void)
 		return (-1);
 	}
 	(void)fprintf(f, "# Written by dspromote(8). Removed by dsdemote(8).\n");
-	(void)fprintf(f, "%s\n", DS_LOCAL);
+	(void)fprintf(f, "V4: / -sec=sys\n");
+	if (!zfs)
+		(void)fprintf(f, "%s\n", DS_LOCAL);
 	if (fclose(f) != 0) {
 		warn("%s", DS_EXPORTS);
 		return (-1);
 	}
 	say("  wrote %s", DS_EXPORTS);
+	if (zfs && zfs_share(ds, true) == -1)
+		return (-1);
 	return (0);
+}
+
+/* Undo write_exports(). Reported, never fatal. */
+static void
+remove_exports(void)
+{
+	char ds[MNAMELEN];
+
+	if (local_dataset(ds, sizeof(ds)))
+		(void)zfs_share(ds, false);
+	if (unlink(DS_EXPORTS) == -1 && errno != ENOENT)
+		warn("%s", DS_EXPORTS);
+	else
+		say("  removed %s", DS_EXPORTS);
 }
 
 /* ------------------------------------------------------- the Bonjour record */
@@ -897,10 +977,7 @@ do_demote(void)
 		return (1);
 	}
 	say("  removed %s", DS_DOMAIN);
-	if (unlink(DS_EXPORTS) == -1 && errno != ENOENT)
-		warn("%s", DS_EXPORTS);
-	else
-		say("  removed %s", DS_EXPORTS);
+	remove_exports();
 	if (unlink(DS_SERVICE_FILE) == -1 && errno != ENOENT)
 		warn("%s", DS_SERVICE_FILE);
 	else
