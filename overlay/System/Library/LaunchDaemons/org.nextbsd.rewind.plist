@@ -6,16 +6,16 @@
 	<string>org.nextbsd.rewind</string>
 	<!--
 	     Snapshots of home folders on each person's schedule, for Rewind
-	     in File Viewer (nextbsd/nextbsd#707): once at boot and then every
-	     minute, on the machine that holds the home datasets.
+	     in File Viewer (nextbsd/nextbsd#707): every minute, on the machine
+	     that holds the home datasets. Periodic only (StartInterval, no
+	     RunAtLoad): each run does what is due and exits, so nothing stays
+	     resident; the first run is a minute after boot.
 	-->
 	<key>ProgramArguments</key>
 	<array>
 		<string>/usr/libexec/nextbsd/rewind</string>
 		<string>run</string>
 	</array>
-	<key>RunAtLoad</key>
-	<true/>
 	<key>StartInterval</key>
 	<integer>60</integer>
 	<key>StandardErrorPath</key>
