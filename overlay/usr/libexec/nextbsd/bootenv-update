@@ -91,6 +91,9 @@ do_begin() {
 		say "removing a copy left by an earlier update"
 		do_abort || die "cannot remove the boot environment $TEMP"
 	fi
+	# Rewind: a snapshot of each home folder whose schedule asks for one
+	# before system updates (nextbsd/nextbsd#707). Best effort.
+	[ -x /usr/libexec/nextbsd/rewind ] && /usr/libexec/nextbsd/rewind before-update
 	rootds=$(root_be)
 	say "copying the running system (${rootds##*/}) into a new boot environment"
 	# From a snapshot named here, not bectl's own, which is named after the

@@ -1,0 +1,197 @@
+#!/bin/sh
+# rewind -- snapshots of home folders on a schedule, for Rewind in File
+# Viewer (nextbsd/nextbsd#707).
+#
+# Each home folder is a ZFS dataset of its own, <pool>/Local/Users/<name>.
+# This runs on the machine that holds those datasets, every minute
+# (org.nextbsd.rewind): a local user's home on their own computer, a
+# network user's on the directory server. Either way the person sets the
+# schedule from File Viewer on whatever computer they use, by writing a
+# small file in their own home, which this reads where the home lives:
+#
+#   ~/Library/Rewind/Schedule     key=value lines:
+#       enabled=1                 snapshots on (off when missing)
+#       freq=15m|hourly|daily|weekly
+#       at=HH:MM                  daily and weekly: when
+#       keep=7|14|30|90           days snapshots are kept
+#       thin=1                    after two days, keep one a day
+#       before=1                  a snapshot before each system update
+#       low=1                     when the pool is 90% full, remove the
+#                                 oldest first
+#   ~/Library/Rewind/SnapshotNow  present: take one now (then removed)
+#   ~/Library/Rewind/Status       written here: count=, latest=, used=
+#
+# Snapshots are <dataset>@rewind-YYYYMMDD-HHMMSS. File Viewer browses
+# them in <home>/.zfs/snapshot, locally and over NFS alike.
+#
+#   rewind run             what is due: requests, the schedule, cleanup
+#   rewind before-update   a snapshot of every home that asks for one
+#                          (bootenv-update begin calls this)
+#
+# The files in a home belong to its owner, so nothing here follows a
+# symbolic link there, only known values are used, and Status is written
+# to a new file and renamed into place.
+set -u
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+
+say() { echo "rewind: $*" >&2; }
+
+# Every home dataset here, as "dataset mountpoint".
+homes() {
+	for pool in $(zpool list -H -o name 2>/dev/null); do
+		zfs list -H -o name,mountpoint -d 1 "$pool/Local/Users" 2>/dev/null |
+		    awk -v top="$pool/Local/Users" '$1 != top && $2 ~ /^\//'
+	done
+}
+
+# A regular file (no link) at a path whose folders aren't links either.
+plain_file() {
+	home=$1 f=$2
+	[ ! -L "$home/Library" ] && [ ! -L "$home/Library/Rewind" ] &&
+	    [ ! -L "$home/Library/Rewind/$f" ] && [ -f "$home/Library/Rewind/$f" ]
+}
+
+# The schedule's value for key, if it's one of the allowed ones.
+setting() {
+	home=$1 key=$2 allowed=$3
+	plain_file "$home" Schedule || return 1
+	v=$(sed -n "s/^[[:space:]]*$key[[:space:]]*=[[:space:]]*\([A-Za-z0-9:]*\).*/\1/p" \
+	    "$home/Library/Rewind/Schedule" | tail -1)
+	for a in $allowed; do
+		[ "$v" = "$a" ] && { echo "$v"; return 0; }
+	done
+	return 1
+}
+
+# The schedule's time of day, HH:MM (02:00 unless it gives a valid one).
+at_time() {
+	home=$1
+	v=
+	plain_file "$home" Schedule &&
+	    v=$(sed -n 's/^[[:space:]]*at[[:space:]]*=[[:space:]]*\([0-9:]*\).*/\1/p' \
+	    "$home/Library/Rewind/Schedule" | tail -1)
+	if echo "$v" | grep -Eq '^([01][0-9]|2[0-3]):[0-5][0-9]$'; then
+		echo "$v"
+	else
+		echo 02:00
+	fi
+}
+
+# Our snapshots of a dataset, oldest first, as "epoch name".
+snaps() {
+	zfs list -H -p -t snapshot -o creation,name -s creation -d 1 "$1" 2>/dev/null |
+	    awk '$2 ~ /@rewind-/'
+}
+
+take() {
+	ds=$1 why=$2
+	name="rewind-$(date +%Y%m%d-%H%M%S)"
+	if zfs snapshot "$ds@$name" 2>/dev/null; then
+		say "$ds@$name ($why)"
+	fi
+}
+
+# When the last snapshot was taken (epoch), 0 for none.
+last() {
+	snaps "$1" | tail -1 | awk '{ print $1 + 0 } END { if (NR == 0) print 0 }' | tail -1
+}
+
+# Seconds since midnight today of HH:MM.
+at_today() {
+	h=${1%%:*} m=${1##*:}
+	midnight=$(date -j -f "%Y%m%d%H%M%S" "$(date +%Y%m%d)000000" +%s)
+	echo $((midnight + ${h#0} * 3600 + ${m#0} * 60))
+}
+
+due() {
+	ds=$1 home=$2
+	freq=$(setting "$home" freq "15m hourly daily weekly") || freq=hourly
+	at=$(at_time "$home")
+	now=$(date +%s)
+	prev=$(last "$ds")
+	case $freq in
+	15m)	[ $((now - prev)) -ge 900 ] ;;
+	hourly)	[ $((now - prev)) -ge 3600 ] ;;
+	daily)	t=$(at_today "$at"); [ "$now" -ge "$t" ] && [ "$prev" -lt "$t" ] ;;
+	weekly)	t=$(at_today "$at"); [ "$now" -ge "$t" ] && [ $((t - prev)) -ge $((6 * 86400)) ] ;;
+	esac
+}
+
+prune() {
+	ds=$1 home=$2
+	keep=$(setting "$home" keep "7 14 30 90") || keep=14
+	thin=$(setting "$home" thin "0 1") || thin=1
+	now=$(date +%s)
+	snaps "$ds" | awk -v now="$now" -v keep="$keep" -v thin="$thin" '
+	{
+		age = now - $1
+		day = substr($2, index($2, "@rewind-") + 8, 8)
+		if (age > keep * 86400) { print $2; next }
+		# After two days, the first of each day stays.
+		if (thin == 1 && age > 2 * 86400) {
+			if (day in seen) { print $2; next }
+			seen[day] = 1
+		}
+	}' | while read -r s; do
+		zfs destroy "$s" 2>/dev/null && say "removed $s"
+	done
+}
+
+status() {
+	ds=$1 home=$2 owner=$3
+	[ -L "$home/Library" ] || [ -L "$home/Library/Rewind" ] && return
+	[ -d "$home/Library/Rewind" ] || return
+	count=$(snaps "$ds" | wc -l | tr -d ' ')
+	latest=$(snaps "$ds" | tail -1 | awk '{ sub(/.*@/, "", $2); print $2 }')
+	used=$(zfs get -H -p -o value usedbysnapshots "$ds" 2>/dev/null)
+	tmp=$(mktemp "$home/Library/Rewind/.Status.XXXXXX") || return
+	printf 'count=%s\nlatest=%s\nused=%s\n' "$count" "$latest" "${used:-0}" > "$tmp"
+	chown "$owner" "$tmp" 2>/dev/null
+	chmod 644 "$tmp"
+	mv -f "$tmp" "$home/Library/Rewind/Status"
+}
+
+# When the pool is 90% full, the oldest snapshot of a home that allows it.
+low_space() {
+	for pool in $(zpool list -H -o name 2>/dev/null); do
+		cap=$(zpool list -H -o cap "$pool" | tr -d '%')
+		[ "${cap:-0}" -ge 90 ] || continue
+		homes | while read -r ds home; do
+			case $ds in "$pool"/*) ;; *) continue ;; esac
+			[ "$(setting "$home" low "0 1")" = 0 ] && continue
+			snaps "$ds" | head -1
+		done | sort -n | head -1 | while read -r _ s; do
+			zfs destroy "$s" 2>/dev/null && say "removed $s (pool $pool is $cap% full)"
+		done
+	done
+}
+
+run() {
+	homes | while read -r ds home; do
+		owner=$(stat -f %u "$home" 2>/dev/null) || continue
+		if plain_file "$home" SnapshotNow; then
+			rm -f "$home/Library/Rewind/SnapshotNow"
+			take "$ds" "asked for"
+		fi
+		if [ "$(setting "$home" enabled "0 1")" = 1 ]; then
+			due "$ds" "$home" && take "$ds" scheduled
+			prune "$ds" "$home"
+		fi
+		status "$ds" "$home" "$owner"
+	done
+	low_space
+}
+
+before_update() {
+	homes | while read -r ds home; do
+		[ "$(setting "$home" enabled "0 1")" = 1 ] || continue
+		[ "$(setting "$home" before "0 1")" = 0 ] && continue
+		take "$ds" "before an update"
+	done
+}
+
+case "${1:-}" in
+run)		run ;;
+before-update)	before_update ;;
+*)		echo "usage: rewind run | before-update" >&2; exit 64 ;;
+esac
