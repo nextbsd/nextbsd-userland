@@ -73,7 +73,9 @@ int
 main(int argc, char *argv[])
 {
     AssertionFlag flags = kDefaultAssertionFlag;
-    char ch;
+    /* int: getopt() returns -1 at the end, and char is unsigned on
+       arm64, where -1 became 255 and every run printed the usage. */
+    int ch;
     unsigned long timeout = 0;
     dispatch_source_t   disp_src;
 
@@ -285,6 +287,13 @@ forkChild(char *argv[])
         exit(EXIT_SUCCESS);
     });
     dispatch_resume(source);
+
+    /* The utility may have run and exited before the watch began (true,
+       an instant command): a watch on a process already gone never
+       fires, and this child waited forever. Gone means reparented. */
+    if (getppid() != pid) {
+        exit(EXIT_SUCCESS);
+    }
 
     return;
 }
