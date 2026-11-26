@@ -28,7 +28,9 @@
 /* See acct.h. Plain libc plus libutil for login.conf. */
 
 #include <sys/types.h>
+#ifdef __FreeBSD__
 #include <sys/mount.h>
+#endif
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 /*
@@ -560,6 +562,11 @@ acct_kill_uid(uid_t uid)
 static int
 destroy_home_dataset(const char *path, const char *name)
 {
+#ifndef __FreeBSD__
+	(void)path;
+	(void)name;
+	return (1);
+#else
 	struct statfs sfs;
 	char ds[sizeof(sfs.f_mntfromname)];
 	char a0[] = "zfs", a1[] = "destroy", a2[] = "-r";
@@ -592,6 +599,7 @@ destroy_home_dataset(const char *path, const char *name)
 	/* zfs leaves the empty mount point behind in /Local/Users. */
 	(void)rmdir(path);
 	return (0);
+#endif
 }
 
 /*

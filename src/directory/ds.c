@@ -91,7 +91,9 @@
  */
 
 #include <sys/param.h>
+#ifdef __FreeBSD__
 #include <sys/mount.h>
+#endif
 #include <sys/stat.h>
 #include <sys/wait.h>
 
@@ -113,6 +115,9 @@
  */
 #ifndef nitems
 #define nitems(x)	(sizeof((x)) / sizeof((x)[0]))
+#endif
+#ifndef MNAMELEN
+#define MNAMELEN	1024	/* the host tests build this on Linux */
 #endif
 
 #ifndef DS_LOCAL
@@ -336,6 +341,7 @@ launchctl_start(const char *label)
 static bool
 local_dataset(char *ds, size_t len)
 {
+#ifdef __FreeBSD__
 	struct statfs sfs;
 
 	if (statfs(DS_LOCAL, &sfs) == -1 ||
@@ -343,6 +349,11 @@ local_dataset(char *ds, size_t len)
 	    strcmp(sfs.f_mntonname, DS_LOCAL) != 0)
 		return (false);
 	return (strlcpy(ds, sfs.f_mntfromname, len) < len);
+#else
+	(void)ds;
+	(void)len;
+	return (false);
+#endif
 }
 
 /* zfs set sharenfs=on, or zfs inherit sharenfs (off again). */
