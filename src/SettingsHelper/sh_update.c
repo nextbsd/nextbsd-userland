@@ -48,6 +48,15 @@
  * rights check; after it Update says the update succeeded until the next
  * check.
  *
+ * On a ZFS install the install doesn't touch the running system: it goes
+ * into a new boot environment (nextbsd/nextbsd#703). bootenv-update begin
+ * clones the running system and mounts the clone, pkg -r <clone> upgrade
+ * installs into it, and bootenv-update commit names it after the version
+ * now in it, copies its loader to the EFI partition, makes it start next
+ * and removes versions beyond the number kept. Any failure runs
+ * bootenv-update abort, which removes the clone: the running system is as
+ * it was. On UFS the install goes over the running system, as before.
+ *
  * Built with -DSH_UPDATE_TEST=\"/dir\" (make UPDATE_TEST=/dir), pkg
  * works on a throwaway database, cache and repository under /dir
  * instead of the system's, and restart only logs: a way to try the
@@ -74,6 +83,10 @@
 
 #define	PKG		"/usr/sbin/pkg"
 #define	SHUTDOWN	"/sbin/shutdown"
+#define	BOOTENV		"/usr/libexec/nextbsd/bootenv-update"
+#define	BECTL		"/sbin/bectl"
+#define	KEEP_DIR	"/Local/Library/Preferences"
+#define	KEEP_FILE	KEEP_DIR "/org.nextbsd.bootenv-update.conf"
 
 #ifdef SH_UPDATE_TEST
 #define	STATE_DIR	SH_UPDATE_TEST "/state"
@@ -103,6 +116,8 @@ struct job {
 static struct job *job;
 static pid_t job_pid = -1;
 static bool in_job;		/* this is the job's child */
+static const char *pkg_root;	/* pkg -r: the boot environment being
+				   installed into */
 static bool restart_approved;	/* this process installed an update */
 
 /* Event-pipe bookkeeping, in the child. */
@@ -160,6 +175,10 @@ pkg_argv(const char *argv[], int max, const char *evpipe,
 	argv[n++] = "-r";
 	argv[n++] = SH_UPDATE_TEST "/root";
 #endif
+	if (pkg_root != NULL) {
+		argv[n++] = "-r";
+		argv[n++] = pkg_root;
+	}
 	if (evpipe != NULL) {
 		(void)snprintf(evopt, sizeof(evopt), "EVENT_PIPE=%s", evpipe);
 		argv[n++] = "-o";
@@ -277,6 +296,69 @@ pkg_line(const char *const args[], char *dst, size_t size)
 	(void)strlcpy(dst, out, size);
 	free(out);
 	return (rc == 0 && dst[0] != '\0');
+}
+
+/*
+ * Run bootenv-update `verb`: its first line of output into `out` (when
+ * given), its messages to the helper's log. Returns its exit status, -1
+ * if it didn't run.
+ */
+static int
+bootenv(const char *verb, char *out, size_t size)
+{
+	static const char *const env[] = {
+		"PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+		"LC_ALL=C",
+		NULL
+	};
+	const char *argv[] = { BOOTENV, verb, NULL };
+	char buf[PATH_MAX];
+	size_t len = 0;
+	ssize_t n;
+	pid_t pid;
+	int fds[2], rc;
+
+	if (out != NULL && size > 0)
+		out[0] = '\0';
+	if (pipe2(fds, O_CLOEXEC) == -1)
+		return (-1);
+	pid = fork();
+	if (pid == -1) {
+		(void)close(fds[0]);
+		(void)close(fds[1]);
+		return (-1);
+	}
+	if (pid == 0) {
+		int fd = open("/dev/null", O_RDONLY);
+
+		if (fd != -1)
+			(void)dup2(fd, STDIN_FILENO);
+		(void)dup2(fds[1], STDOUT_FILENO);
+		/* A cancel mustn't stop it half way through a step. */
+		(void)signal(SIGTERM, SIG_IGN);
+		execve(argv[0], (char *const *)argv, (char *const *)env);
+		_exit(127);
+	}
+	(void)close(fds[1]);
+	while ((n = read(fds[0], buf + len, sizeof(buf) - 1 - len)) != 0) {
+		if (n == -1) {
+			if (errno == EINTR)
+				continue;
+			break;
+		}
+		len += (size_t)n;
+		if (len == sizeof(buf) - 1)
+			break;
+	}
+	(void)close(fds[0]);
+	buf[len] = '\0';
+	buf[strcspn(buf, "\r\n")] = '\0';
+	if (out != NULL)
+		(void)strlcpy(out, buf, size);
+	rc = pkg_wait(pid);
+	sh_log("update: bootenv-update %s: %d%s%s", verb, rc,
+	    buf[0] != '\0' ? " " : "", buf);
+	return (rc);
 }
 
 /* ---- the event pipe ---------------------------------------------------- */
@@ -651,35 +733,68 @@ static int
 run_install(void)
 {
 	static const char *const args[] = { "upgrade", "-y", "-U", NULL };
+	static const char *const clean[] = { "clean", "-a", "-y", NULL };
+	static char root[PATH_MAX];
+	char name[128], *out;
 	struct progress pr;
 	int64_t size;
 	int pass;
+	bool be = false;
 
 	set_line("Preparing to install");
 	available_version(job->available, sizeof(job->available));
+#ifndef SH_UPDATE_TEST
+	/* ZFS: into a new boot environment (see the top of the file). */
+	if (bootenv("check", NULL, 0) == 0) {
+		set_line("Copying the system into a new boot environment");
+		if (bootenv("begin", root, sizeof(root)) != 0 ||
+		    root[0] != '/')
+			return (SH_UPDATE_FAILED);
+		pkg_root = root;
+		be = true;
+	}
+#endif
 	/* Until pkg upgrade has nothing left to do; a second pass if pkg
 	 * upgraded only itself the first time. */
 	for (pass = 0; pass < 3; pass++) {
 		memset(&pr, 0, sizeof(pr));
 		if (!dry_run(&size, &pr.packages))
-			return (SH_UPDATE_FAILED);
+			goto fail;
 		if (pr.packages == 0)
 			break;
 		if (pass == 2)
-			return (SH_UPDATE_FAILED);
+			goto fail;
 		job->pending = true;
 		job->total = (int64_t)pr.packages * PKG_UNIT;
 		job->done = 0;
 		if (pkg_events(args, &pr) != 0)
-			return (SH_UPDATE_FAILED);
+			goto fail;
 		job->done = job->total;
 	}
 	if (!job->pending)
-		return (SH_UPDATE_FAILED);	/* there was nothing to install */
+		goto fail;	/* there was nothing to install */
 	set_line("Finishing up");
+	if (be) {
+		/* The packages the clone was handed are installed now. */
+		(void)pkg_output(clean, &out);
+		free(out);
+		pkg_root = NULL;
+		if (bootenv("commit", name, sizeof(name)) != 0)
+			goto fail;
+		/* And the download, which the running system no longer
+		   needs either. */
+		(void)pkg_output(clean, &out);
+		free(out);
+	}
 	job->pending = false;
 	restart_record(job->available);
 	return (SH_UPDATE_DONE);
+fail:
+	if (be) {
+		pkg_root = NULL;
+		(void)bootenv("abort", NULL, 0);
+	}
+	return (SH_UPDATE_FAILED);
 }
 
 /* ---- the helper's side ------------------------------------------------- */
@@ -811,6 +926,145 @@ sh_update_status(struct sh_update_status *out)
 	}
 	out->restart = restart_state(out->restart_version,
 	    sizeof(out->restart_version));
+}
+
+/* ---- Installed Versions ------------------------------------------------ */
+
+/*
+ * Is `name` a boot environment bectl lists? Its Active column ("N", "R",
+ * "NR" or "-") into `active`. Only names a boot environment can have.
+ */
+static bool
+be_listed(const char *name, char *active, size_t size)
+{
+	static const char *const env[] = { "PATH=/sbin:/bin:/usr/sbin:/usr/bin",
+	    "LC_ALL=C", NULL };
+	const char *argv[] = { BECTL, "list", "-H", NULL };
+	char buf[16384], *line, *next, *tab;
+	size_t len = 0, n = strlen(name);
+	ssize_t r;
+	pid_t pid;
+	int fds[2];
+	bool found = false;
+
+	if (n == 0 || n >= sizeof(SHUpdateVersion) || name[0] == '-' ||
+	    strspn(name, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	    "0123456789._-") != n)
+		return (false);
+	if (pipe2(fds, O_CLOEXEC) == -1)
+		return (false);
+	if ((pid = fork()) == -1) {
+		(void)close(fds[0]);
+		(void)close(fds[1]);
+		return (false);
+	}
+	if (pid == 0) {
+		(void)dup2(fds[1], STDOUT_FILENO);
+		execve(argv[0], (char *const *)argv, (char *const *)env);
+		_exit(127);
+	}
+	(void)close(fds[1]);
+	while (len < sizeof(buf) - 1 &&
+	    (r = read(fds[0], buf + len, sizeof(buf) - 1 - len)) != 0) {
+		if (r == -1) {
+			if (errno == EINTR)
+				continue;
+			break;
+		}
+		len += (size_t)r;
+	}
+	(void)close(fds[0]);
+	buf[len] = '\0';
+	(void)pkg_wait(pid);
+	for (line = buf; line != NULL && *line != '\0'; line = next) {
+		next = strchr(line, '\n');
+		if (next != NULL)
+			*next++ = '\0';
+		tab = strchr(line, '\t');
+		if (tab == NULL || (size_t)(tab - line) != n ||
+		    strncmp(line, name, n) != 0)
+			continue;
+		found = true;
+		line = tab + 1;
+		tab = strchr(line, '\t');
+		if (tab != NULL)
+			*tab = '\0';
+		(void)strlcpy(active, line, size);
+		break;
+	}
+	return (found);
+}
+
+static int
+versions_ready(void)
+{
+	if (bootenv("check", NULL, 0) != 0)
+		return (SH_ERR_UNSUPPORTED);
+	if (sh_update_busy())
+		return (SH_ERR_BUSY);
+	return (SH_OK);
+}
+
+int
+sh_update_start_version(const char *version)
+{
+	const char *activate[] = { BECTL, "activate", version, NULL };
+#ifndef SH_UPDATE_TEST
+	static const char *const restart[] = { SHUTDOWN, "-r", "now", NULL };
+#endif
+	char active[8];
+	int rc;
+
+	if ((rc = versions_ready()) != SH_OK)
+		return (rc);
+	if (!be_listed(version, active, sizeof(active)) ||
+	    strchr(active, 'N') != NULL)
+		return (SH_ERR_INVALID);
+	if (!sh_run(activate))
+		return (SH_ERR_FAILED);
+#ifdef SH_UPDATE_TEST
+	sh_log("update: test build: would run %s -r now", SHUTDOWN);
+	return (SH_OK);
+#else
+	return (sh_run(restart) ? SH_OK : SH_ERR_FAILED);
+#endif
+}
+
+int
+sh_update_remove_version(const char *version)
+{
+	const char *destroy[] = { BECTL, "destroy", "-o", version, NULL };
+	char active[8];
+	int rc;
+
+	if ((rc = versions_ready()) != SH_OK)
+		return (rc);
+	if (!be_listed(version, active, sizeof(active)) ||
+	    strpbrk(active, "NR") != NULL)
+		return (SH_ERR_INVALID);
+	return (sh_run(destroy) ? SH_OK : SH_ERR_FAILED);
+}
+
+int
+sh_update_set_keep(int keep)
+{
+	char tmp[] = KEEP_FILE ".XXXXXX", text[32];
+	int fd, rc, len;
+
+	if (keep < 2 || keep > 10)
+		return (SH_ERR_INVALID);
+	if ((rc = versions_ready()) != SH_OK && rc != SH_ERR_BUSY)
+		return (rc);
+	(void)mkdir(KEEP_DIR, 0755);
+	if ((fd = mkstemp(tmp)) == -1)
+		return (SH_ERR_FAILED);
+	len = snprintf(text, sizeof(text), "keep=%d\n", keep);
+	if (fchmod(fd, 0644) == -1 || write(fd, text, (size_t)len) != len ||
+	    fsync(fd) == -1 || close(fd) == -1 || rename(tmp, KEEP_FILE) == -1) {
+		(void)unlink(tmp);
+		return (SH_ERR_FAILED);
+	}
+	return (SH_OK);
 }
 
 int

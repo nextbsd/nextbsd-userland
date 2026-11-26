@@ -184,6 +184,10 @@ int	sh_update_start(int job);
 int	sh_update_cancel(void);
 void	sh_update_status(struct sh_update_status *status);
 int	sh_update_restart(void);
+/* Installed Versions: boot environments on a ZFS install. */
+int	sh_update_start_version(const char *version);
+int	sh_update_remove_version(const char *version);
+int	sh_update_set_keep(int keep);
 /* Collect a finished job; is one still running? */
 void	sh_update_reap(void);
 bool	sh_update_busy(void);

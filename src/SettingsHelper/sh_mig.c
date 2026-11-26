@@ -591,6 +591,60 @@ _sh_update_cancel(mach_port_t server, SHAuthForm auth, int *status,
 }
 
 kern_return_t
+_sh_update_start_version(mach_port_t server, SHAuthForm auth,
+    SHUpdateVersion version_in, int *status, audit_token_t audit)
+{
+	struct sh_caller caller;
+	SHUpdateVersion version;
+
+	(void)server;
+	(void)auth;
+	WIRE_STR(version, version_in);
+	if (!update_allowed(audit, RIGHT_UPDATE, "UpdateStartVersion", &caller,
+	    status))
+		return (KERN_SUCCESS);
+	*status = sh_update_start_version(version);
+	sh_log("pid %d: UpdateStartVersion \"%s\": %d", (int)caller.pid,
+	    version, *status);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_sh_update_remove_version(mach_port_t server, SHAuthForm auth,
+    SHUpdateVersion version_in, int *status, audit_token_t audit)
+{
+	struct sh_caller caller;
+	SHUpdateVersion version;
+
+	(void)server;
+	(void)auth;
+	WIRE_STR(version, version_in);
+	if (!update_allowed(audit, RIGHT_UPDATE, "UpdateRemoveVersion",
+	    &caller, status))
+		return (KERN_SUCCESS);
+	*status = sh_update_remove_version(version);
+	sh_log("pid %d: UpdateRemoveVersion \"%s\": %d", (int)caller.pid,
+	    version, *status);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_sh_update_set_keep(mach_port_t server, SHAuthForm auth, int keep,
+    int *status, audit_token_t audit)
+{
+	struct sh_caller caller;
+
+	(void)server;
+	(void)auth;
+	if (!update_allowed(audit, RIGHT_UPDATE, "UpdateSetKeep", &caller,
+	    status))
+		return (KERN_SUCCESS);
+	*status = sh_update_set_keep(keep);
+	sh_log("pid %d: UpdateSetKeep %d: %d", (int)caller.pid, keep, *status);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
 _sh_update_restart(mach_port_t server, SHAuthForm auth, int *status,
     audit_token_t audit)
 {
