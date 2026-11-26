@@ -491,10 +491,53 @@ routine sh_update_restart(
 	ServerAuditToken audit	: audit_token_t
 );
 
-/* 32023-32029: reserved for more update operations. */
-skip;	/* 32023 */
-skip;	/* 32024 */
-skip;	/* 32025 */
+/*
+ * Installed Versions (nextbsd/nextbsd#703): on a ZFS install each update
+ * is a boot environment named after its version. Update lists them
+ * itself (bectl list needs no privilege); these change them. `version`
+ * is a boot environment's name as bectl lists it. Right:
+ * org.nextbsd.settings.update. SH_ERR_UNSUPPORTED on a UFS install,
+ * SH_ERR_BUSY while an update job runs.
+ */
+
+/*
+ * 32023 sh_update_start_version — make `version` the one that starts
+ * (bectl activate), then restart into it. Not the running one
+ * (SH_ERR_INVALID).
+ */
+routine sh_update_start_version(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	version			: sh_update_version;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32024 sh_update_remove_version — remove `version` (bectl destroy -o).
+ * Not the running one or the one that starts next (SH_ERR_INVALID).
+ */
+routine sh_update_remove_version(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	version			: sh_update_version;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/*
+ * 32025 sh_update_set_keep — how many versions named after their build
+ * an update keeps, 2 to 10 (bootenv-update's keep=).
+ */
+routine sh_update_set_keep(
+	server			: mach_port_t;
+	auth			: sh_auth_form;
+	keep			: int;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
+
+/* 32026-32029: reserved for more update operations. */
 skip;	/* 32026 */
 skip;	/* 32027 */
 skip;	/* 32028 */
