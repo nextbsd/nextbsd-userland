@@ -1266,7 +1266,7 @@ fi
 # as a fresh image. /etc/ntp.conf (when the overlay has not shipped it yet),
 # /etc/exports and an fstab line are written for the duration and removed.
 # The two-VM join is a manual test; here the server is proved by a loopback
-# NFSv3 mount and the client by its -static map and by autofsd standing down
+# NFSv4 mount and the client by its -static map and by autofsd standing down
 # with no network volume in fstab.
 echo "==> E18 services: ntpd, rpcbind, mountd, nfsd, automountd, autofsd LaunchDaemons"
 svc_ld=/System/Library/LaunchDaemons
@@ -1351,8 +1351,9 @@ else
     if [ -e /etc/exports ]; then
         nfs_fail="/etc/exports already exists; not touching it"
     else
-        # The line dspromote writes: /Local, which clients mount on /Network.
-        printf '# Written by dspromote; dsdemote removes this file.\n/Local\n' > /etc/exports
+        # What dspromote writes on UFS (the live image): the NFSv4 root and
+        # /Local, which clients mount on /Network.
+        printf '# Written by dspromote; dsdemote removes this file.\nV4: / -sec=sys\n/Local\n' > /etc/exports
         for svc_l in org.nextbsd.rpcbind org.nextbsd.mountd org.nextbsd.nfsd; do
             launchctl load -w "$svc_ld/$svc_l.plist"
         done
@@ -1372,12 +1373,12 @@ else
             done
             timeout 5 rpcinfo -p 127.0.0.1 2>/dev/null | grep -q ' nfs$' || nfs_fail="$nfs_fail nfs not registered with rpcbind;"
             mkdir -p /tmp/nfs.test
-            if timeout 30 mount -t nfs -o nfsv3,soft,retrycnt=2 127.0.0.1:/Local /tmp/nfs.test 2>/tmp/nfs.mount.err; then
+            if timeout 30 mount -t nfs -o nfsv4,soft,retrycnt=2 127.0.0.1:/Local /tmp/nfs.test 2>/tmp/nfs.mount.err; then
                 # /tmp is a symlink to private/tmp here; the mount table shows the resolved path.
                 mount -t nfs | grep -q " on $(realpath /tmp/nfs.test) " || nfs_fail="$nfs_fail loopback mount not in the mount table: [$(mount -t nfs | tr '\n' ' ')];"
                 umount /tmp/nfs.test 2>/dev/null || umount -f /tmp/nfs.test 2>/dev/null
             else
-                nfs_fail="$nfs_fail loopback NFSv3 mount of 127.0.0.1:/Local failed: $(tr '\n' ' ' < /tmp/nfs.mount.err);"
+                nfs_fail="$nfs_fail loopback NFSv4 mount of 127.0.0.1:/Local failed: $(tr '\n' ' ' < /tmp/nfs.mount.err);"
             fi
             rmdir /tmp/nfs.test 2>/dev/null
         fi
@@ -1408,11 +1409,11 @@ else
         echo "$nfs_out" | grep -q 'no network volumes' || nfs_fail="$nfs_fail autofsd did not stand down: [$nfs_out];"
         [ "$nfs_autofs_before" -eq 0 ] && [ -e /dev/autofs ] && nfs_fail="$nfs_fail autofsd loaded AutoFS.kext with nothing to mount;"
         # The line dsjoin writes, at a TEST-NET address that is never mounted.
-        printf '# BEGIN directory server (managed by dsjoin and dsleave; do not edit)\n192.0.2.1:/Local\t/Network\tnfs\tnfsv3,soft,intr\t0\t0\n# END directory server\n' >> /etc/fstab
+        printf '# BEGIN directory server (managed by dsjoin and dsleave; do not edit)\n192.0.2.1:/Local\t/Network\tnfs\tnfsv4\t0\t0\n# END directory server\n' >> /etc/fstab
         nfs_keys=$(/etc/autofs/special_static)
         [ "$nfs_keys" = "/Network" ] || nfs_fail="$nfs_fail special_static keys: [$nfs_keys], want /Network;"
         nfs_entry=$(/etc/autofs/special_static /Network/)
-        [ "$nfs_entry" = "-fstype=nfs,nfsv3,soft,intr 192.0.2.1:/Local" ] || nfs_fail="$nfs_fail special_static /Network: [$nfs_entry];"
+        [ "$nfs_entry" = "-fstype=nfs,nfsv4 192.0.2.1:/Local" ] || nfs_fail="$nfs_fail special_static /Network: [$nfs_entry];"
         cp -p /tmp/nfs.fstab.saved /etc/fstab; rm -f /tmp/nfs.fstab.saved
         [ -n "$nfs_fstab_made" ] && rm -f /etc/fstab
     fi
@@ -1420,7 +1421,7 @@ else
     if [ -n "$nfs_fail" ]; then
         echo "NFS-FAIL:$nfs_fail"
     else
-        echo "NFS-OK: rpcbind + mountd + nfsd served /Local (showmount, loopback NFSv3 mount), all Disabled again after unload -w; the -static map gives /Network from dsjoin's fstab line, and autofsd stands down without one${nfs_standins:+ (stand-ins:$nfs_standins)}"
+        echo "NFS-OK: rpcbind + mountd + nfsd served /Local (showmount, loopback NFSv4 mount), all Disabled again after unload -w; the -static map gives /Network from dsjoin's fstab line, and autofsd stands down without one${nfs_standins:+ (stand-ins:$nfs_standins)}"
     fi
 fi
 

@@ -13,6 +13,7 @@
         <string>-d</string>
         <string>-r</string>
         <string>/etc/exports</string>
+        <string>/etc/zfs/exports</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

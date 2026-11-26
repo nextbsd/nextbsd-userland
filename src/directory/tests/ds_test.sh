@@ -149,6 +149,7 @@ ckfile   "the domain marker is written"    "$DOMAIN"
 ckgrep   "and it is an empty dict"         "$DOMAIN" "<dict/>"
 ckfile   "exports written"                 "$EXPORTS"
 ckfile   "the Bonjour record written"      "$SVC"
+ckgrep   "exports has the NFSv4 root"      "$EXPORTS" "^V4: / -sec=sys\$"
 ckgrep   "exports shares /Local"           "$EXPORTS" "^$R/Local\$"
 cknogrep "and exports no /Network path"    "$EXPORTS" "/Network"
 ckgrep   "the record advertises the type"  "$SVC" "_nextbsd-ds._tcp"
@@ -161,9 +162,10 @@ cklc     "promote loads mountd"            "load -w .*org.nextbsd.mountd"
 cklc     "promote loads nfsd"              "load -w .*org.nextbsd.nfsd"
 cknolc   "and does not load autofsd"   "org.nextbsd.autofsd"
 
-# One line: /Local, which holds the accounts and the homes.
-ck "exports is one line" \
-   "$(grep -c -v '^#' "$EXPORTS")" "1"
+# Two lines off ZFS: the NFSv4 root, and /Local, which holds the accounts and
+# the homes. (On ZFS /Local is shared by its dataset's sharenfs instead.)
+ck "exports is two lines" \
+   "$(grep -c -v '^#' "$EXPORTS")" "2"
 
 # ---- promote refusals
 cksay "promote refuses an existing server" "already a directory server" "$fix/dspromote"
@@ -218,7 +220,7 @@ cknogrep "the pool line is untouched"      "$NTP" "^#pool"
 cksay    "status reports the binding"      "bound to server.local" "$fix/dsstatus"
 cklc     "join loads automountd"           "load -w .*org.nextbsd.automountd"
 cklc     "join loads autofsd"              "load -w .*org.nextbsd.autofsd"
-ckgrep   "join writes the /Network line"   "$FSTAB" "^server.local:$R/Local	$R/Network	nfs	nfsv3,soft,intr	0	0$"
+ckgrep   "join writes the /Network line"   "$FSTAB" "^server.local:$R/Local	$R/Network	nfs	nfsv4	0	0$"
 ckgrep   "inside the managed block"        "$FSTAB" "^# BEGIN directory server"
 
 # ---- join refusals

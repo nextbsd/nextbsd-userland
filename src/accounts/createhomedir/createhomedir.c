@@ -39,7 +39,13 @@
  * home is absent, printing "No home directory. Logging in with home = /", so
  * nobody is locked out and this can run afterwards.
  *
- * It creates the directory and nothing inside it.
+ * It creates the directory and nothing inside it. On ZFS a local home is a
+ * dataset of its own (nextbsd/nextbsd#600, phase 3): <pool>/Local/Users/<name>,
+ * mounted at /Local/Users/<name>. The container <pool>/Local/Users is made on
+ * first use with canmount=off, so /Local/Users stays a plain directory of the
+ * Local dataset and a home made before this existed keeps working where it
+ * is. The datasets inherit Local's sharenfs, so a directory server exports a
+ * new home the moment it is made, and NFSv4 clients see into it.
  *
  * There was once a /System/Library/User Template whose tree was copied in,
  * carrying nine folders and a .zshrc. Both halves stopped being ours to own.
@@ -56,11 +62,16 @@
  */
 
 #include <sys/param.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 
 #include <err.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <libgen.h>
 #include <limits.h>
+#include <paths.h>
 #include <pwd.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -88,6 +99,9 @@
 /* Overridable only so the tests can stage a marker outside the system. */
 #ifndef LOCAL_DOMAIN
 #define LOCAL_DOMAIN	"/Local/Library/DirectoryServices/Domain.plist"
+#endif
+#ifndef ZFS_TOOL
+#define ZFS_TOOL	"/sbin/zfs"
 #endif
 
 static bool want_local = false;		/* -c */
@@ -141,13 +155,15 @@ make_dirs(const char *path, mode_t mode, uid_t uid, gid_t gid)
 		errno = ENAMETOOLONG;
 		return (-1);
 	}
+	/*
+	 * The parents stay root's. Chowning them to the user made the first
+	 * account to log in the owner of /Local/Users itself.
+	 */
 	for (p = buf + 1; *p != '\0'; p++) {
 		if (*p != '/')
 			continue;
 		*p = '\0';
-		if (mkdir(buf, 0755) == 0)
-			(void)chown(buf, uid, gid);
-		else if (errno != EEXIST)
+		if (mkdir(buf, 0755) == -1 && errno != EEXIST)
 			return (-1);
 		*p = '/';
 	}
@@ -160,7 +176,103 @@ make_dirs(const char *path, mode_t mode, uid_t uid, gid_t gid)
 }
 
 
+/* Run zfs(8) quietly; 0 when it exits 0. */
+static int
+zfs(const char *a1, const char *a2, const char *a3, const char *a4)
+{
+	char *argv[6];
+	pid_t pid;
+	int st, fd;
 
+	argv[0] = __DECONST(char *, "zfs");
+	argv[1] = __DECONST(char *, a1);
+	argv[2] = __DECONST(char *, a2);
+	argv[3] = __DECONST(char *, a3);
+	argv[4] = __DECONST(char *, a4);
+	argv[5] = NULL;
+	if ((pid = fork()) == -1)
+		return (-1);
+	if (pid == 0) {
+		if ((fd = open(_PATH_DEVNULL, O_WRONLY)) != -1) {
+			(void)dup2(fd, STDOUT_FILENO);
+			if (strcmp(a1, "list") == 0)
+				(void)dup2(fd, STDERR_FILENO);
+		}
+		execv(ZFS_TOOL, argv);
+		_exit(127);
+	}
+	while (waitpid(pid, &st, 0) == -1)
+		if (errno != EINTR)
+			return (-1);
+	return (WIFEXITED(st) && WEXITSTATUS(st) == 0 ? 0 : -1);
+}
+
+/* A dataset name component: what zfs(8) accepts, and nothing to escape. */
+static bool
+component_ok(const char *n)
+{
+	return (n[0] != '\0' && n[0] != '.' && n[0] != '-' &&
+	    strspn(n, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	    "0123456789_-.") == strlen(n));
+}
+
+/*
+ * Make the home a dataset when the directory it goes in is on ZFS. Returns 0
+ * when it did, 1 when this is not ZFS (or the names would not make a dataset)
+ * and the caller makes a plain directory, -1 on failure.
+ *
+ * The container is the dataset path matching the directory: /Local/Users on
+ * a Local dataset mounted at /Local is <Local>/Users, whether or not it
+ * exists yet. A container already mounted at that directory is used as is.
+ */
+static int
+make_dataset(const char *dir, uid_t uid, gid_t gid)
+{
+	char parent[PATH_MAX], base[PATH_MAX], container[MNAMELEN + PATH_MAX];
+	char ds[sizeof(container) + PATH_MAX];
+	struct statfs sfs;
+	size_t mlen;
+
+	if (strlcpy(parent, dir, sizeof(parent)) >= sizeof(parent) ||
+	    strlcpy(base, dir, sizeof(base)) >= sizeof(base))
+		return (1);
+	(void)strlcpy(parent, dirname(parent), sizeof(parent));
+	(void)strlcpy(base, basename(base), sizeof(base));
+	/* A fresh /Local has no Users yet; it is root's, like the rest. */
+	if (!dry_run && make_dirs(parent, 0755, 0, 0) == -1)
+		return (-1);
+	if (statfs(parent, &sfs) == -1 ||
+	    strcmp(sfs.f_fstypename, "zfs") != 0 || !component_ok(base))
+		return (1);
+	mlen = strlen(sfs.f_mntonname);
+	if (strcmp(sfs.f_mntonname, parent) == 0)
+		(void)strlcpy(container, sfs.f_mntfromname, sizeof(container));
+	else if (strncmp(parent, sfs.f_mntonname, mlen) == 0 &&
+	    (parent[mlen] == '/' || mlen == 1))
+		(void)snprintf(container, sizeof(container), "%s%s%s",
+		    sfs.f_mntfromname, mlen == 1 ? "/" : "", parent + mlen);
+	else
+		return (1);
+	if (snprintf(ds, sizeof(ds), "%s/%s", container, base) >=
+	    (int)sizeof(ds))
+		return (1);
+	if (dry_run) {
+		printf("  as dataset %s\n", ds);
+		return (0);
+	}
+	if (zfs("list", "-H", container, NULL) == -1 &&
+	    zfs("create", "-o", "canmount=off", container) == -1) {
+		warnx("zfs create %s failed", container);
+		return (-1);
+	}
+	if (zfs("create", ds, NULL, NULL) == -1) {
+		warnx("zfs create %s failed", ds);
+		return (-1);
+	}
+	if (chown(dir, uid, gid) == -1 || chmod(dir, 0755) == -1)
+		return (-1);
+	return (0);
+}
 
 static void
 build_home(const struct passwd *pw)
@@ -200,6 +312,16 @@ build_home(const struct passwd *pw)
 
 	printf("%s%s: %s\n", dry_run ? "would create " : "creating ",
 	    pw->pw_name, pw->pw_dir);
+	if (under(pw->pw_dir, ROOT_LOCAL)) {
+		switch (make_dataset(pw->pw_dir, pw->pw_uid, pw->pw_gid)) {
+		case 0:
+			return;
+		case -1:
+			warn("%s", pw->pw_dir);
+			exit_status = 1;
+			return;
+		}
+	}
 	if (dry_run)
 		return;
 	if (make_dirs(pw->pw_dir, 0755, pw->pw_uid, pw->pw_gid) == -1) {

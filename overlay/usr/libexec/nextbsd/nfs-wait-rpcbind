@@ -20,4 +20,9 @@ while ! /usr/bin/rpcinfo -p 127.0.0.1 >/dev/null 2>&1; do
     fi
     sleep 1
 done
+# The directory server's NFSv4 clients send owners as numbers (autofsd sets
+# vfs.nfs.enable_uidtostring); accept them without nfsuserd.
+case "$1" in
+*/nfsd) /sbin/sysctl -q vfs.nfsd.enable_stringtouid=1 >/dev/null 2>&1 ;;
+esac
 exec "$@"

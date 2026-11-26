@@ -171,16 +171,41 @@ be unbound.
 .El
 .Pp
 .Pa /etc/exports
-is the single line
-.Pa /Local .
-NFS does not cross filesystems, so
+holds the NFSv4 root,
+.Li V4: / -sec=sys .
+On ZFS,
+.Pa /Local
+is exported by setting
+.Li sharenfs=on
+on the dataset mounted there, and
+.Nm dsdemote
+puts the property back with
+.Li zfs inherit .
+Every dataset under it inherits the property, so each home \[em] a dataset of
+its own, made by
+.Xr createhomedir 8
+\[em] is exported as soon as it is made, and NFSv4 clients cross into it.
+.Pp
+On UFS,
+.Pa /Local
+is a line of
+.Pa /etc/exports
+too, and
 .Nm dspromote
 refuses when
 .Pa /Local/Library/DirectoryServices
 or
 .Pa /Local/Users
 is on a different filesystem from
-.Pa /Local .
+.Pa /Local ,
+because those would not be exported.
+.Pp
+Owners travel as numbers, not names, so no
+.Xr nfsuserd 8
+is needed: clients set
+.Va vfs.nfs.enable_uidtostring
+and the server
+.Va vfs.nfsd.enable_stringtouid .
 .Pp
 The block in
 .Pa /etc/fstab
@@ -189,7 +214,8 @@ is one line, the server's
 on
 .Pa /Network
 with
-.Li nfsv3,soft,intr .
+.Li nfsv4 ,
+a hard mount.
 .Nm dsjoin
 enables the
 .Li org.nextbsd.autofsd

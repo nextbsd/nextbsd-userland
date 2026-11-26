@@ -28,6 +28,9 @@
 /* See acct.h. Plain libc plus libutil for login.conf. */
 
 #include <sys/types.h>
+#ifdef __FreeBSD__
+#include <sys/mount.h>
+#endif
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 /*
@@ -550,6 +553,56 @@ acct_kill_uid(uid_t uid)
 }
 
 /*
+ * A home that is a ZFS dataset of its own (createhomedir makes them on ZFS) is
+ * destroyed rather than emptied: removing the files would leave an empty
+ * dataset mounted where the home was. Only a dataset mounted exactly at the
+ * home and named for it, so a home that is a plain directory on a ZFS
+ * /Local is not mistaken for one. Returns 1 when the home is not a dataset.
+ */
+static int
+destroy_home_dataset(const char *path, const char *name)
+{
+#ifndef __FreeBSD__
+	(void)path;
+	(void)name;
+	return (1);
+#else
+	struct statfs sfs;
+	char ds[sizeof(sfs.f_mntfromname)];
+	char a0[] = "zfs", a1[] = "destroy", a2[] = "-r";
+	char *argv[] = { a0, a1, a2, ds, NULL };
+	size_t dl, nl = strlen(name);
+	pid_t pid;
+	int st;
+
+	if (statfs(path, &sfs) == -1 || strcmp(sfs.f_fstypename, "zfs") != 0 ||
+	    strcmp(sfs.f_mntonname, path) != 0)
+		return (1);
+	(void)strlcpy(ds, sfs.f_mntfromname, sizeof(ds));
+	dl = strlen(ds);
+	if (dl <= nl + 1 || ds[dl - nl - 1] != '/' ||
+	    strcmp(ds + dl - nl, name) != 0)
+		return (1);
+	if ((pid = fork()) == -1)
+		return (-1);
+	if (pid == 0) {
+		execv(ACCT_ZFS, argv);
+		_exit(127);
+	}
+	while (waitpid(pid, &st, 0) == -1)
+		if (errno != EINTR)
+			return (-1);
+	if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) {
+		errno = EBUSY;
+		return (-1);
+	}
+	/* zfs leaves the empty mount point behind in /Local/Users. */
+	(void)rmdir(path);
+	return (0);
+#endif
+}
+
+/*
  * On a server the /Network root is left out entirely. /Local is what is
  * exported, so a server that had /Network mounted on it would otherwise be
  * offered a second path to the same home through its own export -- and would
@@ -581,6 +634,12 @@ acct_remove_home(const char *name)
 		 */
 		if (!S_ISDIR(st.st_mode)) {
 			errno = ENOTDIR;
+			return (-1);
+		}
+		switch (destroy_home_dataset(path, name)) {
+		case 0:
+			return (0);
+		case -1:
 			return (-1);
 		}
 		return (remove_tree(path));

@@ -21,6 +21,10 @@ removes a user account from the DirectoryServices property lists, along with
 everything that belonged to it: its group memberships, its crontab, its queued
 .Xr at 1
 jobs, its processes and, unless told otherwise, its home directory.
+A home that is a ZFS dataset of its own, as
+.Xr createhomedir 8
+makes them on ZFS, is destroyed with
+.Li zfs destroy -r .
 .Pp
 System accounts live in
 .Pa /etc/master.passwd

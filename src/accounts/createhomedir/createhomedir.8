@@ -27,6 +27,23 @@
 creates a user's home directory, at mode 0755 owned by the user, and nothing
 inside it.
 .Pp
+When
+.Pa /Local/Users
+is on ZFS, a home there is a dataset of its own,
+.Ar pool Ns Pa /Local/Users/ Ns Ar name ,
+mounted at the home.
+The container
+.Ar pool Ns Pa /Local/Users
+is made on first use with
+.Li canmount=off ,
+so
+.Pa /Local/Users
+stays a directory of the Local dataset and a home made before it keeps
+working.
+The dataset inherits Local's
+.Li sharenfs ,
+so on a directory server it is exported as soon as it exists.
+.Pp
 Home directories are normally created when the account is, by
 .Xr adduser 8
 or

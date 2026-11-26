@@ -46,6 +46,11 @@ if [ -z "$points" ]; then
     exit 0
 fi
 
+# NFSv4 sends owners as names. The directory's accounts have the same ids
+# on the server and every client, so send the numbers instead, as the
+# server (nfs-wait-rpcbind) is set to accept, and no nfsuserd is needed.
+/sbin/sysctl -q vfs.nfs.enable_uidtostring=1 >/dev/null 2>&1
+
 if [ ! -e /dev/autofs ]; then
     /usr/sbin/kextload "$KEXT" || { log "kextload $KEXT failed"; exit 1; }
     [ -e /dev/autofs ] || { log "/dev/autofs is missing after kextload"; exit 1; }
