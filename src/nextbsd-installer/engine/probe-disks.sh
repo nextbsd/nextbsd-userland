@@ -46,7 +46,7 @@ for d in /dev/iso9660/* /dev/cd0; do
 	break
 done
 # Resolve the disk under / through glabel (e.g. ufs/ROOTFS -> da0p3 -> da0).
-# A ZFS root (NextBSD/ROOT/default) is on every disk of its pool.
+# A ZFS root (NextBSD/ROOT/27.0.0-192) is on every disk of its pool.
 #
 # The pools this system has imported, as "pool<TAB>provider" lines, a label
 # (gpt/zfs0) resolved to its partition: for the root pool here and for the
