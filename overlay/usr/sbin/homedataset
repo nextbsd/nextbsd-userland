@@ -1,0 +1,134 @@
+#!/bin/sh
+# homedataset -- make a home folder a ZFS dataset of its own.
+#
+# Homes made since createhomedir(8) learned datasets (nextbsd-userland#673)
+# are each <pool>/Local/Users/<name>: they can have a quota and snapshots
+# (Rewind), and a directory server shares each one over NFS. A home made
+# before that is a plain folder inside /Local. This converts one:
+#
+#   homedataset [-n] user ...    convert these users' homes
+#   homedataset [-n] -a          convert every plain-folder home here
+#
+#   -n   say what would be done, change nothing
+#
+# Run it on the machine that holds the home: a local user's computer, or
+# the directory server for a network user. The person must be logged out
+# everywhere first: on the server this refuses while they have processes
+# here, but it can't see clients, so log them out there too.
+#
+# Nothing is deleted. The new dataset gets a copy (owners, modes, flags and
+# ACLs kept), the copy is checked against the original, and only then does
+# the original folder move aside, to /Local/.homedataset/<name>-<time>
+# (root's, so clients can't read it). Remove it once the person has checked
+# their files.
+set -u
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+
+dry=0
+all=0
+say() { echo "homedataset: $*" >&2; }
+die() { say "$*"; exit 1; }
+
+while getopts na opt; do
+	case $opt in
+	n) dry=1 ;;
+	a) all=1 ;;
+	*) echo "usage: homedataset [-n] user ... | [-n] -a" >&2; exit 64 ;;
+	esac
+done
+shift $((OPTIND - 1))
+[ "$(id -u)" = 0 ] || die "run this as root"
+[ $all = 1 ] || [ $# -gt 0 ] || { echo "usage: homedataset [-n] user ... | [-n] -a" >&2; exit 64; }
+
+USERS_DIR=/Local/Users
+ASIDE=/Local/.homedataset
+
+# The dataset mounted at a path's filesystem, and that mount point.
+fs_of() { df "$1" 2>/dev/null | awk 'NR == 2 { print $1, $NF }'; }
+
+# Is this path the mount point of a dataset of its own?
+is_dataset() {
+	set -- "$1" $(fs_of "$1")
+	[ "$3" = "$1" ]
+}
+
+convert() {
+	user=$1
+	home=$USERS_DIR/$user
+	uid=$(id -u "$user" 2>/dev/null) || { say "$user: no such user"; return 1; }
+	[ -d "$home" ] && [ ! -L "$home" ] || { say "$user: no home folder at $home"; return 1; }
+	if is_dataset "$home"; then
+		say "$user: $home is already a dataset"
+		return 0
+	fi
+	set -- $(fs_of "$USERS_DIR")
+	fsds=$1 fsmnt=$2
+	[ -n "$fsds" ] && zfs list -H "$fsds" >/dev/null 2>&1 ||
+	    { say "$user: $USERS_DIR is not on ZFS; homes stay folders here"; return 1; }
+	# The container matching /Local/Users, as createhomedir names it.
+	if [ "$fsmnt" = "$USERS_DIR" ]; then
+		container=$fsds
+	else
+		container=$fsds${USERS_DIR#$fsmnt}
+	fi
+	ds=$container/$user
+	if zfs list -H "$ds" >/dev/null 2>&1; then
+		say "$user: $ds already exists but isn't mounted at $home; look at it first"
+		return 1
+	fi
+	if pgrep -U "$uid" >/dev/null 2>&1; then
+		say "$user: still has processes here; log them out first"
+		return 1
+	fi
+	stamp=$(date +%Y%m%d-%H%M%S)
+	work=$USERS_DIR/.$user.homedataset-$stamp
+	aside=$ASIDE/$user-$stamp
+	if [ $dry = 1 ]; then
+		echo "$user: $home -> dataset $ds; the folder moves to $aside"
+		return 0
+	fi
+	say "$user: copying $home into the new dataset $ds"
+	zfs list -H "$container" >/dev/null 2>&1 ||
+	    zfs create -o canmount=off "$container" || { say "zfs create $container failed"; return 1; }
+	zfs create -o mountpoint="$work" "$ds" || { say "zfs create $ds failed"; return 1; }
+	if ! tar -C "$home" --acls --fflags --xattrs -cf - . |
+	    tar -C "$work" --acls --fflags --xattrs -xpf -; then
+		zfs destroy "$ds"
+		say "$user: the copy failed; $home is untouched"
+		return 1
+	fi
+	chown "$(stat -f %u:%g "$home")" "$work" && chmod "$(stat -f %Lp "$home")" "$work"
+	# The copy must match: every name, type, owner, mode, size and link.
+	if ! mtree -c -p "$home" -k type,uid,gid,mode,size,link,flags |
+	    mtree -p "$work" -k type,uid,gid,mode,size,link,flags >/dev/null; then
+		zfs destroy "$ds"
+		say "$user: the copy doesn't match the original; $home is untouched"
+		return 1
+	fi
+	mkdir -p "$ASIDE" && chmod 700 "$ASIDE"
+	mv "$home" "$aside" || { zfs destroy "$ds"; say "$user: couldn't move $home aside; nothing changed"; return 1; }
+	if ! zfs inherit mountpoint "$ds"; then
+		mv "$aside" "$home"
+		zfs destroy "$ds"
+		say "$user: couldn't mount $ds at $home; put back as it was"
+		return 1
+	fi
+	rmdir "$work" 2>/dev/null
+	say "$user: $home is now the dataset $ds; the old folder is $aside (remove it when $user has checked their files)"
+}
+
+rc=0
+if [ $all = 1 ]; then
+	for h in "$USERS_DIR"/*; do
+		[ -d "$h" ] || continue
+		u=${h##*/}
+		id -u "$u" >/dev/null 2>&1 || continue
+		is_dataset "$h" && continue
+		convert "$u" || rc=1
+	done
+else
+	for u in "$@"; do
+		convert "$u" || rc=1
+	done
+fi
+exit $rc
