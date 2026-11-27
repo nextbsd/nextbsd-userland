@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  org.nextbsd.usbconsoled.plist
+
+  usbconsoled(8) (nextbsd/nextbsd#717): gives the person at the console the
+  USB devices no kernel driver claims (scanners, cameras), so Scanner.app
+  and SANE can open them without root, and gives them back to root at
+  logout. It watches configd's State:/Users/ConsoleUser, so it starts at
+  boot with the other system daemons and keeps running. stderr goes to
+  /var/log/usbconsoled.log.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>org.nextbsd.usbconsoled</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/libexec/usbconsoled</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/var/log/usbconsoled.log</string>
+	<key>StandardOutPath</key>
+	<string>/var/log/usbconsoled.log</string>
+	<key>LimitLoadToSessionType</key>
+	<string>System</string>
+</dict>
+</plist>

@@ -1174,6 +1174,17 @@ test -x "$DESTDIR/usr/libexec/consoleuser" || { echo "FAIL: /usr/libexec/console
 needed_check "$DESTDIR/usr/libexec/consoleuser" "libSystemConfiguration"
 echo "==> consoleuser built"
 
+# ---- usbconsoled ------------------------------------------------------------
+# /usr/libexec/usbconsoled (nextbsd/nextbsd#717): gives the console user the
+# ugen nodes of USB devices no kernel driver claims (scanners, cameras) and
+# gives them back at logout; watches the key consoleuser publishes. Started by
+# overlay/System/Library/LaunchDaemons/org.nextbsd.usbconsoled.plist.
+comp "usbconsoled(8)"
+run_buildenv "make -C $SRC/usbconsoled DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/libexec/usbconsoled" || { echo "FAIL: /usr/libexec/usbconsoled not installed"; exit 1; }
+needed_check "$DESTDIR/usr/libexec/usbconsoled" "libSystemConfiguration"
+echo "==> usbconsoled built"
+
 # ---- cpdup + nextbsd-installer (the on-target installer) --------------------
 # The FTXUI TUI installer clones the running system onto the target disk with
 # cpdup. Both are vendored under src/ but were not previously built; wired in

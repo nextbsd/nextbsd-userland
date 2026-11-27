@@ -1,0 +1,61 @@
+.\" Copyright (C) 2026 Joseph Maloney <pkgdemonteam@gmail.com>
+.\" SPDX-License-Identifier: BSD-2-Clause
+.Dd November 27, 2026
+.Dt USBCONSOLED 8
+.Os NextBSD
+.Sh NAME
+.Nm usbconsoled
+.Nd give the console user the USB devices no kernel driver claims
+.Sh SYNOPSIS
+.Nm
+.Op Fl n
+.Sh DESCRIPTION
+Scanners, cameras and other devices driven from user space with
+.Xr libusb 3
+have no kernel driver; programs open their
+.Xr ugen 4
+nodes,
+.Pa /dev/usb/ Ns Ar bus . Ns Ar address . Ns Ar endpoint ,
+which
+.Xr devfs 4
+creates owned by root, mode 0600.
+.Nm
+gives those nodes to the person logged in at the console, mode 0660, so
+that their programs (Scanner, SANE's
+.Xr scanimage 1 )
+can use the device, and gives them back to root when they log out.
+.Pp
+A device qualifies if it is not a hub and at least one interface of its
+configuration has no kernel driver attached.
+Interfaces a driver has stay the kernel's.
+The console user is configd's
+.Li State:/Users/ConsoleUser ,
+which
+.Xr consoleuser 8
+publishes at login, as
+.Xr diskarbitrationd 8
+uses it for removable disks.
+.Pp
+NextBSD runs no
+.Xr devd 8 ,
+so
+.Nm
+reads
+.Pa /dev/usb
+every two seconds; a device that appears is looked at once.
+.Pp
+The options are:
+.Bl -tag -width indent
+.It Fl n
+Change nothing; log what would be done.
+.El
+.Sh FILES
+.Bl -tag -width indent -compact
+.It Pa /System/Library/LaunchDaemons/org.nextbsd.usbconsoled.plist
+.It Pa /var/log/usbconsoled.log
+.El
+.Sh SEE ALSO
+.Xr consoleuser 8 ,
+.Xr diskarbitrationd 8 ,
+.Xr ugen 4 ,
+.Xr usbconfig 8
