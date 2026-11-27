@@ -21,7 +21,7 @@ PROG=		SettingsHelper
 MAN=		SettingsHelper.8
 SRCS=		SettingsHelper.c sh_session.c sh_auth.c sh_rights.c sh_pm.c
 SRCS+=		sh_time.c sh_users.c sh_login.c sh_cups.c sh_net.c
-SRCS+=		sh_locale.c sh_update.c sh_file.c sh_install.c
+SRCS+=		sh_locale.c sh_update.c sh_file.c sh_install.c sh_usb.c
 SRCS+=		sh_mig.c
 BINDIR=		/usr/libexec
 
@@ -92,9 +92,11 @@ LDFLAGS+=	-Wl,--allow-shlib-undefined
 #                              crypt(3) to hash a new password
 #   -lSystemConfiguration      SCPreferences, for the network settings and
 #                              the computer name
+#   usb                        libusb20 (sh_usb.c): which USB interfaces
+#                              have a kernel driver
 LDADD+=		-lIOKit -lCoreFoundation -llaunch -lsystem_kernel -lnotify
 LDADD+=		-lSystemConfiguration
 LDADD+=		-lsystem_dispatch -l:libsystem_blocks.so
-LIBADD+=	pam util crypt
+LIBADD+=	pam util crypt usb
 
 .include <bsd.prog.mk>

@@ -208,4 +208,7 @@ void	sh_install_poll(void);
  * don't exit yet. */
 bool	sh_install_busy(void);
 
+/* sh_usb.c: give the caller one unclaimed USB device (Scanner.app). */
+int	sh_usb_grant(const struct sh_caller *caller, int bus, int address);
+
 #endif /* _SETTINGSHELPER_H */
