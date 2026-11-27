@@ -24,6 +24,7 @@
 #define	RIGHT_UPDATE	"org.nextbsd.settings.update"
 #define	RIGHT_UPDATE_CHECK "org.nextbsd.settings.update.check"
 #define	RIGHT_INSTALLER	"org.nextbsd.installer"
+#define	RIGHT_USB	"org.nextbsd.usb.device"
 
 /* Darwin's audit token layout, as audit_token_to_au32 reads it. */
 #define	CALLER(tok, c)							\
@@ -728,5 +729,26 @@ _sh_install_shutdown(mach_port_t server, int *status, audit_token_t audit)
 	if (*status != SH_OK)
 		sh_log("pid %d: InstallShutdown refused (%d)", (int)caller.pid,
 		    *status);
+	return (KERN_SUCCESS);
+}
+
+kern_return_t
+_sh_usb_grant(mach_port_t server, int bus, int address, int *status,
+    audit_token_t audit)
+{
+	struct sh_caller caller;
+
+	(void)server;
+	CALLER(audit, &caller);
+	*status = sh_rights_check(&caller, RIGHT_USB, true, NULL);
+	if (*status != SH_OK) {
+		sh_log("pid %d: UsbGrant %d.%d refused (%d)", (int)caller.pid,
+		    bus, address, *status);
+		return (KERN_SUCCESS);
+	}
+	*status = sh_usb_grant(&caller, bus, address);
+	if (*status != SH_OK)
+		sh_log("pid %d: UsbGrant %d.%d: %d", (int)caller.pid, bus,
+		    address, *status);
 	return (KERN_SUCCESS);
 }

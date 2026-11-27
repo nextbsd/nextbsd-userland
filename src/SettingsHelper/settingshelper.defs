@@ -606,3 +606,21 @@ routine sh_install_shutdown(
 	out status		: int;
 	ServerAuditToken audit	: audit_token_t
 );
+
+/*
+ * 32034 sh_usb_grant — let the caller open one USB device: the one at
+ * `bus` and `address` (/dev/usb/<bus>.<address>.*), for Scanner.app
+ * (nextbsd/nextbsd#717), whose scanners SANE drives with libusb. Right:
+ * org.nextbsd.usb.device (an administrator, without a prompt). Only a
+ * device no kernel driver has: not a hub, and no interface with a driver
+ * attached (so never a disk, keyboard, mouse, sound or network device),
+ * else SH_ERR_INVALID. Its nodes become the caller's, mode 0600, until it
+ * is unplugged; nothing gives them back.
+ */
+routine sh_usb_grant(
+	server			: mach_port_t;
+	bus			: int;
+	address			: int;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);

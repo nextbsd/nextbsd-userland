@@ -121,6 +121,15 @@
             <key>comment</key>
             <string>Installer.app: erasing a disk and installing NextBSD on it, from the install image or as a copy of the running system (InstallStart). An administrator, asked every time; an administrator without a password is asked "Allow changes?". Following the install and restarting afterwards need nothing more.</string>
         </dict>
+        <key>org.nextbsd.usb.device</key>
+        <dict>
+            <key>class</key>
+            <string>rule</string>
+            <key>rule</key>
+            <string>is-admin</string>
+            <key>comment</key>
+            <string>Scanner.app: using a USB scanner, which SANE drives with libusb (UsbGrant). The helper gives the console user that one device, and only one no kernel driver has: never a disk, keyboard, mouse, sound or network device. An administrator needs no password; others are refused. It lasts until the device is unplugged.</string>
+        </dict>
     </dict>
     <key>rules</key>
     <dict>

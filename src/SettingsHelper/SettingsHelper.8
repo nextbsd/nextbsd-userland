@@ -189,6 +189,24 @@ memory disk
 which is only possible in the probe's test mode, it does nothing.
 .It Cm InstallShutdown
 turns the computer off once that install is done, in the same way.
+.It Cm UsbGrant
+lets the caller open one USB device, named by its bus and address, for
+Scanner.app, whose scanners SANE drives with
+.Xr libusb 3
+.Pq right Ql org.nextbsd.usb.device .
+Only a device no kernel driver has is given: not a hub, and no interface
+of its configuration with a driver attached, so never a disk, keyboard,
+mouse, sound or network device.
+Its nodes in
+.Pa /dev/usb ,
+and devfs's
+.Pa /dev/ugen Ns Ar bus . Ns Ar address
+link, become the caller's, mode 0600; links are not followed and nothing
+outside them is changed.
+Nothing gives the device back: when it is unplugged
+.Xr devfs 4
+removes its nodes, and they come back owned by root when it is plugged in
+again.
 .El
 .Pp
 The update operations run
