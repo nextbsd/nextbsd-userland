@@ -201,6 +201,7 @@ int	sh_install_start(const struct sh_caller *caller, const char *disk,
 int	sh_install_progress(const struct sh_caller *caller, int *state,
 	    int *percent, int *phase);
 int	sh_install_restart(const struct sh_caller *caller);
+int	sh_install_shutdown(const struct sh_caller *caller);
 /* Follow the running install's output and notice its end. */
 void	sh_install_poll(void);
 /* An install runs, finished and waits for its restart, or failed lately:

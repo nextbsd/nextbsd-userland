@@ -594,3 +594,15 @@ routine sh_install_restart(
 	out status		: int;
 	ServerAuditToken audit	: audit_token_t
 );
+
+/*
+ * 32033 sh_install_shutdown — turn the computer off (shutdown -p now) once
+ * the caller's session's install is done, as sh_install_restart restarts
+ * it: the installer's Shut Down, as nextbsd-installer has. After an
+ * install on a test disk (md) it turns nothing off.
+ */
+routine sh_install_shutdown(
+	server			: mach_port_t;
+	out status		: int;
+	ServerAuditToken audit	: audit_token_t
+);
