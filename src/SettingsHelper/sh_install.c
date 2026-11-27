@@ -404,10 +404,12 @@ sh_install_progress(const struct sh_caller *caller, int *state, int *percent,
 	return (SH_OK);
 }
 
-int
-sh_install_restart(const struct sh_caller *caller)
+/* Restart ("-r") or turn off ("-p") once the caller's install is done. */
+static int
+finish(const struct sh_caller *caller, const char *how, const char *op,
+    const char *doing)
 {
-	const char *const argv[] = { SHUTDOWN, "-r", "now", NULL };
+	const char *const argv[] = { SHUTDOWN, how, "now", NULL };
 
 	if (!caller->root && !caller->in_console)
 		return (SH_ERR_NOT_CONSOLE);
@@ -415,10 +417,22 @@ sh_install_restart(const struct sh_caller *caller)
 	if (!owner(caller) || job.state != SH_INSTALL_DONE)
 		return (SH_ERR_DENIED);
 	if (job.test_disk) {
-		sh_log("pid %d: InstallRestart after a test disk (%s): not "
-		    "restarting", (int)caller->pid, job.disk);
+		sh_log("pid %d: %s after a test disk (%s): not %s",
+		    (int)caller->pid, op, job.disk, doing);
 		return (SH_OK);
 	}
-	sh_log("pid %d: InstallRestart: restarting", (int)caller->pid);
+	sh_log("pid %d: %s: %s", (int)caller->pid, op, doing);
 	return (sh_run(argv) ? SH_OK : SH_ERR_FAILED);
+}
+
+int
+sh_install_restart(const struct sh_caller *caller)
+{
+	return (finish(caller, "-r", "InstallRestart", "restarting"));
+}
+
+int
+sh_install_shutdown(const struct sh_caller *caller)
+{
+	return (finish(caller, "-p", "InstallShutdown", "turning off"));
 }

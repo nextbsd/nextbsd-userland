@@ -716,3 +716,17 @@ _sh_install_restart(mach_port_t server, int *status, audit_token_t audit)
 		    *status);
 	return (KERN_SUCCESS);
 }
+
+kern_return_t
+_sh_install_shutdown(mach_port_t server, int *status, audit_token_t audit)
+{
+	struct sh_caller caller;
+
+	(void)server;
+	CALLER(audit, &caller);
+	*status = sh_install_shutdown(&caller);
+	if (*status != SH_OK)
+		sh_log("pid %d: InstallShutdown refused (%d)", (int)caller.pid,
+		    *status);
+	return (KERN_SUCCESS);
+}
