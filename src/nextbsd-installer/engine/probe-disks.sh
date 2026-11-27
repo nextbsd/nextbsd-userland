@@ -89,6 +89,9 @@ else
 	[ -z "$root_provs" ] && root_provs="$root_prov"
 fi
 boot_disks="$(printf '%s\n' $root_provs | sed -E 's/[ps][0-9]+[a-h]?$//' | sort -u)"
+# The live ISO's root is a union over a tmpfs (/cow), on no disk at all: its
+# medium is the cd9660 one above.
+[ "$root_type" = unionfs ] && boot_disks=""
 [ -n "$media" ] && printf 'MEDIA\t%s\n' "$media"
 for d in $boot_disks; do printf 'MEDIA\t%s\n' "$d"; done
 
