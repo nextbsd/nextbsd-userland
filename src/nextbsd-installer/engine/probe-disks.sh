@@ -36,13 +36,31 @@ TEST_DISKS=/var/run/nextbsd-installer.test-disks
 MIN_BYTES=30000000000
 
 # The booted install medium — locked in the front-end so you can't install onto
-# what you booted. Two sources: a cd9660/cd node, AND the physical disk backing
-# the live root (/). The common case is a USB the image was written to (e.g.
-# da0), which the old cd-only check missed — so it was offered as a target.
+# what you booted. Two sources: the disk under the live ISO's cd9660, AND the
+# physical disk backing the live root (/).
+#
+# The disk a provider sits on: a label (iso9660/NEXTBSD, ufs/ROOTFS) resolved
+# through glabel to the provider it labels, then any partition suffix dropped
+# (da0p3 -> da0, da0s1a -> da0).
+disk_of() {
+	_p="${1#/dev/}"
+	_l="$(glabel status -s 2>/dev/null | awk -v n="$_p" '$1 == n {print $3; exit}')"
+	[ -n "$_l" ] && _p="$_l"
+	printf '%s\n' "$_p" | sed -E 's/[ps][0-9]+[a-h]?$//'
+}
+# The live ISO's /init mounts the boot medium, found by its volume label, as
+# cd9660 and runs the system from rootfs.uzip on it. Find that mount by its
+# file system and device, not its mount point (init mounted it in the
+# miniroot, before the pivot to the union root). Discs and images a user
+# opens later mount under /Volumes and are skipped. Then take the disk under
+# the label: da0 for an image written to a USB stick, cd0 for a burned disc.
+# Before this, media was the label's own name ("NEXTBSD"), which matched no
+# disk, so the stick was offered as a target.
 media=""
-for d in /dev/iso9660/* /dev/cd0; do
-	[ -e "$d" ] || continue
-	media="${d##*/}"
+for d in $(mount -p 2>/dev/null | awk '$3 == "cd9660" && $2 !~ /^\/Volumes\// {print $1}'); do
+	m="$(disk_of "$d")"
+	case "$m" in iso9660/*) continue ;; esac
+	media="$m"
 	break
 done
 # Resolve the disk under / through glabel (e.g. ufs/ROOTFS -> da0p3 -> da0).
@@ -71,6 +89,9 @@ else
 	[ -z "$root_provs" ] && root_provs="$root_prov"
 fi
 boot_disks="$(printf '%s\n' $root_provs | sed -E 's/[ps][0-9]+[a-h]?$//' | sort -u)"
+# The live ISO's root is a union over a tmpfs (/cow), on no disk at all: its
+# medium is the cd9660 one above.
+[ "$root_type" = unionfs ] && boot_disks=""
 [ -n "$media" ] && printf 'MEDIA\t%s\n' "$media"
 for d in $boot_disks; do printf 'MEDIA\t%s\n' "$d"; done
 
