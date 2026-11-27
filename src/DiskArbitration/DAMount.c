@@ -9,7 +9,11 @@
  * UserFS and snapshot branches. The decision, in Apple's order:
  *
  *   1. automatic, and the bundle entry said autodiskmount=false (the EFI
- *      system partition): ECANCELED, nothing is mounted.
+ *      system partition): ECANCELED, nothing is mounted. NextBSD adds
+ *      the boot partition of a disk NextBSD is on: a FAT volume sharing
+ *      its disk with a FreeBSD slice or a FreeBSD ZFS or UFS partition
+ *      (the Raspberry Pi's MBR firmware partition, which no bundle entry
+ *      matches), as a Mac never mounts its startup disk's EFI partition.
  *   2. automatic, and nobody is at the console: deferred for removable and
  *      external media (Apple's defaults; internal media mount at boot).
  *      The console user is configd's State:/Users/ConsoleUser (#199,
@@ -110,6 +114,43 @@
 
 /* Apple's DAMain.c kDAMainMountPointFolderCookieFile. */
 #define DA_MOUNT_POINT_COOKIE	".autodiskmounted"
+
+/*
+ * A FAT volume on a disk that also has a FreeBSD slice (MBR) or a FreeBSD
+ * ZFS or UFS partition (GPT): the boot partition of a NextBSD (or
+ * FreeBSD) install, not media to show on the desktop. USB sticks and
+ * cards carry no such partition, and mount as before.
+ */
+static int
+DAMountIsSystemBootVolume(const struct da_disk *disk, const char *kind)
+{
+	static const char *systems[] = {
+		"FreeBSD",				/* MBR slice, type 165 */
+		"516E7CBA-6ECF-11D6-8FF8-00022D09712B",	/* freebsd-zfs */
+		"516E7CB6-6ECF-11D6-8FF8-00022D09712B",	/* freebsd-ufs */
+	};
+	const struct da_disk *sub;
+	CFTypeRef content;
+	char buf[64];
+	unsigned i;
+
+	if (disk->whole == NULL || kind == NULL || strcmp(kind, "msdosfs") != 0)
+		return (0);
+	TAILQ_FOREACH(sub, &gDADiskList, link) {
+		if (sub == disk || sub->whole != disk->whole)
+			continue;
+		content = DADiskGetDescription(sub,
+		    kDADiskDescriptionMediaContentKey);
+		if (content == NULL || CFGetTypeID(content) !=
+		    CFStringGetTypeID() || !CFStringGetCString(content, buf,
+		    sizeof(buf), kCFStringEncodingUTF8))
+			continue;
+		for (i = 0; i < sizeof(systems) / sizeof(systems[0]); i++)
+			if (strcmp(buf, systems[i]) == 0)
+				return (1);
+	}
+	return (0);
+}
 
 /* gDAMountPointList: the mount points this daemon made. */
 struct da_mount_point {
@@ -709,6 +750,12 @@ DAMountWithArguments(struct da_disk *disk, const char *mountpoint,
 	}
 
 	/* 1-2: may this mount happen automatically now? */
+	if (automatic && DAMountIsSystemBootVolume(disk, fs->kind)) {
+		DALog("DA-MOUNT: %s not mounted automatically: the boot "
+		    "partition of a disk NextBSD is on", disk->id);
+		status = ECANCELED;
+		goto out;
+	}
 	if (automatic) {
 		if (mapauto == kCFBooleanFalse) {
 			DALog("DA-MOUNT: %s not mounted automatically: %s says "
