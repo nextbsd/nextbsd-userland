@@ -1,0 +1,32 @@
+NextBSD: fix LIBXML_VERSION in the CMake build (upstream #365).
+
+Origin: upstream commit 94ac5e61f399759a5463c0505099222ed8f13a82
+("CMakeLists.txt: Fix LIBXML_VERSION_NUMBER", Nick Wellnhofer,
+2022-04-07, in 2.9.14), applied unchanged.
+
+2.9.13's CMakeLists.txt pastes the version digits together with "0"
+between them, so xmlversion.h said LIBXML_VERSION 209013 instead of
+20913 (major * 10000 + minor * 100 + micro, as configure.ac computes it).
+Code that compares LIBXML_VERSION then took 2.9.13 for something newer
+than 2.12 (209013 >= 21200): WebKit picked the 2.12 const xmlError*
+callback signature and failed to compile (nextbsd/nextbsd#740).
+
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -106,10 +106,13 @@
+ 	endif()
+ endforeach()
+ 
+-set(LIBXML_VERSION ${LIBXML_MAJOR_VERSION}0${LIBXML_MINOR_VERSION}0${LIBXML_MICRO_VERSION})
+-set(LIBXML_VERSION_STRING "${LIBXML_VERSION}")
++set(LIBXML_VERSION ${VERSION})
+ set(LIBXML_VERSION_EXTRA "")
+-set(LIBXML_VERSION_NUMBER ${LIBXML_VERSION})
++math(EXPR LIBXML_VERSION_NUMBER "
++    ${LIBXML_MAJOR_VERSION} * 10000 +
++    ${LIBXML_MINOR_VERSION} * 100 +
++    ${LIBXML_MICRO_VERSION}
++")
+ 
+ set(MODULE_EXTENSION "${CMAKE_SHARED_LIBRARY_SUFFIX}")
+ 

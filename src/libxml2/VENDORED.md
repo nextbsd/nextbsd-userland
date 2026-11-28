@@ -85,6 +85,7 @@ shipped.
 | `0002-cmake-soversion.patch` | 2.9.13's CMake build has no `SOVERSION`, so its soname was `libxml2.so.2.9.13`; upstream's is `libxml2.so.2`. |
 | `0003-uri-include-stdint.patch` | Apple's overflow check in `xmlBuildRelativeURI()` uses `INT32_MAX`, which only Darwin's headers declare transitively. |
 | `0004-cmake-icu-libicucore.patch` | 2.9.13's CMake build writes `-licudata -licui18n -licuuc` into `libxml-2.0.pc` and `xml2-config --libs`. Base ICU is the one library libicucore, so the `.pc` now says `Requires.private: icu-uc` (upstream uses `icu-i18n` from 2.10) and `xml2-config` prints `-L/usr/lib/system -licucore`. |
+| `0005-cmake-libxml-version-number.patch` | 2.9.13's CMake build pastes the version digits together, so `xmlversion.h` said `LIBXML_VERSION 209013` instead of `20913`, which reads as newer than 2.12 (WebKit then picks the 2.12 `const xmlError *` callbacks and fails to build, nextbsd/nextbsd#740). Upstream fixed it in 2.9.14 (94ac5e61); the patch is that commit. Programs built against the old header call `xmlCheckVersion(209013)` and print a harmless "compiled against libxml 20" line until they are rebuilt. |
 | `0010`–`0027` | Security fixes from upstream that Apple's tree lacks on NextBSD; see the CVE check below. |
 
 The memory-allocator change Apple gates on `linkedOnOrAfter2024EReleases()`

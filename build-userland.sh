@@ -1614,6 +1614,10 @@ test -x "$DESTDIR/usr/bin/xmllint"     || { echo "FAIL: /usr/bin/xmllint missing
 test -x "$DESTDIR/usr/bin/xmlcatalog"  || { echo "FAIL: /usr/bin/xmlcatalog missing"; exit 1; }
 test -f "$DESTDIR/usr/include/libxml2/libxml/xmlversion.h" \
     || { echo "FAIL: libxml2 headers missing"; exit 1; }
+# major*10000 + minor*100 + micro, as upstream defines it (patch 0005);
+# 2.9.13's CMake build wrote 209013, which reads as newer than 2.12.
+grep -q '^#define LIBXML_VERSION 20913$' "$DESTDIR/usr/include/libxml2/libxml/xmlversion.h" \
+    || { echo "FAIL: xmlversion.h does not define LIBXML_VERSION 20913"; exit 1; }
 needed_check "$DESTDIR/usr/lib/libxml2.so.2" "libz"
 # libicucore's soname is the CMake target's, lib_FoundationICU.so.
 needed_check "$DESTDIR/usr/lib/libxml2.so.2" "lib_FoundationICU"
