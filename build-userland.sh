@@ -1365,6 +1365,40 @@ run_buildenv "make -C $SRC/vm_stat DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install
 test -x "$DESTDIR/usr/bin/vm_stat" || { echo "FAIL: /usr/bin/vm_stat not installed"; exit 1; }
 echo "==> vm_stat built"
 
+# ---- serveradmin (E42 Server.app, nextbsd/nextbsd-userland#690) -------------
+# What Server.app runs on each NextBSD computer, as root over SSH: typed
+# subcommands, answers in JSON. Updates go through SettingsHelper's
+# existing Update operations, so its MIG client stubs are generated here
+# from the helper's own .defs (the helper builds only the server side).
+# Links libdns_sd (name checks, account servers), liblaunch and
+# libsystem_kernel (the bootstrap look-up and Mach calls) and libjail.
+comp "serveradmin(8)"
+SA_MIG="$MIGROOT/serveradmin"
+rm -rf "$SA_MIG"; mkdir -p "$SA_MIG"
+run_mig "$SA_MIG" -I"$SRC/libmach/include" -I"$SRC/SettingsHelper" \
+    -header settingshelperUser.h -user settingshelperUser.c \
+    -server /dev/null -sheader /dev/null \
+    "$SRC/SettingsHelper/settingshelper.defs" \
+    || { echo "FAIL: mig could not make serveradmin's SettingsHelper stubs"; exit 1; }
+test -s "$SA_MIG/settingshelperUser.c" || { echo "FAIL: mig produced no settingshelperUser.c"; exit 1; }
+mkdir -p "$DESTDIR/usr/sbin"
+run_buildenv "make -C $SRC/serveradmin DESTDIR=$DESTDIR SYSROOT=$SYSROOT MIGOUT=$SA_MIG all install"
+test -x "$DESTDIR/usr/sbin/serveradmin" || { echo "FAIL: /usr/sbin/serveradmin not installed"; exit 1; }
+needed_check "$DESTDIR/usr/sbin/serveradmin" "libdns_sd"
+needed_check "$DESTDIR/usr/sbin/serveradmin" "liblaunch"
+echo "==> serveradmin built"
+
+# ---- sshd-mdns-register (nextbsd/nextbsd-userland#693) ----------------------
+# Remote Login's Bonjour advertisements, _ssh._tcp and Server.app's
+# _nextbsd-admin._tcp, alive exactly as long as sshd: started by
+# overlay/usr/libexec/sshd-keygen-wrapper, which execs sshd after it.
+comp "sshd-mdns-register"
+mkdir -p "$DESTDIR/usr/libexec"
+run_buildenv "make -C $SRC/sshd-mdns-register DESTDIR=$DESTDIR SYSROOT=$SYSROOT all install"
+test -x "$DESTDIR/usr/libexec/sshd-mdns-register" || { echo "FAIL: /usr/libexec/sshd-mdns-register not installed"; exit 1; }
+needed_check "$DESTDIR/usr/libexec/sshd-mdns-register" "libdns_sd"
+echo "==> sshd-mdns-register built"
+
 # ---- sw_vers (nextbsd/nextbsd#536) -----------------------------------------
 # Darwin's sw_vers(1), ported from DarwinTools-1: the product name, version
 # and build from /System/Library/CoreServices/SystemVersion.plist, which

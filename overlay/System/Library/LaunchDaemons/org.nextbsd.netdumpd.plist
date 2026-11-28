@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- netdumpd (nextbsd-contrib): receives kernel crash dumps other computers
+     send with dumpon -s, into /var/crash/<computer>. Server.app (E42) turns
+     it on only on the computer that collects. -D keeps it in the
+     foreground, as launchd needs. Shipped disabled. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.nextbsd.netdumpd</string>
+    <key>Disabled</key>
+    <true/>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/sbin/netdumpd</string>
+        <string>-D</string>
+        <string>-d</string>
+        <string>/var/crash</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/var/log/netdumpd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/netdumpd.log</string>
+</dict>
+</plist>

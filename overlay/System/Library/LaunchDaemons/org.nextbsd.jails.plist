@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Server.app's jails (E42): a one-shot at boot that starts every jail
+     serveradmin made with autostart=on, from its ZFS properties. No rc.d,
+     no jail.conf. Shipped disabled; serveradmin jailbase setup enables it. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.nextbsd.jails</string>
+    <key>Disabled</key>
+    <true/>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/sbin/serveradmin</string>
+        <string>jail</string>
+        <string>start</string>
+        <string>--all</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/var/log/jails.stderr</string>
+</dict>
+</plist>
