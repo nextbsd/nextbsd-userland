@@ -1,0 +1,146 @@
+.\" Copyright (C) 2026 Joseph Maloney <pkgdemonteam@gmail.com>
+.\" SPDX-License-Identifier: BSD-2-Clause
+.Dd November 28, 2026
+.Dt SERVERADMIN 8
+.Os
+.Sh NAME
+.Nm serveradmin
+.Nd manage this NextBSD computer for Server.app
+.Sh SYNOPSIS
+.Nm
+.Ar command
+.Op Ar arguments
+.Op Fl -json
+.Sh DESCRIPTION
+.Nm
+is what Server.app runs on each NextBSD computer it manages, this one
+included, as root over SSH.
+Every request is one typed subcommand with checked arguments, and every
+answer is one JSON object on standard output; an error is
+.Dl {"error": "...", "code": "..."}
+with a non-zero exit status (2 for a usage error).
+Nothing a caller sends is run as a command or used as a path.
+.Fl -json
+is accepted anywhere and changes nothing: every answer is JSON.
+.Nm
+refuses to run unless it is root.
+.Pp
+Updates go through
+.Xr SettingsHelper 8 Ns 's
+Update operations, the ones Update.app uses; everything else
+.Nm
+does with NextBSD's own tools:
+.Xr zfs 8 ,
+.Xr zpool 8 ,
+.Xr bectl 8 ,
+.Xr jail 8 ,
+.Xr pkg 8 ,
+the directory tools, and
+.Xr dumpon 8 .
+.Sh COMMANDS
+.Bl -tag -width indent
+.It Cm status
+The operating system
+.Pq Dq NextBSD ,
+the protocol number, NextBSD version and build, the FreeBSD release the
+system is synced to, host name, model, processors and their use,
+memory, pools, the accounts role, the number of jails, the wired
+Ethernet interface, and uptime.
+Server.app refuses a computer whose
+.Dq os
+isn't NextBSD.
+.It Cm pair Fl -add-key Ar key | Fl -list | Fl -remove Ar fingerprint
+Server.app's ed25519 key in root's
+.Pa authorized_keys .
+.It Cm update status | check | download | install | cancel | restart
+.It Cm update start-version Ar version | remove-version Ar version | keep Ar n
+NextBSD updates and the installed versions (boot environments).
+.It Cm users list | add Ar name Ar "full name" Op Fl -admin | password Ar name | remove Ar name | admin Ar name Cm on | off
+Accounts.
+.Cm password
+reads the new password from standard input.
+The last administrator can't be removed or demoted.
+.It Cm quota set Ar user Ar size | Cm none
+A space limit on the user's home dataset, such as
+.Ar 10G .
+.It Cm directory status | servers | promote | demote | leave | join Ar server
+Share this computer's accounts, or use another's
+.Pq Xr dspromote 8 .
+.It Cm pool list | scrub Ar pool | scrub-stop Ar pool
+.It Cm pool create Ar name Cm single | mirror | raidz Ar disk ...
+.It Cm pool add Ar pool Cm single | mirror | raidz Ar disk ...
+.It Cm pool attach Ar pool Ar disk Ar newdisk
+Pools.
+A disk must be one
+.Cm disk list
+reports as not in use.
+.It Cm disk list
+Disks not in a pool, not mounted and not swap.
+.It Cm jailbase status | check | setup | upgrade | revert
+The base system all jails share: FreeBSD's pkgbase set
+FreeBSD-set-base-jail at the release this computer is synced to, in
+.Pa <pool>/jails/base .
+.Cm setup
+also creates the datasets, makes bridge0 on the wired interface and
+enables the org.nextbsd.jails launchd job.
+.Cm upgrade
+snapshots the base, upgrades it and restarts each jail once;
+.Cm revert
+returns to the snapshot.
+.It Cm jail list | create Ar name | start Ar name | Fl -all | stop Ar name | restart Ar name | delete Ar name
+.It Cm jail security Ar name Cm raw_sockets | sysvipc Cm on | off
+.It Cm jail autostart Ar name Cm on | off
+.It Cm jail name-check Ar name
+.It Cm jail send Ar name | receive Ar name Cm move | clone Ar release
+Thin jails: each is a dataset with its own
+.Pa /etc ,
+.Pa /var ,
+.Pa /root ,
+.Pa /home ,
+.Pa /tmp
+and
+.Pa /usr/local ;
+the rest of the base is mounted read-only with nullfs.
+Settings are ZFS user properties on the jail's dataset
+.Pq Va org.nextbsd.jail:* ;
+the name is the dataset's name and the host name.
+Each jail is bridged with vNET, gets its address by DHCP and announces
+.Ar name Ns .local
+with Bonjour.
+A name is refused if this computer has a jail by that name or anything on
+the network answers
+.Ar name Ns .local .
+.Cm send
+writes a
+.Ql zfs send -p
+stream of the jail;
+.Cm receive
+reads one, and refuses unless this computer's base is the same FreeBSD
+release.
+.It Cm crashdumps status | collect Cm on | off | send Ar computer | Cm off | refresh | expect Ar computer | list
+.It Cm crashdumps delete Ar computer | - Ar host Ar n
+Kernel crash dumps over the network: one computer collects them with
+.Xr netdumpd 8 ,
+others send theirs with
+.Xr dumpon 8 Fl s .
+.It Cm log sessions | recent Op Ar n | search Ar word
+Who is signed in, and recent system log lines.
+.El
+.Sh FILES
+.Bl -tag -width indent -compact
+.It Pa /usr/local/jails
+the jail base and containers
+.It Pa /Local/Library/Preferences/org.nextbsd.serveradmin.crashdumps.conf
+the collecting computer this one sends crash dumps to
+.It Pa /System/Library/LaunchDaemons/org.nextbsd.jails.plist
+.It Pa /System/Library/LaunchDaemons/org.nextbsd.netdumpd.plist
+.It Pa /System/Library/LaunchDaemons/org.nextbsd.crashdumps-refresh.plist
+.El
+.Sh SEE ALSO
+.Xr SettingsHelper 8 ,
+.Xr dspromote 8 ,
+.Xr jail 8 ,
+.Xr netdumpd 8
+.Sh HISTORY
+.Nm
+first appeared in NextBSD 27.0 for Server.app.

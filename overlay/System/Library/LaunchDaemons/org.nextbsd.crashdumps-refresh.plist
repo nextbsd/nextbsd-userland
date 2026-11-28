@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Server.app's crash dumps (E42): a one-shot at boot that points
+     dumpon -s at the collecting computer again, resolving its .local name
+     anew (dumpon takes addresses). Shipped disabled; serveradmin
+     crashdumps send enables it. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.nextbsd.crashdumps-refresh</string>
+    <key>Disabled</key>
+    <true/>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/sbin/serveradmin</string>
+        <string>crashdumps</string>
+        <string>refresh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/var/log/crashdumps-refresh.stderr</string>
+</dict>
+</plist>
