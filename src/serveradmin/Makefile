@@ -33,11 +33,12 @@ SHDIR=		${.CURDIR}/../SettingsHelper
 MIGOUT?=	${.OBJDIR}
 MIG?=		mig
 SRCS+=		settingshelperUser.c
-CLEANFILES+=	settingshelperUser.c settingshelperUser.h
 CFLAGS+=	-I${MIGOUT} -I${SHDIR}
 CFLAGS.settingshelperUser.c+= -w
 .PATH:		${MIGOUT}
 .if !exists(${MIGOUT}/settingshelperUser.c)
+# Only when made here: bsd.prog.mk never looks for a CLEANFILES source on .PATH.
+CLEANFILES+=	settingshelperUser.c settingshelperUser.h
 settingshelperUser.c settingshelperUser.h: ${SHDIR}/settingshelper.defs ${SHDIR}/settingshelper_types.h
 	cd ${MIGOUT} && ${MIG} -I${SHDIR} -user settingshelperUser.c \
 	    -header settingshelperUser.h -server /dev/null -sheader /dev/null \
