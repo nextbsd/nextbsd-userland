@@ -18,6 +18,12 @@
 
 #include <sys/types.h>
 
+#include <mach/mach.h>
+#include <servers/bootstrap.h>
+
+#include "settingshelper_types.h"
+#include "settingshelperUser.h"
+
 #include <ctype.h>
 #include <unistd.h>
 #include <grp.h>
@@ -87,6 +93,49 @@ home_space(const char *home, int64_t *used, int64_t *quota)
 	}
 	sa_out_free(&o);
 	return (ok);
+}
+
+static struct passwd *must_user(const char *);
+
+/*
+ * The password goes to SettingsHelper (sh_set_password), which hashes it
+ * as passwd(1) does and clears noPassword; root needs no right. pw(8)'s
+ * -h isn't NextBSD's: directory accounts keep their hash in Users.plist.
+ */
+static void
+set_password(const char *name)
+{
+	mach_port_t port = MACH_PORT_NULL;
+	SHAuthForm auth;
+	SHUserName user;
+	SHPassword pass;
+	size_t n;
+	int status = SH_ERR_FAILED;
+
+	(void)must_user(name);
+	if (strlen(name) >= sizeof(user))
+		sa_fail("invalid", "name too long");
+	memset(auth, 0, sizeof(auth));
+	memset(user, 0, sizeof(user));
+	memset(pass, 0, sizeof(pass));
+	strlcpy(user, name, sizeof(user));
+	if (fgets(pass, sizeof(pass), stdin) == NULL || pass[0] == '\n' ||
+	    pass[0] == '\0')
+		sa_fail("invalid", "the new password goes on stdin");
+	n = strlen(pass);
+	if (pass[n - 1] == '\n')
+		pass[--n] = '\0';
+	else if (n == sizeof(pass) - 1)
+		sa_fail("invalid", "password too long");
+	if (bootstrap_look_up(bootstrap_port, SH_SERVICE_NAME, &port) !=
+	    KERN_SUCCESS)
+		sa_fail("unavailable", "SettingsHelper is not running");
+	if (sh_set_password(port, auth, user, pass, &status) != KERN_SUCCESS)
+		status = SH_ERR_FAILED;
+	explicit_bzero(pass, sizeof(pass));
+	if (status != SH_OK)
+		sa_fail("failed", "SettingsHelper refused the password (%d)",
+		    status);
 }
 
 static struct passwd *
@@ -190,12 +239,7 @@ cmd_users(int argc, char **argv)
 		return;
 	}
 	if (argc == 2 && strcmp(argv[0], "password") == 0) {
-		const char *a[] = { PW, "usermod", argv[1], "-h", "0", NULL };
-		char *err;
-
-		(void)must_user(argv[1]);
-		if (!sa_run_stdio(a, &err))
-			sa_fail("failed", "pw: %s", err);
+		set_password(argv[1]);
 		ok();
 		return;
 	}
