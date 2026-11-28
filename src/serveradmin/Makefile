@@ -47,6 +47,7 @@ update.o update.pieo: settingshelperUser.h
 
 # libdns_sd for the Bonjour lookups; liblaunch and libsystem_kernel for
 # the bootstrap look-up and the Mach calls to SettingsHelper; libjail.
-LDADD+=		-ldns_sd -llaunch -lsystem_kernel -ljail
+LDADD+=		-ldns_sd -llaunch -lsystem_kernel
+LIBADD+=	jail
 
 .include <bsd.prog.mk>
